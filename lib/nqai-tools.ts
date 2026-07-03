@@ -734,14 +734,21 @@ export function createNqaiTools(ctx: NqaiToolContext = {}) {
         .describe(
           "The full document body in Markdown: headings (#/##/###), bullet/numbered lists, tables (| col | col |), paragraphs. This becomes the PDF content.",
         ),
+      brand: z
+        .enum(["capital", "petroli", "naftahub"])
+        .nullable()
+        .describe(
+          "Which company letterhead/logo to stamp on the PDF, by document context: 'petroli' for oil, gas, petroleum, crude, diesel or any MCC Petroli trade document (FCO, SPA, quotation, cargo); 'naftahub' for platform onboarding / client handbook / product material; 'capital' for banking, instruments, statements and general MCC Capital documents. Leave null to auto-detect from the content.",
+        ),
     }),
-    execute: async ({ title, markdown }) => {
+    execute: async ({ title, markdown, brand }) => {
       const docId = `NQAI-DOC-${Date.now().toString(36).toUpperCase()}`
       return {
         ok: true,
         docId,
         title,
         markdown,
+        brand: brand ?? null,
         note: "Document prepared. The client can download it as a branded PDF from the chat. Give a short summary in your reply — do not paste the whole document.",
       }
     },

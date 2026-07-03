@@ -8,12 +8,15 @@
 
 import { jsPDF } from "jspdf"
 import { BRAND, formatDateTime, makeDocRef, type GeneratedPdf } from "@/lib/pdf-core"
+import { BRAND_LABELS, drawBrandMark, pickPdfBrand, type PdfBrand } from "@/lib/pdf-logos"
 
 interface NqaiDocInput {
   title: string
   markdown: string
   /** Signed-in client name, shown on the cover ("Prepared for"). */
   clientName?: string
+  /** Which brand mark to stamp. When omitted it is inferred from the content. */
+  brand?: PdfBrand
 }
 
 // Strip inline Markdown emphasis markers we don't render as styled runs, so the
@@ -27,7 +30,7 @@ function cleanInline(text: string): string {
     .trim()
 }
 
-export function generateNqaiDocumentPdf({ title, markdown, clientName }: NqaiDocInput): GeneratedPdf {
+export function generateNqaiDocumentPdf({ title, markdown, clientName, brand }: NqaiDocInput): GeneratedPdf {
   const doc = new jsPDF({ unit: "pt", format: "a4" })
   const pageWidth = doc.internal.pageSize.getWidth()
   const pageHeight = doc.internal.pageSize.getHeight()
@@ -36,6 +39,8 @@ export function generateNqaiDocumentPdf({ title, markdown, clientName }: NqaiDoc
   const bottomLimit = pageHeight - 70
   const docRef = makeDocRef("NQAI-DOC")
   const cleanTitle = (title || "NQAi Document").trim()
+  const activeBrand: PdfBrand = brand ?? pickPdfBrand(title, markdown)
+  const label = BRAND_LABELS[activeBrand]
 
   let y = 0
   let pageNo = 0
@@ -47,23 +52,18 @@ export function generateNqaiDocumentPdf({ title, markdown, clientName }: NqaiDoc
     doc.setFont("helvetica", "normal")
     doc.setFontSize(8)
     doc.setTextColor(...BRAND.slate)
-    doc.text(`${BRAND.name} · Prepared by NQAi · ${docRef}`, margin, bottomLimit + 32)
+    doc.text(`${label.name} · Prepared by NQAi · ${docRef}`, margin, bottomLimit + 32)
     doc.text(`Page ${pageNo}`, pageWidth - margin, bottomLimit + 32, { align: "right" })
   }
 
   const drawContentHeader = () => {
     doc.setFillColor(...BRAND.ink)
     doc.rect(0, 0, pageWidth, 44, "F")
-    doc.setFillColor(...BRAND.gold)
-    doc.roundedRect(margin, 12, 20, 20, 4, 4, "F")
-    doc.setTextColor(...BRAND.ink)
-    doc.setFont("helvetica", "bold")
-    doc.setFontSize(11)
-    doc.text("M", margin + 10, 26, { align: "center" })
+    const markW = drawBrandMark(doc, activeBrand, margin, 10, 60, 24, { panel: true, radius: 4 })
     doc.setTextColor(...BRAND.white)
     doc.setFont("helvetica", "bold")
     doc.setFontSize(10)
-    doc.text(BRAND.name, margin + 30, 26)
+    doc.text(label.name, margin + markW + 10, 26)
     doc.setTextColor(190, 192, 196)
     doc.setFont("helvetica", "normal")
     doc.setFontSize(8)
@@ -184,21 +184,18 @@ export function generateNqaiDocumentPdf({ title, markdown, clientName }: NqaiDoc
   pageNo = 1
   doc.setFillColor(...BRAND.ink)
   doc.rect(0, 0, pageWidth, pageHeight, "F")
-  doc.setFillColor(...BRAND.gold)
-  doc.roundedRect(margin, 150, 64, 64, 12, 12, "F")
-  doc.setTextColor(...BRAND.ink)
-  doc.setFont("helvetica", "bold")
-  doc.setFontSize(34)
-  doc.text("M", margin + 32, 196, { align: "center" })
+  // Context brand mark on a clean white card.
+  drawBrandMark(doc, activeBrand, margin, 138, 210, 92, { panel: true, radius: 10 })
 
   doc.setTextColor(...BRAND.white)
   doc.setFont("helvetica", "bold")
   doc.setFontSize(15)
-  doc.text(BRAND.name, margin, 252)
+  doc.text(label.name, margin, 268)
   doc.setTextColor(190, 192, 196)
   doc.setFont("helvetica", "normal")
   doc.setFontSize(10)
-  doc.text(BRAND.address, margin, 270)
+  doc.text(label.tagline, margin, 285)
+  doc.text(BRAND.address, margin, 300)
 
   doc.setTextColor(...BRAND.gold)
   doc.setFont("helvetica", "bold")
