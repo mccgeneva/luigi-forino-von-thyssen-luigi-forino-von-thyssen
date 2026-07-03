@@ -55,6 +55,7 @@ import { FolderTreePanel, NqaiManager, folderSubtreeIds, type OrganizerProps } f
 import { usePdfViewer } from "@/lib/pdf-viewer"
 import { useCurrentUser } from "@/lib/use-current-user"
 import { generateNqaiDocumentPdf } from "@/lib/nqai-document-pdf"
+import { warmPdfLogos, pickPdfBrand, type PdfBrand } from "@/lib/pdf-logos"
 
 /** Client-accepted upload types and the limit, mirrored by the upload route.
  *  Office/rich-text/tiff/bin are extracted or converted server-side into a
@@ -135,6 +136,7 @@ interface DocArtifact {
   key: string
   title: string
   markdown: string
+  brand?: PdfBrand | null
 }
 
 /** Extract finished createDocument artifacts from an assistant message. */
@@ -142,11 +144,15 @@ function documentArtifacts(message: UIMessage): DocArtifact[] {
   if (!message.parts) return []
   const out: DocArtifact[] = []
   message.parts.forEach((p, i) => {
-    const part = p as { type?: string; state?: string; output?: { ok?: boolean; title?: string; markdown?: string } }
+    const part = p as {
+      type?: string
+      state?: string
+      output?: { ok?: boolean; title?: string; markdown?: string; brand?: PdfBrand | null }
+    }
     if (part.type !== "tool-createDocument") return
     const o = part.output
     if (part.state === "output-available" && o?.ok && o.markdown) {
-      out.push({ key: `doc-${i}`, title: o.title || "NQAi Document", markdown: o.markdown })
+      out.push({ key: `doc-${i}`, title: o.title || "NQAi Document", markdown: o.markdown, brand: o.brand ?? null })
     }
   })
   return out
@@ -326,12 +332,16 @@ export function NqaiChat({ variant = "page" }: { variant?: "page" | "panel" }) {
 
   // Download an NQAi-authored document as a branded PDF via the shared viewer.
   const downloadDocument = useCallback(
-    (artifact: DocArtifact) => {
+    async (artifact: DocArtifact) => {
       try {
+        // Ensure the brand logos are loaded so the PDF carries the right mark.
+        await warmPdfLogos()
+        const brand: PdfBrand = artifact.brand ?? pickPdfBrand(artifact.title, artifact.markdown)
         const generated = generateNqaiDocumentPdf({
           title: artifact.title,
           markdown: artifact.markdown,
           clientName,
+          brand,
         })
         pdf.show(generated)
       } catch (err) {

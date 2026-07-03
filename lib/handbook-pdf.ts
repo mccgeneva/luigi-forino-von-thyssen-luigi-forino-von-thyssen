@@ -5,6 +5,7 @@
 import { jsPDF } from "jspdf"
 import type { GeneratedPdf } from "@/lib/pdf-core"
 import { HANDBOOK_META, HANDBOOK_SECTIONS, type HandbookSection } from "./handbook-content"
+import { drawBrandMark } from "@/lib/pdf-logos"
 
 const BRAND = {
   gold: [245, 140, 0] as [number, number, number],
@@ -42,16 +43,11 @@ export function generateHandbookPdf(): GeneratedPdf {
   const drawContentHeader = () => {
     doc.setFillColor(...BRAND.ink)
     doc.rect(0, 0, pageWidth, 44, "F")
-    doc.setFillColor(...BRAND.gold)
-    doc.roundedRect(margin, 12, 20, 20, 4, 4, "F")
-    doc.setTextColor(...BRAND.ink)
-    doc.setFont("helvetica", "bold")
-    doc.setFontSize(11)
-    doc.text("M", margin + 10, 26, { align: "center" })
+    const markW = drawBrandMark(doc, "capital", margin, 10, 60, 24, { panel: true, radius: 4 })
     doc.setTextColor(...BRAND.white)
     doc.setFont("helvetica", "bold")
     doc.setFontSize(10)
-    doc.text(HANDBOOK_META.brand, margin + 30, 26)
+    doc.text(HANDBOOK_META.brand, margin + markW + 10, 26)
     doc.setTextColor(190, 192, 196)
     doc.setFont("helvetica", "normal")
     doc.setFontSize(8)
@@ -150,13 +146,8 @@ export function generateHandbookPdf(): GeneratedPdf {
   doc.setFillColor(...BRAND.ink)
   doc.rect(0, 0, pageWidth, pageHeight, "F")
 
-  // Gold logo mark
-  doc.setFillColor(...BRAND.gold)
-  doc.roundedRect(margin, 150, 64, 64, 12, 12, "F")
-  doc.setTextColor(...BRAND.ink)
-  doc.setFont("helvetica", "bold")
-  doc.setFontSize(34)
-  doc.text("M", margin + 32, 196, { align: "center" })
+  // Brand logo mark on a clean white card
+  drawBrandMark(doc, "capital", margin, 138, 210, 92, { panel: true, radius: 10 })
 
   doc.setTextColor(...BRAND.white)
   doc.setFont("helvetica", "bold")

@@ -5,6 +5,7 @@
 
 import { jsPDF } from "jspdf"
 import type { GeneratedPdf } from "@/lib/pdf-core"
+import { drawBrandMark } from "@/lib/pdf-logos"
 
 export interface StatementEntry {
   id: string
@@ -120,12 +121,7 @@ export function generateStatementPdf(input: StatementInput): GeneratedPdf {
   const drawHeader = () => {
     doc.setFillColor(...BRAND.ink)
     doc.rect(0, 0, pageWidth, 92, "F")
-    doc.setFillColor(...BRAND.gold)
-    doc.roundedRect(margin, 28, 34, 34, 6, 6, "F")
-    doc.setTextColor(...BRAND.ink)
-    doc.setFont("helvetica", "bold")
-    doc.setFontSize(17)
-    doc.text("M", margin + 17, 51, { align: "center" })
+    drawBrandMark(doc, "capital", margin, 28, 34, 34, { panel: true, radius: 6 })
     doc.setTextColor(...BRAND.white)
     doc.setFont("helvetica", "bold")
     doc.setFontSize(16)

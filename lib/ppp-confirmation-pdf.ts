@@ -5,6 +5,7 @@
 
 import { jsPDF } from "jspdf"
 import { BRAND, money, formatDate, formatDateTime, type GeneratedPdf } from "@/lib/pdf-core"
+import { drawBrandMark } from "@/lib/pdf-logos"
 
 export interface PPPConfirmationData {
   reference: string
@@ -31,12 +32,7 @@ export function generatePPPConfirmationPdf(data: PPPConfirmationData): Generated
   doc.setFillColor(...BRAND.ink)
   doc.rect(0, 0, pageWidth, 96, "F")
 
-  doc.setFillColor(...BRAND.gold)
-  doc.roundedRect(margin, 30, 36, 36, 6, 6, "F")
-  doc.setTextColor(17, 17, 17)
-  doc.setFont("helvetica", "bold")
-  doc.setFontSize(18)
-  doc.text("M", margin + 18, 54, { align: "center" })
+  drawBrandMark(doc, "capital", margin, 30, 36, 36, { panel: true, radius: 6 })
 
   doc.setTextColor(255, 255, 255)
   doc.setFont("helvetica", "bold")

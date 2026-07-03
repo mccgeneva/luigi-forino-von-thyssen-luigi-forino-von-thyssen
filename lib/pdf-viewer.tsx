@@ -6,9 +6,10 @@
 // Download / Print / Open-in-tab. This gives every export a consistent
 // "preview in browser, then download" experience.
 
-import { createContext, useCallback, useContext, useState } from "react"
+import { createContext, useCallback, useContext, useEffect, useState } from "react"
 import type { jsPDF } from "jspdf"
 import { type GeneratedPdf, stampDemoNotice } from "@/lib/pdf-core"
+import { warmPdfLogos } from "@/lib/pdf-logos"
 import { useCurrentUser } from "@/lib/use-current-user"
 import { DEMO_USER_ID } from "@/lib/users"
 import { PdfPreviewModal } from "@/components/pdf-preview-modal"
@@ -36,6 +37,12 @@ export function PdfViewerProvider({ children }: { children: React.ReactNode }) {
   // download, open-in-tab) without touching each individual generator.
   const user = useCurrentUser()
   const isDemo = user.id === DEMO_USER_ID
+
+  // Preload the brand logos once so every generator can stamp the correct mark
+  // synchronously. Cache is idempotent; failures fall back to the gold badge.
+  useEffect(() => {
+    void warmPdfLogos()
+  }, [])
 
   const preview = useCallback(
     (doc: jsPDF, filename: string, title?: string) => {
