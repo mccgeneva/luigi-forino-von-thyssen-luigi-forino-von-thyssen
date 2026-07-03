@@ -3,6 +3,7 @@
 
 import { jsPDF } from "jspdf"
 import type { GeneratedPdf } from "@/lib/pdf-core"
+import { drawBrandMark } from "@/lib/pdf-logos"
 
 export interface ReceiptData {
   reference: string
@@ -65,13 +66,8 @@ export function generateReceiptPdf(data: ReceiptData): GeneratedPdf {
   doc.setFillColor(...BRAND.ink)
   doc.rect(0, 0, pageWidth, 96, "F")
 
-  // Gold logo mark
-  doc.setFillColor(...BRAND.gold)
-  doc.roundedRect(margin, 30, 36, 36, 6, 6, "F")
-  doc.setTextColor(17, 17, 17)
-  doc.setFont("helvetica", "bold")
-  doc.setFontSize(18)
-  doc.text("M", margin + 18, 54, { align: "center" })
+  // Brand logo mark
+  drawBrandMark(doc, "capital", margin, 30, 36, 36, { panel: true, radius: 6 })
 
   // Brand name + tagline
   doc.setTextColor(255, 255, 255)

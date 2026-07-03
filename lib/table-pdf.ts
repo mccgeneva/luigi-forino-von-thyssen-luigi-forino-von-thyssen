@@ -9,6 +9,7 @@
 import { jsPDF } from "jspdf"
 import autoTable from "jspdf-autotable"
 import { BRAND, formatDateTime, makeDocRef, type PdfDoc } from "@/lib/pdf-core"
+import { drawBrandMark } from "@/lib/pdf-logos"
 
 export interface TableColumn {
   /** Object key to read from each row. */
@@ -61,12 +62,7 @@ export function generateTablePdf(input: TablePdfInput): PdfDoc {
   const drawHeader = () => {
     doc.setFillColor(...BRAND.ink)
     doc.rect(0, 0, pageWidth, 78, "F")
-    doc.setFillColor(...BRAND.gold)
-    doc.roundedRect(margin, 22, 30, 30, 6, 6, "F")
-    doc.setTextColor(...BRAND.ink)
-    doc.setFont("helvetica", "bold")
-    doc.setFontSize(15)
-    doc.text("M", margin + 15, 42, { align: "center" })
+    drawBrandMark(doc, "capital", margin, 22, 30, 30, { panel: true, radius: 6 })
     doc.setTextColor(...BRAND.white)
     doc.setFont("helvetica", "bold")
     doc.setFontSize(14)

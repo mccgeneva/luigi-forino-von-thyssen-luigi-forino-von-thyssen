@@ -5,6 +5,7 @@
 import { jsPDF } from "jspdf"
 import type { CertificateType } from "@/lib/certificates-store"
 import type { GeneratedPdf } from "@/lib/pdf-core"
+import { drawBrandMark } from "@/lib/pdf-logos"
 
 export interface InstrumentCertificateData {
   id: string
@@ -68,7 +69,10 @@ export function generateInstrumentCertificate(data: InstrumentCertificateData): 
   doc.setLineWidth(0.5)
   doc.rect(margin / 2 + 6, margin / 2 + 6, pageWidth - margin - 12, pageHeight - margin - 12)
 
-  let y = margin + 28
+  // MCC Capital registrar medallion, centred at the top.
+  drawBrandMark(doc, "capital", pageWidth / 2 - 24, margin - 6, 48, 48, { panel: false })
+
+  let y = margin + 60
 
   // Letterhead — lead with the ISSUING BANK's brand (the instrument is issued by
   // them); MCC Capital appears below as the registrar/platform.
@@ -362,7 +366,10 @@ export function generateAccountCertificate(data: AccountCertificateData): Genera
   doc.setLineWidth(0.5)
   doc.rect(margin / 2 + 6, margin / 2 + 6, pageWidth - margin - 12, pageHeight - margin - 12)
 
-  let y = margin + 26
+  // MCC Capital medallion, centred at the top.
+  drawBrandMark(doc, "capital", pageWidth / 2 - 24, margin - 8, 48, 48, { panel: false })
+
+  let y = margin + 58
 
   // --- Letterhead -----------------------------------------------------------
   doc.setTextColor(...BRAND.ink)
@@ -591,7 +598,10 @@ export function generateSkrCertificate(data: SkrCertificateData): GeneratedPdf {
   doc.setLineWidth(0.5)
   doc.rect(margin / 2 + 6, margin / 2 + 6, pageWidth - margin - 12, pageHeight - margin - 12)
 
-  let y = margin + 26
+  // MCC Capital medallion, centred at the top.
+  drawBrandMark(doc, "capital", pageWidth / 2 - 24, margin - 8, 48, 48, { panel: false })
+
+  let y = margin + 58
 
   // --- Letterhead -----------------------------------------------------------
   doc.setTextColor(...BRAND.ink)
