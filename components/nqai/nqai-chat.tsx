@@ -73,6 +73,7 @@ const MAX_UPLOAD_BYTES = 20 * 1024 * 1024
 const MAX_AUTO_RECOVERIES = 2 // per turn, so a genuinely broken turn can't loop
 const STALL_MS = 45000 // no streamed content for this long ⇒ hung (safety net); above the ~22s tool-call ceiling to avoid false trips
 const VISIBILITY_GRACE_MS = 3500 // after returning to the tab, wait this long for the stream to resume on its own before restarting
+const POST_RETURN_ERROR_WINDOW_MS = 12000 // an error surfacing within this long after returning is treated as a dropped-socket casualty, not a genuine fault
 
 interface PendingAttachment {
   id: string
@@ -348,20 +349,30 @@ export function NqaiChat({ variant = "page" }: { variant?: "page" | "panel" }) {
   statusRef.current = status
   const lastActivityRef = useRef(Date.now())
   const hiddenAtRef = useRef(0)
+  const becameVisibleAtRef = useRef(0)
+  const lastHiddenForRef = useRef(0)
   const recoveringRef = useRef(false)
   const recoveryAttemptsRef = useRef(0)
   const [recovering, setRecovering] = useState(false)
 
-  // Resume an interrupted in-flight turn. The server persists a turn ONLY in
-  // onFinish (never on an aborted/dropped stream), so the in-memory transcript
-  // is authoritative — we must NOT reload from the DB here (that would lose the
+  // Resume an interrupted turn. The server persists a turn ONLY in onFinish
+  // (never on an aborted/dropped stream), so the in-memory transcript is
+  // authoritative — we must NOT reload from the DB here (that would lose the
   // just-sent user message). regenerate() keeps a trailing user message (or
   // drops a half-streamed assistant one) and re-runs the turn.
+  //
+  // We recover TWO post-background states: (1) HUNG — the socket died silently
+  // and status is still submitted/streaming; (2) ERRORED — iOS/Safari abort the
+  // in-flight fetch when the tab is backgrounded, so useChat surfaces an error
+  // (the "transient fault" banner). Both are the same underlying cause: the app
+  // was switched away mid-turn. A genuine foreground error (real 503/no-key) is
+  // NOT auto-recovered — only errors tied to a recent tab return are.
   const attemptRecovery = useCallback(
     async (reason: string) => {
       if (recoveringRef.current) return
       const s = statusRef.current
-      if (s !== "submitted" && s !== "streaming") return // only the hung-turn case
+      const canRecover = s === "submitted" || s === "streaming" || s === "error"
+      if (!canRecover) return
       if (messagesRef.current.length === 0) return
       if (recoveryAttemptsRef.current >= MAX_AUTO_RECOVERIES) return
       recoveringRef.current = true
@@ -401,6 +412,19 @@ export function NqaiChat({ variant = "page" }: { variant?: "page" | "panel" }) {
     if (status === "ready") recoveryAttemptsRef.current = 0
   }, [status])
 
+  // Auto-recover when a turn ERRORS shortly after returning from the background.
+  // iOS aborts the in-flight fetch on backgrounding, so the turn surfaces an
+  // error (not a hang) the moment we come back. Only treat it as a tab-switch
+  // casualty if we were genuinely hidden and just returned — foreground errors
+  // keep their manual Retry.
+  useEffect(() => {
+    if (status !== "error") return
+    const sinceReturn = becameVisibleAtRef.current ? Date.now() - becameVisibleAtRef.current : Number.POSITIVE_INFINITY
+    if (lastHiddenForRef.current >= 1500 && sinceReturn <= POST_RETURN_ERROR_WINDOW_MS) {
+      void attemptRecovery("tab-return-error")
+    }
+  }, [status, attemptRecovery])
+
   // Watchdog + visibility recovery.
   useEffect(() => {
     // Safety net: while foregrounded, a stream that emits nothing for STALL_MS
@@ -412,9 +436,10 @@ export function NqaiChat({ variant = "page" }: { variant?: "page" | "panel" }) {
       if (Date.now() - lastActivityRef.current > STALL_MS) void attemptRecovery("stall")
     }, 5000)
 
-    // Primary trigger: the freeze happens on tab/app switch. On return, if we're
-    // still mid-turn after a short grace (and nothing streamed in during it), the
-    // socket is dead — resume.
+    // Primary trigger: the freeze happens on tab/app switch. On return, if the
+    // turn is still hung after a short grace (nothing streamed in during it), the
+    // socket is dead — resume. If it already errored, the error effect above
+    // handles it immediately.
     let graceTimer: number | undefined
     const onVisible = () => {
       if (document.visibilityState === "hidden") {
@@ -423,14 +448,26 @@ export function NqaiChat({ variant = "page" }: { variant?: "page" | "panel" }) {
       }
       const hiddenFor = hiddenAtRef.current ? Date.now() - hiddenAtRef.current : 0
       hiddenAtRef.current = 0
+      lastHiddenForRef.current = hiddenFor
+      becameVisibleAtRef.current = Date.now()
       const s = statusRef.current
+      if (hiddenFor < 1500) return // brief blur can't kill the socket
+      // Already errored on return → recover now.
+      if (s === "error") {
+        void attemptRecovery("tab-return-error")
+        return
+      }
       const mid = s === "submitted" || s === "streaming"
-      if (!mid || hiddenFor < 1500) return // brief blur can't kill the socket
+      if (!mid) return
       window.clearTimeout(graceTimer)
       const activityBefore = lastActivityRef.current
       graceTimer = window.setTimeout(() => {
-        const stillMid = statusRef.current === "submitted" || statusRef.current === "streaming"
-        if (stillMid && lastActivityRef.current === activityBefore) void attemptRecovery("tab-return")
+        const st = statusRef.current
+        const stillMid = st === "submitted" || st === "streaming"
+        // Resume if still hung with no new content, OR it errored during the grace.
+        if ((stillMid && lastActivityRef.current === activityBefore) || st === "error") {
+          void attemptRecovery("tab-return")
+        }
       }, VISIBILITY_GRACE_MS)
     }
 
