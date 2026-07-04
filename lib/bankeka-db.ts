@@ -47,6 +47,19 @@ async function ensureTables(): Promise<void> {
   )
   await query(`CREATE INDEX IF NOT EXISTS bankeka_thread_idx ON bankeka_messages (thread_key, created_at)`)
   await query(`CREATE INDEX IF NOT EXISTS bankeka_recipient_idx ON bankeka_messages (recipient_id)`)
+  // Per-user "delete for me" markers. Deleting a message is intentionally NON
+  // destructive: it hides the message from the viewer who deleted it only, so
+  // one participant can never erase a message from the other's inbox (or from
+  // the compliance record). One row per (message, user).
+  await query(
+    `CREATE TABLE IF NOT EXISTS bankeka_hidden (
+       message_id text NOT NULL,
+       user_id    text NOT NULL,
+       hidden_at  timestamptz NOT NULL DEFAULT now(),
+       PRIMARY KEY (message_id, user_id)
+     )`,
+  )
+  await query(`CREATE INDEX IF NOT EXISTS bankeka_hidden_user_idx ON bankeka_hidden (user_id)`)
   await query(
     `CREATE TABLE IF NOT EXISTS bankeka_audit (
        id              text PRIMARY KEY,
@@ -110,6 +123,27 @@ export async function insertMessage(input: InsertMessageInput): Promise<MessageR
   return rowToMessage(rows[0])
 }
 
+/**
+ * Hide a single message for `userId` only ("delete for me"). Verifies the caller
+ * is actually a participant of that message (sender or recipient) before writing,
+ * so a user can only ever delete a message from a thread they belong to. Returns
+ * true when a marker exists afterwards. Idempotent (safe to call twice).
+ */
+export async function hideMessageForUser(userId: string, messageId: string): Promise<boolean> {
+  await ensureTables()
+  const { rows } = await query(
+    `SELECT id FROM bankeka_messages WHERE id = $1 AND (sender_id = $2 OR recipient_id = $2)`,
+    [messageId, userId],
+  )
+  if (rows.length === 0) return false // not a participant / message doesn't exist
+  await query(
+    `INSERT INTO bankeka_hidden (message_id, user_id) VALUES ($1, $2)
+     ON CONFLICT (message_id, user_id) DO NOTHING`,
+    [messageId, userId],
+  )
+  return true
+}
+
 /** Mark every message addressed to `me` from `other` as read (right now). */
 export async function markThreadRead(me: string, other: string): Promise<void> {
   await ensureTables()
@@ -138,8 +172,13 @@ export async function getThreadMessages(me: string, other: string): Promise<Mess
   await ensureTables()
   const tk = threadKey(me, other)
   const { rows } = await query(
-    `SELECT * FROM bankeka_messages WHERE thread_key = $1 ORDER BY created_at ASC`,
-    [tk],
+    `SELECT m.* FROM bankeka_messages m
+      WHERE m.thread_key = $1
+        AND NOT EXISTS (
+          SELECT 1 FROM bankeka_hidden h WHERE h.message_id = m.id AND h.user_id = $2
+        )
+      ORDER BY m.created_at ASC`,
+    [tk, me],
   )
   return rows.map(rowToMessage)
 }
@@ -148,7 +187,11 @@ export async function getThreadMessages(me: string, other: string): Promise<Mess
 export async function getUnreadCount(me: string): Promise<number> {
   await ensureTables()
   const { rows } = await query(
-    `SELECT count(*)::int AS n FROM bankeka_messages WHERE recipient_id = $1 AND read_at IS NULL`,
+    `SELECT count(*)::int AS n FROM bankeka_messages m
+      WHERE m.recipient_id = $1 AND m.read_at IS NULL
+        AND NOT EXISTS (
+          SELECT 1 FROM bankeka_hidden h WHERE h.message_id = m.id AND h.user_id = $1
+        )`,
     [me],
   )
   return (rows[0]?.n as number) ?? 0
@@ -158,7 +201,12 @@ export async function getUnreadCount(me: string): Promise<number> {
 export async function getMessagesForParticipant(me: string): Promise<MessageRow[]> {
   await ensureTables()
   const { rows } = await query(
-    `SELECT * FROM bankeka_messages WHERE sender_id = $1 OR recipient_id = $1 ORDER BY created_at DESC`,
+    `SELECT m.* FROM bankeka_messages m
+      WHERE (m.sender_id = $1 OR m.recipient_id = $1)
+        AND NOT EXISTS (
+          SELECT 1 FROM bankeka_hidden h WHERE h.message_id = m.id AND h.user_id = $1
+        )
+      ORDER BY m.created_at DESC`,
     [me],
   )
   return rows.map(rowToMessage)

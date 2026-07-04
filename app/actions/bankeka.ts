@@ -22,6 +22,7 @@ import { ADMIN_PASSCODE } from "@/lib/admin-config"
 import { logActivity } from "@/app/actions/log-activity"
 import {
   insertMessage,
+  hideMessageForUser,
   markThreadRead,
   markAllDelivered,
   getThreadMessages,
@@ -256,6 +257,30 @@ export async function getMyUnreadCount(): Promise<number> {
   }
 }
 
+export type DeleteResult = { ok: true } | { ok: false; error: string }
+
+/**
+ * Delete a single message for the signed-in user only ("delete for me").
+ *
+ * This is non-destructive: the message is merely hidden from this user's own
+ * view — the other participant still sees it, and the compliance record is
+ * untouched. The DB layer verifies the caller is a participant of the message,
+ * so a user can only ever hide messages from their own threads. Works for both
+ * received and sent messages.
+ */
+export async function deleteMessage(messageId: string): Promise<DeleteResult> {
+  const me = await requireSessionId()
+  if (!me) return { ok: false, error: "Your session has expired. Please sign in again." }
+  if (!messageId) return { ok: false, error: "Invalid message." }
+  try {
+    const ok = await hideMessageForUser(me, messageId)
+    if (!ok) return { ok: false, error: "Message not found." }
+    return { ok: true }
+  } catch {
+    return { ok: false, error: "Could not delete the message. Please try again." }
+  }
+}
+
 /** The pinned MCC Capital · Administration contact, so support is always
  *  reachable without needing to know an email address. */
 export async function getSupportContact(): Promise<BankekaParticipant | null> {
@@ -424,6 +449,21 @@ export async function adminReply(passcode: string, otherId: string, body: string
     return { ok: true, message: toMessage(row, BANKEKA_ADMIN_ID) }
   } catch {
     return { ok: false, error: "Could not send the reply. Please try again." }
+  }
+}
+
+/** Delete a message for the administration inbox only ("delete for me"). Hides
+ *  it from the admin console view; the client still sees it and the compliance
+ *  record is untouched. */
+export async function adminDeleteMessage(passcode: string, messageId: string): Promise<DeleteResult> {
+  if (!adminOk(passcode)) return { ok: false, error: "Administrator authorization failed." }
+  if (!messageId) return { ok: false, error: "Invalid message." }
+  try {
+    const ok = await hideMessageForUser(BANKEKA_ADMIN_ID, messageId)
+    if (!ok) return { ok: false, error: "Message not found." }
+    return { ok: true }
+  } catch {
+    return { ok: false, error: "Could not delete the message. Please try again." }
   }
 }
 
