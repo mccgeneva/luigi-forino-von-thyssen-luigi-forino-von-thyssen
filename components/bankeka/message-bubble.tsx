@@ -175,7 +175,10 @@ function BubbleMenu({
           type="button"
           aria-label="Message options"
           className={cn(
-            "mb-1 flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-muted-foreground opacity-0 transition-opacity hover:bg-secondary focus:opacity-100 focus-visible:outline-none group-hover:opacity-100 data-[state=open]:opacity-100",
+            // Always visible so the delete action is discoverable on touch
+            // devices (no hover); a touch has no group-hover, so an opacity-0
+            // kebab would never appear. Subtle by default, full on hover/open.
+            "mb-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-muted-foreground opacity-70 transition-opacity hover:bg-secondary focus:opacity-100 focus-visible:outline-none group-hover:opacity-100 data-[state=open]:opacity-100",
           )}
         >
           <MoreVertical className="h-4 w-4" />
