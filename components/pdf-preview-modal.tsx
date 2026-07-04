@@ -42,7 +42,26 @@ export function PdfPreviewModal({ doc, filename, title, onClose }: PdfPreviewPro
   )
 
   const handleDownload = () => {
-    doc.save(filename)
+    // IMPORTANT: do NOT use jsPDF's doc.save() here. On browsers where the
+    // anchor `download` attribute is unsupported (notably iOS Safari), jsPDF
+    // falls back to navigating the CURRENT window to the blob URL. That unloads
+    // the SPA and dumps the user back on the dashboard overview when they
+    // return — they lose the NQAi console. Instead we drive the download from
+    // our own blob URL and never touch the top-level location.
+    if (!blobUrl) return
+    if (isMobile) {
+      // Mobile browsers can't force a file download reliably; open the PDF in a
+      // NEW tab so the console tab (and its state) stays exactly as it was.
+      window.open(blobUrl, "_blank", "noopener,noreferrer")
+      return
+    }
+    const link = document.createElement("a")
+    link.href = blobUrl
+    link.download = filename
+    link.rel = "noopener"
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
   }
 
   const handlePrint = () => {
@@ -143,7 +162,7 @@ export function PdfPreviewModal({ doc, filename, title, onClose }: PdfPreviewPro
               <Printer className="mr-1.5 h-4 w-4" aria-hidden />
               Print
             </Button>
-            <Button size="sm" onClick={handleDownload} className="min-h-11">
+            <Button size="sm" onClick={handleDownload} disabled={!blobUrl} className="min-h-11">
               <Download className="mr-1.5 h-4 w-4" aria-hidden />
               Download
             </Button>
