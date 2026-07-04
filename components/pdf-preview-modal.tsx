@@ -8,21 +8,32 @@ import { useEffect, useMemo, useState } from "react"
 import type { jsPDF } from "jspdf"
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Button } from "@/components/ui/button"
-import { Download, Printer, ExternalLink, FileText, Loader2, X } from "lucide-react"
+import { Download, Printer, ExternalLink, FileText, Loader2, X, Lock } from "lucide-react"
 
 export interface PdfPreviewProps {
   doc: jsPDF
   filename: string
   title?: string
+  /** When true (demo account), all export paths are blocked to prevent the
+   *  document from being lifted for fraudulent use. */
+  exportDisabled?: boolean
   onClose: () => void
 }
 
-export function PdfPreviewModal({ doc, filename, title, onClose }: PdfPreviewProps) {
+export function PdfPreviewModal({ doc, filename, title, exportDisabled = false, onClose }: PdfPreviewProps) {
   const [blobUrl, setBlobUrl] = useState<string | null>(null)
 
   // Build the blob once per document. Revoke it on unmount so we never leak
   // object URLs as the user previews many documents in a session.
+  // SECURITY: when exports are disabled (demo account) we NEVER create an object
+  // URL — the raw PDF must never reach the DOM (iframe src) or a user-reachable
+  // action, otherwise the browser's own PDF viewer toolbar / "open in tab" would
+  // let a scammer extract a usable file despite the disabled buttons.
   useEffect(() => {
+    if (exportDisabled) {
+      setBlobUrl(null)
+      return
+    }
     let url: string | null = null
     try {
       const blob = doc.output("blob")
@@ -34,7 +45,7 @@ export function PdfPreviewModal({ doc, filename, title, onClose }: PdfPreviewPro
     return () => {
       if (url) URL.revokeObjectURL(url)
     }
-  }, [doc])
+  }, [doc, exportDisabled])
 
   const isMobile = useMemo(
     () => typeof navigator !== "undefined" && /iPhone|iPad|iPod|Android/i.test(navigator.userAgent),
@@ -42,6 +53,7 @@ export function PdfPreviewModal({ doc, filename, title, onClose }: PdfPreviewPro
   )
 
   const handleDownload = () => {
+    if (exportDisabled) return
     // IMPORTANT: do NOT use jsPDF's doc.save() here. On browsers where the
     // anchor `download` attribute is unsupported (notably iOS Safari), jsPDF
     // falls back to navigating the CURRENT window to the blob URL. That unloads
@@ -65,7 +77,7 @@ export function PdfPreviewModal({ doc, filename, title, onClose }: PdfPreviewPro
   }
 
   const handlePrint = () => {
-    if (!blobUrl) return
+    if (exportDisabled || !blobUrl) return
     // Print via a hidden iframe so the dialog stays intact.
     const frame = document.createElement("iframe")
     frame.style.position = "fixed"
@@ -88,6 +100,7 @@ export function PdfPreviewModal({ doc, filename, title, onClose }: PdfPreviewPro
   }
 
   const handleOpenTab = () => {
+    if (exportDisabled) return
     if (blobUrl) window.open(blobUrl, "_blank")
   }
 
@@ -113,7 +126,23 @@ export function PdfPreviewModal({ doc, filename, title, onClose }: PdfPreviewPro
 
         {/* Viewer */}
         <div className="relative flex-1 overflow-hidden bg-muted/40">
-          {blobUrl ? (
+          {exportDisabled ? (
+            <div className="flex h-full w-full flex-col items-center justify-center gap-4 px-6 text-center">
+              <div className="flex h-14 w-14 items-center justify-center rounded-full bg-destructive/10">
+                <Lock className="h-7 w-7 text-destructive" aria-hidden />
+              </div>
+              <div className="max-w-md space-y-2">
+                <p className="text-balance text-sm font-semibold sm:text-base">
+                  Document export is disabled on the demo account
+                </p>
+                <p className="text-pretty text-xs leading-relaxed text-muted-foreground sm:text-sm">
+                  For security, documents generated on the public demo (demo@mccgva.ch) cannot be previewed,
+                  downloaded, printed, or opened. This prevents the demo from being used to produce documents for
+                  fraudulent purposes. Sign in with a full client account to export documents.
+                </p>
+              </div>
+            </div>
+          ) : blobUrl ? (
             <iframe
               src={blobUrl}
               title={title || "PDF preview"}
@@ -146,27 +175,34 @@ export function PdfPreviewModal({ doc, filename, title, onClose }: PdfPreviewPro
             <X className="mr-1.5 h-4 w-4" aria-hidden />
             Close
           </Button>
-          <div className="flex items-center justify-end gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={handleOpenTab}
-              disabled={!blobUrl}
-              className="min-h-11"
-            >
-              <ExternalLink className="mr-1.5 h-4 w-4" aria-hidden />
-              <span className="hidden sm:inline">Open in tab</span>
-              <span className="sm:hidden">Open</span>
-            </Button>
-            <Button variant="outline" size="sm" onClick={handlePrint} disabled={!blobUrl} className="min-h-11">
-              <Printer className="mr-1.5 h-4 w-4" aria-hidden />
-              Print
-            </Button>
-            <Button size="sm" onClick={handleDownload} disabled={!blobUrl} className="min-h-11">
-              <Download className="mr-1.5 h-4 w-4" aria-hidden />
-              Download
-            </Button>
-          </div>
+          {exportDisabled ? (
+            <p className="flex items-center gap-1.5 text-right text-xs text-muted-foreground">
+              <Lock className="h-3.5 w-3.5 shrink-0" aria-hidden />
+              <span className="text-pretty">Exports disabled on the demo account</span>
+            </p>
+          ) : (
+            <div className="flex items-center justify-end gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleOpenTab}
+                disabled={!blobUrl}
+                className="min-h-11"
+              >
+                <ExternalLink className="mr-1.5 h-4 w-4" aria-hidden />
+                <span className="hidden sm:inline">Open in tab</span>
+                <span className="sm:hidden">Open</span>
+              </Button>
+              <Button variant="outline" size="sm" onClick={handlePrint} disabled={!blobUrl} className="min-h-11">
+                <Printer className="mr-1.5 h-4 w-4" aria-hidden />
+                Print
+              </Button>
+              <Button size="sm" onClick={handleDownload} disabled={!blobUrl} className="min-h-11">
+                <Download className="mr-1.5 h-4 w-4" aria-hidden />
+                Download
+              </Button>
+            </div>
+          )}
         </div>
       </DialogContent>
     </Dialog>

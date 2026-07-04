@@ -68,6 +68,13 @@ export function PdfViewerProvider({ children }: { children: React.ReactNode }) {
           doc={state.doc}
           filename={state.filename}
           title={state.title}
+          // The public demo account (demo@mccgva.ch) is routinely abused by
+          // scammers who try to lift real-looking documents (SWIFT confirmations,
+          // instruments, statements) for fraud. In addition to the red DEMO
+          // stamp, we DISABLE every export path (download, print, open-in-tab,
+          // and the extractable inline PDF viewer) so no usable file can leave
+          // the demo. Enforced here at the single chokepoint all exports use.
+          exportDisabled={isDemo}
           onClose={() => setState(null)}
         />
       )}
