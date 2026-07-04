@@ -66,6 +66,14 @@ const ACCEPTED_UPLOAD =
   "application/rtf,text/rtf,text/plain,text/csv,image/*,application/octet-stream"
 const MAX_UPLOAD_BYTES = 20 * 1024 * 1024
 
+/** Resilience tuning for auto-recovering an interrupted streaming turn.
+ *  A backgrounded mobile tab suspends JS and silently drops the streaming
+ *  socket, leaving a turn hung forever (no error, no completion) — the "frozen,
+ *  must restart" symptom. These bound how aggressively we auto-resume. */
+const MAX_AUTO_RECOVERIES = 2 // per turn, so a genuinely broken turn can't loop
+const STALL_MS = 45000 // no streamed content for this long ⇒ hung (safety net); above the ~22s tool-call ceiling to avoid false trips
+const VISIBILITY_GRACE_MS = 3500 // after returning to the tab, wait this long for the stream to resume on its own before restarting
+
 interface PendingAttachment {
   id: string
   name: string
@@ -329,6 +337,113 @@ export function NqaiChat({ variant = "page" }: { variant?: "page" | "panel" }) {
   const uploadingFiles = attachments.some((a) => a.status === "uploading")
   const readyFiles = attachments.filter((a) => a.status === "ready" && a.url)
   const canSend = !busy && !uploadingFiles && (input.trim().length > 0 || readyFiles.length > 0)
+
+  // ── Resilience: never leave a turn "frozen" after a tab/app switch ──────────
+  // Mirror status/messages into refs so the watchdog closures below always read
+  // live values without re-subscribing. `lastActivityRef` tracks the last time
+  // streamed content arrived; the rest bound the auto-recovery attempts.
+  const messagesRef = useRef(messages)
+  messagesRef.current = messages
+  const statusRef = useRef(status)
+  statusRef.current = status
+  const lastActivityRef = useRef(Date.now())
+  const hiddenAtRef = useRef(0)
+  const recoveringRef = useRef(false)
+  const recoveryAttemptsRef = useRef(0)
+  const [recovering, setRecovering] = useState(false)
+
+  // Resume an interrupted in-flight turn. The server persists a turn ONLY in
+  // onFinish (never on an aborted/dropped stream), so the in-memory transcript
+  // is authoritative — we must NOT reload from the DB here (that would lose the
+  // just-sent user message). regenerate() keeps a trailing user message (or
+  // drops a half-streamed assistant one) and re-runs the turn.
+  const attemptRecovery = useCallback(
+    async (reason: string) => {
+      if (recoveringRef.current) return
+      const s = statusRef.current
+      if (s !== "submitted" && s !== "streaming") return // only the hung-turn case
+      if (messagesRef.current.length === 0) return
+      if (recoveryAttemptsRef.current >= MAX_AUTO_RECOVERIES) return
+      recoveringRef.current = true
+      recoveryAttemptsRef.current += 1
+      setRecovering(true)
+      console.log(`[v0] NQAi resuming interrupted turn (${reason}); attempt ${recoveryAttemptsRef.current}`)
+      try {
+        await stop() // tear down the dead/hung stream and reset status
+        clearError()
+        // Fire-and-forget: regenerate() only resolves when the WHOLE resumed turn
+        // finishes (and never, if that stream also hangs), so we must not await it
+        // — doing so would pin the guard/banner for the entire answer. We kick it
+        // and release the guard shortly after so a fresh interruption can recover
+        // again (bounded by MAX_AUTO_RECOVERIES).
+        regenerate().catch((err) =>
+          console.log("[v0] NQAi resume request failed:", err instanceof Error ? err.message : String(err)),
+        )
+        lastActivityRef.current = Date.now()
+      } catch (err) {
+        console.log("[v0] NQAi recovery failed:", err instanceof Error ? err.message : String(err))
+      } finally {
+        window.setTimeout(() => {
+          recoveringRef.current = false
+          setRecovering(false)
+        }, 1200)
+      }
+    },
+    [stop, clearError, regenerate],
+  )
+
+  // Track streamed progress (baseline while busy, and on every chunk) and reset
+  // the per-turn recovery budget once a turn completes cleanly.
+  useEffect(() => {
+    if (busy) lastActivityRef.current = Date.now()
+  }, [messages, busy])
+  useEffect(() => {
+    if (status === "ready") recoveryAttemptsRef.current = 0
+  }, [status])
+
+  // Watchdog + visibility recovery.
+  useEffect(() => {
+    // Safety net: while foregrounded, a stream that emits nothing for STALL_MS
+    // is hung (a dead socket that never closed) — resume it.
+    const interval = window.setInterval(() => {
+      const s = statusRef.current
+      if (s !== "submitted" && s !== "streaming") return
+      if (document.visibilityState !== "visible") return
+      if (Date.now() - lastActivityRef.current > STALL_MS) void attemptRecovery("stall")
+    }, 5000)
+
+    // Primary trigger: the freeze happens on tab/app switch. On return, if we're
+    // still mid-turn after a short grace (and nothing streamed in during it), the
+    // socket is dead — resume.
+    let graceTimer: number | undefined
+    const onVisible = () => {
+      if (document.visibilityState === "hidden") {
+        hiddenAtRef.current = Date.now()
+        return
+      }
+      const hiddenFor = hiddenAtRef.current ? Date.now() - hiddenAtRef.current : 0
+      hiddenAtRef.current = 0
+      const s = statusRef.current
+      const mid = s === "submitted" || s === "streaming"
+      if (!mid || hiddenFor < 1500) return // brief blur can't kill the socket
+      window.clearTimeout(graceTimer)
+      const activityBefore = lastActivityRef.current
+      graceTimer = window.setTimeout(() => {
+        const stillMid = statusRef.current === "submitted" || statusRef.current === "streaming"
+        if (stillMid && lastActivityRef.current === activityBefore) void attemptRecovery("tab-return")
+      }, VISIBILITY_GRACE_MS)
+    }
+
+    document.addEventListener("visibilitychange", onVisible)
+    // iOS bfcache restore is another "back to the app" signal.
+    window.addEventListener("pageshow", onVisible)
+    return () => {
+      window.clearInterval(interval)
+      window.clearTimeout(graceTimer)
+      document.removeEventListener("visibilitychange", onVisible)
+      window.removeEventListener("pageshow", onVisible)
+    }
+  }, [attemptRecovery])
 
   // Download an NQAi-authored document as a branded PDF via the shared viewer.
   const downloadDocument = useCallback(
@@ -726,6 +841,8 @@ export function NqaiChat({ variant = "page" }: { variant?: "page" | "panel" }) {
     // Need either text or at least one uploaded file; never send while a file
     // is still uploading.
     if ((!value && files.length === 0) || busy || uploadingFiles) return
+    // Fresh turn ⇒ fresh auto-recovery budget.
+    recoveryAttemptsRef.current = 0
     // Lazily mint a thread id on the first message of a new conversation, and
     // set the ref BEFORE sending so the transport tags this request correctly.
     if (!activeThreadIdRef.current) {
@@ -913,11 +1030,17 @@ export function NqaiChat({ variant = "page" }: { variant?: "page" | "panel" }) {
             <span
               className={cn(
                 "h-2 w-2 rounded-full",
-                error ? "bg-destructive" : busy ? "bg-warning animate-pulse" : "bg-success animate-pulse",
+                error
+                  ? "bg-destructive"
+                  : recovering
+                    ? "bg-warning animate-pulse"
+                    : busy
+                      ? "bg-warning animate-pulse"
+                      : "bg-success animate-pulse",
               )}
             />
             <span className="hidden text-[10px] font-semibold uppercase tracking-wider text-muted-foreground sm:inline">
-              {error ? "Fault" : busy ? "Reasoning" : "Online"}
+              {error ? "Fault" : recovering ? "Reconnecting" : busy ? "Reasoning" : "Online"}
             </span>
           </div>
           <Button
@@ -1141,6 +1264,13 @@ export function NqaiChat({ variant = "page" }: { variant?: "page" | "panel" }) {
             </div>
           )
         })}
+
+        {recovering && !error && (
+          <div className="flex items-center gap-2 rounded-sm border border-primary/30 bg-primary/5 px-3 py-2 text-xs text-muted-foreground">
+            <Loader2 className="h-4 w-4 shrink-0 animate-spin text-primary" />
+            <span>Connection interrupted after switching away — reconnecting and resuming your request…</span>
+          </div>
+        )}
 
         {error && (
           <div className="flex items-center gap-2 rounded-sm border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
