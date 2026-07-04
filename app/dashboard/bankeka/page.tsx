@@ -6,6 +6,7 @@ import {
   listConversations,
   getThread,
   sendMessage,
+  deleteMessage,
   findRecipientByEmail,
   getSupportContact,
 } from "@/app/actions/bankeka"
@@ -38,6 +39,7 @@ export default function BankekaPage() {
         fetchConversations={listConversations}
         fetchThread={getThread}
         send={sendMessage}
+        deleteMessage={deleteMessage}
         findByEmail={findRecipientByEmail}
         fetchSupportContact={getSupportContact}
         emptyHint="Message MCC Capital support, or start a private conversation with someone by entering their email address."

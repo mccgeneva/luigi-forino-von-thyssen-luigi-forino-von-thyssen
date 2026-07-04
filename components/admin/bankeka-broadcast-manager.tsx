@@ -26,6 +26,7 @@ import {
   adminListConversations,
   adminGetThread,
   adminReply,
+  adminDeleteMessage,
   adminListAudit,
 } from "@/app/actions/bankeka"
 import type { BankekaAuditEntry } from "@/lib/bankeka-shared"
@@ -294,6 +295,7 @@ export function BankekaBroadcastManager() {
           fetchConversations={() => adminListConversations(ADMIN_PASSCODE)}
           fetchThread={(id) => adminGetThread(ADMIN_PASSCODE, id)}
           send={(id, body) => adminReply(ADMIN_PASSCODE, id, body)}
+          deleteMessage={(messageId) => adminDeleteMessage(ADMIN_PASSCODE, messageId)}
           emptyHint="Replies from clients to your broadcasts and direct messages appear here."
         />
       </TabsContent>

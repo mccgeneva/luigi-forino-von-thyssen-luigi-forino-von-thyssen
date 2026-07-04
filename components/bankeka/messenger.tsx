@@ -42,6 +42,7 @@ interface ThreadResult {
   messages: BankekaMessage[]
 }
 type SendResult = { ok: true; message: BankekaMessage } | { ok: false; error: string }
+type DeleteResult = { ok: true } | { ok: false; error: string }
 type FindRecipientResult =
   | { ok: true; participant: BankekaParticipant }
   | { ok: false; error: string }
@@ -52,6 +53,12 @@ export interface MessengerProps {
   fetchConversations: () => Promise<BankekaConversation[]>
   fetchThread: (otherId: string) => Promise<ThreadResult | null>
   send: (otherId: string, body: string) => Promise<SendResult>
+  /**
+   * When provided, enables "Delete for me" on each message. Deleting is
+   * non-destructive: it hides the message from the current viewer only, the
+   * other participant still sees it.
+   */
+  deleteMessage?: (messageId: string) => Promise<DeleteResult>
   /**
    * Enables the private "new conversation" picker. There is deliberately NO
    * browsable directory: a user can only start a thread with someone whose
@@ -83,6 +90,7 @@ export function Messenger({
   fetchConversations,
   fetchThread,
   send,
+  deleteMessage,
   findByEmail,
   fetchSupportContact,
   emptyHint = "Select a conversation to start messaging.",
@@ -92,6 +100,9 @@ export function Messenger({
   const [draft, setDraft] = useState("")
   const [sending, setSending] = useState(false)
   const [pending, setPending] = useState<Record<string, BankekaMessage[]>>({})
+  // Optimistically hidden message ids (delete-for-me), cleared once the server
+  // read reflects the deletion.
+  const [deletedIds, setDeletedIds] = useState<Set<string>>(new Set())
   const [search, setSearch] = useState("")
   const [contactsOpen, setContactsOpen] = useState(false)
   // Private "new conversation" lookup state (exact email only).
@@ -130,8 +141,8 @@ export function Messenger({
   const serverMessages = thread?.messages ?? []
   const pendingForActive = activeId ? pending[activeId] ?? [] : []
   const messages = useMemo(
-    () => [...serverMessages, ...pendingForActive],
-    [serverMessages, pendingForActive],
+    () => [...serverMessages, ...pendingForActive].filter((m) => !deletedIds.has(m.id)),
+    [serverMessages, pendingForActive, deletedIds],
   )
 
   // Keep the resolved participant header in sync once a thread loads.
@@ -214,6 +225,32 @@ export function Messenger({
       setPending((p) => ({ ...p, [activeId]: (p[activeId] ?? []).filter((m) => m.id !== tempId) }))
       setSending(false)
       await Promise.all([mutateThread(), mutateConversations()])
+    }
+  }
+
+  const handleDelete = async (messageId: string) => {
+    if (!deleteMessage || messageId.startsWith("temp_")) return
+    // Optimistically hide it, then confirm with the server.
+    setDeletedIds((prev) => new Set(prev).add(messageId))
+    try {
+      const res = await deleteMessage(messageId)
+      if (!res.ok) {
+        toast.error(res.error)
+        setDeletedIds((prev) => {
+          const next = new Set(prev)
+          next.delete(messageId)
+          return next
+        })
+        return
+      }
+      await Promise.all([mutateThread(), mutateConversations()])
+    } catch {
+      toast.error("Could not delete the message.")
+      setDeletedIds((prev) => {
+        const next = new Set(prev)
+        next.delete(messageId)
+        return next
+      })
     }
   }
 
@@ -484,7 +521,12 @@ export function Messenger({
                   </p>
                 ) : (
                   messages.map((m) => (
-                    <MessageBubble key={m.id} message={m} pending={m.id.startsWith("temp_")} />
+                    <MessageBubble
+                      key={m.id}
+                      message={m}
+                      pending={m.id.startsWith("temp_")}
+                      onDelete={deleteMessage ? handleDelete : undefined}
+                    />
                   ))
                 )}
                 <div ref={scrollEndRef} />
