@@ -8,7 +8,7 @@ import { useEffect, useMemo, useState } from "react"
 import type { jsPDF } from "jspdf"
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Button } from "@/components/ui/button"
-import { Download, Printer, ExternalLink, FileText, Loader2 } from "lucide-react"
+import { Download, Printer, ExternalLink, FileText, Loader2, X } from "lucide-react"
 
 export interface PdfPreviewProps {
   doc: jsPDF
@@ -122,20 +122,32 @@ export function PdfPreviewModal({ doc, filename, title, onClose }: PdfPreviewPro
         </div>
 
         {/* Actions */}
-        <div className="flex items-center justify-end gap-2 border-t border-border px-4 py-3 sm:px-6">
-          <Button variant="outline" size="sm" onClick={handleOpenTab} disabled={!blobUrl}>
-            <ExternalLink className="mr-1.5 h-4 w-4" aria-hidden />
-            <span className="hidden sm:inline">Open in tab</span>
-            <span className="sm:hidden">Open</span>
+        <div className="flex items-center justify-between gap-2 border-t border-border px-4 py-3 sm:px-6">
+          <Button variant="ghost" size="sm" onClick={onClose} className="min-h-11 shrink-0">
+            <X className="mr-1.5 h-4 w-4" aria-hidden />
+            Close
           </Button>
-          <Button variant="outline" size="sm" onClick={handlePrint} disabled={!blobUrl}>
-            <Printer className="mr-1.5 h-4 w-4" aria-hidden />
-            Print
-          </Button>
-          <Button size="sm" onClick={handleDownload}>
-            <Download className="mr-1.5 h-4 w-4" aria-hidden />
-            Download
-          </Button>
+          <div className="flex items-center justify-end gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleOpenTab}
+              disabled={!blobUrl}
+              className="min-h-11"
+            >
+              <ExternalLink className="mr-1.5 h-4 w-4" aria-hidden />
+              <span className="hidden sm:inline">Open in tab</span>
+              <span className="sm:hidden">Open</span>
+            </Button>
+            <Button variant="outline" size="sm" onClick={handlePrint} disabled={!blobUrl} className="min-h-11">
+              <Printer className="mr-1.5 h-4 w-4" aria-hidden />
+              Print
+            </Button>
+            <Button size="sm" onClick={handleDownload} className="min-h-11">
+              <Download className="mr-1.5 h-4 w-4" aria-hidden />
+              Download
+            </Button>
+          </div>
         </div>
       </DialogContent>
     </Dialog>
