@@ -65,7 +65,12 @@ import { usePdfViewer } from "@/lib/pdf-viewer"
 import { toast } from "sonner"
 import { useInstrumentRequests, type Instrument } from "@/lib/instrument-requests-store"
 import { InstrumentMarketplace } from "@/components/dashboard/instrument-marketplace"
-import { IsinTools } from "@/components/instruments/isin-tools"
+import { IsinTools, type IsinAcquisitionRequest } from "@/components/instruments/isin-tools"
+import { buildInstrumentIdentifiers } from "@/lib/instrument-identifiers"
+import {
+  MARKET_INSTRUMENT_TYPES,
+  ACQUISITION_ACTION_LABELS,
+} from "@/lib/instrument-marketplace"
 import { resolveTransferRecipient } from "@/app/actions/transfers"
 import type { TransferDirectoryEntry } from "@/lib/users"
 import { useLeverageRequests } from "@/lib/leverage-requests-store"
@@ -137,7 +142,10 @@ const formatCurrency = (value: number, currency: string) => {
     GBP: "£",
     CHF: "CHF ",
   }
-  return `${symbols[currency]}${value.toLocaleString()}`
+  // Fall back to the ISO code prefix for currencies without a dedicated symbol
+  // (e.g. AED, SGD, HKD, JPY) so values never render "undefined…".
+  const symbol = symbols[currency] ?? `${currency} `
+  return `${symbol}${value.toLocaleString()}`
 }
 
 export default function InstrumentsPage() {
@@ -147,7 +155,7 @@ export default function InstrumentsPage() {
   // Read-only portfolio: clients can no longer create, cancel, or delete
   // instruments. Bank instruments are issued and managed exclusively by the
   // administrator; the client view only displays them.
-  const { instruments, transferInstrument } = useInstrumentRequests()
+  const { instruments, transferInstrument, addInstrument } = useInstrumentRequests()
   const { addRequest: addMonetizationRequest } = useMonetizationRequests()
   const { requests: leverageRequests } = useLeverageRequests()
 
@@ -222,6 +230,64 @@ export default function InstrumentsPage() {
     })
   }
 
+
+  // Acquire an instrument straight from a verified ISIN (ISIN Tools tab). The
+  // request rides the same approvals backbone as the Marketplace, so it appears
+  // in the portfolio once the Administrator approves it — nothing auto-executes.
+  const acquireFromIsin = async (req: IsinAcquisitionRequest) => {
+    const now = new Date()
+    const expiry = new Date(now)
+    expiry.setMonth(expiry.getMonth() + req.tenorMonths)
+    const daysRemaining = Math.max(
+      0,
+      Math.round((expiry.getTime() - now.getTime()) / 86_400_000),
+    )
+    // Enrich with governing rules / serial / BIC from the identifier engine, but
+    // keep the client's VERIFIED ISIN (don't regenerate a new one).
+    const ids = buildInstrumentIdentifiers(req.issuer, req.type, now)
+    const typeMeta = MARKET_INSTRUMENT_TYPES.find((t) => t.code === req.type)
+    const actionLabel = ACQUISITION_ACTION_LABELS[req.action]
+
+    const created = addInstrument({
+      id: `${req.type}-${now.getTime().toString().slice(-6)}`,
+      type: req.type,
+      typeFull: req.typeFull,
+      issuer: req.issuer,
+      faceValue: req.faceValue,
+      currency: req.currency,
+      issuedDate: now.toISOString().split("T")[0],
+      expiryDate: expiry.toISOString().split("T")[0],
+      daysRemaining,
+      rating: "A+",
+      purpose: typeMeta?.purpose ?? "Bank instrument",
+      assignable: typeMeta?.assignable ?? true,
+      monetizable: typeMeta?.monetizable ?? true,
+      tradeType: `${actionLabel} acquisition (ISIN lookup)`,
+      ...ids,
+      isin: req.isin,
+      issuerBic: ids.issuerBic,
+    })
+
+    logActivity({
+      action: `Requested ${actionLabel.toLowerCase()} of ${req.type} ${created.id} via ISIN ${req.isin}`,
+      category: "Bank Instruments",
+      details: {
+        summary: `Client looked up ISIN ${req.isin} (${req.listed ? `exchange-listed${req.figi ? ` — Bloomberg ID ${req.figi}` : ""}` : "private / bilateral"}) and requested to ${actionLabel.toLowerCase()} a ${req.typeFull} (${req.type}) from ${req.issuer}, face value ${formatCurrency(req.faceValue, req.currency)}. Indicative ${actionLabel.toLowerCase()} fee ${formatCurrency(req.fee, req.currency)}. Awaiting Administrator approval — nothing executes automatically.`,
+        referenceId: created.id,
+        isin: req.isin,
+        instrumentType: `${req.type} — ${req.typeFull}`,
+        faceValue: formatCurrency(req.faceValue, req.currency),
+        issuingBank: req.issuer,
+        acquisition: `${actionLabel} · fee ${formatCurrency(req.fee, req.currency)}`,
+        marketStatus: req.listed ? "Exchange-listed" : "Private / bilateral",
+      },
+    })
+
+    toast.success(`${actionLabel} request submitted`, {
+      description: `${req.type} ${created.id} (ISIN ${req.isin}) is pending Administrator approval. It will appear in your portfolio once approved.`,
+    })
+    return { ok: true }
+  }
 
   const viewInstrument = (instrument: Instrument) => {
     router.push(`/dashboard/instruments/${encodeURIComponent(instrument.id)}`)
@@ -1198,9 +1264,10 @@ export default function InstrumentsPage() {
 
         <TabsContent value="isin-tools" className="space-y-4">
           <IsinTools
-            title="ISIN validation, lookup &amp; market data"
-            description="Check any ISIN's format and ISO 6166 check digit instantly, resolve it to live Bloomberg market reference data (issuer, Bloomberg ID, ticker, exchange, type), or search issuers and tickers."
+            title="Verify an ISIN &amp; add it to your portfolio"
+            description="Paste any bank instrument's ISIN to validate its format and ISO 6166 check digit, retrieve its live Bloomberg market data (issuer, Bloomberg ID, ticker, exchange, type), then trade it and add it to your portfolio for Administrator approval."
             onLog={logActivity}
+            onAcquire={acquireFromIsin}
           />
 
           {/* One-tap verification of the client's own portfolio ISINs */}
