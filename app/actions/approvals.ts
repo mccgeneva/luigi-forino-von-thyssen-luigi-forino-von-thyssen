@@ -872,7 +872,11 @@ export interface ReservationAssessment {
 async function assessReservation(req: ApprovalRequest): Promise<ReservationAssessment> {
   const entry = ledgerEntryForApproval(req)
   const ownerId = await resolveDataOwnerIdFor(req.userId)
-  if (!entry || entry.direction !== "debit" || entry.status !== "hold") {
+  // A "hold" debit always reserves; a `gate:true` effect is a SETTLED debit
+  // (e.g. an instrument acquisition fee) that must still be pre-checked for
+  // affordability and funded via FX before it posts, so it is assessed too.
+  const gated = entry?.direction === "debit" && (entry.status === "hold" || req.ledgerEffect?.gate === true)
+  if (!entry || !gated) {
     return { required: false, feasible: true, plan: null, ownerId, message: "" }
   }
   const existing = await readLedgerEntries(ownerId)
@@ -909,7 +913,11 @@ async function applyLedgerEffect(req: ApprovalRequest): Promise<void> {
   // overdrawn reservation — callers pre-check and auto-reject, this is the last
   // line of defense.
   const postedIds: string[] = []
-  if (entry.status === "hold" && entry.direction === "debit") {
+  // Fund both reservations ("hold" debits) and gated SETTLED debits (e.g. an
+  // instrument acquisition fee) the same way: take from the deal/fee currency
+  // first, cover any shortfall with capped cross-currency FX, and never overdraw.
+  const gatedDebit = entry.direction === "debit" && (entry.status === "hold" || req.ledgerEffect?.gate === true)
+  if (gatedDebit) {
     const existing = await readLedgerEntries(ownerId)
     const available = availableExcludingApproval(existing, req.id)
     const plan = planReservation(available, entry.currency, entry.amount)
