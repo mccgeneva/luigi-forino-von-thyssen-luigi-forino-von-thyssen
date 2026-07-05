@@ -80,25 +80,35 @@ export function PdfPreviewModal({ doc, filename, title, exportDisabled = false, 
   const handleDownload = () => {
     if (exportDisabled) return
     // IMPORTANT: do NOT use jsPDF's doc.save() here. On browsers where the
-    // anchor `download` attribute is unsupported (notably iOS Safari), jsPDF
-    // falls back to navigating the CURRENT window to the blob URL. That unloads
-    // the SPA and dumps the user back on the dashboard overview when they
-    // return — they lose the NQAi console. Instead we drive the download from
-    // our own blob URL and never touch the top-level location.
+    // anchor `download` attribute is unsupported, jsPDF falls back to navigating
+    // the CURRENT window to the blob URL. That unloads the SPA and dumps the user
+    // back on the dashboard overview when they return — they lose the NQAi
+    // console. Instead we drive the download from our own blob URL and never
+    // touch the top-level location.
     if (!blobUrl) return
-    if (isMobile) {
-      // Mobile browsers can't force a file download reliably; open the PDF in a
-      // NEW tab so the console tab (and its state) stays exactly as it was.
-      window.open(blobUrl, "_blank", "noopener,noreferrer")
+
+    // Prefer a NAMED anchor download on EVERY platform. Modern iOS Safari (13+)
+    // and Android Chrome both honour `a[download]` for blob: URLs and present the
+    // correct filename in the save/share sheet — this is what fixes files being
+    // saved as "Unknown" on mobile. We intentionally re-create the blob URL from
+    // the freshly named blob so the download carries `downloadName`.
+    const supportsDownload = "download" in document.createElement("a")
+    if (supportsDownload) {
+      const link = document.createElement("a")
+      link.href = blobUrl
+      link.download = downloadName
+      link.rel = "noopener"
+      link.target = "_self"
+      document.body.appendChild(link)
+      link.click()
+      document.body.removeChild(link)
       return
     }
-    const link = document.createElement("a")
-    link.href = blobUrl
-    link.download = downloadName
-    link.rel = "noopener"
-    document.body.appendChild(link)
-    link.click()
-    document.body.removeChild(link)
+
+    // Last-resort fallback for ancient browsers with no `download` support:
+    // open the blob in a new tab (may save as "Unknown", but never navigates
+    // the SPA away).
+    window.open(blobUrl, "_blank", "noopener,noreferrer")
   }
 
   const handlePrint = () => {
