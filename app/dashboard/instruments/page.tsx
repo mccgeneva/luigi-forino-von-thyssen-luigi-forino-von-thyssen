@@ -64,6 +64,7 @@ import { generateTablePdf, tablePdfFilename } from "@/lib/table-pdf"
 import { usePdfViewer } from "@/lib/pdf-viewer"
 import { toast } from "sonner"
 import { useInstrumentRequests, type Instrument } from "@/lib/instrument-requests-store"
+import { useLedger } from "@/lib/ledger-store"
 import { InstrumentMarketplace } from "@/components/dashboard/instrument-marketplace"
 import { IsinTools, type IsinAcquisitionRequest } from "@/components/instruments/isin-tools"
 import { buildInstrumentIdentifiers } from "@/lib/instrument-identifiers"
@@ -156,6 +157,7 @@ export default function InstrumentsPage() {
   // instruments. Bank instruments are issued and managed exclusively by the
   // administrator; the client view only displays them.
   const { instruments, transferInstrument, addInstrument } = useInstrumentRequests()
+  const { totalIn } = useLedger()
   const { addRequest: addMonetizationRequest } = useMonetizationRequests()
   const { requests: leverageRequests } = useLeverageRequests()
 
@@ -235,6 +237,31 @@ export default function InstrumentsPage() {
   // request rides the same approvals backbone as the Marketplace, so it appears
   // in the portfolio once the Administrator approves it — nothing auto-executes.
   const acquireFromIsin = async (req: IsinAcquisitionRequest) => {
+    const actionLabel = ACQUISITION_ACTION_LABELS[req.action]
+    // Block entirely when this ISIN is already held or awaiting approval — no
+    // duplicate positions / double fees. Rejected / cancelled / expired /
+    // transferred instruments do NOT count as held.
+    const wanted = req.isin.trim().toUpperCase()
+    const existing = instruments.find(
+      (i) =>
+        (i.isin || "").trim().toUpperCase() === wanted &&
+        (i.status === "active" || i.status === "pending"),
+    )
+    if (existing) {
+      toast.error("Already in your portfolio", {
+        description: `ISIN ${req.isin} is already ${existing.status === "pending" ? "awaiting Administrator approval" : "held"} in your portfolio (${existing.type} ${existing.id}). You can't acquire the same instrument twice.`,
+      })
+      return { ok: false }
+    }
+    // Block when the fee can't be covered by total spendable balance (all
+    // currencies, converted). The Administrator approval re-enforces this with FX.
+    const spendable = totalIn(req.currency)
+    if (req.fee > spendable + 0.01) {
+      toast.error("Insufficient balance for the acquisition fee", {
+        description: `The ${actionLabel.toLowerCase()} fee is ${formatCurrency(req.fee, req.currency)}, but your spendable balance is only ${formatCurrency(spendable, req.currency)}. Fund your account and try again.`,
+      })
+      return { ok: false }
+    }
     const now = new Date()
     const expiry = new Date(now)
     expiry.setMonth(expiry.getMonth() + req.tenorMonths)
@@ -246,7 +273,6 @@ export default function InstrumentsPage() {
     // keep the client's VERIFIED ISIN (don't regenerate a new one).
     const ids = buildInstrumentIdentifiers(req.issuer, req.type, now)
     const typeMeta = MARKET_INSTRUMENT_TYPES.find((t) => t.code === req.type)
-    const actionLabel = ACQUISITION_ACTION_LABELS[req.action]
 
     const created = addInstrument({
       id: `${req.type}-${now.getTime().toString().slice(-6)}`,
@@ -266,7 +292,7 @@ export default function InstrumentsPage() {
       ...ids,
       isin: req.isin,
       issuerBic: ids.issuerBic,
-    })
+    }, { amount: req.fee, actionLabel })
 
     logActivity({
       action: `Requested ${actionLabel.toLowerCase()} of ${req.type} ${created.id} via ISIN ${req.isin}`,
@@ -284,7 +310,7 @@ export default function InstrumentsPage() {
     })
 
     toast.success(`${actionLabel} request submitted`, {
-      description: `${req.type} ${created.id} (ISIN ${req.isin}) is pending Administrator approval. It will appear in your portfolio once approved.`,
+      description: `${req.type} ${created.id} (ISIN ${req.isin}) is pending Administrator approval. The ${formatCurrency(req.fee, req.currency)} fee is deducted from your balance once approved; nothing is charged if it is declined.`,
     })
     return { ok: true }
   }

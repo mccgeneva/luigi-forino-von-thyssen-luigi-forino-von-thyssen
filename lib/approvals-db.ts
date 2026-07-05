@@ -51,6 +51,16 @@ export interface LedgerEffect {
   category?: string
   /** "completed" moves available balance immediately; "hold" pends it. */
   status?: "completed" | "hold"
+  /**
+   * Opt-in fund-availability gate for an immediate ("completed") DEBIT. Normally
+   * only "hold" debits are pre-assessed (auto-reject if unfundable) and funded
+   * via capped cross-currency FX. Setting `gate: true` makes a settled debit —
+   * e.g. a non-refundable instrument acquisition fee that must actually leave the
+   * balance on approval — go through the SAME feasibility check + FX funding +
+   * solvency enforcement, so approval auto-rejects when the fee can't be covered
+   * and never overdraws the account.
+   */
+  gate?: boolean
 }
 
 export interface ApprovalRequest {

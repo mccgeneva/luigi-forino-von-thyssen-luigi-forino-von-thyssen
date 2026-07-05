@@ -94,11 +94,26 @@ function instrumentFromApproval(rec: ApprovalRecord): Instrument | null {
   })
 }
 
+/**
+ * The non-refundable acquisition fee charged for leasing / assigning / buying
+ * an instrument. Attached to the approval as a gated, settled DEBIT so that on
+ * Administrator approval it is actually deducted from the client's balance (in
+ * the instrument's own currency), funded via capped FX if needed, and the
+ * approval auto-rejects if the fee cannot be covered.
+ */
+export interface AcquisitionFeeInput {
+  /** Fee amount in the instrument's currency. */
+  amount: number
+  /** Human label of the action (e.g. "Lease", "Assign", "Purchase"). */
+  actionLabel: string
+}
+
 interface InstrumentRequestsContextValue {
   instruments: Instrument[]
   /** Create a new pending instrument request awaiting Administrator approval. */
   addInstrument: (
     instrument: Omit<Instrument, "status" | "submittedAt" | "decidedAt" | "decisionNote">,
+    fee?: AcquisitionFeeInput,
   ) => Instrument
   /** Approve a pending request — the instrument becomes active. */
   approveInstrument: (id: string) => Instrument | null
@@ -134,13 +149,30 @@ export function InstrumentRequestsProvider({ children }: { children: React.React
     refresh,
   } = useServerRequestList<Instrument>("instrument", { fromApproval: instrumentFromApproval })
 
-  const addInstrument: InstrumentRequestsContextValue["addInstrument"] = (instrument) => {
+  const addInstrument: InstrumentRequestsContextValue["addInstrument"] = (instrument, fee) => {
     const full: Instrument = {
       ...instrument,
       status: "pending",
       submittedAt: new Date().toISOString(),
     }
     setInstruments([full, ...instruments])
+    // A positive acquisition fee becomes a GATED, SETTLED debit on the approval:
+    // on Administrator approval it is deducted from the client's balance in the
+    // instrument's currency (FX-funded if needed) and the approval auto-rejects
+    // if it cannot be covered. Admin-issued instruments never pass a fee here.
+    const feeEffect =
+      fee && Number.isFinite(fee.amount) && fee.amount > 0
+        ? {
+            direction: "debit" as const,
+            amount: fee.amount,
+            currency: full.currency,
+            status: "completed" as const,
+            gate: true,
+            category: "Bank Instrument — Acquisition Fee",
+            counterparty: `${fee.actionLabel} fee — ${full.issuer} ${full.type}`,
+            reference: full.id,
+          }
+        : null
     // Mirror into the DB so the Administrator can review it cross-client; persist
     // the COMPLETE record under `payload.record` so the server rebuilds it anywhere.
     void mirrorSubmission({
@@ -149,7 +181,15 @@ export function InstrumentRequestsProvider({ children }: { children: React.React
       summary: `${full.currency} ${full.faceValue.toLocaleString("en-US")} ${full.typeFull} issued by ${full.issuer} (${full.purpose})`,
       amount: full.faceValue,
       currency: full.currency,
-      payload: { localId: full.id, type: full.type, issuer: full.issuer, isin: full.isin, record: full },
+      payload: {
+        localId: full.id,
+        type: full.type,
+        issuer: full.issuer,
+        isin: full.isin,
+        record: full,
+        acquisitionFee: feeEffect ? { amount: feeEffect.amount, currency: feeEffect.currency, label: fee?.actionLabel } : null,
+      },
+      ledgerEffect: feeEffect,
     }).then(() => {
       void refresh()
     })
