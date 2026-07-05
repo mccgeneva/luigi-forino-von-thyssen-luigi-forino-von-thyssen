@@ -312,7 +312,8 @@ export function DocumentTraceability() {
             for which account, and from where.
           </p>
 
-          {/* Primary path: upload the PDF and let the browser recover its token. */}
+          {/* Primary path: an obvious button that uploads the PDF and lets the
+              browser recover its token. Drag & drop still works on the wrapper. */}
           <input
             ref={fileInputRef}
             type="file"
@@ -323,31 +324,34 @@ export function DocumentTraceability() {
               e.target.value = ""
             }}
           />
-          <button
-            type="button"
-            onClick={() => fileInputRef.current?.click()}
-            disabled={fileBusy || looking}
+          <div
             onDragOver={(e) => e.preventDefault()}
             onDrop={(e) => {
               e.preventDefault()
               void handleFile(e.dataTransfer.files?.[0])
             }}
-            className="flex w-full flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed border-border bg-secondary/30 px-4 py-8 text-center transition-colors hover:border-primary/50 hover:bg-secondary/50 disabled:opacity-60"
+            className="flex flex-col items-center gap-3 rounded-xl border-2 border-dashed border-border bg-secondary/30 p-6 text-center"
           >
-            {fileBusy ? (
-              <Loader2 className="h-7 w-7 animate-spin text-muted-foreground" aria-hidden="true" />
-            ) : (
-              <Upload className="h-7 w-7 text-muted-foreground" aria-hidden="true" />
-            )}
-            <span className="text-sm font-medium text-foreground">
-              {fileBusy ? "Reading document…" : fileName ? `${fileName} — tap to choose another` : "Upload a PDF to trace it"}
-            </span>
-            {!fileBusy ? (
-              <span className="text-xs text-muted-foreground">
-                Tap to browse or drag &amp; drop · the trace token is read in your browser
-              </span>
-            ) : null}
-          </button>
+            <Button
+              type="button"
+              size="lg"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={fileBusy || looking}
+              className="w-full min-h-12 text-base font-semibold sm:w-auto"
+            >
+              {fileBusy ? (
+                <Loader2 className="mr-2 h-5 w-5 animate-spin" />
+              ) : (
+                <Upload className="mr-2 h-5 w-5" />
+              )}
+              {fileBusy ? "Reading document…" : "Upload document for verification"}
+            </Button>
+            <p className="text-xs text-muted-foreground text-pretty">
+              {fileName
+                ? `Selected: ${fileName} — tap the button to choose another`
+                : "Choose a PDF or drag & drop it here · the trace token is read in your browser"}
+            </p>
+          </div>
 
           <div className="flex items-center gap-3">
             <div className="h-px flex-1 bg-border" />
