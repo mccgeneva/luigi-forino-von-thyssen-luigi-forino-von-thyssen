@@ -39,6 +39,7 @@ import {
   Handshake,
   ArrowRight,
   Tag,
+  Fingerprint,
 } from "lucide-react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -128,6 +129,7 @@ import { CardManager } from "@/components/admin/card-manager"
 import { CertificateManager } from "@/components/admin/certificate-manager"
 import { BankekaBroadcastManager } from "@/components/admin/bankeka-broadcast-manager"
  import { SpotDealManager } from "@/components/admin/spot-deal-manager"
+import { DocumentTraceability } from "@/components/admin/document-traceability"
 import { ProjectFinanceAdmin } from "@/components/admin/project-finance-admin"
 import { toast } from "sonner"
 
@@ -1903,6 +1905,7 @@ export default function AdminPage() {
     {
       title: "System",
       items: [
+        { id: "traceability", label: "Document Traceability", description: "Trace any generated document back to the account, IP and biometric on file.", icon: Fingerprint, count: 0 },
         { id: "danger", label: "Danger Zone", description: "Reset account data to a brand-new state.", icon: AlertTriangle, count: 0 },
       ],
     },
@@ -4680,6 +4683,13 @@ export default function AdminPage() {
       {activeView === "spotdeals" && (
       <div className="space-y-6">
         <SpotDealManager />
+      </div>
+      )}
+
+      {/* Document Traceability: trace any generated document to its origin */}
+      {activeView === "traceability" && (
+      <div className="space-y-6">
+        <DocumentTraceability />
       </div>
       )}
 
