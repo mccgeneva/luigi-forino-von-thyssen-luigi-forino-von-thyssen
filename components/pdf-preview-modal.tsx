@@ -8,7 +8,20 @@ import { useEffect, useMemo, useState } from "react"
 import type { jsPDF } from "jspdf"
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Button } from "@/components/ui/button"
-import { Download, Printer, ExternalLink, FileText, Loader2, X, Lock } from "lucide-react"
+import { Input } from "@/components/ui/input"
+import { Download, Printer, ExternalLink, FileText, Loader2, X, Lock, Pencil } from "lucide-react"
+
+// Turn a user-typed name into a safe download filename ending in `.pdf`.
+// Falls back to a sensible default so a file is never saved as "Unknown".
+function toPdfFilename(name: string): string {
+  const base = name
+    .trim()
+    .replace(/\.pdf$/i, "")
+    .replace(/[^\w.\- ]+/g, "")
+    .replace(/\s+/g, "-")
+    .slice(0, 80)
+  return `${base || "document"}.pdf`
+}
 
 export interface PdfPreviewProps {
   doc: jsPDF
@@ -22,6 +35,18 @@ export interface PdfPreviewProps {
 
 export function PdfPreviewModal({ doc, filename, title, exportDisabled = false, onClose }: PdfPreviewProps) {
   const [blobUrl, setBlobUrl] = useState<string | null>(null)
+  // Editable name (without the .pdf extension) so the user can set what the file
+  // is called BEFORE downloading — otherwise some browsers save it as "Unknown".
+  const [nameInput, setNameInput] = useState(() => filename.replace(/\.pdf$/i, ""))
+  const [editingName, setEditingName] = useState(false)
+
+  // Reset the editable name whenever a different document is opened.
+  useEffect(() => {
+    setNameInput(filename.replace(/\.pdf$/i, ""))
+    setEditingName(false)
+  }, [filename])
+
+  const downloadName = toPdfFilename(nameInput)
 
   // Build the blob once per document. Revoke it on unmount so we never leak
   // object URLs as the user previews many documents in a session.
@@ -69,7 +94,7 @@ export function PdfPreviewModal({ doc, filename, title, exportDisabled = false, 
     }
     const link = document.createElement("a")
     link.href = blobUrl
-    link.download = filename
+    link.download = downloadName
     link.rel = "noopener"
     document.body.appendChild(link)
     link.click()
@@ -119,7 +144,41 @@ export function PdfPreviewModal({ doc, filename, title, exportDisabled = false, 
               <DialogTitle className="truncate text-sm font-semibold sm:text-base">
                 {title || "Document preview"}
               </DialogTitle>
-              <p className="truncate text-xs text-muted-foreground">{filename}</p>
+              {exportDisabled ? (
+                <p className="truncate text-xs text-muted-foreground">{downloadName}</p>
+              ) : editingName ? (
+                <div className="mt-0.5 flex items-center gap-1">
+                  <Input
+                    autoFocus
+                    value={nameInput}
+                    onChange={(e) => setNameInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.nativeEvent.isComposing || e.keyCode === 229) return
+                      if (e.key === "Enter") setEditingName(false)
+                      if (e.key === "Escape") {
+                        setNameInput(filename.replace(/\.pdf$/i, ""))
+                        setEditingName(false)
+                      }
+                    }}
+                    onBlur={() => setEditingName(false)}
+                    aria-label="File name"
+                    placeholder="File name"
+                    className="h-7 text-xs"
+                  />
+                  <span className="shrink-0 text-xs text-muted-foreground">.pdf</span>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => setEditingName(true)}
+                  className="group mt-0.5 flex max-w-full items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
+                  title="Rename file before downloading"
+                >
+                  <span className="truncate">{downloadName}</span>
+                  <Pencil className="h-3 w-3 shrink-0 opacity-60 group-hover:opacity-100" aria-hidden />
+                  <span className="sr-only">Rename file before downloading</span>
+                </button>
+              )}
             </div>
           </div>
         </DialogHeader>
