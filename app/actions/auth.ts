@@ -20,24 +20,40 @@ import { getDynamicUserByEmail, getDynamicUserById, updateDynamicUserProfile } f
 import { resolveCurrentSession } from "@/lib/session-user"
 import { DEMO_USER_ID } from "@/lib/users"
 import { logActivity } from "@/app/actions/log-activity"
+import { del } from "@vercel/blob"
 import {
   signChallenge,
   verifyChallenge,
   decryptDescriptors,
+  encryptDescriptors,
   matchesEnrolled,
+  matchesPassport,
   isValidDescriptor,
 } from "@/lib/biometric"
 import {
   getFaceState,
   getEncryptedDescriptor,
+  getIdentityStatus,
+  markIdentityVerified,
+  saveEncryptedDescriptor,
   registerFailure,
   resetFailCount,
 } from "@/lib/biometric-db"
+import { verifyPassportImage } from "@/lib/kyc-analyze"
 
 export type LoginState = {
   error?: string
   /** Set when the password step passed but a face scan is now required. */
   faceRequired?: boolean
+  /**
+   * Set when the password step passed but the account still needs to complete
+   * one-time identity verification (passport + matching live selfie) before a
+   * session is granted. Applies to unverified accounts and, every time, to the
+   * shared demo account.
+   */
+  identityRequired?: boolean
+  /** True when the identity step belongs to the stateless demo account. */
+  demo?: boolean
   /** Short-lived signed token proving the password step passed (no password inside). */
   challenge?: string
   /** Display name for the face-scan UI. */
@@ -187,12 +203,18 @@ export async function login(_prevState: LoginState, formData: FormData): Promise
   const accountActive = !!matchedUser && matchedUser.active
 
   if (matchedUser && passwordMatches && accountActive) {
-    // Password step passed. If this user has enrolled Face ID, DO NOT establish
-    // a session yet — require a successful, strict face match as a second
-    // factor. We hand the browser a short-lived signed challenge (no password
-    // inside) that `completeFaceLogin` will verify alongside the live scan.
+    // Password step passed. DO NOT establish a session yet — a second factor is
+    // always required. We hand the browser a short-lived signed challenge (no
+    // password inside) that the follow-up action verifies alongside the scan.
+    const isDemo = matchedUser.id === DEMO_USER_ID
     const face = await getFaceState(matchedUser.id)
-    if (face.enrolled) {
+    const identity = await getIdentityStatus(matchedUser.id)
+
+    // FAST PATH: a real account that has already completed identity verification
+    // and enrolled a live selfie only needs the strict selfie second factor —
+    // the unchanged Face ID flow. (The demo account is stateless and never
+    // takes this path; it re-verifies its identity on every login.)
+    if (!isDemo && identity.verified && face.enrolled) {
       if (face.locked) {
         await logFailedLogin(email, "biometric locked")
         await clearAllSessionCookies()
@@ -208,8 +230,15 @@ export async function login(_prevState: LoginState, formData: FormData): Promise
       }
     }
 
-    // No biometric enrolled → password-only login (unchanged behavior).
-    await establishSessionAndRedirect(matchedUser, email)
+    // IDENTITY GATE: unverified real accounts (including existing users on their
+    // next login) and the demo account every time must prove their identity with
+    // a passport + a matching live selfie before any session is granted.
+    return {
+      identityRequired: true,
+      demo: isDemo,
+      challenge: signChallenge(matchedUser.id),
+      name: matchedUser.fullName,
+    }
   }
 
   // A failed attempt must never leave an active session behind.
@@ -303,6 +332,192 @@ export async function completeFaceLogin(
     rec.email,
   )
   return { success: true, redirectTo: POST_LOGIN_PATH }
+}
+
+/** Payload sent by the client after gathering the passport + live selfie. */
+export interface IdentityVerificationInput {
+  /** 128-float descriptor of the face photo on the passport (computed client-side). */
+  passportDescriptor: number[]
+  /** 128-float descriptor of the live selfie (computed client-side). */
+  selfieDescriptor: number[]
+  /** Blob pathname of the uploaded passport image (server reads its bio-data, then deletes it). */
+  passportPathname: string
+  /** Content type of the uploaded passport image. */
+  passportContentType: string
+}
+
+/**
+ * First login factor extension: mandatory identity verification. Requires a
+ * valid, unexpired challenge from the password step, then:
+ *   1. Confirms the uploaded document actually reads as a passport (photo + MRZ)
+ *      via the multimodal analyzer — an in-app document check, NOT a licensed
+ *      government-authenticity attestation.
+ *   2. Matches the live selfie against the passport photo under a looser
+ *      threshold suited to live-vs-printed comparison.
+ * On success: real accounts are marked verified and their LIVE selfie is
+ * enrolled for the strict fast path on future logins; the demo account verifies
+ * statelessly (nothing persisted) so the shared public login stays usable. The
+ * passport image is deleted from Blob in every case.
+ */
+export async function verifyIdentityAndLogin(
+  challenge: string,
+  input: IdentityVerificationInput,
+): Promise<LoginState> {
+  const uid = verifyChallenge(challenge)
+  if (!uid) {
+    return { error: "Your sign-in attempt expired. Please enter your password again." }
+  }
+
+  const rec = await getDynamicUserById(uid)
+  if (!rec || rec.status !== "active") {
+    await clearAllSessionCookies()
+    return { error: "Invalid email or password. Access denied." }
+  }
+
+  const isDemo = uid === DEMO_USER_ID
+  const name = rec.profile.fullName || rec.profile.company || rec.email
+
+  if (!isValidDescriptor(input?.passportDescriptor)) {
+    return {
+      identityRequired: true,
+      demo: isDemo,
+      challenge,
+      name,
+      error: "We couldn't find a clear face photo on your passport. Retake the photo with the whole bio-data page in frame.",
+    }
+  }
+  if (!isValidDescriptor(input?.selfieDescriptor)) {
+    return {
+      identityRequired: true,
+      demo: isDemo,
+      challenge,
+      name,
+      error: "No face detected in your selfie. Center your face and try again.",
+    }
+  }
+
+  // Face-scan lockout applies to real accounts (the demo is stateless and never
+  // locks, so the public login can't be bricked by a bad actor).
+  const face = await getFaceState(uid)
+  if (!isDemo && face.locked) {
+    return { error: "Face ID is locked after too many failed attempts. Please contact your administrator to reset it." }
+  }
+
+  const cleanupPassport = async () => {
+    try {
+      await del(input.passportPathname)
+    } catch {
+      // Best-effort: a leftover blob is harmless and will be re-checked next time.
+    }
+  }
+
+  try {
+    // 1) Confirm the uploaded document reads as a passport with a face photo.
+    const pv = await verifyPassportImage(input.passportPathname, input.passportContentType || "image/jpeg")
+    if (!pv.isPassport || !pv.hasFacePhoto) {
+      await cleanupPassport()
+      await logActivity({
+        action: "Identity verification rejected — not a valid passport",
+        category: "Authentication / Security",
+        user: name,
+        details: { email: rec.email, reason: pv.reason || "document is not a passport with a photo", result: "denied" },
+      })
+      return {
+        identityRequired: true,
+        demo: isDemo,
+        challenge,
+        name,
+        error:
+          (pv.reason && pv.reason.trim()) ||
+          "That document doesn't read as a valid passport. Upload a clear photo of your passport bio-data page.",
+      }
+    }
+
+    // 2) Match the live selfie against the passport photo (looser threshold).
+    const { ok, distance } = matchesPassport(input.selfieDescriptor, input.passportDescriptor)
+    if (!ok) {
+      await cleanupPassport()
+      let failCount = 0
+      let locked = false
+      if (!isDemo) {
+        const res = await registerFailure(uid)
+        failCount = res.failCount
+        locked = res.locked
+      }
+      await logActivity({
+        action: locked ? "Identity verification locked after failed attempts" : "Identity verification failed — face mismatch",
+        category: "Authentication / Security",
+        user: name,
+        details: { email: rec.email, distance: distance.toFixed(3), failCount, result: locked ? "locked" : "denied" },
+      })
+      if (locked) {
+        return { error: "Face verification locked after too many failed attempts. Please contact your administrator to reset it." }
+      }
+      const remaining = isDemo ? 0 : Math.max(0, 5 - failCount)
+      return {
+        identityRequired: true,
+        demo: isDemo,
+        challenge,
+        name,
+        error: `Your selfie didn't match the photo on the passport. Please try again${
+          remaining ? ` (${remaining} attempt${remaining === 1 ? "" : "s"} left)` : ""
+        }.`,
+      }
+    }
+
+    // 3) Success. Remove the passport image; we keep only non-sensitive metadata.
+    await cleanupPassport()
+
+    if (!isDemo) {
+      // Persist verification and enroll the LIVE selfie so future logins use the
+      // strict selfie-only fast path (selfie-vs-selfie, not selfie-vs-document).
+      const last4 = pv.passportNo ? pv.passportNo.slice(-4) : null
+      await markIdentityVerified(uid, {
+        country: pv.country || null,
+        fullName: pv.fullName || name,
+        passportLast4: last4,
+      })
+      await saveEncryptedDescriptor(uid, encryptDescriptors([input.selfieDescriptor]))
+      await resetFailCount(uid)
+    }
+
+    await logActivity({
+      action: "Identity verified",
+      category: "Authentication / Security",
+      user: name,
+      details: {
+        email: rec.email,
+        country: pv.country || "",
+        distance: distance.toFixed(3),
+        mode: isDemo ? "demo (stateless)" : "enrolled",
+        result: "granted",
+      },
+    })
+
+    await establishSession(
+      {
+        id: rec.id,
+        password: rec.password,
+        sessionToken: rec.sessionToken,
+        fullName: name,
+        company: rec.profile.company || "",
+        active: true,
+      },
+      rec.email,
+    )
+    return { success: true, redirectTo: POST_LOGIN_PATH }
+  } catch (error) {
+    await cleanupPassport()
+    const detail = error instanceof Error ? error.message : String(error)
+    console.error("[v0] Identity verification error:", detail)
+    return {
+      identityRequired: true,
+      demo: isDemo,
+      challenge,
+      name,
+      error: "We couldn't verify your identity right now. Please try again in a moment.",
+    }
+  }
 }
 
 export async function logout() {

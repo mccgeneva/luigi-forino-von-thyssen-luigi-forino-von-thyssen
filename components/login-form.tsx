@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { FaceCapture } from "@/components/auth/face-capture"
+import { PassportVerify } from "@/components/auth/passport-verify"
 
 function SubmitButton() {
   const { pending } = useFormStatus()
@@ -103,10 +104,22 @@ function FaceStep({
 
 export function LoginForm() {
   const [state, formAction] = useActionState<LoginState, FormData>(login, {})
-  // Local flag lets the user back out of the face step to the password form.
+  // Local flag lets the user back out of a second-factor step to the password form.
   const [backToPassword, setBackToPassword] = useState(false)
 
   const showFaceStep = state?.faceRequired && state.challenge && !backToPassword
+  const showIdentityStep = state?.identityRequired && state.challenge && !backToPassword
+
+  if (showIdentityStep) {
+    return (
+      <PassportVerify
+        challenge={state.challenge!}
+        name={state.name}
+        demo={state.demo}
+        onBack={() => setBackToPassword(true)}
+      />
+    )
+  }
 
   if (showFaceStep) {
     return (
