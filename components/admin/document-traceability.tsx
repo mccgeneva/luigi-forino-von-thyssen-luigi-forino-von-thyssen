@@ -14,7 +14,7 @@
 // document type). The in-file token is only the pointer back to that row.
 // ---------------------------------------------------------------------------
 
-import { useCallback, useEffect, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
@@ -31,9 +31,14 @@ import {
   Loader2,
   Info,
   RefreshCw,
+  Upload,
+  MapPin,
+  ExternalLink,
+  Building2,
 } from "lucide-react"
 import { ADMIN_PASSCODE } from "@/lib/admin-config"
-import { adminExtractTrace, adminListTraces, type TraceLookupResult } from "@/app/actions/pdf-trace"
+import { adminExtractTrace, adminListTraces, type TraceLookupResult, type IpGeo } from "@/app/actions/pdf-trace"
+import { extractTraceToken } from "@/lib/pdf-trace"
 import type { DocumentTrace } from "@/lib/pdf-trace-db"
 
 function fmtWhen(iso: string): string {
@@ -62,9 +67,70 @@ function Field({ icon: Icon, label, value, mono }: { icon: typeof User; label: s
   )
 }
 
+function GeoPanel({ geo }: { geo: IpGeo }) {
+  const place = [geo.city, geo.region, geo.country].filter(Boolean).join(", ")
+  const hasCoords = typeof geo.latitude === "number" && typeof geo.longitude === "number"
+  return (
+    <div className="rounded-lg border border-border bg-secondary/40 p-4">
+      <p className="mb-3 flex items-center gap-2 text-sm font-semibold text-foreground">
+        <MapPin className="h-4 w-4 text-primary" />
+        Origin location (IP geolocation)
+      </p>
+
+      {geo.isPrivate ? (
+        <p className="text-sm text-muted-foreground text-pretty">
+          The recorded address (<span className="font-mono">{geo.ip}</span>) is a private / local network
+          address, so no public geolocation is available. This is expected for documents generated in a
+          development or internal environment.
+        </p>
+      ) : geo.error ? (
+        <p className="text-sm text-muted-foreground text-pretty">
+          Could not resolve a location for <span className="font-mono">{geo.ip}</span>: {geo.error}
+        </p>
+      ) : (
+        <div className="space-y-3">
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Field icon={MapPin} label="Approximate location" value={place || "Unknown"} />
+            {geo.postal ? <Field icon={MapPin} label="Postal code" value={geo.postal} /> : null}
+            {geo.timezone ? <Field icon={Clock} label="Timezone" value={geo.timezone} /> : null}
+            {geo.isp ? <Field icon={Building2} label="Internet provider (ISP)" value={geo.isp} /> : null}
+            {geo.org && geo.org !== geo.isp ? (
+              <Field icon={Building2} label="Organisation" value={geo.org} />
+            ) : null}
+            {hasCoords ? (
+              <Field
+                icon={Globe}
+                label="Coordinates"
+                value={`${geo.latitude!.toFixed(4)}, ${geo.longitude!.toFixed(4)}`}
+                mono
+              />
+            ) : null}
+          </div>
+          {hasCoords ? (
+            <a
+              href={`https://www.google.com/maps/search/?api=1&query=${geo.latitude},${geo.longitude}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1.5 text-sm font-medium text-primary hover:underline"
+            >
+              <ExternalLink className="h-3.5 w-3.5" />
+              View on map
+            </a>
+          ) : null}
+          <p className="text-xs text-muted-foreground text-pretty">
+            IP geolocation is approximate (typically city / region level) and reflects the network the
+            document was generated from, not a precise address.
+          </p>
+        </div>
+      )}
+    </div>
+  )
+}
+
 function TraceResultCard({ result }: { result: TraceLookupResult }) {
   const trace = result.trace
   const payload = result.payload
+  const geo = result.geo
 
   return (
     <Card className="border-primary/30 bg-primary/5">
@@ -97,6 +163,11 @@ function TraceResultCard({ result }: { result: TraceLookupResult }) {
                 <Badge variant="secondary">Demo account · exports were blocked</Badge>
               </div>
             ) : null}
+            {geo ? (
+              <div className="sm:col-span-2">
+                <GeoPanel geo={geo} />
+              </div>
+            ) : null}
           </div>
         ) : payload ? (
           <div className="space-y-4">
@@ -125,6 +196,10 @@ export function DocumentTraceability() {
   const [lookupError, setLookupError] = useState<string | null>(null)
   const [result, setResult] = useState<TraceLookupResult | null>(null)
 
+  const [fileBusy, setFileBusy] = useState(false)
+  const [fileName, setFileName] = useState<string | null>(null)
+  const fileInputRef = useRef<HTMLInputElement>(null)
+
   const [filterUser, setFilterUser] = useState("")
   const [recent, setRecent] = useState<DocumentTrace[]>([])
   const [loadingRecent, setLoadingRecent] = useState(false)
@@ -145,10 +220,10 @@ export function DocumentTraceability() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  const runLookup = useCallback(async () => {
-    const value = needle.trim()
+  const runLookup = useCallback(async (override?: string) => {
+    const value = (override ?? needle).trim()
     if (!value) {
-      setLookupError("Enter a document id, token, or paste the document text.")
+      setLookupError("Upload a PDF, or enter a document id / token / pasted text.")
       return
     }
     setLooking(true)
@@ -165,12 +240,61 @@ export function DocumentTraceability() {
         return
       }
       setResult(res)
+      if (typeof window !== "undefined") window.scrollTo({ top: 0, behavior: "smooth" })
     } catch {
       setLookupError("The lookup failed. Please try again.")
     } finally {
       setLooking(false)
     }
   }, [needle])
+
+  /**
+   * Handle a dropped/selected PDF. We read the file in the browser and recover
+   * the embedded trace token from its raw bytes (the token lives in the PDF Info
+   * dictionary and as page micro-text, both plaintext in jsPDF output). Only the
+   * small extracted token is sent to the server — never the whole file.
+   */
+  const handleFile = useCallback(
+    async (file: File | undefined | null) => {
+      if (!file) return
+      setResult(null)
+      setLookupError(null)
+      setFileName(file.name)
+
+      if (file.size > 30 * 1024 * 1024) {
+        setLookupError("That file is larger than 30 MB. Please upload the original document.")
+        return
+      }
+
+      setFileBusy(true)
+      try {
+        // Read as a binary string so the token regex can scan the raw bytes.
+        const buf = await file.arrayBuffer()
+        const bytes = new Uint8Array(buf)
+        let text = ""
+        const CHUNK = 0x8000
+        for (let i = 0; i < bytes.length; i += CHUNK) {
+          text += String.fromCharCode(...bytes.subarray(i, i + CHUNK))
+        }
+
+        const found = extractTraceToken(text)
+        if (!found) {
+          setLookupError(
+            "No MCC trace token was found in that file. It may have been re-exported or stripped — " +
+              "use the recent-activity log below (searchable by account id and time) instead.",
+          )
+          return
+        }
+        setNeedle(found.token)
+        await runLookup(found.token)
+      } catch {
+        setLookupError("Could not read that file. Make sure it is the original PDF.")
+      } finally {
+        setFileBusy(false)
+      }
+    },
+    [runLookup],
+  )
 
   return (
     <div className="space-y-6">
@@ -184,10 +308,52 @@ export function DocumentTraceability() {
         <CardContent className="space-y-4">
           <p className="text-sm text-muted-foreground text-pretty">
             Every document generated on the platform carries a hidden trace token and is recorded in a
-            tamper-proof server log. Paste a token (<span className="font-mono">MCCX1:…</span>), a document
-            id (<span className="font-mono">MCC-DOC-…</span>), or the extracted text of a suspect PDF to
-            identify who generated it, for which account, and from where.
+            tamper-proof server log. Upload the PDF (or paste its token / id) to identify who generated it,
+            for which account, and from where.
           </p>
+
+          {/* Primary path: upload the PDF and let the browser recover its token. */}
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="application/pdf,.pdf"
+            className="sr-only"
+            onChange={(e) => {
+              void handleFile(e.target.files?.[0])
+              e.target.value = ""
+            }}
+          />
+          <button
+            type="button"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={fileBusy || looking}
+            onDragOver={(e) => e.preventDefault()}
+            onDrop={(e) => {
+              e.preventDefault()
+              void handleFile(e.dataTransfer.files?.[0])
+            }}
+            className="flex w-full flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed border-border bg-secondary/30 px-4 py-8 text-center transition-colors hover:border-primary/50 hover:bg-secondary/50 disabled:opacity-60"
+          >
+            {fileBusy ? (
+              <Loader2 className="h-7 w-7 animate-spin text-muted-foreground" aria-hidden="true" />
+            ) : (
+              <Upload className="h-7 w-7 text-muted-foreground" aria-hidden="true" />
+            )}
+            <span className="text-sm font-medium text-foreground">
+              {fileBusy ? "Reading document…" : fileName ? `${fileName} — tap to choose another` : "Upload a PDF to trace it"}
+            </span>
+            {!fileBusy ? (
+              <span className="text-xs text-muted-foreground">
+                Tap to browse or drag &amp; drop · the trace token is read in your browser
+              </span>
+            ) : null}
+          </button>
+
+          <div className="flex items-center gap-3">
+            <div className="h-px flex-1 bg-border" />
+            <span className="text-xs uppercase tracking-wide text-muted-foreground">or enter it manually</span>
+            <div className="h-px flex-1 bg-border" />
+          </div>
 
           <div className="space-y-2">
             <label htmlFor="trace-needle" className="text-sm font-medium text-foreground">
@@ -207,7 +373,7 @@ export function DocumentTraceability() {
             <p className="text-sm text-destructive">{lookupError}</p>
           ) : null}
 
-          <Button onClick={runLookup} disabled={looking}>
+          <Button onClick={() => runLookup()} disabled={looking || fileBusy}>
             {looking ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Search className="mr-2 h-4 w-4" />}
             Trace document
           </Button>
@@ -269,8 +435,8 @@ export function DocumentTraceability() {
                   type="button"
                   onClick={() => {
                     setNeedle(t.docId)
-                    setResult({ ok: true, trace: t })
-                    if (typeof window !== "undefined") window.scrollTo({ top: 0, behavior: "smooth" })
+                    setFileName(null)
+                    void runLookup(t.docId)
                   }}
                   className="flex w-full flex-col gap-1 p-3 text-left transition-colors hover:bg-secondary sm:flex-row sm:items-center sm:justify-between"
                 >
