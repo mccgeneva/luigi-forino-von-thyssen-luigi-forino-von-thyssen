@@ -238,6 +238,21 @@ export default function InstrumentsPage() {
   // in the portfolio once the Administrator approves it — nothing auto-executes.
   const acquireFromIsin = async (req: IsinAcquisitionRequest) => {
     const actionLabel = ACQUISITION_ACTION_LABELS[req.action]
+    // Block entirely when this ISIN is already held or awaiting approval — no
+    // duplicate positions / double fees. Rejected / cancelled / expired /
+    // transferred instruments do NOT count as held.
+    const wanted = req.isin.trim().toUpperCase()
+    const existing = instruments.find(
+      (i) =>
+        (i.isin || "").trim().toUpperCase() === wanted &&
+        (i.status === "active" || i.status === "pending"),
+    )
+    if (existing) {
+      toast.error("Already in your portfolio", {
+        description: `ISIN ${req.isin} is already ${existing.status === "pending" ? "awaiting Administrator approval" : "held"} in your portfolio (${existing.type} ${existing.id}). You can't acquire the same instrument twice.`,
+      })
+      return { ok: false }
+    }
     // Block when the fee can't be covered by total spendable balance (all
     // currencies, converted). The Administrator approval re-enforces this with FX.
     const spendable = totalIn(req.currency)

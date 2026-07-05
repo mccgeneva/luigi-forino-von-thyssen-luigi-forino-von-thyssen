@@ -76,7 +76,7 @@ interface FigiMatch {
 const ACTIONS: AcquisitionAction[] = ["lease", "assign", "purchase"]
 
 export function InstrumentMarketplace() {
-  const { addInstrument } = useInstrumentRequests()
+  const { addInstrument, instruments } = useInstrumentRequests()
   const { totalIn } = useLedger()
   const logActivity = useActivityLog()
 
@@ -265,6 +265,22 @@ export function InstrumentMarketplace() {
     if (!target) return
     const fee = computeAcquisitionFee(action, target.faceValue)
     const actionLabel = ACQUISITION_ACTION_LABELS[action]
+    // Block entirely when this ISIN is already held or awaiting approval — no
+    // duplicate positions / double fees. Only active + pending count as held.
+    const wanted = (target.isin || "").trim().toUpperCase()
+    const existing = wanted
+      ? instruments.find(
+          (i) =>
+            (i.isin || "").trim().toUpperCase() === wanted &&
+            (i.status === "active" || i.status === "pending"),
+        )
+      : undefined
+    if (existing) {
+      toast.error("Already in your portfolio", {
+        description: `ISIN ${target.isin} is already ${existing.status === "pending" ? "awaiting Administrator approval" : "held"} in your portfolio (${existing.type} ${existing.id}). You can't acquire the same instrument twice.`,
+      })
+      return
+    }
     // Block submission when the fee can't be covered by the client's total
     // spendable balance (across all currencies, converted). The Administrator
     // approval also enforces this server-side with FX; this is the up-front gate.
