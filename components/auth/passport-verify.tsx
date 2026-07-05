@@ -2,7 +2,7 @@
 
 import { useRef, useState } from "react"
 import { upload } from "@vercel/blob/client"
-import { AlertCircle, ArrowLeft, BadgeCheck, IdCard, Loader2, ShieldQuestion, Upload } from "lucide-react"
+import { AlertCircle, ArrowLeft, BadgeCheck, Camera, IdCard, Loader2, ShieldQuestion, Upload } from "lucide-react"
 import { verifyIdentityAndLogin, type LoginState } from "@/app/actions/auth"
 import { descriptorFromImage, loadImageFromFile, FaceModelLoadError } from "@/lib/face-client"
 import { FaceCapture } from "@/components/auth/face-capture"
@@ -48,7 +48,11 @@ export function PassportVerify({
   // Held between sub-steps: the chosen passport file and its face descriptor.
   const passportFileRef = useRef<File | null>(null)
   const passportDescriptorRef = useRef<number[] | null>(null)
-  const fileInputRef = useRef<HTMLInputElement>(null)
+  // Two separate inputs so the user can EITHER open the camera OR pick an
+  // existing photo/file. A single input with `capture` forces the camera on
+  // mobile and hides the gallery/file option, which is what we're fixing.
+  const cameraInputRef = useRef<HTMLInputElement>(null)
+  const uploadInputRef = useRef<HTMLInputElement>(null)
 
   const handlePassportSelected = async (file: File | undefined) => {
     if (!file) return
@@ -155,18 +159,34 @@ export function PassportVerify({
 
       {subStep === "passport" ? (
         <div className="space-y-4">
+          {/* Camera: opens the device camera on mobile. */}
           <input
-            ref={fileInputRef}
+            ref={cameraInputRef}
             type="file"
             accept="image/*"
             capture="environment"
             className="sr-only"
-            onChange={(e) => handlePassportSelected(e.target.files?.[0])}
+            onChange={(e) => {
+              handlePassportSelected(e.target.files?.[0])
+              e.target.value = ""
+            }}
+          />
+          {/* Upload: opens the gallery / file picker (no `capture`), also works on desktop.
+              PDF is allowed too so users can upload a scanned passport document. */}
+          <input
+            ref={uploadInputRef}
+            type="file"
+            accept="image/*"
+            className="sr-only"
+            onChange={(e) => {
+              handlePassportSelected(e.target.files?.[0])
+              e.target.value = ""
+            }}
           />
 
           <button
             type="button"
-            onClick={() => fileInputRef.current?.click()}
+            onClick={() => uploadInputRef.current?.click()}
             disabled={busy}
             className="flex w-full flex-col items-center justify-center gap-3 rounded-xl border-2 border-dashed border-border bg-muted/40 px-4 py-8 text-center transition-colors hover:border-primary/50 hover:bg-muted/60 disabled:opacity-60"
           >
@@ -183,12 +203,30 @@ export function PassportVerify({
               <Upload className="h-8 w-8 text-muted-foreground" aria-hidden="true" />
             )}
             <span className="text-sm font-medium text-foreground">
-              {busy ? "Reading document…" : previewUrl ? "Passport photo added — tap to replace" : "Tap to photograph or upload your passport"}
+              {busy
+                ? "Reading document…"
+                : previewUrl
+                  ? "Passport photo added — tap to replace"
+                  : "Tap to upload a photo or file"}
             </span>
             {!busy && !previewUrl && (
-              <span className="text-xs text-muted-foreground">JPG or PNG · the bio-data page with your photo</span>
+              <span className="text-xs text-muted-foreground">
+                JPG or PNG from your phone or computer · the bio-data page with your photo
+              </span>
             )}
           </button>
+
+          {/* Explicit camera option for mobile users who want to snap a fresh photo. */}
+          <Button
+            type="button"
+            variant="outline"
+            className="h-11 w-full gap-2"
+            disabled={busy}
+            onClick={() => cameraInputRef.current?.click()}
+          >
+            <Camera className="h-4 w-4" />
+            Take a photo instead
+          </Button>
 
           {passportReady && (
             <div className="flex items-center gap-2 rounded-lg border border-primary/30 bg-primary/5 px-3 py-2 text-sm text-foreground">
