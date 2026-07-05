@@ -1,5 +1,14 @@
 import { anthropic } from "@ai-sdk/anthropic"
-import { convertToModelMessages, generateText, streamText, stepCountIs, type UIMessage } from "ai"
+import {
+  convertToModelMessages,
+  generateText,
+  streamText,
+  stepCountIs,
+  type UIMessage,
+  type ModelMessage,
+  type LanguageModelUsage,
+  type ProviderMetadata,
+} from "ai"
 import { buildNqaiContext } from "@/lib/nqai-context"
 import { resolveCurrentSession } from "@/lib/session-user"
 import { getNqaiUserSnapshot, renderUserContextBlock } from "@/lib/nqai-user-context"
@@ -143,6 +152,72 @@ function boundAttachments(messages: UIMessage[]): UIMessage[] {
         : ([{ type: "text", text: "[earlier attachment omitted from replay]" }] as UIMessage["parts"])
     return { ...m, parts } as UIMessage
   })
+}
+
+// ── Anthropic prompt caching ────────────────────────────────────────────────
+// Prompt caching lets Anthropic reuse an already-processed prefix of the request
+// (tool schemas + system prompt + prior turns) instead of re-reading it every
+// time. Cache READS are billed at ~10% of the base input-token price and are
+// materially faster, so caching the large, stable NQAi prefix cuts both latency
+// and cost on repeat/long conversations. It degrades gracefully: if a prefix is
+// below the model's minimum cacheable size or a breakpoint misses, Anthropic
+// simply processes it as a normal (uncached) request — no special fallback code.
+//
+// Anthropic ordering rule: a longer TTL breakpoint must appear BEFORE a shorter
+// one in the prefix. We therefore order 1h (static charter) → 5m (dynamic
+// context) → 5m (conversation tail).
+type CacheTtl = "5m" | "1h"
+
+function cacheControl(ttl: CacheTtl) {
+  return { anthropic: { cacheControl: { type: "ephemeral" as const, ttl } } }
+}
+
+/** A system block marked as a cache breakpoint with the given TTL. */
+function cachedSystemMessage(content: string, ttl: CacheTtl): ModelMessage {
+  return { role: "system", content, providerOptions: cacheControl(ttl) }
+}
+
+/**
+ * Mark the LAST replayed message as a 5-minute cache breakpoint. On the next
+ * turn the entire prior conversation is a matching prefix, so multi-turn chats
+ * read the history from cache instead of reprocessing it. Anthropic applies a
+ * message-level cacheControl to that message's final content block.
+ */
+function withConversationCacheBreakpoint(messages: ModelMessage[]): ModelMessage[] {
+  if (messages.length === 0) return messages
+  const out = [...messages]
+  const last = out[out.length - 1]
+  const prior = (last.providerOptions?.anthropic ?? {}) as Record<string, unknown>
+  out[out.length - 1] = {
+    ...last,
+    providerOptions: {
+      ...last.providerOptions,
+      anthropic: { ...prior, cacheControl: { type: "ephemeral", ttl: "5m" } },
+    },
+  } as ModelMessage
+  return out
+}
+
+/**
+ * Log cache effectiveness for each turn so writes/reads/base input tokens can be
+ * monitored (a cache hit shows a large `cacheRead` and small `input`). Anthropic
+ * reports cache READS via `usage.cachedInputTokens` and cache WRITES via
+ * `providerMetadata.anthropic.cacheCreationInputTokens`.
+ */
+function logCacheUsage(
+  usage: LanguageModelUsage | undefined,
+  providerMetadata: ProviderMetadata | undefined,
+  threadId: string,
+): void {
+  const input = usage?.inputTokens ?? 0
+  const cacheRead = usage?.cachedInputTokens ?? 0
+  const anthro = providerMetadata?.anthropic as { cacheCreationInputTokens?: number } | undefined
+  const cacheWrite = typeof anthro?.cacheCreationInputTokens === "number" ? anthro.cacheCreationInputTokens : 0
+  const cacheable = input + cacheRead
+  const hitRate = cacheable > 0 ? Math.round((cacheRead / cacheable) * 100) : 0
+  console.log(
+    `[v0] NQAi prompt-cache — thread ${threadId}: input=${input} cacheRead=${cacheRead} cacheWrite=${cacheWrite} hitRate=${hitRate}% output=${usage?.outputTokens ?? 0}`,
+  )
 }
 
 // Names of rival AI systems/vendors NQAi must never compare itself to. Used
@@ -348,15 +423,23 @@ export async function POST(req: Request) {
   const memory = thread?.summary ?? ""
   const existingTitle = thread?.title ?? ""
 
-  const systemParts = [NQAI_SYSTEM_PROMPT]
-  if (userContextBlock) systemParts.push(userContextBlock)
+  // Split the system prompt into a STATIC prefix (the large, immutable NQAi
+  // charter — byte-identical on every request, for every client) and a DYNAMIC
+  // block (this client's live account snapshot, durable profile and rolling
+  // memory). The static prefix is cached at 1h and also transparently caches the
+  // tool schemas (Anthropic places tools before the system prompt in the request
+  // prefix); the dynamic block is cached at 5m so it is reused across the rapid
+  // turns of one session without pinning stale context.
+  const staticSystem = NQAI_SYSTEM_PROMPT
+  const dynamicParts: string[] = []
+  if (userContextBlock) dynamicParts.push(userContextBlock)
   if (personalizationProfile)
-    systemParts.push(
+    dynamicParts.push(
       `## CLIENT PERSONALIZATION PROFILE (durable preferences you've learned about THIS client — use proactively to tailor every reply)\n${personalizationProfile}`,
     )
-  if (memory) systemParts.push(`## LONG-TERM MEMORY (your notes from prior sessions with this client)\n${memory}`)
-  if (liveContext) systemParts.push(liveContext)
-  const system = systemParts.join("\n\n---\n\n")
+  if (memory) dynamicParts.push(`## LONG-TERM MEMORY (your notes from prior sessions with this client)\n${memory}`)
+  if (liveContext) dynamicParts.push(liveContext)
+  const dynamicSystem = dynamicParts.join("\n\n---\n\n")
 
   // Bound replayed history: only the recent window goes to the model verbatim;
   // older context is represented by the rolling memory summary above.
@@ -366,9 +449,9 @@ export async function POST(req: Request) {
   // Convert BEFORE streaming so a malformed part (e.g. a bad persisted file
   // reference) returns a clean JSON error instead of throwing after headers are
   // sent, which the client can only interpret as an "unexpected response".
-  let modelMessages
+  let conversation: ModelMessage[]
   try {
-    modelMessages = await convertToModelMessages(replayMessages)
+    conversation = await convertToModelMessages(replayMessages)
   } catch (err) {
     console.log("[v0] NQAi message conversion failed:", err instanceof Error ? err.message : String(err))
     return new Response(
@@ -377,9 +460,19 @@ export async function POST(req: Request) {
     )
   }
 
+  // Assemble the final model messages WITH cache breakpoints, longest TTL first:
+  //  1. static charter  → 1h cache (also caches the tool schemas)
+  //  2. dynamic context → 5m cache (per-session live account context)
+  //  3. conversation tail → 5m cache so multi-turn follow-ups read the prior
+  //     conversation from cache instead of reprocessing it each turn.
+  const modelMessages: ModelMessage[] = [
+    cachedSystemMessage(staticSystem, "1h"),
+    ...(dynamicSystem ? [cachedSystemMessage(dynamicSystem, "5m")] : []),
+    ...withConversationCacheBreakpoint(conversation),
+  ]
+
   const result = streamText({
     model: anthropic(NQAI_MODEL),
-    system,
     messages: modelMessages,
     tools: createNqaiTools({ senderName }),
     // Allow several tool round-trips (e.g. discover deals → verify a vessel →
@@ -390,6 +483,11 @@ export async function POST(req: Request) {
     // navigated-away/aborted request never keeps an expensive model call running
     // (and never blocks behind a request the user already abandoned).
     abortSignal: req.signal,
+    // Cache-effectiveness telemetry: writes on the first request of a session,
+    // reads (billed ~10% of input) on every subsequent turn that reuses the prefix.
+    onFinish: ({ usage, providerMetadata }) => {
+      logCacheUsage(usage, providerMetadata, threadId || "(none)")
+    },
   })
 
   return result.toUIMessageStreamResponse({
