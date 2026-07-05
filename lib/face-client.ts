@@ -68,3 +68,44 @@ export async function captureDescriptor(video: HTMLVideoElement): Promise<number
   if (!detection) return null
   return Array.from(detection.descriptor)
 }
+
+/**
+ * Compute a 128-float descriptor from the face photo on a STATIC image (a
+ * passport bio page). Used by the identity-verification gate to match a live
+ * selfie against the document photo. A larger input size and lower score
+ * threshold help find the small, often low-contrast photo printed on a passport.
+ * Returns null if no face can be located on the document.
+ *
+ * As with the webcam path, the image never leaves the device for THIS step —
+ * only the resulting numeric descriptor is sent to the server. (The passport
+ * image is uploaded separately so the server can read its MRZ/bio-data.)
+ */
+export async function descriptorFromImage(
+  img: HTMLImageElement | HTMLCanvasElement,
+): Promise<number[] | null> {
+  const api = await ensureModels()
+  const detection = await api
+    .detectSingleFace(img, new api.TinyFaceDetectorOptions({ inputSize: 512, scoreThreshold: 0.3 }))
+    .withFaceLandmarks()
+    .withFaceDescriptor()
+  if (!detection) return null
+  return Array.from(detection.descriptor)
+}
+
+/** Load a File/Blob into a decoded <img> element (for descriptor extraction). */
+export function loadImageFromFile(file: File | Blob): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file)
+    const img = new Image()
+    img.crossOrigin = "anonymous"
+    img.onload = () => {
+      URL.revokeObjectURL(url)
+      resolve(img)
+    }
+    img.onerror = () => {
+      URL.revokeObjectURL(url)
+      reject(new Error("Could not read the selected image."))
+    }
+    img.src = url
+  })
+}

@@ -34,6 +34,17 @@ export const DESCRIPTOR_LENGTH = 128
  */
 export const FACE_MATCH_THRESHOLD = 0.42
 
+/**
+ * LOOSER threshold used ONLY for the identity-verification gate, where a LIVE
+ * selfie is compared against the face photo printed on a passport. Comparing a
+ * live camera frame to a scanned/printed document photo is inherently noisier
+ * than selfie-vs-selfie (print screen, laminate glare, older photo), so a strict
+ * 0.42 would reject most genuine matches. 0.55 still comfortably rejects a
+ * different person while tolerating that print-vs-live gap. After a user passes
+ * once, we enroll their LIVE selfie and all future logins use the strict 0.42.
+ */
+export const PASSPORT_FACE_MATCH_THRESHOLD = 0.55
+
 /** Consecutive failed scans before biometric login locks (admin reset required). */
 export const FACE_MAX_FAILS = 5
 
@@ -119,6 +130,15 @@ export function bestDistance(candidate: number[], enrolled: number[][]): number 
 export function matchesEnrolled(candidate: number[], enrolled: number[][]): { ok: boolean; distance: number } {
   const distance = bestDistance(candidate, enrolled)
   return { ok: distance <= FACE_MATCH_THRESHOLD, distance }
+}
+
+/**
+ * True when a live selfie matches a passport-photo descriptor under the LOOSER
+ * identity-gate threshold. Used only during first-time identity verification.
+ */
+export function matchesPassport(selfie: number[], passport: number[]): { ok: boolean; distance: number } {
+  const distance = bestDistance(selfie, [passport])
+  return { ok: distance <= PASSPORT_FACE_MATCH_THRESHOLD, distance }
 }
 
 // --- Login challenge (signed, short-lived) ---------------------------------

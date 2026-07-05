@@ -11,3 +11,17 @@ export interface FaceState {
   failCount: number
   enrolledAt: string | null
 }
+
+/**
+ * Identity-verification status for a user (passport + selfie gate). Contains
+ * only non-sensitive summary fields safe to compute for login gating — never
+ * the passport image or any face descriptor.
+ */
+export interface IdentityStatus {
+  verified: boolean
+  verifiedAt: string | null
+  country: string | null
+  fullName: string | null
+  /** Last 4 chars of the passport number, for display/audit only. */
+  passportLast4: string | null
+}

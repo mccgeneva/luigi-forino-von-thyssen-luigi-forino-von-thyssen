@@ -1,0 +1,256 @@
+"use client"
+
+import { useRef, useState } from "react"
+import { upload } from "@vercel/blob/client"
+import { AlertCircle, ArrowLeft, BadgeCheck, IdCard, Loader2, ShieldQuestion, Upload } from "lucide-react"
+import { verifyIdentityAndLogin, type LoginState } from "@/app/actions/auth"
+import { descriptorFromImage, loadImageFromFile, FaceModelLoadError } from "@/lib/face-client"
+import { FaceCapture } from "@/components/auth/face-capture"
+import { Button } from "@/components/ui/button"
+
+type SubStep = "passport" | "selfie"
+
+function markLoginHandoff() {
+  try {
+    localStorage.setItem("mcc_login_handoff", "1")
+  } catch {
+    // Ignore storage access errors (e.g. privacy mode).
+  }
+}
+
+/**
+ * Mandatory identity-verification step shown after the password is verified for
+ * an account that has not yet been verified (and every time for the shared demo
+ * account). The user uploads their passport bio-data page, then takes a live
+ * selfie; the server confirms the document reads as a passport and that the
+ * selfie matches the passport photo before granting a session.
+ *
+ * Privacy: the passport image is used only for this one check and is deleted
+ * from storage immediately afterwards. Face matching sends only numeric
+ * descriptors — never the raw selfie image — to the server.
+ */
+export function PassportVerify({
+  challenge,
+  name,
+  demo,
+  onBack,
+}: {
+  challenge: string
+  name?: string
+  demo?: boolean
+  onBack: () => void
+}) {
+  const [subStep, setSubStep] = useState<SubStep>("passport")
+  const [error, setError] = useState("")
+  const [busy, setBusy] = useState(false)
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null)
+
+  // Held between sub-steps: the chosen passport file and its face descriptor.
+  const passportFileRef = useRef<File | null>(null)
+  const passportDescriptorRef = useRef<number[] | null>(null)
+  const fileInputRef = useRef<HTMLInputElement>(null)
+
+  const handlePassportSelected = async (file: File | undefined) => {
+    if (!file) return
+    setError("")
+    setBusy(true)
+    try {
+      const img = await loadImageFromFile(file)
+      const descriptor = await descriptorFromImage(img)
+      if (!descriptor) {
+        setError(
+          "We couldn't find a face photo on that image. Make sure the whole passport bio-data page is in frame, well lit, and in focus.",
+        )
+        setBusy(false)
+        return
+      }
+      passportFileRef.current = file
+      passportDescriptorRef.current = descriptor
+      setPreviewUrl((prev) => {
+        if (prev) URL.revokeObjectURL(prev)
+        return URL.createObjectURL(file)
+      })
+    } catch (err) {
+      if (err instanceof FaceModelLoadError) {
+        setError("Couldn't load the document scanner. Check your connection and try again.")
+      } else {
+        setError("We couldn't read that image. Please choose a clear photo of your passport.")
+      }
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const handleSelfie = async (selfieDescriptor: number[]) => {
+    const passportFile = passportFileRef.current
+    const passportDescriptor = passportDescriptorRef.current
+    if (!passportFile || !passportDescriptor) {
+      setSubStep("passport")
+      return { ok: false, error: "Please add your passport photo first." }
+    }
+    setError("")
+    markLoginHandoff()
+    try {
+      // Upload the passport image fresh for this attempt. The server deletes it
+      // after every check (pass or fail), so each retry re-uploads.
+      const blob = await upload(`identity/${Date.now()}-passport.jpg`, passportFile, {
+        access: "public",
+        handleUploadUrl: "/api/identity/blob-upload",
+        clientPayload: JSON.stringify({ challenge }),
+      })
+
+      const res: LoginState = await verifyIdentityAndLogin(challenge, {
+        passportDescriptor,
+        selfieDescriptor,
+        passportPathname: blob.pathname,
+        passportContentType: passportFile.type || "image/jpeg",
+      })
+
+      if (res?.success) {
+        window.location.assign(res.redirectTo || "/dashboard?fresh=1")
+        return { ok: true }
+      }
+
+      if (res?.error) {
+        setError(res.error)
+        // Challenge expired or hard failure (e.g. account inactive / locked):
+        // no longer an identity retry → send the user back to the password form.
+        if (!res.identityRequired) setTimeout(onBack, 2400)
+        return { ok: false, error: res.error }
+      }
+      return { ok: false, error: "Verification failed. Please try again." }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Upload failed. Please try again."
+      setError(message)
+      return { ok: false, error: message }
+    }
+  }
+
+  const passportReady = !!passportDescriptorRef.current
+
+  return (
+    <div className="space-y-5">
+      <div className="text-center space-y-1">
+        <div className="mx-auto flex h-10 w-10 items-center justify-center rounded-full bg-primary/10">
+          {subStep === "passport" ? (
+            <IdCard className="h-5 w-5 text-primary" />
+          ) : (
+            <BadgeCheck className="h-5 w-5 text-primary" />
+          )}
+        </div>
+        <h2 className="text-base font-semibold text-foreground">Verify your identity</h2>
+        <p className="text-sm text-muted-foreground text-pretty">
+          {name ? `${name}, ` : ""}
+          {subStep === "passport"
+            ? "Add a photo of your passport bio-data page to continue."
+            : "Now take a live selfie so we can match it to your passport photo."}
+        </p>
+      </div>
+
+      {/* Step indicator */}
+      <div className="flex items-center justify-center gap-2" aria-hidden="true">
+        <span className={`h-1.5 w-8 rounded-full ${subStep === "passport" ? "bg-primary" : "bg-primary/40"}`} />
+        <span className={`h-1.5 w-8 rounded-full ${subStep === "selfie" ? "bg-primary" : "bg-muted"}`} />
+      </div>
+
+      {subStep === "passport" ? (
+        <div className="space-y-4">
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/*"
+            capture="environment"
+            className="sr-only"
+            onChange={(e) => handlePassportSelected(e.target.files?.[0])}
+          />
+
+          <button
+            type="button"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={busy}
+            className="flex w-full flex-col items-center justify-center gap-3 rounded-xl border-2 border-dashed border-border bg-muted/40 px-4 py-8 text-center transition-colors hover:border-primary/50 hover:bg-muted/60 disabled:opacity-60"
+          >
+            {busy ? (
+              <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" aria-hidden="true" />
+            ) : previewUrl ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img
+                src={previewUrl || "/placeholder.svg"}
+                alt="Selected passport preview"
+                className="h-28 w-auto rounded-md border border-border object-contain"
+              />
+            ) : (
+              <Upload className="h-8 w-8 text-muted-foreground" aria-hidden="true" />
+            )}
+            <span className="text-sm font-medium text-foreground">
+              {busy ? "Reading document…" : previewUrl ? "Passport photo added — tap to replace" : "Tap to photograph or upload your passport"}
+            </span>
+            {!busy && !previewUrl && (
+              <span className="text-xs text-muted-foreground">JPG or PNG · the bio-data page with your photo</span>
+            )}
+          </button>
+
+          {passportReady && (
+            <div className="flex items-center gap-2 rounded-lg border border-primary/30 bg-primary/5 px-3 py-2 text-sm text-foreground">
+              <BadgeCheck className="h-4 w-4 shrink-0 text-primary" />
+              <span>Face photo detected on your document.</span>
+            </div>
+          )}
+
+          <Button
+            type="button"
+            className="h-11 w-full text-base"
+            disabled={!passportReady || busy}
+            onClick={() => {
+              setError("")
+              setSubStep("selfie")
+            }}
+          >
+            Continue to selfie
+          </Button>
+        </div>
+      ) : (
+        <div className="space-y-4">
+          <FaceCapture onCapture={handleSelfie} actionLabel="Take selfie & verify" autoStart />
+          <Button
+            type="button"
+            variant="ghost"
+            className="w-full gap-2"
+            onClick={() => {
+              setError("")
+              setSubStep("passport")
+            }}
+          >
+            <ArrowLeft className="h-4 w-4" />
+            Back to passport
+          </Button>
+        </div>
+      )}
+
+      {error && (
+        <div
+          role="alert"
+          className="flex items-center gap-2 rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2.5 text-sm text-destructive"
+        >
+          <AlertCircle className="h-4 w-4 shrink-0" />
+          <span>{error}</span>
+        </div>
+      )}
+
+      <p className="flex items-start gap-2 rounded-lg bg-muted/50 px-3 py-2.5 text-xs text-muted-foreground text-pretty">
+        <ShieldQuestion className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+        <span>
+          {demo
+            ? "Demo account: your passport is checked live and deleted immediately — nothing is saved. "
+            : "Your passport is used once to verify you, then deleted. Only an encrypted face match is kept. "}
+          This is an in-app identity check, not a government-issued authenticity certificate.
+        </span>
+      </p>
+
+      <Button type="button" variant="ghost" onClick={onBack} className="w-full gap-2">
+        <ArrowLeft className="h-4 w-4" />
+        Use a different account
+      </Button>
+    </div>
+  )
+}
