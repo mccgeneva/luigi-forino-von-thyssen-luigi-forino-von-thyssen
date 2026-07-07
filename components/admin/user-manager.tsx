@@ -47,7 +47,6 @@ import { ADMIN_PASSCODE } from "@/lib/admin-config"
 import { CountryCombobox } from "@/components/country-combobox"
 import { useActivityLog } from "@/components/activity-tracker"
 import {
-  listUsers,
   createUser,
   editUser,
   resetUserPassword,
@@ -55,6 +54,7 @@ import {
   removeUser,
   listMasterCandidates,
   type AdminUserView,
+  type AdminUsersResult,
   type SelectableClient,
 } from "@/app/actions/admin-users"
 import { adminResetUserFace } from "@/app/actions/biometric"
@@ -90,6 +90,12 @@ export function UserManager() {
 
   const [users, setUsers] = useState<AdminUserView[]>([])
   const [loading, setLoading] = useState(true)
+  // Distinguishes "the server said there are zero accounts" from "we could not
+  // load accounts at all" (e.g. a stale browser tab calling a Server Action
+  // after a new deployment shipped, which rejects the promise). Without this the
+  // load-failure and the genuinely-empty states look identical, which reads as
+  // catastrophic "all users disappeared" data loss when the data is perfectly safe.
+  const [loadError, setLoadError] = useState<string | null>(null)
   const [query, setQuery] = useState("")
 
   // Create form
@@ -150,18 +156,45 @@ export function UserManager() {
 
   const load = () => {
     setLoading(true)
-    listUsers(ADMIN_PASSCODE)
-      .then((res) => {
-        if (!res.ok) {
-          toast.error(res.error)
+    setLoadError(null)
+    // Load via a Route Handler (GET /api/admin/users) rather than the Server
+    // Action. Next.js validates Server Action requests against the forwarded
+    // Origin/Host, and on this app's production domains (apex -> www redirect,
+    // custom domains, in-app webviews) that check can SILENTLY reject the call —
+    // which made this list come back empty even though the accounts were safe on
+    // the server. Route Handlers are exempt from that check and work identically
+    // on every domain. (Same fix already applied to activity logging.)
+    fetch(`/api/admin/users?p=${encodeURIComponent(ADMIN_PASSCODE)}`, {
+      headers: { "x-admin-passcode": ADMIN_PASSCODE },
+      cache: "no-store",
+    })
+      .then(async (res) => {
+        const data = (await res.json().catch(() => null)) as AdminUsersResult | null
+        if (!res.ok || !data || !data.ok) {
+          const message =
+            (data && !data.ok && data.error) || "Couldn’t load client accounts. Please reload — your data is safe."
+          setLoadError(message)
+          toast.error(message)
           setUsers([])
           return
         }
-        setUsers(res.users)
+        // Success: clear any prior error and show the accounts the server returned.
+        setLoadError(null)
+        setUsers(data.users)
+      })
+      .catch((err) => {
+        const message =
+          "Couldn’t load client accounts. This usually means the app was updated in another tab — reload to fetch the latest version. Your data is safe."
+        console.log("[v0] /api/admin/users fetch failed:", err?.message ?? err)
+        setLoadError(message)
+        toast.error(message)
+        setUsers([])
       })
       .finally(() => setLoading(false))
     // Refresh the Master candidate list alongside the user table.
-    listMasterCandidates(ADMIN_PASSCODE).then(setMasters)
+    listMasterCandidates(ADMIN_PASSCODE).catch(() => {
+      /* non-fatal: the master dropdown simply stays empty */
+    }).then((m) => m && setMasters(m))
   }
 
   useEffect(() => {
@@ -579,6 +612,18 @@ export function UserManager() {
           <p className="flex items-center gap-2 py-6 text-sm text-muted-foreground">
             <Loader2 className="h-4 w-4 animate-spin" /> Loading accounts…
           </p>
+        ) : loadError && users.length === 0 ? (
+          <div className="flex flex-col items-center gap-3 rounded-lg border border-dashed border-destructive/40 bg-destructive/5 p-6 text-center">
+            <p className="text-sm text-foreground text-balance">{loadError}</p>
+            <div className="flex flex-wrap items-center justify-center gap-2">
+              <Button variant="outline" size="sm" onClick={() => load()}>
+                Try again
+              </Button>
+              <Button size="sm" onClick={() => window.location.reload()}>
+                Reload page
+              </Button>
+            </div>
+          </div>
         ) : filtered.length === 0 ? (
           <div className="rounded-lg border border-dashed border-border bg-secondary/30 p-6 text-center">
             <p className="text-sm text-muted-foreground">
