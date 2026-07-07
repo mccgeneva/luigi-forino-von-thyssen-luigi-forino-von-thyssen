@@ -39,6 +39,7 @@ import {
   AlertTriangle,
   Activity,
   FileText,
+  ShieldAlert,
 } from "lucide-react"
 import type { jsPDF } from "jspdf"
 import { ADMIN_PASSCODE } from "@/lib/admin-config"
@@ -97,6 +98,7 @@ export function SecurityAudit() {
   const [category, setCategory] = useState("All")
   const [dossierDoc, setDossierDoc] = useState<jsPDF | null>(null)
   const [buildingDossier, setBuildingDossier] = useState(false)
+  const [reverifyState, setReverifyState] = useState<"idle" | "working" | "done">("idle")
 
   const loadOverview = useCallback(async () => {
     setLoadingOverview(true)
@@ -125,6 +127,7 @@ export function SecurityAudit() {
   const loadReport = useCallback(async (userId: string, cat: string) => {
     setLoadingReport(true)
     setReportError("")
+    setReverifyState("idle")
     try {
       // Route Handler, not a Server Action (same domain-compatibility reason).
       const params = new URLSearchParams({ p: ADMIN_PASSCODE, userId })
@@ -222,6 +225,37 @@ export function SecurityAudit() {
       console.log("[v0] Dossier build failed:", err instanceof Error ? err.message : err)
     } finally {
       setBuildingDossier(false)
+    }
+  }
+
+  // Force a client to re-verify identity on next login so the platform captures
+  // their full passport number + image under the current retention rules. Uses a
+  // Route Handler (Server Actions are rejected on this app's production domains).
+  const requireReverification = async () => {
+    if (!report || reverifyState === "working") return
+    if (
+      !window.confirm(
+        `Require ${report.account} to re-verify their identity on next login?\n\nThis clears their Face ID enrollment and identity record. On their next sign-in they must complete the full passport + selfie step again, which captures the complete passport number and passport image.`,
+      )
+    )
+      return
+    setReverifyState("working")
+    try {
+      const res = await fetch(`/api/admin/audit/reset-identity?p=${encodeURIComponent(ADMIN_PASSCODE)}`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-admin-passcode": ADMIN_PASSCODE },
+        body: JSON.stringify({ userId: report.userId }),
+        cache: "no-store",
+      })
+      const json = (await res.json().catch(() => null)) as { ok: boolean; error?: string } | null
+      if (res.ok && json?.ok) setReverifyState("done")
+      else {
+        setReverifyState("idle")
+        window.alert(json?.error || "Could not require re-verification. Please try again.")
+      }
+    } catch {
+      setReverifyState("idle")
+      window.alert("Could not require re-verification. Please try again.")
     }
   }
 
@@ -365,16 +399,16 @@ export function SecurityAudit() {
       {/* ---- Per-user report ---- */}
       {selectedId && (
         <div className="space-y-6">
-          <div className="flex items-center justify-between gap-3">
+          <div className="flex flex-wrap items-center justify-between gap-3">
             <Button variant="ghost" size="sm" onClick={closeUser}>
               <ChevronLeft className="h-4 w-4" />
               <span className="ml-1">All clients</span>
             </Button>
             {report ? (
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center justify-end gap-2">
                 <Button size="sm" onClick={() => void buildDossier()} disabled={buildingDossier}>
                   {buildingDossier ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileText className="h-4 w-4" />}
-                  <span className="ml-2">Dossier (PDF)</span>
+                  <span className="ml-2">Generate report (PDF)</span>
                 </Button>
                 <Button variant="outline" size="sm" onClick={() => exportData("csv")}>
                   <Download className="h-4 w-4" />
@@ -474,11 +508,51 @@ export function SecurityAudit() {
                   </div>
                   <p className="text-xs text-muted-foreground text-pretty">
                     Full KYC is retained for the account controller: the complete passport number, the passport image and
-                    the login selfie above. Use <span className="font-medium text-foreground">Dossier (PDF)</span> to
-                    export an authorities-ready report. Data is captured on a full passport + selfie verification (first
-                    login or after an identity reset), so accounts verified before this was enabled show only the
-                    passport last-4 until they next re-verify.
+                    the login selfie above. Data is captured on a full passport + selfie verification (first login or
+                    after an identity reset), so accounts verified before this was enabled show only the passport last-4
+                    and no image until they next re-verify.
                   </p>
+
+                  <div className="mt-2 flex flex-col gap-2">
+                    <Button className="w-full" onClick={() => void buildDossier()} disabled={buildingDossier}>
+                      {buildingDossier ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <FileText className="h-4 w-4" />
+                      )}
+                      <span className="ml-2">Generate report for download (PDF)</span>
+                    </Button>
+
+                    {!report.passportNo || !report.passportImageUrl ? (
+                      reverifyState === "done" ? (
+                        <p className="rounded-md border border-border bg-secondary px-3 py-2 text-xs text-muted-foreground text-pretty">
+                          Re-verification required. {report.identity.fullName || "This client"} must complete the full
+                          passport + selfie step at their next login — the complete passport number and image will appear
+                          here afterwards.
+                        </p>
+                      ) : (
+                        <>
+                          <Button
+                            variant="outline"
+                            className="w-full"
+                            onClick={() => void requireReverification()}
+                            disabled={reverifyState === "working"}
+                          >
+                            {reverifyState === "working" ? (
+                              <Loader2 className="h-4 w-4 animate-spin" />
+                            ) : (
+                              <ShieldAlert className="h-4 w-4" />
+                            )}
+                            <span className="ml-2">Require full re-verification (capture passport + image)</span>
+                          </Button>
+                          <p className="text-xs text-muted-foreground text-pretty">
+                            This account has no stored passport image (verified before full-KYC retention). Requiring
+                            re-verification captures the complete passport number and image on their next login.
+                          </p>
+                        </>
+                      )
+                    ) : null}
+                  </div>
                 </CardContent>
               </Card>
 
