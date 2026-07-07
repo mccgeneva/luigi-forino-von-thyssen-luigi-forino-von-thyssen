@@ -89,11 +89,41 @@ export async function readBlobBuffer(pathname: string): Promise<Buffer> {
 }
 
 /**
+ * Detect the true media type of a file from its magic bytes.
+ *
+ * KYC documents reach us with unreliable content-type labels: onboarding-PDF
+ * pages are rendered in the browser and may be PNG or JPEG regardless of the
+ * label we stored, and mobile uploads can be HEIC/WebP. Declaring the WRONG
+ * media type to the model causes a hard "Unable to process input image" decode
+ * failure, so we always sniff the bytes and only fall back to the label when the
+ * signature is unrecognised.
+ */
+export function detectMediaType(buffer: Buffer, fallback: string): string {
+  if (buffer.length >= 4) {
+    if (buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4e && buffer[3] === 0x47) return "image/png"
+    if (buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) return "image/jpeg"
+    if (buffer[0] === 0x25 && buffer[1] === 0x50 && buffer[2] === 0x44 && buffer[3] === 0x46) return "application/pdf"
+    if (buffer[0] === 0x47 && buffer[1] === 0x49 && buffer[2] === 0x46 && buffer[3] === 0x38) return "image/gif"
+  }
+  if (buffer.length >= 12) {
+    const riff = buffer.toString("ascii", 0, 4)
+    const fmt = buffer.toString("ascii", 8, 12)
+    if (riff === "RIFF" && fmt === "WEBP") return "image/webp"
+    if (buffer.toString("ascii", 4, 8) === "ftyp") {
+      const brand = buffer.toString("ascii", 8, 12).toLowerCase()
+      if (["heic", "heif", "hevc", "mif1", "msf1", "heix"].some((b) => brand.includes(b))) return "image/heic"
+    }
+  }
+  return fallback
+}
+
+/**
  * Run the full KYC pack analysis on an uploaded document (PDF or image) and
  * return the raw structured output. Shared by the admin analyze route.
  */
 export async function analyzeKycDocument(pathname: string, mediaType: string): Promise<KycAnalysisOutput> {
   const buffer = await readBlobBuffer(pathname)
+  const detected = detectMediaType(buffer, mediaType)
   const { output } = await generateText({
     model: "google/gemini-3-flash",
     output: Output.object({ schema: analysisSchema }),
@@ -108,7 +138,7 @@ export async function analyzeKycDocument(pathname: string, mediaType: string): P
               "Extract the account holder's identity details to pre-fill an onboarding form, read any passport or identity document bio-data, and classify EACH page. " +
               "Use empty strings for fields you cannot find. Page numbers are 1-based, in document order.",
           },
-          { type: "file" as const, data: new Uint8Array(buffer), mediaType },
+          { type: "file" as const, data: new Uint8Array(buffer), mediaType: detected },
         ],
       },
     ],
@@ -186,6 +216,7 @@ export interface PassportVerification {
  */
 export async function verifyPassportImage(pathname: string, mediaType: string): Promise<PassportVerification> {
   const buffer = await readBlobBuffer(pathname)
+  const detected = detectMediaType(buffer, mediaType)
   const { output } = await generateText({
     model: "google/gemini-3-flash",
     output: Output.object({ schema: passportCheckSchema }),
@@ -201,7 +232,7 @@ export async function verifyPassportImage(pathname: string, mediaType: string): 
               "and a machine-readable zone (MRZ) are present, and read the bio-data. Be strict: reject anything that is not an " +
               "identity document.",
           },
-          { type: "file" as const, data: new Uint8Array(buffer), mediaType },
+          { type: "file" as const, data: new Uint8Array(buffer), mediaType: detected },
         ],
       },
     ],
@@ -285,7 +316,9 @@ export async function analyzeDocumentCompliance(
   }
   try {
     const buffer = await readBlobBuffer(doc.pathname)
-    const mediaType = doc.contentType || (doc.isImage ? "image/jpeg" : "application/pdf")
+    // Never trust the stored/declared content type — sniff the real bytes so a
+    // PNG-rendered onboarding page isn't sent to the model as (wrongly) JPEG.
+    const mediaType = detectMediaType(buffer, doc.contentType || (doc.isImage ? "image/jpeg" : "application/pdf"))
     const { output } = await generateText({
       model: "google/gemini-3-flash",
       output: Output.object({ schema: docComplianceSchema }),
@@ -307,7 +340,7 @@ export async function analyzeDocumentCompliance(
           ],
         },
       ],
-    })
+  })
     return {
       ...base,
       detectedType: output.detectedType || doc.label,
