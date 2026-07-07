@@ -583,15 +583,13 @@ export async function verifyIdentityAndLogin(
   }
 }
 
-export async function logout() {
-  await clearAllSessionCookies()
-  await logActivity({
-    action: "Logout",
-    category: "Authentication",
-    details: { result: "session ended" },
-  })
-  redirect("/login")
-}
+// NOTE: Sign-out used to live here as the `logout()` Server Action, invoked via
+// `<form action={logout}>`. It was moved to the Route Handler `app/api/logout`
+// because Server Action POSTs are silently rejected on this app's production
+// domains + mobile in-app webviews — the failed action bubbled into the app
+// error boundary ("Something went wrong"), most visibly right after returning
+// from an admin impersonation session. Do NOT reintroduce logout as a Server
+// Action; the forms now do a native POST to /api/logout.
 
 export type ChangePasswordResult = { ok: true } | { ok: false; error: string }
 

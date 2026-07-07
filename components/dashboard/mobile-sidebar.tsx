@@ -38,7 +38,6 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
 import { SheetClose } from "@/components/ui/sheet"
-import { logout } from "@/app/actions/auth"
 
 type NavItem = {
   title: string
@@ -225,7 +224,7 @@ export function MobileSidebar() {
         </div>
 
         {/* Sign Out — always reachable from the mobile navigation */}
-        <form action={logout} className="mt-3">
+        <form action="/api/logout" method="POST" className="mt-3">
           <Button
             type="submit"
             variant="ghost"
