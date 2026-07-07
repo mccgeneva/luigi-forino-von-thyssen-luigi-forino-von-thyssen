@@ -1,4 +1,4 @@
-import { anthropic } from "@ai-sdk/anthropic"
+import { nqaiChatModel } from "@/lib/ai-models"
 import {
   convertToModelMessages,
   generateText,
@@ -21,11 +21,12 @@ import {
 } from "@/lib/nqai-chat-db"
 import { createNqaiTools } from "@/lib/nqai-tools"
 
-// NQAi runs live through the Anthropic Claude account configured via the
-// ANTHROPIC_API_KEY secret (forinoht@gmail.com). The @ai-sdk/anthropic provider
-// reads that key directly from the environment, so all interactions are billed
-// to and routed through the proprietor's own Anthropic account — never the
-// shared gateway. Node runtime is required (never edge) for the AI SDK.
+// NQAi runs live through the single platform Anthropic backend defined in
+// lib/ai-models.ts, keyed to the proprietor's own ANTHROPIC_API_KEY secret
+// (forinoht@gmail.com) — never the shared gateway. NQAi is an identity layer
+// (system prompt, knowledge graph, tools, memory) composed on top of that
+// shared Claude backend, using the fast Sonnet chat tier for responsiveness.
+// Node runtime is required (never edge) for the AI SDK.
 export const runtime = "nodejs"
 // Document analysis is heavy: Anthropic must fetch + vision-process each
 // attached PDF/image, then the model may take several tool round-trips before
@@ -33,8 +34,8 @@ export const runtime = "nodejs"
 // timeouts that surface to the client as a generic "unexpected response" fault.
 export const maxDuration = 300
 
-// Latest Sonnet generation available on the linked account.
-const NQAI_MODEL = "claude-sonnet-4-6"
+// Fast Sonnet chat tier from the shared platform backend (lib/ai-models.ts).
+const NQAI_MODEL = nqaiChatModel()
 
 // How many of the most recent messages are replayed verbatim to the model.
 // Anything older is folded into the rolling memory summary to bound token cost.
@@ -280,7 +281,7 @@ async function regenerateSummary(priorSummary: string, olderMessages: UIMessage[
     if (!transcript) return null
 
     const { text } = await generateText({
-      model: anthropic(NQAI_MODEL),
+      model: NQAI_MODEL,
       system:
         "You maintain a concise running memory of an ongoing NQAi client conversation. Merge the prior memory with the new exchanges into a single compact briefing (max ~180 words). Capture durable facts, the client's goals, open requests, instruments discussed, and stated preferences. Omit pleasantries. Write in terse note form.",
       prompt: `PRIOR MEMORY:\n${priorSummary || "(none)"}\n\nNEW EXCHANGES:\n${transcript}\n\nUpdated memory:`,
@@ -320,7 +321,7 @@ async function updatePersonalizationProfile(
 
   try {
     const { text } = await generateText({
-      model: anthropic(NQAI_MODEL),
+      model: NQAI_MODEL,
       system:
         "You maintain a DURABLE personalization profile of a single NAFTAhub/MCC trading client so an AI co-pilot can tailor future help. Merge the prior profile with new evidence from the latest exchanges into one compact profile (max ~150 words, terse note form, grouped bullet-style). Capture ONLY durable, reusable traits: preferred products/grades, typical ports & trade routes, usual deal sizes & currencies, recurring counterparties & instruments (SKR/POF/SBLC etc.), risk posture, communication style/preferences, languages, and recurring needs or goals. Do NOT record one-off transactional details, pleasantries, or anything already obvious from account data. If the new exchanges add nothing durable, return the prior profile unchanged.",
       prompt: `PRIOR PROFILE:\n${priorProfile || "(none yet)"}\n\nRECENT EXCHANGES:\n${transcript}\n\nUpdated durable profile:`,
@@ -355,7 +356,7 @@ async function generateThreadTitle(messages: UIMessage[]): Promise<string> {
 
   try {
     const { text } = await generateText({
-      model: anthropic(NQAI_MODEL),
+      model: NQAI_MODEL,
       system:
         "You write an ultra-concise title (3–6 words, Title Case, no quotes, no trailing punctuation) summarizing the TOPIC of a trading-desk conversation, for a history card. Output ONLY the title.",
       prompt: `Conversation:\n${transcript}\n\nTitle:`,
@@ -472,7 +473,7 @@ export async function POST(req: Request) {
   ]
 
   const result = streamText({
-    model: anthropic(NQAI_MODEL),
+    model: NQAI_MODEL,
     messages: modelMessages,
     tools: createNqaiTools({ senderName }),
     // Allow several tool round-trips (e.g. discover deals → verify a vessel →

@@ -18,11 +18,13 @@ import type {
   DocComplianceAnalysis,
   KycVerdict,
 } from "@/lib/kyc-types"
+import { docAnalysisModel } from "@/lib/ai-models"
 
-// Anthropic Claude (via the Vercel AI Gateway) powers all KYC document analysis.
-// Claude Sonnet reads images and PDFs natively and matches the model family used
-// by the NQAi assistant (`app/api/nqai/route.ts`). Override with KYC_MODEL if set.
-const KYC_MODEL = process.env.KYC_MODEL || "anthropic/claude-sonnet-4.6"
+// All KYC document analysis runs on the proprietor's own Anthropic account
+// (see lib/ai-models.ts) using the top Opus reasoning tier. Claude reads images
+// and PDFs natively, so the same instance powers classification, passport
+// verification, per-document compliance review, and the overall verdict.
+const KYC_MODEL = docAnalysisModel()
 
 const DOCUMENT_TYPES = [
   "passport",
