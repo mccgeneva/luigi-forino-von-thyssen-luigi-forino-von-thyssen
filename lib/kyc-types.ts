@@ -156,3 +156,57 @@ export interface UploadedKycDocument {
   uploadedBy: string
   createdAt: string
 }
+
+// ---------------------------------------------------------------------------
+// AI-enriched KYC analysis (Security Audit "Generate report").
+//
+// These types are client-safe (imported by the PDF builder and the admin UI).
+// The server-only implementation lives in `lib/kyc-analyze.ts`, and the
+// passcode-gated Route Handler is `app/api/admin/audit/analyze-documents`.
+// ---------------------------------------------------------------------------
+
+export type KycRiskLevel = "low" | "medium" | "high"
+
+/** Compliance analysis of a single uploaded document (one AI pass per file). */
+export interface DocComplianceAnalysis {
+  /** Matches UploadedKycDocument.id, or "passport-image" for the retained scan. */
+  docId: string
+  label: string
+  filename: string
+  /** What the model concluded the document actually is. */
+  detectedType: string
+  documentNumber: string
+  issuingAuthority: string
+  issueDate: string
+  expiryDate: string
+  personName: string
+  /** Key extracted values worth showing (name/value pairs). */
+  extractedFields: { label: string; value: string }[]
+  /** How well the doc matches the identity on file. */
+  consistencyNotes: string
+  redFlags: string[]
+  riskLevel: KycRiskLevel
+  summary: string
+  /** Set when the document could not be analyzed (unreadable, fetch error…). */
+  error?: string
+}
+
+/** Overall KYC verdict synthesised across all analysed documents. */
+export interface KycVerdict {
+  completeness: "complete" | "partial" | "insufficient"
+  overallRisk: KycRiskLevel
+  presentDocumentTypes: string[]
+  missingRecommended: string[]
+  keyFindings: string[]
+  redFlags: string[]
+  narrative: string
+}
+
+/** Full analysis payload attached to the dossier PDF. */
+export interface DossierAnalysis {
+  analyzedAt: string
+  documents: DocComplianceAnalysis[]
+  verdict: KycVerdict | null
+  /** Number of documents that were considered but skipped (over the cap). */
+  skippedCount?: number
+}
