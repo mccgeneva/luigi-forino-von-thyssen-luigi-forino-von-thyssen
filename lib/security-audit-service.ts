@@ -14,6 +14,8 @@
 import { geolocateIp, type IpGeo } from "@/lib/ip-geo"
 import { getIdentityStatus, getLastLoginSelfie, getAdminIdentityDetails, type IdentityStatus } from "@/lib/biometric-db"
 import { listDynamicUsers } from "@/lib/admin-users-db"
+import { listKycDocuments } from "@/lib/kyc-documents-db"
+import type { UploadedKycDocument } from "@/lib/kyc-types"
 import {
   listAuditActors,
   listAuditEvents,
@@ -64,6 +66,8 @@ export interface UserAuditReport {
   /** Geolocated distinct IPs (best-effort, capped). */
   locations: IpGeo[]
   events: AuditEvent[]
+  /** Admin-uploaded KYC documents (passport, ID, face, company reg, bills, …). */
+  documents: UploadedKycDocument[]
 }
 
 /** Overview for the picker: active actors + the full account directory. */
@@ -84,13 +88,14 @@ export async function buildAuditOverview(): Promise<AuditOverview> {
 
 /** Full audit report for one account. */
 export async function buildUserAudit(userId: string, opts?: { category?: string }): Promise<UserAuditReport> {
-  const [stats, identity, adminIdentity, selfie, devices, events] = await Promise.all([
+  const [stats, identity, adminIdentity, selfie, devices, events, documents] = await Promise.all([
     getActorStats(userId),
     getIdentityStatus(userId),
     getAdminIdentityDetails(userId),
     getLastLoginSelfie(userId),
     listUserDevices(userId),
     listAuditEvents({ userId, category: opts?.category, limit: 300 }),
+    listKycDocuments(userId).catch(() => [] as UploadedKycDocument[]),
   ])
 
   // Geolocate the most-recent distinct public IPs (cap the fan-out so a slow
@@ -123,5 +128,6 @@ export async function buildUserAudit(userId: string, opts?: { category?: string 
     devices,
     locations,
     events,
+    documents,
   }
 }

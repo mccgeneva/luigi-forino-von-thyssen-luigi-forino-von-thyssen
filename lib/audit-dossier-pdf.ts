@@ -12,6 +12,15 @@
 
 import { jsPDF } from "jspdf"
 import type { UserAuditReport } from "@/lib/security-audit-service"
+import { blobFileUrl, type UploadedKycDocument } from "@/lib/kyc-types"
+
+/** Human-readable file size for the dossier document list. */
+function fmtSize(bytes: number): string {
+  if (!bytes) return "—"
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+}
 
 interface LoadedImage {
   dataUrl: string
@@ -63,6 +72,18 @@ export async function buildDossierDoc(report: UserAuditReport): Promise<jsPDF> {
     loadImage(report.passportImageUrl),
     loadImage(report.selfie.url),
   ])
+
+  // Preload image-type uploaded documents (cap the fan-out so a large pack can't
+  // stall the export or bloat the PDF). Non-image docs are listed with metadata.
+  const documents = report.documents ?? []
+  const imageDocs = documents.filter((d) => d.isImage).slice(0, 12)
+  const loadedDocImages = new Map<string, LoadedImage>()
+  await Promise.all(
+    imageDocs.map(async (d) => {
+      const img = await loadImage(blobFileUrl(d.pathname))
+      if (img) loadedDocImages.set(d.id, img)
+    }),
+  )
 
   const doc = new jsPDF({ unit: "mm", format: "a4" })
   const PAGE_W = 210
@@ -182,6 +203,60 @@ export async function buildDossierDoc(report: UserAuditReport): Promise<jsPDF> {
   drawImageBox(M, "Passport / ID document", passport, "No passport image retained")
   drawImageBox(M + imgBoxW + 8, `Login selfie · ${fmt(report.selfie.at)}`, selfie, "No login selfie captured")
   y += imgBoxH + 10
+
+  // ===== Uploaded KYC documents =====
+  sectionTitle(`KYC documents on file (${documents.length})`)
+  if (documents.length === 0) {
+    doc.setFont("helvetica", "italic")
+    doc.setFontSize(9)
+    doc.setTextColor(...muted)
+    doc.text("No KYC documents uploaded.", M, y)
+    y += 8
+  } else {
+    // 1) Embed image documents in a 2-column grid of image boxes.
+    const embedded = documents.filter((d) => loadedDocImages.has(d.id))
+    for (let i = 0; i < embedded.length; i += 2) {
+      ensureSpace(imgBoxH + 8)
+      const left = embedded[i]
+      const right = embedded[i + 1]
+      drawImageBox(M, `${left.label} · ${left.filename}`, loadedDocImages.get(left.id) ?? null, "Image unavailable")
+      if (right) {
+        drawImageBox(
+          M + imgBoxW + 8,
+          `${right.label} · ${right.filename}`,
+          loadedDocImages.get(right.id) ?? null,
+          "Image unavailable",
+        )
+      }
+      y += imgBoxH + 8
+    }
+
+    // 2) List EVERY document with metadata (type, filename, size, uploader, date).
+    for (const d of documents) {
+      ensureSpace(9)
+      doc.setFont("helvetica", "bold")
+      doc.setFontSize(9)
+      doc.setTextColor(...ink)
+      const title = doc.splitTextToSize(`${d.label} — ${d.filename || "document"}`, CW)
+      doc.text(title, M, y)
+      y += title.length * 4
+      doc.setFont("helvetica", "normal")
+      doc.setFontSize(7.5)
+      doc.setTextColor(...muted)
+      const meta = `${d.isImage ? "Image" : d.contentType || "File"} · ${fmtSize(d.sizeBytes)} · uploaded by ${d.uploadedBy} · ${fmt(d.createdAt)}`
+      doc.text(doc.splitTextToSize(meta, CW), M, y)
+      y += 4
+      doc.setTextColor(150, 150, 150)
+      doc.setFontSize(7)
+      doc.text("Original file retained securely; accessible to authorised administrators via NAFTAhub.", M, y)
+      y += 3
+      doc.setDrawColor(...line)
+      doc.setLineWidth(0.15)
+      doc.line(M, y + 0.5, M + CW, y + 0.5)
+      y += 3.5
+    }
+    y += 2
+  }
 
   // ===== Summary statistics =====
   sectionTitle("Activity summary")
