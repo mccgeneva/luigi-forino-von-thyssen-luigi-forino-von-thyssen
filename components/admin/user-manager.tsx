@@ -58,6 +58,7 @@ import {
   type SelectableClient,
 } from "@/app/actions/admin-users"
 import { adminResetUserFace } from "@/app/actions/biometric"
+import { KycDocumentManager } from "@/components/admin/kyc-document-manager"
 import { startImpersonation } from "@/app/actions/admin-impersonation"
 import type { UserStatus, AccountRelationship } from "@/lib/profile-types"
 import { RELATIONSHIP_OPTIONS, relationshipLabel, relationshipCode } from "@/lib/account-hierarchy"
@@ -149,6 +150,7 @@ export function UserManager() {
 
   // Face ID reset confirm
   const [faceResetTarget, setFaceResetTarget] = useState<AdminUserView | null>(null)
+  const [docsTarget, setDocsTarget] = useState<AdminUserView | null>(null)
   const [faceResetting, setFaceResetting] = useState(false)
 
   // "Sign in as" (impersonation) — tracks the account currently being entered.
@@ -696,6 +698,9 @@ export function UserManager() {
                     </Button>
                     <Button variant="outline" size="sm" onClick={() => openEdit(u)}>
                       <Pencil className="mr-1.5 h-3.5 w-3.5" /> Edit
+                    </Button>
+                    <Button variant="outline" size="sm" onClick={() => setDocsTarget(u)}>
+                      <FileText className="mr-1.5 h-3.5 w-3.5" /> Documents
                     </Button>
                     {u.status === "active" ? (
                       <Button
@@ -1255,6 +1260,23 @@ export function UserManager() {
       </Dialog>
 
       {/* Delete confirm dialog */}
+      {/* KYC documents dialog */}
+      <Dialog open={!!docsTarget} onOpenChange={(o) => !o && setDocsTarget(null)}>
+        <DialogContent className="flex max-h-[90dvh] flex-col gap-0 sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>KYC documents</DialogTitle>
+            <DialogDescription>
+              View, upload and remove identity &amp; compliance documents for {docsTarget?.fullName || "this client"}.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="mt-2 flex-1 overflow-y-auto pr-1">
+            {docsTarget ? (
+              <KycDocumentManager userId={docsTarget.id} account={docsTarget.fullName || docsTarget.email} />
+            ) : null}
+          </div>
+        </DialogContent>
+      </Dialog>
+
       <Dialog open={!!deleteTarget} onOpenChange={(o) => !o && setDeleteTarget(null)}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>

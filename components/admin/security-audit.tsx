@@ -46,6 +46,7 @@ import { ADMIN_PASSCODE } from "@/lib/admin-config"
 import type { AuditOverview, UserAuditReport } from "@/lib/security-audit-service"
 import { buildDossierDoc } from "@/lib/audit-dossier-pdf"
 import { PdfPreviewModal } from "@/components/pdf-preview-modal"
+import { KycDocumentManager } from "@/components/admin/kyc-document-manager"
 
 function fmtWhen(iso: string | null): string {
   if (!iso) return "—"
@@ -553,6 +554,18 @@ export function SecurityAudit() {
                       )
                     ) : null}
                   </div>
+                </CardContent>
+              </Card>
+
+              {/* KYC documents */}
+              <Card>
+                <CardHeader>
+                  <CardTitle className="flex items-center gap-2 text-base font-semibold">
+                    <FileText className="h-4 w-4 text-primary" /> KYC documents
+                  </CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <KycDocumentManager userId={report.userId} account={report.account} />
                 </CardContent>
               </Card>
 

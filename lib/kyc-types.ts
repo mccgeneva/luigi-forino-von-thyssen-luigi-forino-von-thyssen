@@ -84,3 +84,66 @@ export interface KycAnalysisResult {
 export function blobFileUrl(pathname: string): string {
   return `/api/file?pathname=${encodeURIComponent(pathname)}`
 }
+
+// ---------------------------------------------------------------------------
+// Admin-uploaded KYC documents (Security Audit).
+//
+// Separate from the auto-classified `KycDocument` above: these are files an
+// administrator uploads directly against a client account (for new or existing
+// clients), each stored in Blob with a full audit trail row in Neon. Types kept
+// here so both the manager UI and the dossier PDF share one source of truth.
+// ---------------------------------------------------------------------------
+
+/** Document categories offered by the admin uploader. */
+export type UploadedKycDocType =
+  | "passport_id"
+  | "face"
+  | "company_registration"
+  | "utility_bill"
+  | "bank_statement"
+  | "other"
+
+/** Human-friendly label for each uploader category. */
+export const UPLOADED_KYC_DOC_LABELS: Record<UploadedKycDocType, string> = {
+  passport_id: "Passport / ID",
+  face: "Face / selfie",
+  company_registration: "Company registration",
+  utility_bill: "Utility bill",
+  bank_statement: "Bank statement",
+  other: "Other document",
+}
+
+/** Display order for the uploader's category selector. */
+export const UPLOADED_KYC_DOC_ORDER: UploadedKycDocType[] = [
+  "passport_id",
+  "face",
+  "company_registration",
+  "utility_bill",
+  "bank_statement",
+  "other",
+]
+
+/** Normalise an arbitrary string into a known uploader category. */
+export function normalizeUploadedKycType(value: string | null | undefined): UploadedKycDocType {
+  const v = (value || "").toLowerCase()
+  return (UPLOADED_KYC_DOC_ORDER as string[]).includes(v) ? (v as UploadedKycDocType) : "other"
+}
+
+/**
+ * A single admin-uploaded KYC document (client-safe / serialisable). `pathname`
+ * is the private Blob path; use `blobFileUrl(pathname)` for the session-gated
+ * delivery URL. `isImage` lets the UI/dossier decide whether to render a picture.
+ */
+export interface UploadedKycDocument {
+  id: string
+  userId: string
+  type: UploadedKycDocType
+  label: string
+  filename: string
+  contentType: string
+  sizeBytes: number
+  pathname: string
+  isImage: boolean
+  uploadedBy: string
+  createdAt: string
+}
