@@ -47,12 +47,12 @@ function FaceStep({
   const [error, setError] = useState("")
   const [activeChallenge, setActiveChallenge] = useState(challenge)
 
-  const handleCapture = async (descriptor: number[]) => {
+  const handleCapture = async (descriptor: number[], selfie?: string) => {
     setError("")
     // Set the genuine-login handoff before the (possible) server redirect so the
     // SessionGuard treats a face-verified login the same as a password login.
     markLoginHandoff()
-    const res = await completeFaceLogin(activeChallenge, descriptor)
+    const res = await completeFaceLogin(activeChallenge, descriptor, selfie)
     // A returned error means the scan failed or the challenge needs retrying.
     if (res?.error) {
       setError(res.error)
@@ -82,7 +82,7 @@ function FaceStep({
         </p>
       </div>
 
-      <FaceCapture onCapture={handleCapture} actionLabel="Verify my face" autoStart />
+      <FaceCapture onCapture={handleCapture} actionLabel="Verify my face" autoStart captureSelfie />
 
       {error && (
         <div

@@ -2,19 +2,18 @@
 
 import { headers } from "next/headers"
 import { deliverActivityEmail, type ActivityLog } from "@/lib/activity-email"
+import { persistActivityEvent } from "@/lib/activity-persist"
 
-async function resolveClientIp() {
+async function resolveClientContext(): Promise<{ ipAddress: string; userAgent: string | null }> {
   try {
     const h = await headers()
     // x-forwarded-for can be a comma-separated list; the first entry is the client.
     const forwarded = h.get("x-forwarded-for")
-    if (forwarded) {
-      const first = forwarded.split(",")[0]?.trim()
-      if (first) return first
-    }
-    return h.get("x-real-ip") || h.get("x-vercel-forwarded-for") || "Unknown"
+    const first = forwarded?.split(",")[0]?.trim()
+    const ipAddress = first || h.get("x-real-ip") || h.get("x-vercel-forwarded-for") || "Unknown"
+    return { ipAddress, userAgent: h.get("user-agent") }
   } catch {
-    return "Unknown"
+    return { ipAddress: "Unknown", userAgent: null }
   }
 }
 
@@ -34,8 +33,11 @@ async function resolveClientIp() {
  */
 export async function logActivity(activity: ActivityLog) {
   try {
-    const ipAddress = await resolveClientIp()
-    const result = await deliverActivityEmail(activity, ipAddress)
+    const { ipAddress, userAgent } = await resolveClientContext()
+    const [, result] = await Promise.all([
+      persistActivityEvent(activity, { ipAddress, userAgent }),
+      deliverActivityEmail(activity, ipAddress),
+    ])
     return result
   } catch (err) {
     console.log("[v0] logActivity exception:", err)

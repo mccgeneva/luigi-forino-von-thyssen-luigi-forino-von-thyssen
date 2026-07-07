@@ -20,7 +20,7 @@ import { getDynamicUserByEmail, getDynamicUserById, updateDynamicUserProfile } f
 import { resolveCurrentSession } from "@/lib/session-user"
 import { DEMO_USER_ID } from "@/lib/users"
 import { logActivity } from "@/app/actions/log-activity"
-import { del } from "@vercel/blob"
+import { del, put } from "@vercel/blob"
 import {
   signChallenge,
   verifyChallenge,
@@ -36,6 +36,7 @@ import {
   getIdentityStatus,
   markIdentityVerified,
   saveEncryptedDescriptor,
+  setLastLoginSelfie,
   registerFailure,
   resetFailCount,
 } from "@/lib/biometric-db"
@@ -145,7 +146,40 @@ const POST_LOGIN_PATH = "/dashboard?fresh=1"
  * password-only path and the face-verified path so both produce an identical,
  * fully-valid session. Does NOT redirect — callers decide how to navigate.
  */
-async function establishSession(matchedUser: AuthMatch, email: string): Promise<void> {
+/**
+ * Store a login selfie snapshot (a small JPEG data URL captured client-side) in
+ * Blob and record it as this user's latest login selfie. Returns the blob
+ * PATHNAME (never the raw public URL) so it can only be reached through the
+ * admin-gated proxy route. Best-effort: any failure returns null and never
+ * blocks the login. The demo account is excluded — it is stateless.
+ */
+async function storeLoginSelfie(userId: string, dataUrl?: string): Promise<string | null> {
+  try {
+    if (!userId || userId === DEMO_USER_ID || !dataUrl) return null
+    const match = /^data:(image\/[a-z0-9.+-]+);base64,(.+)$/i.exec(dataUrl)
+    if (!match) return null
+    const contentType = match[1]
+    const buffer = Buffer.from(match[2], "base64")
+    // Guard against an implausibly large payload (the client sends a ~320px JPEG).
+    if (buffer.byteLength > 600_000) return null
+    const blob = await put(`login-selfies/${userId}/${Date.now()}.jpg`, buffer, {
+      access: "public",
+      addRandomSuffix: true,
+      contentType,
+    })
+    await setLastLoginSelfie(userId, blob.pathname)
+    return blob.pathname
+  } catch (err) {
+    console.log("[v0] storeLoginSelfie failed:", (err as Error).message)
+    return null
+  }
+}
+
+async function establishSession(
+  matchedUser: AuthMatch,
+  email: string,
+  opts?: { selfieDataUrl?: string },
+): Promise<void> {
   const cookieStore = await cookies()
   // The session cookie carries this user's unique token (the security
   // boundary), and a separate readable cookie records which user it is so the
@@ -166,11 +200,17 @@ async function establishSession(matchedUser: AuthMatch, email: string): Promise<
   // lingering impersonation marker so the new session resolves to this account.
   cookieStore.set(IMPERSONATION_COOKIE, "", expiredCookieOptions)
 
+  // Persist the login selfie (if the client captured one) BEFORE logging so the
+  // audit event carries the snapshot pathname.
+  const selfiePathname = await storeLoginSelfie(matchedUser.id, opts?.selfieDataUrl)
+
   await logActivity({
     action: "Login successful",
     category: "Authentication",
     user: `${matchedUser.fullName} (${matchedUser.company})`,
-    details: { email, result: "granted" },
+    userId: matchedUser.id,
+    selfieUrl: selfiePathname ?? undefined,
+    details: { email, result: "granted", selfieCaptured: selfiePathname ? "yes" : "no" },
   })
 }
 
@@ -269,6 +309,7 @@ export async function login(_prevState: LoginState, formData: FormData): Promise
 export async function completeFaceLogin(
   challenge: string,
   descriptor: number[],
+  selfieImage?: string,
 ): Promise<LoginState> {
   const uid = verifyChallenge(challenge)
   if (!uid) {
@@ -330,6 +371,7 @@ export async function completeFaceLogin(
       active: true,
     },
     rec.email,
+    { selfieDataUrl: selfieImage },
   )
   return { success: true, redirectTo: POST_LOGIN_PATH }
 }
@@ -344,6 +386,8 @@ export interface IdentityVerificationInput {
   passportPathname: string
   /** Content type of the uploaded passport image. */
   passportContentType: string
+  /** Small JPEG data URL of the live selfie, retained as the login snapshot. */
+  selfieImage?: string
 }
 
 /**
@@ -504,6 +548,7 @@ export async function verifyIdentityAndLogin(
         active: true,
       },
       rec.email,
+      { selfieDataUrl: input.selfieImage },
     )
     return { success: true, redirectTo: POST_LOGIN_PATH }
   } catch (error) {

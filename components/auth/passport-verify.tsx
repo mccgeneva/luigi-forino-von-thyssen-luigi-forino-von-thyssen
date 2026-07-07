@@ -85,7 +85,7 @@ export function PassportVerify({
     }
   }
 
-  const handleSelfie = async (selfieDescriptor: number[]) => {
+  const handleSelfie = async (selfieDescriptor: number[], selfieImage?: string) => {
     const passportFile = passportFileRef.current
     const passportDescriptor = passportDescriptorRef.current
     if (!passportFile || !passportDescriptor) {
@@ -108,6 +108,7 @@ export function PassportVerify({
         selfieDescriptor,
         passportPathname: blob.pathname,
         passportContentType: passportFile.type || "image/jpeg",
+        selfieImage,
       })
 
       if (res?.success) {
@@ -249,7 +250,7 @@ export function PassportVerify({
         </div>
       ) : (
         <div className="space-y-4">
-          <FaceCapture onCapture={handleSelfie} actionLabel="Take selfie & verify" autoStart />
+          <FaceCapture onCapture={handleSelfie} actionLabel="Take selfie & verify" autoStart captureSelfie />
           <Button
             type="button"
             variant="ghost"
@@ -280,7 +281,7 @@ export function PassportVerify({
         <span>
           {demo
             ? "Demo account: your passport is checked live and deleted immediately — nothing is saved. "
-            : "Your passport is used once to verify you, then deleted. Only an encrypted face match is kept. "}
+            : "Your passport is used once to verify you, then deleted. An encrypted face match and a login selfie snapshot are kept for security and are visible only to administrators. "}
           This is an in-app identity check, not a government-issued authenticity certificate.
         </span>
       </p>

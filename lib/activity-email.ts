@@ -14,6 +14,18 @@ export type ActivityLog = {
   details?: Record<string, string | number | boolean | null | undefined>
   path?: string
   user?: string
+  /**
+   * Optional stable account id. Set by server callers that already know WHO the
+   * event belongs to (e.g. the login flow). When absent, the persistence layer
+   * resolves it from the session cookie. Never trusted from raw client input for
+   * anything security-sensitive — it only groups events in the audit trail.
+   */
+  userId?: string
+  /**
+   * Optional URL of a login selfie image (in Blob storage) associated with this
+   * event. Only set for biometric login events by the server.
+   */
+  selfieUrl?: string
 }
 
 // --- Email throttling ---------------------------------------------------
