@@ -19,6 +19,11 @@ import type {
   KycVerdict,
 } from "@/lib/kyc-types"
 
+// Anthropic Claude (via the Vercel AI Gateway) powers all KYC document analysis.
+// Claude Sonnet reads images and PDFs natively and matches the model family used
+// by the NQAi assistant (`app/api/nqai/route.ts`). Override with KYC_MODEL if set.
+const KYC_MODEL = process.env.KYC_MODEL || "anthropic/claude-sonnet-4.6"
+
 const DOCUMENT_TYPES = [
   "passport",
   "id_card",
@@ -125,7 +130,7 @@ export async function analyzeKycDocument(pathname: string, mediaType: string): P
   const buffer = await readBlobBuffer(pathname)
   const detected = detectMediaType(buffer, mediaType)
   const { output } = await generateText({
-    model: "google/gemini-3-flash",
+    model: KYC_MODEL,
     output: Output.object({ schema: analysisSchema }),
     messages: [
       {
@@ -218,7 +223,7 @@ export async function verifyPassportImage(pathname: string, mediaType: string): 
   const buffer = await readBlobBuffer(pathname)
   const detected = detectMediaType(buffer, mediaType)
   const { output } = await generateText({
-    model: "google/gemini-3-flash",
+    model: KYC_MODEL,
     output: Output.object({ schema: passportCheckSchema }),
     messages: [
       {
@@ -256,7 +261,7 @@ export async function verifyPassportImage(pathname: string, mediaType: string): 
 const RISK_LEVELS = ["low", "medium", "high"] as const
 
 // One AI pass per uploaded document. The model reads the file (image OR PDF —
-// gemini reads PDFs natively) and returns a compliance-oriented breakdown that
+// Claude reads PDFs natively) and returns a compliance-oriented breakdown that
 // is embedded, per document, into the KYC & Activity dossier.
 const docComplianceSchema = z.object({
   detectedType: z
@@ -320,7 +325,7 @@ export async function analyzeDocumentCompliance(
     // PNG-rendered onboarding page isn't sent to the model as (wrongly) JPEG.
     const mediaType = detectMediaType(buffer, doc.contentType || (doc.isImage ? "image/jpeg" : "application/pdf"))
     const { output } = await generateText({
-      model: "google/gemini-3-flash",
+      model: KYC_MODEL,
       output: Output.object({ schema: docComplianceSchema }),
       messages: [
         {
@@ -403,7 +408,7 @@ export async function synthesizeKycVerdict(
       )
       .join("\n")
     const { output } = await generateText({
-      model: "google/gemini-3-flash",
+      model: KYC_MODEL,
       output: Output.object({ schema: kycVerdictSchema }),
       messages: [
         {
