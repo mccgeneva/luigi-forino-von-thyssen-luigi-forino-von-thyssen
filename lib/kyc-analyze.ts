@@ -18,6 +18,13 @@ import type {
   DocComplianceAnalysis,
   KycVerdict,
 } from "@/lib/kyc-types"
+import { docAnalysisModel } from "@/lib/ai-models"
+
+// All KYC document analysis runs on the proprietor's own Anthropic account
+// (see lib/ai-models.ts) using the top Opus reasoning tier. Claude reads images
+// and PDFs natively, so the same instance powers classification, passport
+// verification, per-document compliance review, and the overall verdict.
+const KYC_MODEL = docAnalysisModel()
 
 const DOCUMENT_TYPES = [
   "passport",
@@ -125,7 +132,7 @@ export async function analyzeKycDocument(pathname: string, mediaType: string): P
   const buffer = await readBlobBuffer(pathname)
   const detected = detectMediaType(buffer, mediaType)
   const { output } = await generateText({
-    model: "google/gemini-3-flash",
+    model: KYC_MODEL,
     output: Output.object({ schema: analysisSchema }),
     messages: [
       {
@@ -218,7 +225,7 @@ export async function verifyPassportImage(pathname: string, mediaType: string): 
   const buffer = await readBlobBuffer(pathname)
   const detected = detectMediaType(buffer, mediaType)
   const { output } = await generateText({
-    model: "google/gemini-3-flash",
+    model: KYC_MODEL,
     output: Output.object({ schema: passportCheckSchema }),
     messages: [
       {
@@ -256,7 +263,7 @@ export async function verifyPassportImage(pathname: string, mediaType: string): 
 const RISK_LEVELS = ["low", "medium", "high"] as const
 
 // One AI pass per uploaded document. The model reads the file (image OR PDF —
-// gemini reads PDFs natively) and returns a compliance-oriented breakdown that
+// Claude reads PDFs natively) and returns a compliance-oriented breakdown that
 // is embedded, per document, into the KYC & Activity dossier.
 const docComplianceSchema = z.object({
   detectedType: z
@@ -320,7 +327,7 @@ export async function analyzeDocumentCompliance(
     // PNG-rendered onboarding page isn't sent to the model as (wrongly) JPEG.
     const mediaType = detectMediaType(buffer, doc.contentType || (doc.isImage ? "image/jpeg" : "application/pdf"))
     const { output } = await generateText({
-      model: "google/gemini-3-flash",
+      model: KYC_MODEL,
       output: Output.object({ schema: docComplianceSchema }),
       messages: [
         {
@@ -403,7 +410,7 @@ export async function synthesizeKycVerdict(
       )
       .join("\n")
     const { output } = await generateText({
-      model: "google/gemini-3-flash",
+      model: KYC_MODEL,
       output: Output.object({ schema: kycVerdictSchema }),
       messages: [
         {
