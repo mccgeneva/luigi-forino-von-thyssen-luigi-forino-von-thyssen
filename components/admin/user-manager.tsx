@@ -90,6 +90,12 @@ export function UserManager() {
 
   const [users, setUsers] = useState<AdminUserView[]>([])
   const [loading, setLoading] = useState(true)
+  // Distinguishes "the server said there are zero accounts" from "we could not
+  // load accounts at all" (e.g. a stale browser tab calling a Server Action
+  // after a new deployment shipped, which rejects the promise). Without this the
+  // load-failure and the genuinely-empty states look identical, which reads as
+  // catastrophic "all users disappeared" data loss when the data is perfectly safe.
+  const [loadError, setLoadError] = useState<string | null>(null)
   const [query, setQuery] = useState("")
 
   // Create form
@@ -150,18 +156,38 @@ export function UserManager() {
 
   const load = () => {
     setLoading(true)
+    setLoadError(null)
     listUsers(ADMIN_PASSCODE)
       .then((res) => {
         if (!res.ok) {
+          setLoadError(res.error)
           toast.error(res.error)
           setUsers([])
           return
         }
+        // Success: clear any prior error and show the accounts the server returned.
+        setLoadError(null)
         setUsers(res.users)
+      })
+      .catch((err) => {
+        // A REJECTED promise (not an `ok:false` result) almost always means the
+        // client bundle is stale relative to the deployment — e.g. the tab was
+        // open before a redeploy, so the Server Action reference no longer
+        // resolves. The accounts are safe on the server; the browser just needs
+        // to reload the new bundle. Surface this clearly instead of silently
+        // showing the "no accounts" empty state.
+        const message =
+          "Couldn’t load client accounts. This usually means the app was updated in another tab — reload to fetch the latest version. Your data is safe."
+        console.log("[v0] listUsers rejected:", err?.message ?? err)
+        setLoadError(message)
+        toast.error(message)
+        setUsers([])
       })
       .finally(() => setLoading(false))
     // Refresh the Master candidate list alongside the user table.
-    listMasterCandidates(ADMIN_PASSCODE).then(setMasters)
+    listMasterCandidates(ADMIN_PASSCODE).catch(() => {
+      /* non-fatal: the master dropdown simply stays empty */
+    }).then((m) => m && setMasters(m))
   }
 
   useEffect(() => {
@@ -579,6 +605,18 @@ export function UserManager() {
           <p className="flex items-center gap-2 py-6 text-sm text-muted-foreground">
             <Loader2 className="h-4 w-4 animate-spin" /> Loading accounts…
           </p>
+        ) : loadError && users.length === 0 ? (
+          <div className="flex flex-col items-center gap-3 rounded-lg border border-dashed border-destructive/40 bg-destructive/5 p-6 text-center">
+            <p className="text-sm text-foreground text-balance">{loadError}</p>
+            <div className="flex flex-wrap items-center justify-center gap-2">
+              <Button variant="outline" size="sm" onClick={() => load()}>
+                Try again
+              </Button>
+              <Button size="sm" onClick={() => window.location.reload()}>
+                Reload page
+              </Button>
+            </div>
+          </div>
         ) : filtered.length === 0 ? (
           <div className="rounded-lg border border-dashed border-border bg-secondary/30 p-6 text-center">
             <p className="text-sm text-muted-foreground">
