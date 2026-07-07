@@ -1,19 +1,28 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { get } from "@vercel/blob"
 import { resolveCurrentSession } from "@/lib/session-user"
+import { ADMIN_PASSCODE } from "@/lib/admin-config"
 
 // Blob access + session resolution require the Node.js runtime.
 export const runtime = "nodejs"
 
-// Serves KYC document blobs only to authenticated users. This route is the only
-// path the UI uses to reach a document: it requires a valid signed-in session
-// before streaming the file, and the raw Blob URL is never surfaced in the app.
-// (The connected Blob store is a public store, but pathnames are unguessable and
-// the app only ever links through this session-gated proxy.)
+// Serves KYC document blobs to authorized viewers. This route is the only path
+// the UI uses to reach a document; the raw Blob URL is never surfaced in the app.
+// (The connected Blob store is public, but pathnames are unguessable and the app
+// only ever links through this proxy.) Authorization is granted for either:
+//   1. a valid signed-in user session, OR
+//   2. a matching admin passcode (`?p=` or `x-admin-passcode`) — the admin panel
+//      authenticates with the shared passcode, not a user session, and file
+//      links opened in a new tab / mobile in-app webview don't reliably carry
+//      the session cookie. This mirrors the other passcode-gated admin routes.
 export async function GET(request: NextRequest) {
-  const session = await resolveCurrentSession()
-  if (!session) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+  const passcode = request.nextUrl.searchParams.get("p") ?? request.headers.get("x-admin-passcode") ?? ""
+  const isAdmin = passcode !== "" && passcode === ADMIN_PASSCODE
+  if (!isAdmin) {
+    const session = await resolveCurrentSession()
+    if (!session) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+    }
   }
 
   try {
