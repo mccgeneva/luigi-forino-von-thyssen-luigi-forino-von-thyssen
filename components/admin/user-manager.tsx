@@ -47,7 +47,6 @@ import { ADMIN_PASSCODE } from "@/lib/admin-config"
 import { CountryCombobox } from "@/components/country-combobox"
 import { useActivityLog } from "@/components/activity-tracker"
 import {
-  listUsers,
   createUser,
   editUser,
   resetUserPassword,
@@ -55,6 +54,7 @@ import {
   removeUser,
   listMasterCandidates,
   type AdminUserView,
+  type AdminUsersResult,
   type SelectableClient,
 } from "@/app/actions/admin-users"
 import { adminResetUserFace } from "@/app/actions/biometric"
@@ -157,28 +157,35 @@ export function UserManager() {
   const load = () => {
     setLoading(true)
     setLoadError(null)
-    listUsers(ADMIN_PASSCODE)
-      .then((res) => {
-        if (!res.ok) {
-          setLoadError(res.error)
-          toast.error(res.error)
+    // Load via a Route Handler (GET /api/admin/users) rather than the Server
+    // Action. Next.js validates Server Action requests against the forwarded
+    // Origin/Host, and on this app's production domains (apex -> www redirect,
+    // custom domains, in-app webviews) that check can SILENTLY reject the call —
+    // which made this list come back empty even though the accounts were safe on
+    // the server. Route Handlers are exempt from that check and work identically
+    // on every domain. (Same fix already applied to activity logging.)
+    fetch(`/api/admin/users?p=${encodeURIComponent(ADMIN_PASSCODE)}`, {
+      headers: { "x-admin-passcode": ADMIN_PASSCODE },
+      cache: "no-store",
+    })
+      .then(async (res) => {
+        const data = (await res.json().catch(() => null)) as AdminUsersResult | null
+        if (!res.ok || !data || !data.ok) {
+          const message =
+            (data && !data.ok && data.error) || "Couldn’t load client accounts. Please reload — your data is safe."
+          setLoadError(message)
+          toast.error(message)
           setUsers([])
           return
         }
         // Success: clear any prior error and show the accounts the server returned.
         setLoadError(null)
-        setUsers(res.users)
+        setUsers(data.users)
       })
       .catch((err) => {
-        // A REJECTED promise (not an `ok:false` result) almost always means the
-        // client bundle is stale relative to the deployment — e.g. the tab was
-        // open before a redeploy, so the Server Action reference no longer
-        // resolves. The accounts are safe on the server; the browser just needs
-        // to reload the new bundle. Surface this clearly instead of silently
-        // showing the "no accounts" empty state.
         const message =
           "Couldn’t load client accounts. This usually means the app was updated in another tab — reload to fetch the latest version. Your data is safe."
-        console.log("[v0] listUsers rejected:", err?.message ?? err)
+        console.log("[v0] /api/admin/users fetch failed:", err?.message ?? err)
         setLoadError(message)
         toast.error(message)
         setUsers([])
