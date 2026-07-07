@@ -18,10 +18,37 @@ import {
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog"
 import { FaceCapture } from "@/components/auth/face-capture"
-import { getMyFaceState, enrollMyFace, disableMyFace } from "@/app/actions/biometric"
 import type { FaceState } from "@/lib/biometric-types"
 
 const ENROLL_SAMPLES = 3
+
+const NOT_ENROLLED: FaceState = { enrolled: false, locked: false, failCount: 0, enrolledAt: null }
+
+// Biometric enroll/status/disable go through a Route Handler (NOT a Server
+// Action): Server Action POSTs are silently rejected on this app's production
+// domains + mobile in-app webviews, which left the enroll flow hanging on
+// "Securing your biometric profile…". Route Handlers are exempt from that check.
+async function fetchFaceState(): Promise<FaceState> {
+  const res = await fetch("/api/biometric", { cache: "no-store" })
+  if (!res.ok) throw new Error(`status ${res.status}`)
+  return (await res.json()) as FaceState
+}
+
+async function postEnroll(descriptors: number[][]): Promise<{ ok: boolean; error?: string }> {
+  const res = await fetch("/api/biometric", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    cache: "no-store",
+    body: JSON.stringify({ descriptors }),
+  })
+  const json = (await res.json().catch(() => null)) as { ok?: boolean; error?: string } | null
+  if (res.ok && json?.ok) return { ok: true }
+  return { ok: false, error: json?.error || "Enrollment failed. Please try again." }
+}
+
+async function postDisable(): Promise<void> {
+  await fetch("/api/biometric", { method: "DELETE", cache: "no-store" })
+}
 
 export function FaceIdManager() {
   const [state, setState] = useState<FaceState | null>(null)
@@ -32,11 +59,11 @@ export function FaceIdManager() {
   const [pending, startTransition] = useTransition()
 
   const refresh = () =>
-    getMyFaceState()
+    fetchFaceState()
       .then(setState)
       // Never let a transient failure leave the button permanently disabled —
       // fall back to a "not enrolled" state so the user can still try to enroll.
-      .catch(() => setState({ enrolled: false, locked: false, failCount: 0, enrolledAt: null }))
+      .catch(() => setState(NOT_ENROLLED))
   useEffect(() => {
     void refresh()
   }, [])
@@ -48,24 +75,34 @@ export function FaceIdManager() {
     if (next.length >= ENROLL_SAMPLES) {
       setEnrolling(true)
       setError("")
-      const res = await enrollMyFace(next)
-      setEnrolling(false)
-      if (res.ok) {
-        setDialogOpen(false)
+      try {
+        const res = await postEnroll(next)
+        if (res.ok) {
+          setDialogOpen(false)
+          setCaptured([])
+          void refresh()
+        } else {
+          setError(res.error || "Enrollment failed. Please try again.")
+          setCaptured([])
+        }
+        return res
+      } catch {
+        // Network/transport failure — surface it instead of hanging the spinner.
+        setError("Could not reach the server. Check your connection and try again.")
         setCaptured([])
-        void refresh()
-      } else {
-        setError(res.error || "Enrollment failed. Please try again.")
-        setCaptured([])
+        return { ok: false, error: "network" }
+      } finally {
+        // ALWAYS clear the spinner, even if the request threw. This is what left
+        // the flow stuck on "Securing your biometric profile…" before.
+        setEnrolling(false)
       }
-      return res
     }
     return { ok: true }
   }
 
   const handleDisable = () => {
     startTransition(async () => {
-      await disableMyFace()
+      await postDisable()
       void refresh()
     })
   }
