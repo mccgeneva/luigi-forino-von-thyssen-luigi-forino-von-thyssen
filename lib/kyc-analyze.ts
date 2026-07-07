@@ -11,7 +11,13 @@ import "server-only"
 import { get } from "@vercel/blob"
 import { generateText, Output } from "ai"
 import * as z from "zod"
-import type { KycDocument, KycDocumentType, KycAnalysisResult } from "@/lib/kyc-types"
+import type {
+  KycDocument,
+  KycDocumentType,
+  KycAnalysisResult,
+  DocComplianceAnalysis,
+  KycVerdict,
+} from "@/lib/kyc-types"
 
 const DOCUMENT_TYPES = [
   "passport",
@@ -211,5 +217,192 @@ export async function verifyPassportImage(pathname: string, mediaType: string): 
     country: p?.country || "",
     validUntil: p?.validUntil || "",
     reason: output.reason || "",
+  }
+}
+
+// --- Security-Audit dossier: per-document compliance analysis ---------------
+
+const RISK_LEVELS = ["low", "medium", "high"] as const
+
+// One AI pass per uploaded document. The model reads the file (image OR PDF —
+// gemini reads PDFs natively) and returns a compliance-oriented breakdown that
+// is embedded, per document, into the KYC & Activity dossier.
+const docComplianceSchema = z.object({
+  detectedType: z
+    .string()
+    .describe('What this document actually is, e.g. "Passport bio-data page", "Utility bill", "Bank statement".'),
+  personName: z.string().describe("Full name of the person the document belongs to, if present. Empty string if none."),
+  documentNumber: z
+    .string()
+    .describe("The primary document / reference number (passport no., account no., invoice no.). Empty if none."),
+  issuingAuthority: z
+    .string()
+    .describe("Issuing authority, bank, government body or company that produced the document. Empty if unknown."),
+  issueDate: z.string().describe("Issue / statement date as printed. Empty string if none."),
+  expiryDate: z.string().describe("Expiry / valid-until date as printed. Empty string if none/not applicable."),
+  extractedFields: z
+    .array(z.object({ label: z.string(), value: z.string() }))
+    .describe("Up to 8 of the most important extracted fields as label/value pairs (dates, numbers, addresses, amounts)."),
+  consistencyNotes: z
+    .string()
+    .describe(
+      "How well this document matches the account identity on file (name and country provided in the prompt). " +
+        "State clearly if the name matches, partially matches, or conflicts.",
+    ),
+  redFlags: z
+    .array(z.string())
+    .describe(
+      "Concrete compliance concerns: expired document, name mismatch, signs of tampering/editing, low legibility, " +
+        "wrong document type, missing MRZ on a passport, etc. Empty array if none.",
+    ),
+  riskLevel: z.enum(RISK_LEVELS).describe("Overall risk this single document contributes: low, medium, or high."),
+  summary: z.string().describe("A 1-2 sentence plain-English summary of the document and its KYC relevance."),
+})
+
+/**
+ * Analyse one uploaded document for the dossier. Never throws — on any failure
+ * it returns a populated `error` so a single bad file can't abort the batch.
+ */
+export async function analyzeDocumentCompliance(
+  doc: { id: string; label: string; filename: string; pathname: string; contentType: string; isImage: boolean },
+  identity: { fullName: string; country: string },
+): Promise<DocComplianceAnalysis> {
+  const base: DocComplianceAnalysis = {
+    docId: doc.id,
+    label: doc.label,
+    filename: doc.filename,
+    detectedType: "",
+    documentNumber: "",
+    issuingAuthority: "",
+    issueDate: "",
+    expiryDate: "",
+    personName: "",
+    extractedFields: [],
+    consistencyNotes: "",
+    redFlags: [],
+    riskLevel: "medium",
+    summary: "",
+  }
+  try {
+    const buffer = await readBlobBuffer(doc.pathname)
+    const mediaType = doc.contentType || (doc.isImage ? "image/jpeg" : "application/pdf")
+    const { output } = await generateText({
+      model: "google/gemini-3-flash",
+      output: Output.object({ schema: docComplianceSchema }),
+      messages: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "text",
+              text:
+                "You are a KYC / AML compliance analyst at a financial institution reviewing ONE document from a client's " +
+                "onboarding file. Read it carefully and extract its key data, then assess it for compliance.\n\n" +
+                `Account identity on file — name: "${identity.fullName || "unknown"}", country: "${identity.country || "unknown"}".\n` +
+                `This document is labelled "${doc.label}" (file: ${doc.filename}).\n\n` +
+                "Compare the document against the identity on file, flag any concerns, and assign a risk level. " +
+                "Use empty strings / empty arrays where information is absent. Be precise and factual.",
+            },
+            { type: "file" as const, data: new Uint8Array(buffer), mediaType },
+          ],
+        },
+      ],
+    })
+    return {
+      ...base,
+      detectedType: output.detectedType || doc.label,
+      personName: output.personName || "",
+      documentNumber: output.documentNumber || "",
+      issuingAuthority: output.issuingAuthority || "",
+      issueDate: output.issueDate || "",
+      expiryDate: output.expiryDate || "",
+      extractedFields: (output.extractedFields || []).filter((f) => f.label || f.value).slice(0, 8),
+      consistencyNotes: output.consistencyNotes || "",
+      redFlags: (output.redFlags || []).filter(Boolean),
+      riskLevel: output.riskLevel,
+      summary: output.summary || "",
+    }
+  } catch (err) {
+    return {
+      ...base,
+      detectedType: doc.label,
+      riskLevel: "medium",
+      summary: "This document could not be analysed automatically and should be reviewed manually.",
+      error: err instanceof Error ? err.message : "Analysis failed.",
+    }
+  }
+}
+
+// --- Security-Audit dossier: overall KYC verdict ----------------------------
+
+const kycVerdictSchema = z.object({
+  completeness: z
+    .enum(["complete", "partial", "insufficient"])
+    .describe("Whether the document set is complete, partial, or insufficient for standard KYC."),
+  overallRisk: z.enum(RISK_LEVELS).describe("Overall KYC risk across the whole file."),
+  presentDocumentTypes: z.array(z.string()).describe("Distinct categories of documents present in the file."),
+  missingRecommended: z
+    .array(z.string())
+    .describe("Recommended KYC documents that appear to be missing (e.g. proof of address, valid photo ID)."),
+  keyFindings: z.array(z.string()).describe("The most important factual findings, as short bullet points."),
+  redFlags: z.array(z.string()).describe("Aggregated compliance red flags across all documents. Empty if none."),
+  narrative: z
+    .string()
+    .describe("A concise 2-4 paragraph compliance narrative an administrator could hand to authorities."),
+})
+
+/**
+ * Synthesise an overall KYC verdict from the per-document analyses. Never throws
+ * — returns null on failure so the dossier still builds with the per-doc detail.
+ */
+export async function synthesizeKycVerdict(
+  identity: { fullName: string; country: string; verified: boolean; passportNo: string | null },
+  analyses: DocComplianceAnalysis[],
+): Promise<KycVerdict | null> {
+  try {
+    const docDigest = analyses
+      .map(
+        (a, i) =>
+          `${i + 1}. ${a.detectedType || a.label} (${a.filename}) — risk ${a.riskLevel}. ` +
+          `Person: ${a.personName || "—"}. Number: ${a.documentNumber || "—"}. Expiry: ${a.expiryDate || "—"}. ` +
+          `Consistency: ${a.consistencyNotes || "—"}. Red flags: ${a.redFlags.length ? a.redFlags.join("; ") : "none"}.` +
+          (a.error ? ` (ANALYSIS ERROR: ${a.error})` : ""),
+      )
+      .join("\n")
+    const { output } = await generateText({
+      model: "google/gemini-3-flash",
+      output: Output.object({ schema: kycVerdictSchema }),
+      messages: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "text",
+              text:
+                "You are a senior KYC / AML compliance officer producing the overall verdict for a client file. " +
+                "Below is the identity on record and a per-document analysis of everything in the file. " +
+                "Assess completeness and overall risk, list present document categories, note recommended documents that " +
+                "are missing, summarise the key findings and any aggregated red flags, and write a concise compliance " +
+                "narrative.\n\n" +
+                `IDENTITY ON FILE — name: "${identity.fullName || "unknown"}", country: "${identity.country || "unknown"}", ` +
+                `identity verified: ${identity.verified ? "yes" : "no"}, passport number on record: ${identity.passportNo ? "yes" : "no"}.\n\n` +
+                `DOCUMENTS ANALYSED (${analyses.length}):\n${docDigest || "No documents were provided."}`,
+            },
+          ],
+        },
+      ],
+    })
+    return {
+      completeness: output.completeness,
+      overallRisk: output.overallRisk,
+      presentDocumentTypes: (output.presentDocumentTypes || []).filter(Boolean),
+      missingRecommended: (output.missingRecommended || []).filter(Boolean),
+      keyFindings: (output.keyFindings || []).filter(Boolean),
+      redFlags: (output.redFlags || []).filter(Boolean),
+      narrative: output.narrative || "",
+    }
+  } catch (err) {
+    console.log("[v0] KYC verdict synthesis failed:", err instanceof Error ? err.message : err)
+    return null
   }
 }

@@ -11,8 +11,15 @@
 // ---------------------------------------------------------------------------
 
 import { jsPDF } from "jspdf"
+import { ADMIN_PASSCODE } from "@/lib/admin-config"
 import type { UserAuditReport } from "@/lib/security-audit-service"
-import { blobFileUrl, type UploadedKycDocument } from "@/lib/kyc-types"
+import {
+  blobFileUrl,
+  type UploadedKycDocument,
+  type DossierAnalysis,
+  type DocComplianceAnalysis,
+  type KycRiskLevel,
+} from "@/lib/kyc-types"
 
 /** Human-readable file size for the dossier document list. */
 function fmtSize(bytes: number): string {
@@ -67,20 +74,26 @@ function fmt(iso: string | null): string {
 }
 
 /** Build the dossier PDF for a report. Loads images first, then lays out pages. */
-export async function buildDossierDoc(report: UserAuditReport): Promise<jsPDF> {
+export async function buildDossierDoc(report: UserAuditReport, analysis?: DossierAnalysis | null): Promise<jsPDF> {
   const [passport, selfie] = await Promise.all([
     loadImage(report.passportImageUrl),
     loadImage(report.selfie.url),
   ])
 
-  // Preload image-type uploaded documents (cap the fan-out so a large pack can't
-  // stall the export or bloat the PDF). Non-image docs are listed with metadata.
+  // Per-document analysis, keyed by document id (the retained passport image is
+  // keyed "passport-image").
+  const analysisById = new Map<string, DocComplianceAnalysis>()
+  for (const a of analysis?.documents ?? []) analysisById.set(a.docId, a)
+
+  // Preload EVERY image-type uploaded document (no cap) so the full pack is
+  // embedded. Non-image docs (PDFs) are noted with metadata + their AI analysis,
+  // since the vision model reads PDF content directly into the report.
   const documents = report.documents ?? []
-  const imageDocs = documents.filter((d) => d.isImage).slice(0, 12)
+  const imageDocs = documents.filter((d) => d.isImage)
   const loadedDocImages = new Map<string, LoadedImage>()
   await Promise.all(
     imageDocs.map(async (d) => {
-      const img = await loadImage(blobFileUrl(d.pathname))
+      const img = await loadImage(blobFileUrl(d.pathname, ADMIN_PASSCODE))
       if (img) loadedDocImages.set(d.id, img)
     }),
   )
@@ -129,6 +142,55 @@ export async function buildDossierDoc(report: UserAuditReport): Promise<jsPDF> {
     const lines = doc.splitTextToSize(value || "—", colW)
     doc.text(lines, colX, y + 4)
     return 4 + lines.length * 4
+  }
+
+  const riskColor = (level: KycRiskLevel): [number, number, number] => {
+    if (level === "high") return [176, 42, 42] // red
+    if (level === "medium") return [176, 116, 20] // amber
+    return [15, 110, 70] // green
+  }
+
+  // Wrapped paragraph in the current text style; advances y.
+  const paragraph = (text: string, size = 8.5, color: [number, number, number] = ink, indent = 0) => {
+    if (!text) return
+    doc.setFont("helvetica", "normal")
+    doc.setFontSize(size)
+    doc.setTextColor(...color)
+    const lines = doc.splitTextToSize(text, CW - indent)
+    for (const ln of lines) {
+      ensureSpace(size * 0.5)
+      doc.text(ln, M + indent, y)
+      y += size * 0.48 + 1
+    }
+  }
+
+  // A coloured pill (used for risk / completeness chips).
+  const pill = (label: string, x: number, fill: [number, number, number]) => {
+    doc.setFont("helvetica", "bold")
+    doc.setFontSize(7.5)
+    const w = doc.getTextWidth(label) + 6
+    doc.setFillColor(...fill)
+    doc.roundedRect(x, y - 3.4, w, 5, 1, 1, "F")
+    doc.setTextColor(255, 255, 255)
+    doc.text(label, x + 3, y)
+    return w
+  }
+
+  // A small bulleted list; advances y.
+  const bulletList = (items: string[], size = 8.5, color: [number, number, number] = ink) => {
+    for (const it of items) {
+      if (!it) continue
+      doc.setFont("helvetica", "normal")
+      doc.setFontSize(size)
+      doc.setTextColor(...color)
+      const lines = doc.splitTextToSize(it, CW - 5)
+      ensureSpace(lines.length * (size * 0.48 + 1))
+      doc.text("•", M, y)
+      for (let i = 0; i < lines.length; i++) {
+        doc.text(lines[i], M + 4, y)
+        y += size * 0.48 + 1
+      }
+    }
   }
 
   // ===== Header banner =====
@@ -204,6 +266,88 @@ export async function buildDossierDoc(report: UserAuditReport): Promise<jsPDF> {
   drawImageBox(M + imgBoxW + 8, `Login selfie · ${fmt(report.selfie.at)}`, selfie, "No login selfie captured")
   y += imgBoxH + 10
 
+  // ===== AI KYC analysis (overall verdict) =====
+  const verdict = analysis?.verdict ?? null
+  if (analysis) {
+    sectionTitle("AI KYC analysis")
+    if (verdict) {
+      // Verdict chips: completeness + overall risk.
+      ensureSpace(8)
+      const completenessLabel = verdict.completeness.toUpperCase()
+      const completenessFill: [number, number, number] =
+        verdict.completeness === "complete"
+          ? [15, 110, 70]
+          : verdict.completeness === "partial"
+            ? [176, 116, 20]
+            : [176, 42, 42]
+      let px = M
+      px += pill(`FILE: ${completenessLabel}`, px, completenessFill) + 3
+      pill(`RISK: ${verdict.overallRisk.toUpperCase()}`, px, riskColor(verdict.overallRisk))
+      y += 6
+
+      if (verdict.narrative) {
+        paragraph(verdict.narrative, 8.5, ink)
+        y += 1
+      }
+      if (verdict.presentDocumentTypes.length) {
+        ensureSpace(6)
+        doc.setFont("helvetica", "bold")
+        doc.setFontSize(8)
+        doc.setTextColor(...muted)
+        doc.text("DOCUMENTS PRESENT", M, y)
+        y += 4
+        paragraph(verdict.presentDocumentTypes.join(" · "), 8.5, ink)
+        y += 1
+      }
+      if (verdict.missingRecommended.length) {
+        ensureSpace(6)
+        doc.setFont("helvetica", "bold")
+        doc.setFontSize(8)
+        doc.setTextColor(...muted)
+        doc.text("RECOMMENDED / MISSING", M, y)
+        y += 4
+        bulletList(verdict.missingRecommended, 8.5, [150, 90, 20])
+        y += 1
+      }
+      if (verdict.keyFindings.length) {
+        ensureSpace(6)
+        doc.setFont("helvetica", "bold")
+        doc.setFontSize(8)
+        doc.setTextColor(...muted)
+        doc.text("KEY FINDINGS", M, y)
+        y += 4
+        bulletList(verdict.keyFindings, 8.5, ink)
+        y += 1
+      }
+      if (verdict.redFlags.length) {
+        ensureSpace(6)
+        doc.setFont("helvetica", "bold")
+        doc.setFontSize(8)
+        doc.setTextColor(176, 42, 42)
+        doc.text("RED FLAGS", M, y)
+        y += 4
+        bulletList(verdict.redFlags, 8.5, [176, 42, 42])
+        y += 1
+      }
+    } else {
+      paragraph(
+        "Per-document analysis is included below; an overall verdict could not be generated automatically.",
+        8.5,
+        muted,
+      )
+    }
+    doc.setFont("helvetica", "italic")
+    doc.setFontSize(7)
+    doc.setTextColor(150, 150, 150)
+    ensureSpace(6)
+    doc.text(
+      `AI-assisted analysis generated ${fmt(analysis.analyzedAt)}. Machine-generated; not a licensed authenticity attestation. Review before reliance.`,
+      M,
+      y,
+    )
+    y += 6
+  }
+
   // ===== Uploaded KYC documents =====
   sectionTitle(`KYC documents on file (${documents.length})`)
   if (documents.length === 0) {
@@ -246,8 +390,50 @@ export async function buildDossierDoc(report: UserAuditReport): Promise<jsPDF> {
       const meta = `${d.isImage ? "Image" : d.contentType || "File"} · ${fmtSize(d.sizeBytes)} · uploaded by ${d.uploadedBy} · ${fmt(d.createdAt)}`
       doc.text(doc.splitTextToSize(meta, CW), M, y)
       y += 4
+
+      // Per-document AI analysis (when the report was generated with analysis).
+      const da = analysisById.get(d.id)
+      if (da) {
+        ensureSpace(6)
+        // Detected type + risk chip on one line.
+        doc.setFont("helvetica", "bold")
+        doc.setFontSize(7.5)
+        doc.setTextColor(...ink)
+        doc.text(`Detected: ${da.detectedType || "—"}`, M, y)
+        pill(`RISK: ${da.riskLevel.toUpperCase()}`, M + CW - 24, riskColor(da.riskLevel))
+        y += 4
+        if (da.error) {
+          paragraph(`Not analysed automatically: ${da.error}`, 7.5, [176, 42, 42])
+        } else {
+          if (da.summary) paragraph(da.summary, 7.8, ink)
+          const keyBits = [
+            da.personName ? `Name: ${da.personName}` : "",
+            da.documentNumber ? `No.: ${da.documentNumber}` : "",
+            da.issuingAuthority ? `Issuer: ${da.issuingAuthority}` : "",
+            da.issueDate ? `Issued: ${da.issueDate}` : "",
+            da.expiryDate ? `Expires: ${da.expiryDate}` : "",
+          ].filter(Boolean)
+          if (keyBits.length) paragraph(keyBits.join("  ·  "), 7.5, muted)
+          for (const f of da.extractedFields) {
+            if (f.label || f.value) paragraph(`${f.label}: ${f.value}`, 7.3, muted, 4)
+          }
+          if (da.consistencyNotes) paragraph(`Consistency: ${da.consistencyNotes}`, 7.5, ink)
+          if (da.redFlags.length) {
+            doc.setFont("helvetica", "bold")
+            doc.setFontSize(7.3)
+            doc.setTextColor(176, 42, 42)
+            ensureSpace(4)
+            doc.text("Red flags:", M, y)
+            y += 3.4
+            bulletList(da.redFlags, 7.3, [176, 42, 42])
+          }
+        }
+        y += 1
+      }
+
       doc.setTextColor(150, 150, 150)
       doc.setFontSize(7)
+      ensureSpace(4)
       doc.text("Original file retained securely; accessible to authorised administrators via NAFTAhub.", M, y)
       y += 3
       doc.setDrawColor(...line)

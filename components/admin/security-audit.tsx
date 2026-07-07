@@ -45,6 +45,7 @@ import type { jsPDF } from "jspdf"
 import { ADMIN_PASSCODE } from "@/lib/admin-config"
 import type { AuditOverview, UserAuditReport } from "@/lib/security-audit-service"
 import { buildDossierDoc } from "@/lib/audit-dossier-pdf"
+import type { DossierAnalysis } from "@/lib/kyc-types"
 import { PdfPreviewModal } from "@/components/pdf-preview-modal"
 import { KycDocumentManager } from "@/components/admin/kyc-document-manager"
 
@@ -99,6 +100,7 @@ export function SecurityAudit() {
   const [category, setCategory] = useState("All")
   const [dossierDoc, setDossierDoc] = useState<jsPDF | null>(null)
   const [buildingDossier, setBuildingDossier] = useState(false)
+  const [dossierPhase, setDossierPhase] = useState<"idle" | "analyzing" | "building">("idle")
   const [reverifyState, setReverifyState] = useState<"idle" | "working" | "done">("idle")
 
   const loadOverview = useCallback(async () => {
@@ -216,16 +218,36 @@ export function SecurityAudit() {
   // Build the full KYC + activity dossier (identity, passport image, selfie,
   // locations, devices, complete activity log) as a print-ready PDF and open it
   // in the shared preview modal (preview / download / print).
+  //
+  // First runs AI analysis on every KYC document on file (extracted fields,
+  // consistency vs. identity, red flags, overall verdict), then embeds that
+  // analysis into the PDF. If analysis fails, the dossier is still built.
   const buildDossier = async () => {
     if (!report || buildingDossier) return
     setBuildingDossier(true)
+    setDossierPhase("analyzing")
+    let analysis: DossierAnalysis | null = null
     try {
-      const doc = await buildDossierDoc(report)
+      const res = await fetch(`/api/admin/audit/analyze-documents?p=${encodeURIComponent(ADMIN_PASSCODE)}`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-admin-passcode": ADMIN_PASSCODE },
+        body: JSON.stringify({ userId: report.userId }),
+        cache: "no-store",
+      })
+      const json = (await res.json().catch(() => null)) as { ok: boolean; data?: DossierAnalysis } | null
+      if (res.ok && json?.ok && json.data) analysis = json.data
+    } catch (err) {
+      console.log("[v0] Document analysis failed:", err instanceof Error ? err.message : err)
+    }
+    try {
+      setDossierPhase("building")
+      const doc = await buildDossierDoc(report, analysis)
       setDossierDoc(doc)
     } catch (err) {
       console.log("[v0] Dossier build failed:", err instanceof Error ? err.message : err)
     } finally {
       setBuildingDossier(false)
+      setDossierPhase("idle")
     }
   }
 
@@ -521,8 +543,20 @@ export function SecurityAudit() {
                       ) : (
                         <FileText className="h-4 w-4" />
                       )}
-                      <span className="ml-2">Generate report for download (PDF)</span>
+                      <span className="ml-2">
+                        {dossierPhase === "analyzing"
+                          ? "Analyzing documents with NQAi…"
+                          : dossierPhase === "building"
+                            ? "Building report…"
+                            : "Generate full KYC report (AI-analyzed, PDF)"}
+                      </span>
                     </Button>
+                    <p className="text-xs text-muted-foreground text-pretty">
+                      NQAi reads every KYC document on file (passport, ID, proof of address, statements and more),
+                      extracts the key data, checks it against the identity on record, flags risks and produces an
+                      overall KYC verdict — all embedded in the PDF alongside the images and full activity log. This can
+                      take a moment for large files.
+                    </p>
 
                     {!report.passportNo || !report.passportImageUrl ? (
                       reverifyState === "done" ? (
