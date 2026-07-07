@@ -1011,7 +1011,7 @@ export function NqaiChat({ variant = "page" }: { variant?: "page" | "panel" }) {
           <div className="min-w-0 leading-tight">
             <div className="flex items-center gap-2">
               <span className="font-semibold tracking-tight text-foreground">NQAi</span>
-              <span className="hidden rounded-sm border border-primary/30 bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wider text-primary sm:inline-block">
+              <span className="inline-block whitespace-nowrap rounded-sm border border-primary/30 bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wider text-primary">
                 Super Intelligence
               </span>
             </div>
