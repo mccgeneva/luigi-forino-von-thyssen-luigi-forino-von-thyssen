@@ -59,7 +59,6 @@ import {
 } from "@/app/actions/admin-users"
 import { adminResetUserFace } from "@/app/actions/biometric"
 import { KycDocumentManager } from "@/components/admin/kyc-document-manager"
-import { startImpersonation } from "@/app/actions/admin-impersonation"
 import type { UserStatus, AccountRelationship } from "@/lib/profile-types"
 import { RELATIONSHIP_OPTIONS, relationshipLabel, relationshipCode } from "@/lib/account-hierarchy"
 import { upload } from "@vercel/blob/client"
@@ -557,12 +556,29 @@ export function UserManager() {
         status: u.status,
       },
     })
-    // On success this server action establishes the client's session and
-    // redirects into the dashboard, so control never returns here. It only
-    // returns when something went wrong.
-    const res = await startImpersonation(ADMIN_PASSCODE, u.id)
-    if (res && !res.ok) {
-      toast.error(res.error)
+    // Impersonation runs through a Route Handler (NOT a Server Action): Server
+    // Action POSTs are silently rejected on this app's production domains +
+    // mobile in-app webviews, which left this button spinning forever. On
+    // success the handler returns a redirect target; we hard-navigate so the
+    // freshly-set session cookie takes effect.
+    try {
+      const res = await fetch("/api/admin/impersonate", {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-admin-passcode": ADMIN_PASSCODE },
+        cache: "no-store",
+        body: JSON.stringify({ passcode: ADMIN_PASSCODE, targetUserId: u.id }),
+      })
+      const data = (await res.json().catch(() => null)) as
+        | { ok: boolean; error?: string; redirect?: string }
+        | null
+      if (res.ok && data?.ok && data.redirect) {
+        window.location.href = data.redirect
+        return // keep the spinner until the navigation happens
+      }
+      toast.error(data?.error || "Could not start the maintenance session. Please try again.")
+      setImpersonatingId(null)
+    } catch {
+      toast.error("Could not reach the server. Check your connection and try again.")
       setImpersonatingId(null)
     }
   }
