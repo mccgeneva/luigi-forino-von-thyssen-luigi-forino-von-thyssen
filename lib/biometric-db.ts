@@ -29,6 +29,16 @@ async function ensureColumns(): Promise<void> {
   await query(`ALTER TABLE admin_users ADD COLUMN IF NOT EXISTS identity_country text`)
   await query(`ALTER TABLE admin_users ADD COLUMN IF NOT EXISTS identity_full_name text`)
   await query(`ALTER TABLE admin_users ADD COLUMN IF NOT EXISTS identity_passport_last4 text`)
+  // FULL KYC retention (administrator dossier). DELIBERATE change from the earlier
+  // "keep only last-4, delete the image" design: the administrator is the data
+  // controller and needs the complete passport number and the passport image to
+  // produce a KYC dossier for authorities. These columns are NEVER exposed through
+  // the client-safe IdentityStatus / DynamicUserRecord — they are read only by the
+  // admin-passcode-gated security-audit path and the image is served through a
+  // session-gated proxy. Captured only on a full passport+selfie verification
+  // (first login or after an admin reset); the demo account stays stateless.
+  await query(`ALTER TABLE admin_users ADD COLUMN IF NOT EXISTS identity_passport_no text`)
+  await query(`ALTER TABLE admin_users ADD COLUMN IF NOT EXISTS identity_passport_image text`)
   // Most-recent login selfie (URL of an image in Blob storage) for the admin
   // security-audit identity panel. This is a DELIBERATE change to the previous
   // "no face images retained" design: with it enabled, the live selfie captured
@@ -120,6 +130,7 @@ export async function clearEnrollment(userId: string): Promise<void> {
             face_enrolled_at = NULL,
             identity_verified = false, identity_verified_at = NULL,
             identity_country = NULL, identity_full_name = NULL, identity_passport_last4 = NULL,
+            identity_passport_no = NULL, identity_passport_image = NULL,
             updated_at = now()
       WHERE id = $1`,
     [userId],
@@ -153,20 +164,64 @@ export async function getIdentityStatus(userId: string): Promise<IdentityStatus>
   }
 }
 
-/** Mark a user identity-verified and record the non-sensitive passport summary. */
+/**
+ * Mark a user identity-verified and record the passport summary. Also retains
+ * the FULL passport number and the passport image pathname for the administrator
+ * KYC dossier when provided (see the column comments in `ensureColumns`).
+ */
 export async function markIdentityVerified(
   userId: string,
-  meta: { country?: string | null; fullName?: string | null; passportLast4?: string | null },
+  meta: {
+    country?: string | null
+    fullName?: string | null
+    passportLast4?: string | null
+    passportNo?: string | null
+    passportImagePath?: string | null
+  },
 ): Promise<void> {
   await ensureColumns()
   await query(
     `UPDATE admin_users
         SET identity_verified = true, identity_verified_at = now(),
             identity_country = $2, identity_full_name = $3, identity_passport_last4 = $4,
+            identity_passport_no = $5, identity_passport_image = $6,
             updated_at = now()
       WHERE id = $1`,
-    [userId, meta.country || null, meta.fullName || null, meta.passportLast4 || null],
+    [
+      userId,
+      meta.country || null,
+      meta.fullName || null,
+      meta.passportLast4 || null,
+      meta.passportNo || null,
+      meta.passportImagePath || null,
+    ],
   )
+}
+
+/** Full (unmasked) KYC identity details for a user. */
+export interface AdminIdentityDetails {
+  passportNo: string | null
+  passportImagePath: string | null
+}
+
+/**
+ * ADMIN-ONLY: read the full passport number and passport image pathname.
+ * This bypasses the client-safe `IdentityStatus` shape on purpose and must only
+ * be called from the admin-passcode-gated security-audit path.
+ */
+export async function getAdminIdentityDetails(userId: string): Promise<AdminIdentityDetails> {
+  if (!userId) return { passportNo: null, passportImagePath: null }
+  await ensureColumns()
+  const { rows } = await query(
+    `SELECT identity_passport_no, identity_passport_image FROM admin_users WHERE id = $1`,
+    [userId],
+  )
+  const row = rows[0]
+  if (!row) return { passportNo: null, passportImagePath: null }
+  return {
+    passportNo: (row.identity_passport_no as string | null) ?? null,
+    passportImagePath: (row.identity_passport_image as string | null) ?? null,
+  }
 }
 
 /** Reset the consecutive-failure counter after a successful match. */

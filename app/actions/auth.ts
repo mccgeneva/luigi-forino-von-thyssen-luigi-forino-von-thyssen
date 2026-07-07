@@ -399,9 +399,11 @@ export interface IdentityVerificationInput {
  *   2. Matches the live selfie against the passport photo under a looser
  *      threshold suited to live-vs-printed comparison.
  * On success: real accounts are marked verified and their LIVE selfie is
- * enrolled for the strict fast path on future logins; the demo account verifies
- * statelessly (nothing persisted) so the shared public login stays usable. The
- * passport image is deleted from Blob in every case.
+ * enrolled for the strict fast path on future logins; the full passport number
+ * and the passport image are RETAINED for the administrator KYC dossier. The
+ * demo account verifies statelessly (nothing persisted, image deleted) so the
+ * shared public login stays usable. On any rejection/failure the uploaded image
+ * is always deleted.
  */
 export async function verifyIdentityAndLogin(
   challenge: string,
@@ -509,20 +511,28 @@ export async function verifyIdentityAndLogin(
       }
     }
 
-    // 3) Success. Remove the passport image; we keep only non-sensitive metadata.
-    await cleanupPassport()
-
+    // 3) Success.
     if (!isDemo) {
       // Persist verification and enroll the LIVE selfie so future logins use the
       // strict selfie-only fast path (selfie-vs-selfie, not selfie-vs-document).
+      // RETAIN the full passport number and the passport image for the
+      // administrator KYC dossier: the image is intentionally NOT deleted here —
+      // it stays in Blob under its unguessable `identity/` pathname and is only
+      // reachable through the session-gated passport-image proxy that the
+      // admin-passcode-gated security audit surfaces.
       const last4 = pv.passportNo ? pv.passportNo.slice(-4) : null
       await markIdentityVerified(uid, {
         country: pv.country || null,
         fullName: pv.fullName || name,
         passportLast4: last4,
+        passportNo: pv.passportNo || null,
+        passportImagePath: input.passportPathname || null,
       })
       await saveEncryptedDescriptor(uid, encryptDescriptors([input.selfieDescriptor]))
       await resetFailCount(uid)
+    } else {
+      // The demo account is stateless — never persist a passport image.
+      await cleanupPassport()
     }
 
     await logActivity({
