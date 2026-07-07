@@ -200,7 +200,7 @@ export function UserManager() {
   const [docsTarget, setDocsTarget] = useState<AdminUserView | null>(null)
   const [faceResetting, setFaceResetting] = useState(false)
 
-  // "Sign in as" (impersonation) — tracks the account currently being entered.
+  // "Sign in as" (impersonation) �� tracks the account currently being entered.
   const [impersonatingId, setImpersonatingId] = useState<string | null>(null)
 
   const load = () => {
@@ -884,7 +884,7 @@ export function UserManager() {
                           {kycResult.documents.map((doc) => (
                             <a
                               key={`${doc.type}-${doc.pageNumber}`}
-                              href={`${blobFileUrl(doc.pathname)}#page=${doc.pageNumber}`}
+                              href={`${blobFileUrl(doc.pathname, ADMIN_PASSCODE)}#page=${doc.pageNumber}`}
                               target="_blank"
                               rel="noopener noreferrer"
                               className="group flex items-center gap-2 rounded-md border border-border bg-background px-2.5 py-1.5 transition-colors hover:border-primary"

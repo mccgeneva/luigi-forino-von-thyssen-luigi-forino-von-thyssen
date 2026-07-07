@@ -203,7 +203,7 @@ export function KycDocumentManager({ userId, account }: { userId: string; accoun
       ) : (
         <ul className="flex flex-col gap-2">
           {documents.map((doc) => {
-            const url = blobFileUrl(doc.pathname)
+            const url = blobFileUrl(doc.pathname, ADMIN_PASSCODE)
             return (
               <li
                 key={doc.id}

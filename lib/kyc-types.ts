@@ -80,9 +80,18 @@ export interface KycAnalysisResult {
   pdfPathname: string
 }
 
-/** Build the authenticated delivery URL for a private Blob pathname. */
-export function blobFileUrl(pathname: string): string {
-  return `/api/file?pathname=${encodeURIComponent(pathname)}`
+/**
+ * Build the authenticated delivery URL for a private Blob pathname.
+ *
+ * Pass `adminPasscode` when the link is rendered inside the admin panel: the
+ * admin is authenticated by the shared passcode (not a user session), and when
+ * a file link opens in a new tab / mobile in-app webview the user-session cookie
+ * is often not carried, so `/api/file` would otherwise answer `Unauthorized`.
+ * The `/api/file` route accepts either a valid session OR a matching `?p=`.
+ */
+export function blobFileUrl(pathname: string, adminPasscode?: string): string {
+  const base = `/api/file?pathname=${encodeURIComponent(pathname)}`
+  return adminPasscode ? `${base}&p=${encodeURIComponent(adminPasscode)}` : base
 }
 
 // ---------------------------------------------------------------------------

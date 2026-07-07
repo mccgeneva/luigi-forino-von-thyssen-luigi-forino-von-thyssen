@@ -11,6 +11,7 @@
 // Route Handlers are exempt from that check.
 // ---------------------------------------------------------------------------
 
+import { ADMIN_PASSCODE } from "@/lib/admin-config"
 import { geolocateIp, type IpGeo } from "@/lib/ip-geo"
 import { getIdentityStatus, getLastLoginSelfie, getAdminIdentityDetails, type IdentityStatus } from "@/lib/biometric-db"
 import { listDynamicUsers } from "@/lib/admin-users-db"
@@ -27,16 +28,23 @@ import {
   type ActorStats,
 } from "@/lib/security-audit-db"
 
-/** Turn a stored selfie pathname into an app-relative, session-gated proxy URL. */
+// These proxy URLs are consumed by the admin Security Audit panel, which is
+// authenticated by the shared admin passcode rather than a user session. We
+// append `p=<passcode>` so the images load even when there is no user-session
+// cookie (or it isn't carried into a new tab / mobile in-app webview). The
+// routes accept either a valid session OR a matching passcode.
+const adminPasscodeParam = `&p=${encodeURIComponent(ADMIN_PASSCODE)}`
+
+/** Turn a stored selfie pathname into an app-relative, admin-authorized proxy URL. */
 function selfieUrl(pathname: string | null): string | null {
   if (!pathname) return null
-  return `/api/login-selfie?pathname=${encodeURIComponent(pathname)}`
+  return `/api/login-selfie?pathname=${encodeURIComponent(pathname)}${adminPasscodeParam}`
 }
 
-/** Turn a retained passport-image pathname into a session-gated proxy URL. */
+/** Turn a retained passport-image pathname into an admin-authorized proxy URL. */
 function passportUrl(pathname: string | null): string | null {
   if (!pathname) return null
-  return `/api/passport-image?pathname=${encodeURIComponent(pathname)}`
+  return `/api/passport-image?pathname=${encodeURIComponent(pathname)}${adminPasscodeParam}`
 }
 
 export interface AuditActorView extends Omit<AuditActor, "lastSelfieUrl"> {
