@@ -12,7 +12,7 @@
 // ---------------------------------------------------------------------------
 
 import { geolocateIp, type IpGeo } from "@/lib/ip-geo"
-import { getIdentityStatus, getLastLoginSelfie, type IdentityStatus } from "@/lib/biometric-db"
+import { getIdentityStatus, getLastLoginSelfie, getAdminIdentityDetails, type IdentityStatus } from "@/lib/biometric-db"
 import { listDynamicUsers } from "@/lib/admin-users-db"
 import {
   listAuditActors,
@@ -29,6 +29,12 @@ import {
 function selfieUrl(pathname: string | null): string | null {
   if (!pathname) return null
   return `/api/login-selfie?pathname=${encodeURIComponent(pathname)}`
+}
+
+/** Turn a retained passport-image pathname into a session-gated proxy URL. */
+function passportUrl(pathname: string | null): string | null {
+  if (!pathname) return null
+  return `/api/passport-image?pathname=${encodeURIComponent(pathname)}`
 }
 
 export interface AuditActorView extends Omit<AuditActor, "lastSelfieUrl"> {
@@ -49,6 +55,10 @@ export interface UserAuditReport {
   account: string
   stats: ActorStats
   identity: IdentityStatus
+  /** ADMIN-ONLY: full (unmasked) passport number, when one was retained. */
+  passportNo: string | null
+  /** ADMIN-ONLY: session-gated proxy URL for the retained passport image. */
+  passportImageUrl: string | null
   selfie: { url: string | null; at: string | null }
   devices: DeviceRow[]
   /** Geolocated distinct IPs (best-effort, capped). */
@@ -74,9 +84,10 @@ export async function buildAuditOverview(): Promise<AuditOverview> {
 
 /** Full audit report for one account. */
 export async function buildUserAudit(userId: string, opts?: { category?: string }): Promise<UserAuditReport> {
-  const [stats, identity, selfie, devices, events] = await Promise.all([
+  const [stats, identity, adminIdentity, selfie, devices, events] = await Promise.all([
     getActorStats(userId),
     getIdentityStatus(userId),
+    getAdminIdentityDetails(userId),
     getLastLoginSelfie(userId),
     listUserDevices(userId),
     listAuditEvents({ userId, category: opts?.category, limit: 300 }),
@@ -106,6 +117,8 @@ export async function buildUserAudit(userId: string, opts?: { category?: string 
     account,
     stats,
     identity,
+    passportNo: adminIdentity.passportNo,
+    passportImageUrl: passportUrl(adminIdentity.passportImagePath),
     selfie: { url: selfieUrl(selfie?.url ?? null), at: selfie?.at ?? null },
     devices,
     locations,

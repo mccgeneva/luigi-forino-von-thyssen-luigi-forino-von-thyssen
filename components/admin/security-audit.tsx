@@ -38,9 +38,13 @@ import {
   Camera,
   AlertTriangle,
   Activity,
+  FileText,
 } from "lucide-react"
+import type { jsPDF } from "jspdf"
 import { ADMIN_PASSCODE } from "@/lib/admin-config"
 import type { AuditOverview, UserAuditReport } from "@/lib/security-audit-service"
+import { buildDossierDoc } from "@/lib/audit-dossier-pdf"
+import { PdfPreviewModal } from "@/components/pdf-preview-modal"
 
 function fmtWhen(iso: string | null): string {
   if (!iso) return "—"
@@ -91,6 +95,8 @@ export function SecurityAudit() {
   const [loadingReport, setLoadingReport] = useState(false)
   const [reportError, setReportError] = useState("")
   const [category, setCategory] = useState("All")
+  const [dossierDoc, setDossierDoc] = useState<jsPDF | null>(null)
+  const [buildingDossier, setBuildingDossier] = useState(false)
 
   const loadOverview = useCallback(async () => {
     setLoadingOverview(true)
@@ -202,6 +208,22 @@ export function SecurityAudit() {
       return a.label.localeCompare(b.label)
     })
   }, [overview, search])
+
+  // Build the full KYC + activity dossier (identity, passport image, selfie,
+  // locations, devices, complete activity log) as a print-ready PDF and open it
+  // in the shared preview modal (preview / download / print).
+  const buildDossier = async () => {
+    if (!report || buildingDossier) return
+    setBuildingDossier(true)
+    try {
+      const doc = await buildDossierDoc(report)
+      setDossierDoc(doc)
+    } catch (err) {
+      console.log("[v0] Dossier build failed:", err instanceof Error ? err.message : err)
+    } finally {
+      setBuildingDossier(false)
+    }
+  }
 
   const exportData = (format: "csv" | "json") => {
     if (!report) return
@@ -350,6 +372,10 @@ export function SecurityAudit() {
             </Button>
             {report ? (
               <div className="flex items-center gap-2">
+                <Button size="sm" onClick={() => void buildDossier()} disabled={buildingDossier}>
+                  {buildingDossier ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileText className="h-4 w-4" />}
+                  <span className="ml-2">Dossier (PDF)</span>
+                </Button>
                 <Button variant="outline" size="sm" onClick={() => exportData("csv")}>
                   <Download className="h-4 w-4" />
                   <span className="ml-2">CSV</span>
@@ -380,18 +406,41 @@ export function SecurityAudit() {
                 </CardHeader>
                 <CardContent className="space-y-5">
                   <div className="flex flex-col gap-5 sm:flex-row">
-                    <div className="flex flex-col items-center gap-2">
-                      <span className="flex h-28 w-28 items-center justify-center overflow-hidden rounded-xl border border-border bg-secondary">
-                        {report.selfie.url ? (
-                          // eslint-disable-next-line @next/next/no-img-element
-                          <img src={report.selfie.url || "/placeholder.svg"} alt="Login selfie" className="h-full w-full object-cover" />
+                    <div className="flex shrink-0 gap-3">
+                      <div className="flex flex-col items-center gap-2">
+                        <span className="flex h-28 w-28 items-center justify-center overflow-hidden rounded-xl border border-border bg-secondary">
+                          {report.selfie.url ? (
+                            // eslint-disable-next-line @next/next/no-img-element
+                            <img src={report.selfie.url || "/placeholder.svg"} alt="Login selfie" className="h-full w-full object-cover" />
+                          ) : (
+                            <Camera className="h-8 w-8 text-muted-foreground" />
+                          )}
+                        </span>
+                        <span className="text-center text-xs text-muted-foreground">
+                          {report.selfie.url ? `Login selfie · ${fmtWhen(report.selfie.at)}` : "No selfie yet"}
+                        </span>
+                      </div>
+                      <div className="flex flex-col items-center gap-2">
+                        {report.passportImageUrl ? (
+                          <a
+                            href={report.passportImageUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="flex h-28 w-28 items-center justify-center overflow-hidden rounded-xl border border-border bg-secondary"
+                            title="Open full-size passport image"
+                          >
+                            {/* eslint-disable-next-line @next/next/no-img-element */}
+                            <img src={report.passportImageUrl || "/placeholder.svg"} alt="Passport document" className="h-full w-full object-cover" />
+                          </a>
                         ) : (
-                          <Camera className="h-8 w-8 text-muted-foreground" />
+                          <span className="flex h-28 w-28 items-center justify-center overflow-hidden rounded-xl border border-border bg-secondary">
+                            <FileText className="h-8 w-8 text-muted-foreground" />
+                          </span>
                         )}
-                      </span>
-                      <span className="text-center text-xs text-muted-foreground">
-                        {report.selfie.url ? `Login selfie · ${fmtWhen(report.selfie.at)}` : "No selfie captured yet"}
-                      </span>
+                        <span className="text-center text-xs text-muted-foreground">
+                          {report.passportImageUrl ? "Passport / ID" : "No passport image"}
+                        </span>
+                      </div>
                     </div>
                     <div className="flex-1 space-y-3">
                       <div className="flex items-center gap-2">
@@ -412,16 +461,23 @@ export function SecurityAudit() {
                         <InfoRow label="Full name" value={report.identity.fullName || "—"} />
                         <InfoRow label="Country" value={report.identity.country || "—"} />
                         <InfoRow
-                          label="Passport"
-                          value={report.identity.passportLast4 ? `•••• ${report.identity.passportLast4}` : "—"}
+                          label="Passport / document no."
+                          value={
+                            report.passportNo ||
+                            (report.identity.passportLast4 ? `•••• ${report.identity.passportLast4}` : "—")
+                          }
+                          mono
                         />
                         <InfoRow label="Account id" value={report.userId} mono />
                       </div>
                     </div>
                   </div>
-                  <p className="text-xs text-muted-foreground">
-                    By design the platform keeps no raw passport scan — only the verification status, country, name and
-                    passport last-4 shown here, plus the login selfie above.
+                  <p className="text-xs text-muted-foreground text-pretty">
+                    Full KYC is retained for the account controller: the complete passport number, the passport image and
+                    the login selfie above. Use <span className="font-medium text-foreground">Dossier (PDF)</span> to
+                    export an authorities-ready report. Data is captured on a full passport + selfie verification (first
+                    login or after an identity reset), so accounts verified before this was enabled show only the
+                    passport last-4 until they next re-verify.
                   </p>
                 </CardContent>
               </Card>
@@ -576,6 +632,15 @@ export function SecurityAudit() {
           ) : null}
         </div>
       )}
+
+      {dossierDoc && report ? (
+        <PdfPreviewModal
+          doc={dossierDoc}
+          filename={`kyc-dossier-${report.account.replace(/[^a-z0-9]+/gi, "-").toLowerCase()}`}
+          title={`KYC & activity dossier — ${report.account}`}
+          onClose={() => setDossierDoc(null)}
+        />
+      ) : null}
     </div>
   )
 }
