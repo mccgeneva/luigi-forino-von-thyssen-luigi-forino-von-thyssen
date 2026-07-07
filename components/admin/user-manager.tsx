@@ -46,18 +46,14 @@ import { toast } from "sonner"
 import { ADMIN_PASSCODE } from "@/lib/admin-config"
 import { CountryCombobox } from "@/components/country-combobox"
 import { useActivityLog } from "@/components/activity-tracker"
-import {
-  createUser,
-  editUser,
-  resetUserPassword,
-  updateUserStatus,
-  removeUser,
-  listMasterCandidates,
-  type AdminUserView,
-  type AdminUsersResult,
-  type SelectableClient,
+import type {
+  AdminUserView,
+  AdminUsersResult,
+  AdminUserMutation,
+  SelectableClient,
+  CreateUserInput,
+  EditUserInput,
 } from "@/app/actions/admin-users"
-import { adminResetUserFace } from "@/app/actions/biometric"
 import { KycDocumentManager } from "@/components/admin/kyc-document-manager"
 import type { UserStatus, AccountRelationship } from "@/lib/profile-types"
 import { RELATIONSHIP_OPTIONS, relationshipLabel, relationshipCode } from "@/lib/account-hierarchy"
@@ -83,6 +79,58 @@ interface CredentialReveal {
   email: string
   password: string
   title: string
+}
+
+// All admin user mutations + the Master-candidate list go through the
+// `/api/admin/users` Route Handler instead of Server Actions. Server Action
+// POSTs are silently rejected on this app's production domains + mobile in-app
+// webviews, which left "Save changes" / create / reset / status / delete
+// spinning forever and the Master dropdown empty. These helpers wrap the route
+// and always resolve, so the callers can use try/catch/finally safely.
+async function postUserAction(action: string, payload: Record<string, unknown>): Promise<AdminUserMutation> {
+  try {
+    const res = await fetch("/api/admin/users", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-admin-passcode": ADMIN_PASSCODE },
+      cache: "no-store",
+      body: JSON.stringify({ action, ...payload }),
+    })
+    const data = (await res.json().catch(() => null)) as AdminUserMutation | null
+    if (data) return data
+    return { ok: false, error: "The request could not be completed. Please try again." }
+  } catch {
+    return { ok: false, error: "Could not reach the server. Check your connection and try again." }
+  }
+}
+
+async function postDeleteUser(id: string): Promise<AdminUsersResult> {
+  try {
+    const res = await fetch("/api/admin/users", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-admin-passcode": ADMIN_PASSCODE },
+      cache: "no-store",
+      body: JSON.stringify({ action: "delete", id }),
+    })
+    const data = (await res.json().catch(() => null)) as AdminUsersResult | null
+    if (data) return data
+    return { ok: false, error: "The request could not be completed. Please try again." }
+  } catch {
+    return { ok: false, error: "Could not reach the server. Check your connection and try again." }
+  }
+}
+
+async function fetchMasterCandidates(excludeId?: string): Promise<SelectableClient[]> {
+  try {
+    const url = new URL("/api/admin/users", window.location.origin)
+    url.searchParams.set("candidates", "1")
+    url.searchParams.set("p", ADMIN_PASSCODE)
+    if (excludeId) url.searchParams.set("excludeId", excludeId)
+    const res = await fetch(url.toString(), { cache: "no-store" })
+    const data = (await res.json().catch(() => null)) as { ok?: boolean; masters?: SelectableClient[] } | null
+    return data?.ok && data.masters ? data.masters : []
+  } catch {
+    return []
+  }
 }
 
 export function UserManager() {
@@ -193,9 +241,7 @@ export function UserManager() {
       })
       .finally(() => setLoading(false))
     // Refresh the Master candidate list alongside the user table.
-    listMasterCandidates(ADMIN_PASSCODE).catch(() => {
-      /* non-fatal: the master dropdown simply stays empty */
-    }).then((m) => m && setMasters(m))
+    fetchMasterCandidates().then((m) => setMasters(m))
   }
 
   useEffect(() => {
@@ -336,8 +382,7 @@ export function UserManager() {
       return
     }
     setCreating(true)
-    const res = await createUser({
-      passcode: ADMIN_PASSCODE,
+    const input: Omit<CreateUserInput, "passcode"> = {
       fullName: fullName.trim(),
       company: company.trim(),
       role: role.trim() || undefined,
@@ -357,7 +402,8 @@ export function UserManager() {
       kycDocuments: kycResult?.documents?.length ? kycResult.documents : undefined,
       kycPdfPathname: kycResult?.pdfPathname || undefined,
       adminName: "Administrator",
-    })
+    }
+    const res = await postUserAction("create", { input })
     setCreating(false)
 
     if (!res.ok) {
@@ -408,8 +454,7 @@ export function UserManager() {
       return
     }
     setSavingEdit(true)
-    const res = await editUser({
-      passcode: ADMIN_PASSCODE,
+    const input: Omit<EditUserInput, "passcode"> = {
       id: editTarget.id,
       fullName: editFullName.trim() || undefined,
       company: editCompany.trim() || undefined,
@@ -419,7 +464,8 @@ export function UserManager() {
       relationship: editRelationship,
       masterId: editRelationship !== "master" ? editMasterId : undefined,
       adminName: "Administrator",
-    })
+    }
+    const res = await postUserAction("edit", { input })
     setSavingEdit(false)
     if (!res.ok) {
       toast.error(res.error)
@@ -453,7 +499,7 @@ export function UserManager() {
     }
     setResetting(true)
     // Pass the typed password to assign it directly; leave blank to auto-generate.
-    const res = await resetUserPassword(ADMIN_PASSCODE, u.id, custom || undefined, "Administrator")
+    const res = await postUserAction("resetPassword", { id: u.id, newPassword: custom || undefined })
     setResetting(false)
     if (!res.ok) {
       toast.error(res.error)
@@ -478,7 +524,7 @@ export function UserManager() {
   }
 
   const handleStatus = async (u: AdminUserView, status: UserStatus) => {
-    const res = await updateUserStatus(ADMIN_PASSCODE, u.id, status, "Administrator")
+    const res = await postUserAction("status", { id: u.id, status })
     if (!res.ok) {
       toast.error(res.error)
       return
@@ -501,7 +547,7 @@ export function UserManager() {
   const handleDelete = async () => {
     if (!deleteTarget) return
     setDeleting(true)
-    const res = await removeUser(ADMIN_PASSCODE, deleteTarget.id, "Administrator")
+    const res = await postDeleteUser(deleteTarget.id)
     setDeleting(false)
     if (!res.ok) {
       toast.error(res.error)
@@ -525,7 +571,7 @@ export function UserManager() {
     const u = faceResetTarget
     if (!u) return
     setFaceResetting(true)
-    const res = await adminResetUserFace(ADMIN_PASSCODE, u.id, "Administrator")
+    const res = await postUserAction("resetFace", { id: u.id })
     setFaceResetting(false)
     if (!res.ok) {
       toast.error(res.error || "Could not reset Face ID.")
