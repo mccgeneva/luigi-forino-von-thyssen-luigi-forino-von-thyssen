@@ -18,7 +18,6 @@ import { Badge } from "@/components/ui/badge"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Sheet, SheetContent, SheetTrigger, SheetTitle, SheetDescription } from "@/components/ui/sheet"
 import { MobileSidebar } from "./mobile-sidebar"
-import { logout } from "@/app/actions/auth"
 import { useCurrentUser } from "@/lib/use-current-user"
 import { BankekaHeaderButton } from "@/components/bankeka/bankeka-header-button"
 import type { NotificationsSnapshot } from "@/app/actions/notifications"
@@ -301,7 +300,7 @@ export function DashboardHeader() {
               </Link>
             </DropdownMenuItem>
             <DropdownMenuSeparator />
-            <form action={logout}>
+            <form action="/api/logout" method="POST">
               <DropdownMenuItem
                 className="text-destructive cursor-pointer"
                 onSelect={(e) => e.preventDefault()}

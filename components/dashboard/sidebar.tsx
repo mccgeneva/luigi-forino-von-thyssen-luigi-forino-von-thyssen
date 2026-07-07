@@ -41,7 +41,6 @@ import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card"
-import { logout } from "@/app/actions/auth"
 
 type NavItem = {
   title: string
@@ -329,7 +328,7 @@ export function DashboardSidebar() {
 
       {/* Sign Out — always available, regardless of collapsed state */}
       <div className="border-t border-sidebar-border p-3">
-        <form action={logout}>
+        <form action="/api/logout" method="POST">
           <Button
             type="submit"
             variant="ghost"
