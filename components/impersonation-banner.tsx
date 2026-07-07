@@ -1,9 +1,8 @@
 "use client"
 
-import { useState, useTransition } from "react"
+import { useState } from "react"
 import { ShieldAlert, LogOut, Loader2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
-import { stopImpersonation } from "@/app/actions/admin-impersonation"
 
 /**
  * Sticky banner shown while an administrator is "signed in as" a client for
@@ -19,17 +18,24 @@ export function ImpersonationBanner({
   adminName: string
   targetName: string
 }) {
-  const [pending, startTransition] = useTransition()
   const [returning, setReturning] = useState(false)
 
-  const handleReturn = () => {
+  // Return-to-admin goes through the impersonation Route Handler (NOT a Server
+  // Action, which is silently rejected on production/in-app webviews). On
+  // success we hard-navigate so the restored admin session cookie takes effect.
+  const handleReturn = async () => {
     setReturning(true)
-    startTransition(async () => {
-      await stopImpersonation()
-    })
+    try {
+      const res = await fetch("/api/admin/impersonate", { method: "DELETE", cache: "no-store" })
+      const data = (await res.json().catch(() => null)) as { ok?: boolean; redirect?: string } | null
+      window.location.href = data?.redirect || "/dashboard/admin"
+    } catch {
+      // Even on transport failure, send the admin somewhere sane rather than hang.
+      window.location.href = "/dashboard/admin"
+    }
   }
 
-  const busy = pending || returning
+  const busy = returning
 
   return (
     <div className="sticky top-0 z-50 border-b border-amber-500/40 bg-amber-500/15 backdrop-blur">

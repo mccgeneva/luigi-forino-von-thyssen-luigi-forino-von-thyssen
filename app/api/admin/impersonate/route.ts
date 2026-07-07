@@ -1,24 +1,5 @@
-"use server"
-
-// ---------------------------------------------------------------------------
-// Administrator "act as client" (impersonation) for maintenance.
-//
-// WHY: every account's password and Face ID can be changed by the client
-// themselves, so an administrator can be locked out of a client's login while
-// still needing to service that account. These actions let any passcode-holding
-// admin step into a client's session WITHOUT their credentials, do maintenance,
-// then return to their own admin session in one click — all without a password.
-//
-// HOW (no new auth surface): we overwrite the session cookie with the target's
-// per-user token and set a SIGNED impersonation cookie that records the original
-// admin (id + token, to restore) and the target id. `resolveCurrentSession`
-// (lib/session-user.ts) reads that cookie and resolves the session to the target
-// — by id, so suspended/inactive accounts can be serviced too — and flags the
-// impersonator so the dashboard shows a "Return to admin" banner.
-// ---------------------------------------------------------------------------
-
+import { type NextRequest, NextResponse } from "next/server"
 import { cookies } from "next/headers"
-import { redirect } from "next/navigation"
 import {
   SESSION_COOKIE,
   SESSION_META_COOKIE,
@@ -39,7 +20,18 @@ import { resolveCurrentSession } from "@/lib/session-user"
 import { getDynamicUserById } from "@/lib/admin-users-db"
 import { logActivity } from "@/app/actions/log-activity"
 
-export type ImpersonationResult = { ok: true } | { ok: false; error: string }
+// ---------------------------------------------------------------------------
+// Administrator "Sign in as" (impersonation) as a ROUTE HANDLER.
+//
+// This logic used to live in the Server Actions `startImpersonation` /
+// `stopImpersonation`, but Server Action POSTs are silently rejected on this
+// app's production domains + mobile in-app webviews (same root cause as the
+// admin user list and Face ID enroll). That left the "Sign in as" button
+// spinning forever. Route Handlers are exempt from that Origin/Host check.
+//
+// The handler sets the same cookies and returns a JSON `{ ok, redirect }` — the
+// client performs a hard navigation so the new session cookie takes effect.
+// ---------------------------------------------------------------------------
 
 /** Issue a fresh signed session-metadata cookie (8h absolute cap from now). */
 async function issueFreshMeta(): Promise<void> {
@@ -54,18 +46,28 @@ async function issueFreshMeta(): Promise<void> {
   cookieStore.set(FRESH_LOGIN_COOKIE, "1", freshLoginCookieOptions)
 }
 
-/**
- * Begin impersonating a client. Passcode-gated (any admin-passcode holder, per
- * the configured policy). Establishes the target's session and stores a signed
- * marker so the admin session can be restored. Redirects into the dashboard as
- * the client on success; returns an error result otherwise.
- */
-export async function startImpersonation(
-  passcode: string,
-  targetUserId: string,
-): Promise<ImpersonationResult> {
-  if (String(passcode) !== ADMIN_PASSCODE) {
-    return { ok: false, error: "Administrator authorization failed." }
+function readPasscode(req: NextRequest, body: unknown): string {
+  const fromHeader = req.headers.get("x-admin-passcode")
+  if (fromHeader) return fromHeader
+  if (body && typeof body === "object" && "passcode" in body) {
+    return String((body as { passcode?: unknown }).passcode ?? "")
+  }
+  return req.nextUrl.searchParams.get("p") ?? ""
+}
+
+/** POST — begin impersonating a client. Body: `{ passcode, targetUserId }`. */
+export async function POST(req: NextRequest) {
+  const body = (await req.json().catch(() => null)) as
+    | { passcode?: string; targetUserId?: string }
+    | null
+  const passcode = readPasscode(req, body)
+  const targetUserId = String(body?.targetUserId ?? "")
+
+  if (passcode !== ADMIN_PASSCODE) {
+    return NextResponse.json({ ok: false, error: "Administrator authorization failed." }, { status: 401 })
+  }
+  if (!targetUserId) {
+    return NextResponse.json({ ok: false, error: "No target account specified." }, { status: 400 })
   }
 
   const cookieStore = await cookies()
@@ -74,22 +76,28 @@ export async function startImpersonation(
   // into another account, otherwise the saved "admin token" would be a client's.
   const existing = await verifyImpersonation(cookieStore.get(IMPERSONATION_COOKIE)?.value)
   if (existing) {
-    return { ok: false, error: "You are already signed in as a client. Return to admin first." }
+    return NextResponse.json(
+      { ok: false, error: "You are already signed in as a client. Return to admin first." },
+      { status: 409 },
+    )
   }
 
   // The acting administrator's OWN session (not yet impersonating).
   const adminSession = await resolveCurrentSession()
   const adminToken = cookieStore.get(SESSION_COOKIE)?.value
   if (!adminSession || !adminToken) {
-    return { ok: false, error: "Your session has expired. Please sign in again." }
+    return NextResponse.json(
+      { ok: false, error: "Your session has expired. Please sign in again." },
+      { status: 401 },
+    )
   }
 
   const target = await getDynamicUserById(targetUserId)
   if (!target) {
-    return { ok: false, error: "That client account could not be found." }
+    return NextResponse.json({ ok: false, error: "That client account could not be found." }, { status: 404 })
   }
   if (target.id === adminSession.id) {
-    return { ok: false, error: "You are already signed in as this account." }
+    return NextResponse.json({ ok: false, error: "You are already signed in as this account." }, { status: 400 })
   }
 
   const adminName = adminSession.profile.fullName || adminSession.profile.company || adminSession.id
@@ -124,22 +132,22 @@ export async function startImpersonation(
     },
   })
 
-  redirect("/dashboard?fresh=1")
+  return NextResponse.json({ ok: true, redirect: "/dashboard?fresh=1" })
 }
 
 /**
- * End impersonation and restore the original administrator session. Requires no
- * passcode — the signed impersonation cookie itself is the proof of who to
- * restore — so it can be a one-click "Return to admin" action.
+ * DELETE — end impersonation and restore the original admin session. No
+ * passcode required: the signed impersonation cookie is itself the proof of who
+ * to restore, so this stays a one-click "Return to admin".
  */
-export async function stopImpersonation(): Promise<void> {
+export async function DELETE() {
   const cookieStore = await cookies()
   const imp = await verifyImpersonation(cookieStore.get(IMPERSONATION_COOKIE)?.value)
 
   if (!imp) {
-    // Nothing to restore — just clear any stray marker and go to the dashboard.
+    // Nothing to restore — clear any stray marker and go back to the dashboard.
     cookieStore.set(IMPERSONATION_COOKIE, "", expiredCookieOptions)
-    redirect("/dashboard")
+    return NextResponse.json({ ok: true, redirect: "/dashboard" })
   }
 
   // Restore the administrator's own session and drop the impersonation marker.
@@ -159,5 +167,5 @@ export async function stopImpersonation(): Promise<void> {
     },
   })
 
-  redirect("/dashboard/admin")
+  return NextResponse.json({ ok: true, redirect: "/dashboard/admin" })
 }
