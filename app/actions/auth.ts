@@ -449,7 +449,12 @@ export async function verifyIdentityAndLogin(
     return { error: "Face ID is locked after too many failed attempts. Please contact your administrator to reset it." }
   }
 
+  // Once we commit to RETAINING the passport image (real account, verified), we
+  // must never delete it — otherwise the stored `identity_passport_image` path
+  // would dangle. This flag makes the catch-all cleanup below respect that.
+  let passportRetained = false
   const cleanupPassport = async () => {
+    if (passportRetained) return
     try {
       await del(input.passportPathname)
     } catch {
@@ -513,6 +518,9 @@ export async function verifyIdentityAndLogin(
 
     // 3) Success.
     if (!isDemo) {
+      // Mark BEFORE the DB write so any later failure in this try can't delete
+      // the image out from under a stored `identity_passport_image` path.
+      passportRetained = true
       // Persist verification and enroll the LIVE selfie so future logins use the
       // strict selfie-only fast path (selfie-vs-selfie, not selfie-vs-document).
       // RETAIN the full passport number and the passport image for the
