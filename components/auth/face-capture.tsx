@@ -21,15 +21,47 @@ const IN_APP_HINT =
   " If you opened this from inside another app, tap the menu and choose “Open in Safari/Chrome”, then try again."
 
 interface FaceCaptureProps {
-  /** Called with a captured 128-float descriptor. Return a promise so the
-      component can show progress and surface a failure message. */
-  onCapture: (descriptor: number[]) => Promise<{ ok: boolean; error?: string } | void>
+  /** Called with a captured 128-float descriptor and, when `captureSelfie` is
+      enabled, a downscaled JPEG data URL of the live frame. Return a promise so
+      the component can show progress and surface a failure message. */
+  onCapture: (descriptor: number[], selfie?: string) => Promise<{ ok: boolean; error?: string } | void>
   /** Number of samples to gather before completing (enrollment uses several). */
   samples?: number
   /** Button label for the scan action. */
   actionLabel?: string
   /** Auto-start the camera on mount (login uses this for a fast path). */
   autoStart?: boolean
+  /**
+   * When true, also grab a small JPEG snapshot of the live frame and pass it to
+   * `onCapture`. Used by the LOGIN flow so an administrator can later confirm
+   * who actually signed in. Enrollment leaves this off — it only needs the
+   * numeric descriptor.
+   */
+  captureSelfie?: boolean
+}
+
+/**
+ * Grab a small JPEG snapshot of the current video frame. Downscaled to keep the
+ * stored image tiny (a login thumbnail, not a high-res photo). Returns undefined
+ * if the frame can't be read.
+ */
+function grabSelfieFrame(video: HTMLVideoElement): string | undefined {
+  try {
+    const vw = video.videoWidth
+    const vh = video.videoHeight
+    if (!vw || !vh) return undefined
+    const maxW = 320
+    const scale = Math.min(1, maxW / vw)
+    const canvas = document.createElement("canvas")
+    canvas.width = Math.round(vw * scale)
+    canvas.height = Math.round(vh * scale)
+    const ctx = canvas.getContext("2d")
+    if (!ctx) return undefined
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
+    return canvas.toDataURL("image/jpeg", 0.7)
+  } catch {
+    return undefined
+  }
 }
 
 /**
@@ -43,6 +75,7 @@ export function FaceCapture({
   samples = 1,
   actionLabel = "Scan face",
   autoStart = false,
+  captureSelfie = false,
 }: FaceCaptureProps) {
   const videoRef = useRef<HTMLVideoElement>(null)
   const streamRef = useRef<MediaStream | null>(null)
@@ -137,10 +170,14 @@ export function FaceCapture({
         if (i < samples - 1) await new Promise((r) => setTimeout(r, 400))
       }
 
+      // For the login flow, grab a single live-frame snapshot while the camera
+      // is still running so the admin audit trail can show who signed in.
+      const selfie = captureSelfie && videoRef.current ? grabSelfieFrame(videoRef.current) : undefined
+
       // For multi-sample enrollment send all; for single just the one.
       let lastError: string | undefined
       for (const d of collected) {
-        const res = await onCapture(d)
+        const res = await onCapture(d, selfie)
         if (res && res.ok === false) lastError = res.error
       }
       if (lastError) {
@@ -170,7 +207,7 @@ export function FaceCapture({
       busyRef.current = false
       setProgress(0)
     }
-  }, [onCapture, samples, stopCamera])
+  }, [onCapture, samples, stopCamera, captureSelfie])
 
   const live = phase === "ready" || phase === "scanning"
 

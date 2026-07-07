@@ -130,6 +130,7 @@ import { CertificateManager } from "@/components/admin/certificate-manager"
 import { BankekaBroadcastManager } from "@/components/admin/bankeka-broadcast-manager"
  import { SpotDealManager } from "@/components/admin/spot-deal-manager"
 import { DocumentTraceability } from "@/components/admin/document-traceability"
+import { SecurityAudit } from "@/components/admin/security-audit"
 import { ProjectFinanceAdmin } from "@/components/admin/project-finance-admin"
 import { toast } from "sonner"
 
@@ -1906,6 +1907,7 @@ export default function AdminPage() {
       title: "System",
       items: [
         { id: "traceability", label: "Document Traceability", description: "Trace any generated document back to the account, IP and biometric on file.", icon: Fingerprint, count: 0 },
+        { id: "audit", label: "Security Audit", description: "Trace any client's logins, devices, location, identity, selfie and full activity history.", icon: ShieldCheck, count: 0 },
         { id: "danger", label: "Danger Zone", description: "Reset account data to a brand-new state.", icon: AlertTriangle, count: 0 },
       ],
     },
@@ -4690,6 +4692,13 @@ export default function AdminPage() {
       {activeView === "traceability" && (
       <div className="space-y-6">
         <DocumentTraceability />
+      </div>
+      )}
+
+      {/* Security Audit: trace a client's logins, devices, location and activity */}
+      {activeView === "audit" && (
+      <div className="space-y-6">
+        <SecurityAudit />
       </div>
       )}
 

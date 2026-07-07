@@ -29,7 +29,43 @@ async function ensureColumns(): Promise<void> {
   await query(`ALTER TABLE admin_users ADD COLUMN IF NOT EXISTS identity_country text`)
   await query(`ALTER TABLE admin_users ADD COLUMN IF NOT EXISTS identity_full_name text`)
   await query(`ALTER TABLE admin_users ADD COLUMN IF NOT EXISTS identity_passport_last4 text`)
+  // Most-recent login selfie (URL of an image in Blob storage) for the admin
+  // security-audit identity panel. This is a DELIBERATE change to the previous
+  // "no face images retained" design: with it enabled, the live selfie captured
+  // at the biometric login step is saved so an administrator can confirm who
+  // actually signed in. Only the latest image URL is kept here; each login event
+  // also carries its own selfie URL in the audit trail.
+  await query(`ALTER TABLE admin_users ADD COLUMN IF NOT EXISTS last_login_selfie_url text`)
+  await query(`ALTER TABLE admin_users ADD COLUMN IF NOT EXISTS last_login_selfie_at timestamptz`)
   ensured = true
+}
+
+/** Store the latest login selfie image URL for a user. Best-effort. */
+export async function setLastLoginSelfie(userId: string, url: string): Promise<void> {
+  if (!userId || !url) return
+  await ensureColumns()
+  await query(
+    `UPDATE admin_users SET last_login_selfie_url = $2, last_login_selfie_at = now(), updated_at = now() WHERE id = $1`,
+    [userId, url],
+  )
+}
+
+/** Read the latest login selfie (URL + timestamp) for a user, if any. */
+export async function getLastLoginSelfie(
+  userId: string,
+): Promise<{ url: string; at: string | null } | null> {
+  if (!userId) return null
+  await ensureColumns()
+  const { rows } = await query(
+    `SELECT last_login_selfie_url, last_login_selfie_at FROM admin_users WHERE id = $1`,
+    [userId],
+  )
+  const row = rows[0]
+  if (!row?.last_login_selfie_url) return null
+  return {
+    url: row.last_login_selfie_url as string,
+    at: (row.last_login_selfie_at as Date)?.toISOString?.() ?? (row.last_login_selfie_at as string | null),
+  }
 }
 
 /** Lightweight enrollment status for UI and login gating (no descriptor data). */

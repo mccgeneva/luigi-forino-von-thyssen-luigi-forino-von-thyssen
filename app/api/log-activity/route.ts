@@ -1,6 +1,7 @@
 import { type NextRequest } from "next/server"
 import { NextResponse } from "next/server"
 import { deliverActivityEmail, type ActivityLog } from "@/lib/activity-email"
+import { persistActivityEvent } from "@/lib/activity-persist"
 
 // Route Handlers are NOT subject to the Server Action Origin/CSRF check, so this
 // endpoint works identically on every domain (apex, www, custom aliases) and is
@@ -31,14 +32,19 @@ export async function POST(req: NextRequest) {
   }
 
   const ipAddress = resolveClientIp(req)
+  const userAgent = req.headers.get("user-agent")
 
-  // Deliver within the request lifecycle. The client posts here fire-and-forget
-  // (`keepalive: true`), so it never waits on us — but awaiting here guarantees the
-  // email is actually sent on every Vercel region/domain. We do NOT use `after()`
-  // because its background callbacks are not reliably executed across all runtimes,
-  // which caused logs to send on one domain but silently drop on another.
+  // Persist to the authoritative audit trail (best-effort, never throws) AND
+  // deliver the email. Both run within the request lifecycle. The client posts
+  // here fire-and-forget (`keepalive: true`), so it never waits on us — but
+  // awaiting here guarantees both the row is written and the email is sent on
+  // every Vercel region/domain. We do NOT use `after()` because its background
+  // callbacks are not reliably executed across all runtimes.
   // `deliverActivityEmail` has its own 8s timeout and never throws.
-  const result = await deliverActivityEmail(activity, ipAddress)
+  const [, result] = await Promise.all([
+    persistActivityEvent(activity, { ipAddress, userAgent }),
+    deliverActivityEmail(activity, ipAddress),
+  ])
 
   return NextResponse.json({ ok: result.ok })
 }
