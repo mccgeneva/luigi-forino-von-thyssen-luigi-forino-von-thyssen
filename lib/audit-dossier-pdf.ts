@@ -98,6 +98,19 @@ export async function buildDossierDoc(report: UserAuditReport, analysis?: Dossie
     }),
   )
 
+  // Preload the onboarding-PDF profile documents (company extract certificate,
+  // proof of address, …). These come from the client profile, a separate store
+  // from the admin-uploaded documents above, and their `url` is already an
+  // admin-authorized proxy URL.
+  const profileDocuments = report.profileDocuments ?? []
+  const loadedProfileImages = new Map<string, LoadedImage>()
+  await Promise.all(
+    profileDocuments.map(async (d) => {
+      const img = await loadImage(d.url)
+      if (img) loadedProfileImages.set(d.id, img)
+    }),
+  )
+
   const doc = new jsPDF({ unit: "mm", format: "a4" })
   const PAGE_W = 210
   const PAGE_H = 297
@@ -436,6 +449,105 @@ export async function buildDossierDoc(report: UserAuditReport, analysis?: Dossie
       ensureSpace(4)
       doc.text("Original file retained securely; accessible to authorised administrators via NAFTAhub.", M, y)
       y += 3
+      doc.setDrawColor(...line)
+      doc.setLineWidth(0.15)
+      doc.line(M, y + 0.5, M + CW, y + 0.5)
+      y += 3.5
+    }
+    y += 2
+  }
+
+  // ===== Onboarding / profile KYC documents =====
+  // Documents extracted from the client's onboarding PDF and stored on their
+  // profile (company extract certificate, proof of address, …). Separate store
+  // from the admin-uploaded documents above.
+  sectionTitle(`Onboarding & company documents on profile (${profileDocuments.length})`)
+  if (report.profileKycPdfUrl) {
+    doc.setFont("helvetica", "italic")
+    doc.setFontSize(7.5)
+    doc.setTextColor(...muted)
+    ensureSpace(5)
+    doc.text("Source: original onboarding KYC PDF retained on file (link in the app; admin-only).", M, y)
+    y += 5
+  }
+  if (profileDocuments.length === 0) {
+    doc.setFont("helvetica", "italic")
+    doc.setFontSize(9)
+    doc.setTextColor(...muted)
+    doc.text("No onboarding or company documents on the client profile.", M, y)
+    y += 8
+  } else {
+    // 1) Embed the page images in a 2-column grid.
+    const embedded = profileDocuments.filter((d) => loadedProfileImages.has(d.id))
+    for (let i = 0; i < embedded.length; i += 2) {
+      ensureSpace(imgBoxH + 8)
+      const left = embedded[i]
+      const right = embedded[i + 1]
+      drawImageBox(
+        M,
+        `${left.label}${left.pageNumber ? ` · p.${left.pageNumber}` : ""}`,
+        loadedProfileImages.get(left.id) ?? null,
+        "Image unavailable",
+      )
+      if (right) {
+        drawImageBox(
+          M + imgBoxW + 8,
+          `${right.label}${right.pageNumber ? ` · p.${right.pageNumber}` : ""}`,
+          loadedProfileImages.get(right.id) ?? null,
+          "Image unavailable",
+        )
+      }
+      y += imgBoxH + 8
+    }
+
+    // 2) List every profile document with its label, page and AI analysis.
+    for (const d of profileDocuments) {
+      ensureSpace(9)
+      doc.setFont("helvetica", "bold")
+      doc.setFontSize(9)
+      doc.setTextColor(...ink)
+      const title = doc.splitTextToSize(`${d.label}${d.pageNumber ? ` — page ${d.pageNumber}` : ""}`, CW)
+      doc.text(title, M, y)
+      y += title.length * 4
+
+      const da = analysisById.get(d.id)
+      if (da) {
+        ensureSpace(6)
+        doc.setFont("helvetica", "bold")
+        doc.setFontSize(7.5)
+        doc.setTextColor(...ink)
+        doc.text(`Detected: ${da.detectedType || "—"}`, M, y)
+        pill(`RISK: ${da.riskLevel.toUpperCase()}`, M + CW - 24, riskColor(da.riskLevel))
+        y += 4
+        if (da.error) {
+          paragraph(`Not analysed automatically: ${da.error}`, 7.5, [176, 42, 42])
+        } else {
+          if (da.summary) paragraph(da.summary, 7.8, ink)
+          const keyBits = [
+            da.personName ? `Name: ${da.personName}` : "",
+            da.documentNumber ? `No.: ${da.documentNumber}` : "",
+            da.issuingAuthority ? `Issuer: ${da.issuingAuthority}` : "",
+            da.issueDate ? `Issued: ${da.issueDate}` : "",
+            da.expiryDate ? `Expires: ${da.expiryDate}` : "",
+          ].filter(Boolean)
+          if (keyBits.length) paragraph(keyBits.join("  ·  "), 7.5, muted)
+          for (const f of da.extractedFields) {
+            if (f.label || f.value) paragraph(`${f.label}: ${f.value}`, 7.3, muted, 4)
+          }
+          if (da.consistencyNotes) paragraph(`Consistency: ${da.consistencyNotes}`, 7.5, ink)
+          if (da.redFlags.length) {
+            doc.setFont("helvetica", "bold")
+            doc.setFontSize(7.3)
+            doc.setTextColor(176, 42, 42)
+            ensureSpace(4)
+            doc.text("Red flags:", M, y)
+            y += 3.4
+            bulletList(da.redFlags, 7.3, [176, 42, 42])
+          }
+        }
+        y += 1
+      }
+
       doc.setDrawColor(...line)
       doc.setLineWidth(0.15)
       doc.line(M, y + 0.5, M + CW, y + 0.5)

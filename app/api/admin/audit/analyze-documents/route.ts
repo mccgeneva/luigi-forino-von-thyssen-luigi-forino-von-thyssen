@@ -2,8 +2,10 @@ import { type NextRequest, NextResponse } from "next/server"
 import { ADMIN_PASSCODE } from "@/lib/admin-config"
 import { listKycDocuments } from "@/lib/kyc-documents-db"
 import { getIdentityStatus, getAdminIdentityDetails } from "@/lib/biometric-db"
+import { getDynamicUserById } from "@/lib/admin-users-db"
+import { profileDocId } from "@/lib/security-audit-service"
 import { analyzeDocumentCompliance, synthesizeKycVerdict } from "@/lib/kyc-analyze"
-import type { DocComplianceAnalysis, DossierAnalysis, UploadedKycDocument } from "@/lib/kyc-types"
+import type { DocComplianceAnalysis, DossierAnalysis, KycDocument, UploadedKycDocument } from "@/lib/kyc-types"
 
 // Admin Security Audit — AI analysis of every KYC document on file, used to
 // enrich the "Generate report" dossier. Reads each document (image or PDF)
@@ -18,7 +20,9 @@ export const dynamic = "force-dynamic"
 export const maxDuration = 300
 
 // Hard cap so an unusually large pack can't run indefinitely / blow the budget.
-const MAX_DOCS = 16
+// Covers the retained passport image + admin-uploaded docs + onboarding-PDF
+// profile documents (company extract, proof of address, …).
+const MAX_DOCS = 24
 // Small concurrency: fast enough, but avoids hammering the gateway rate limits.
 const CONCURRENCY = 3
 
@@ -53,11 +57,13 @@ export async function POST(req: NextRequest) {
   }
 
   try {
-    const [docs, identity, adminIdentity] = await Promise.all([
+    const [docs, identity, adminIdentity, user] = await Promise.all([
       listKycDocuments(userId).catch(() => [] as UploadedKycDocument[]),
       getIdentityStatus(userId),
       getAdminIdentityDetails(userId),
+      getDynamicUserById(userId).catch(() => undefined),
     ])
+    const profileDocs = (user?.profile?.kycDocuments ?? []) as KycDocument[]
 
     const identityCtx = {
       fullName: identity.fullName || "",
@@ -86,6 +92,19 @@ export async function POST(req: NextRequest) {
         pathname: d.pathname,
         contentType: d.contentType,
         isImage: d.isImage,
+      })
+    }
+    // Onboarding-PDF documents stored on the client profile (company extract
+    // certificate, proof of address, …) — rendered page images in Blob.
+    for (const d of profileDocs) {
+      if (!d.pathname) continue
+      targets.push({
+        id: profileDocId(d.pathname),
+        label: d.label || d.type,
+        filename: `page ${d.pageNumber || "?"}`,
+        pathname: d.pathname,
+        contentType: "image/jpeg",
+        isImage: true,
       })
     }
 
