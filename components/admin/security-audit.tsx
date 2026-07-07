@@ -40,12 +40,7 @@ import {
   Activity,
 } from "lucide-react"
 import { ADMIN_PASSCODE } from "@/lib/admin-config"
-import {
-  getAuditOverview,
-  getUserAudit,
-  type AuditOverview,
-  type UserAuditReport,
-} from "@/app/actions/security-audit"
+import type { AuditOverview, UserAuditReport } from "@/lib/security-audit-service"
 
 function fmtWhen(iso: string | null): string {
   if (!iso) return "—"
@@ -101,9 +96,15 @@ export function SecurityAudit() {
     setLoadingOverview(true)
     setOverviewError("")
     try {
-      const res = await getAuditOverview(ADMIN_PASSCODE)
-      if (res.ok && res.data) setOverview(res.data)
-      else setOverviewError(res.error || "Could not load the audit overview.")
+      // Route Handler, not a Server Action — Server Actions are silently
+      // rejected on this app's production domains (see the route for details).
+      const res = await fetch(`/api/admin/audit/overview?p=${encodeURIComponent(ADMIN_PASSCODE)}`, {
+        headers: { "x-admin-passcode": ADMIN_PASSCODE },
+        cache: "no-store",
+      })
+      const json = (await res.json().catch(() => null)) as { ok: boolean; data?: AuditOverview; error?: string } | null
+      if (res.ok && json?.ok && json.data) setOverview(json.data)
+      else setOverviewError(json?.error || "Could not load the audit overview.")
     } catch {
       setOverviewError("Could not load the audit overview.")
     } finally {
@@ -119,13 +120,18 @@ export function SecurityAudit() {
     setLoadingReport(true)
     setReportError("")
     try {
-      const res = await getUserAudit(ADMIN_PASSCODE, userId, {
-        category: cat === "All" ? undefined : cat,
+      // Route Handler, not a Server Action (same domain-compatibility reason).
+      const params = new URLSearchParams({ p: ADMIN_PASSCODE, userId })
+      if (cat && cat !== "All") params.set("category", cat)
+      const res = await fetch(`/api/admin/audit/user?${params.toString()}`, {
+        headers: { "x-admin-passcode": ADMIN_PASSCODE },
+        cache: "no-store",
       })
-      if (res.ok && res.data) setReport(res.data)
+      const json = (await res.json().catch(() => null)) as { ok: boolean; data?: UserAuditReport; error?: string } | null
+      if (res.ok && json?.ok && json.data) setReport(json.data)
       else {
         setReport(null)
-        setReportError(res.error || "Could not load this account's audit.")
+        setReportError(json?.error || "Could not load this account's audit.")
       }
     } catch {
       setReport(null)
