@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server"
 import { del } from "@vercel/blob"
-import { ADMIN_PASSCODE } from "@/lib/admin-config"
+import { adminActionAuthorized } from "@/lib/admin-auth"
 import { getDynamicUserById } from "@/lib/admin-users-db"
 import { addKycDocument, listKycDocuments, deleteKycDocument } from "@/lib/kyc-documents-db"
 import { normalizeUploadedKycType } from "@/lib/kyc-types"
@@ -20,15 +20,15 @@ export const dynamic = "force-dynamic"
 // the existing token route /api/kyc/blob-upload (also passcode-gated). These
 // handlers only manage the authoritative audit-trail rows in Neon.
 
-function authed(req: Request): boolean {
+async function authed(req: Request): Promise<boolean> {
   const url = new URL(req.url)
   const passcode = req.headers.get("x-admin-passcode") || url.searchParams.get("p") || ""
-  return String(passcode) === ADMIN_PASSCODE
+  return adminActionAuthorized(passcode)
 }
 
 /** GET ?userId= → list a client's uploaded KYC documents. */
 export async function GET(req: Request) {
-  if (!authed(req)) {
+  if (!(await authed(req))) {
     return NextResponse.json({ ok: false, error: "Administrator authorization failed." }, { status: 401 })
   }
   const userId = new URL(req.url).searchParams.get("userId") || ""
@@ -46,7 +46,7 @@ export async function GET(req: Request) {
 
 /** POST → record a freshly-uploaded document (after the browser→Blob upload). */
 export async function POST(req: Request) {
-  if (!authed(req)) {
+  if (!(await authed(req))) {
     return NextResponse.json({ ok: false, error: "Administrator authorization failed." }, { status: 401 })
   }
   const body = (await req.json().catch(() => null)) as {
@@ -102,7 +102,7 @@ export async function POST(req: Request) {
 
 /** DELETE ?id= → remove a document row and its Blob file. */
 export async function DELETE(req: Request) {
-  if (!authed(req)) {
+  if (!(await authed(req))) {
     return NextResponse.json({ ok: false, error: "Administrator authorization failed." }, { status: 401 })
   }
   const id = new URL(req.url).searchParams.get("id") || ""

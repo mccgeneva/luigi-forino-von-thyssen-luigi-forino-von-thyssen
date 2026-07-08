@@ -1,6 +1,6 @@
 "use server"
 
-import { ADMIN_PASSCODE } from "@/lib/admin-config"
+import { adminActionAuthorized } from "@/lib/admin-auth"
 import { resolveCurrentSession } from "@/lib/session-user"
 import { listSelectableClients, type SelectableClient } from "@/app/actions/admin-users"
 import {
@@ -105,7 +105,7 @@ export async function listMySwiftRoutingRequests(): Promise<SwiftRoutingRequest[
 export async function listAllSwiftRoutingRequestsAdmin(
   passcode: string,
 ): Promise<{ ok: true; requests: SwiftRoutingRequest[] } | { ok: false; error: string }> {
-  if (String(passcode) !== ADMIN_PASSCODE) return { ok: false, error: "Administrator authorization failed." }
+  if (!(await adminActionAuthorized(passcode))) return { ok: false, error: "Administrator authorization failed." }
   try {
     return { ok: true, requests: await listAllSwiftRoutingRequests() }
   } catch (err) {
@@ -118,7 +118,7 @@ export async function listAllSwiftRoutingRequestsAdmin(
 export async function listSwiftBeneficiaries(
   passcode: string,
 ): Promise<{ ok: true; clients: SelectableClient[] } | { ok: false; error: string }> {
-  if (String(passcode) !== ADMIN_PASSCODE) return { ok: false, error: "Administrator authorization failed." }
+  if (!(await adminActionAuthorized(passcode))) return { ok: false, error: "Administrator authorization failed." }
   try {
     const clients = await listSelectableClients(passcode)
     return { ok: true, clients }
@@ -137,7 +137,7 @@ export async function approveSwiftRoutingAdmin(
   id: string,
   beneficiary: { userId: string; email: string; name: string },
 ): Promise<{ ok: true; request: SwiftRoutingRequest; emailed: boolean } | { ok: false; error: string }> {
-  if (String(passcode) !== ADMIN_PASSCODE) return { ok: false, error: "Administrator authorization failed." }
+  if (!(await adminActionAuthorized(passcode))) return { ok: false, error: "Administrator authorization failed." }
   if (!beneficiary.email) return { ok: false, error: "Select a beneficiary before routing." }
 
   const session = await resolveCurrentSession()
@@ -165,7 +165,7 @@ export async function declineSwiftRoutingAdmin(
   id: string,
   reason: string,
 ): Promise<{ ok: true; request: SwiftRoutingRequest } | { ok: false; error: string }> {
-  if (String(passcode) !== ADMIN_PASSCODE) return { ok: false, error: "Administrator authorization failed." }
+  if (!(await adminActionAuthorized(passcode))) return { ok: false, error: "Administrator authorization failed." }
 
   const session = await resolveCurrentSession()
   const decidedBy = session?.profile.fullName || "Administrator"

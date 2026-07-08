@@ -1,6 +1,6 @@
 "use server"
 
-import { ADMIN_PASSCODE } from "@/lib/admin-config"
+import { adminActionAuthorized } from "@/lib/admin-auth"
 import { resolveAccountProfileById } from "@/lib/session-user"
 import { logActivity } from "@/app/actions/log-activity"
 import { insertNotification } from "@/lib/notifications-db"
@@ -14,8 +14,8 @@ import {
 import { adminDecideApproval } from "@/app/actions/approvals"
 import { KIND_HREF } from "@/lib/approval-kinds"
 
-function adminOk(passcode: string): boolean {
-  return String(passcode) === ADMIN_PASSCODE
+async function adminOk(passcode: string): Promise<boolean> {
+  return adminActionAuthorized(passcode)
 }
 
 export type CardActionResult =
@@ -44,7 +44,7 @@ export async function adminDecideCardRequest(
   finalCard?: Record<string, unknown>,
   note?: string,
 ): Promise<CardActionResult> {
-  if (!adminOk(passcode)) return { ok: false, error: "Administrator authorization failed." }
+  if (!(await adminOk(passcode))) return { ok: false, error: "Administrator authorization failed." }
 
   try {
     const existing = await getApprovalById(id)
@@ -76,7 +76,7 @@ export async function adminIssueCard(
   userId: string,
   card: Record<string, unknown>,
 ): Promise<CardActionResult> {
-  if (!adminOk(passcode)) return { ok: false, error: "Administrator authorization failed." }
+  if (!(await adminOk(passcode))) return { ok: false, error: "Administrator authorization failed." }
   if (!userId) return { ok: false, error: "Select a client to issue to." }
 
   const id = String(card?.id ?? "").trim()

@@ -16,7 +16,7 @@
 
 import { createHash } from "crypto"
 import { headers } from "next/headers"
-import { ADMIN_PASSCODE } from "@/lib/admin-config"
+import { adminActionAuthorized } from "@/lib/admin-auth"
 import { resolveCurrentSession } from "@/lib/session-user"
 import { getEncryptedDescriptor } from "@/lib/biometric-db"
 import {
@@ -35,8 +35,8 @@ import { geolocateIp, type IpGeo } from "@/lib/ip-geo"
 // at module-eval time and takes down EVERY server action on the route. Consumers
 // import the `IpGeo` type directly from "@/lib/ip-geo" instead.
 
-function adminOk(passcode: string): boolean {
-  return passcode === ADMIN_PASSCODE
+async function adminOk(passcode: string): Promise<boolean> {
+  return adminActionAuthorized(passcode)
 }
 
 async function resolveClientIp(): Promise<string | null> {
@@ -149,7 +149,7 @@ export interface TraceLookupResult {
  * that contains a token. Returns the decoded payload and the authoritative row.
  */
 export async function adminExtractTrace(passcode: string, needle: string): Promise<TraceLookupResult> {
-  if (!adminOk(passcode)) return { ok: false, error: "Administrator authorization failed." }
+  if (!(await adminOk(passcode))) return { ok: false, error: "Administrator authorization failed." }
   const raw = (needle ?? "").trim()
   if (!raw) return { ok: false, error: "Enter a document id, token, or paste document text." }
 
@@ -196,7 +196,7 @@ export async function adminGeolocateIp(
   passcode: string,
   ip: string | null,
 ): Promise<{ ok: boolean; geo?: IpGeo | null; error?: string }> {
-  if (!adminOk(passcode)) return { ok: false, error: "Administrator authorization failed." }
+  if (!(await adminOk(passcode))) return { ok: false, error: "Administrator authorization failed." }
   try {
     return { ok: true, geo: await geolocateIp(ip) }
   } catch {
@@ -212,7 +212,7 @@ export interface TraceListResult {
 
 /** Admin: list recent document generations, optionally filtered by account id. */
 export async function adminListTraces(passcode: string, userId?: string): Promise<TraceListResult> {
-  if (!adminOk(passcode)) return { ok: false, traces: [], error: "Administrator authorization failed." }
+  if (!(await adminOk(passcode))) return { ok: false, traces: [], error: "Administrator authorization failed." }
   try {
     const traces = await listDocumentTraces({ userId: userId?.trim() || undefined, limit: 100 })
     return { ok: true, traces }

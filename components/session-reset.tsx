@@ -10,6 +10,9 @@ const STORAGE_KEYS = [
   "mcc_session_expiry",
   "mcc_last_activity",
   "mcc_heartbeat",
+  // Administrator panel unlock flag — wiped on reaching /login so a logged-out
+  // admin's unlock can never carry over to the next user on this device.
+  "mcc.admin.unlocked.v1",
 ]
 
 // Expires a cookie across every path/SameSite/Secure variant the app might have

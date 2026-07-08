@@ -1,5 +1,5 @@
 import { type NextRequest, NextResponse } from "next/server"
-import { ADMIN_PASSCODE } from "@/lib/admin-config"
+import { adminActionAuthorized } from "@/lib/admin-auth"
 import { listKycDocuments } from "@/lib/kyc-documents-db"
 import { getIdentityStatus, getAdminIdentityDetails } from "@/lib/biometric-db"
 import { getDynamicUserById } from "@/lib/admin-users-db"
@@ -41,7 +41,7 @@ async function mapWithConcurrency<T, R>(items: T[], limit: number, fn: (item: T)
 
 export async function POST(req: NextRequest) {
   const passcode = req.headers.get("x-admin-passcode") ?? req.nextUrl.searchParams.get("p") ?? ""
-  if (String(passcode) !== ADMIN_PASSCODE) {
+  if (!(await adminActionAuthorized(passcode))) {
     return NextResponse.json({ ok: false, error: "Administrator authorization failed." }, { status: 401 })
   }
 

@@ -18,7 +18,7 @@
 
 import { resolveCurrentSession } from "@/lib/session-user"
 import { getDynamicUserById, getDynamicUserByEmail, listDynamicUsers } from "@/lib/admin-users-db"
-import { ADMIN_PASSCODE } from "@/lib/admin-config"
+import { adminActionAuthorized } from "@/lib/admin-auth"
 import { logActivity } from "@/app/actions/log-activity"
 import {
   insertMessage,
@@ -340,8 +340,8 @@ export async function findRecipientByEmail(email: string): Promise<FindRecipient
 
 // --- Administrator (passcode-gated) actions --------------------------------
 
-function adminOk(passcode: string): boolean {
-  return String(passcode) === ADMIN_PASSCODE
+async function adminOk(passcode: string): Promise<boolean> {
+  return adminActionAuthorized(passcode)
 }
 
 export type BroadcastResult = { ok: true; delivered: number } | { ok: false; error: string }
@@ -356,7 +356,7 @@ export async function adminBroadcast(
   target: "all" | string[],
   body: string,
 ): Promise<BroadcastResult> {
-  if (!adminOk(passcode)) return { ok: false, error: "Administrator authorization failed." }
+  if (!(await adminOk(passcode))) return { ok: false, error: "Administrator authorization failed." }
   const trimmed = (body ?? "").trim()
   if (!trimmed) return { ok: false, error: "Message cannot be empty." }
   if (trimmed.length > MAX_BODY) return { ok: false, error: "Message is too long." }
@@ -406,7 +406,7 @@ export async function adminBroadcast(
 
 /** Admin inbox: conversations where the administration participant is involved. */
 export async function adminListConversations(passcode: string): Promise<BankekaConversation[]> {
-  if (!adminOk(passcode)) return []
+  if (!(await adminOk(passcode))) return []
   try {
     await markAllDelivered(BANKEKA_ADMIN_ID)
     return await buildConversations(BANKEKA_ADMIN_ID, resolveParticipant)
@@ -417,7 +417,7 @@ export async function adminListConversations(passcode: string): Promise<BankekaC
 
 /** Admin opens a thread with a specific client; marks incoming as read. */
 export async function adminGetThread(passcode: string, otherId: string): Promise<ThreadResult | null> {
-  if (!adminOk(passcode) || !otherId) return null
+  if (!(await adminOk(passcode)) || !otherId) return null
   try {
     await markThreadRead(BANKEKA_ADMIN_ID, otherId)
     const rows = await getThreadMessages(BANKEKA_ADMIN_ID, otherId)
@@ -430,7 +430,7 @@ export async function adminGetThread(passcode: string, otherId: string): Promise
 
 /** Admin replies to a client inside an existing admin thread. */
 export async function adminReply(passcode: string, otherId: string, body: string): Promise<SendResult> {
-  if (!adminOk(passcode)) return { ok: false, error: "Administrator authorization failed." }
+  if (!(await adminOk(passcode))) return { ok: false, error: "Administrator authorization failed." }
   const trimmed = (body ?? "").trim()
   if (!trimmed) return { ok: false, error: "Message cannot be empty." }
   if (trimmed.length > MAX_BODY) return { ok: false, error: "Message is too long." }
@@ -456,7 +456,7 @@ export async function adminReply(passcode: string, otherId: string, body: string
  *  it from the admin console view; the client still sees it and the compliance
  *  record is untouched. */
 export async function adminDeleteMessage(passcode: string, messageId: string): Promise<DeleteResult> {
-  if (!adminOk(passcode)) return { ok: false, error: "Administrator authorization failed." }
+  if (!(await adminOk(passcode))) return { ok: false, error: "Administrator authorization failed." }
   if (!messageId) return { ok: false, error: "Invalid message." }
   try {
     const ok = await hideMessageForUser(BANKEKA_ADMIN_ID, messageId)
@@ -469,7 +469,7 @@ export async function adminDeleteMessage(passcode: string, messageId: string): P
 
 /** Unread count for the administration inbox (admin console badge). */
 export async function adminUnreadCount(passcode: string): Promise<number> {
-  if (!adminOk(passcode)) return 0
+  if (!(await adminOk(passcode))) return 0
   try {
     await markAllDelivered(BANKEKA_ADMIN_ID)
     return await getUnreadCount(BANKEKA_ADMIN_ID)
@@ -480,7 +480,7 @@ export async function adminUnreadCount(passcode: string): Promise<number> {
 
 /** The compliance audit trail (metadata only — never message bodies). */
 export async function adminListAudit(passcode: string): Promise<BankekaAuditEntry[]> {
-  if (!adminOk(passcode)) return []
+  if (!(await adminOk(passcode))) return []
   try {
     const rows = await listAudit(300)
     return rows.map((r) => ({

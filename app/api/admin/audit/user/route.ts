@@ -1,5 +1,5 @@
 import { type NextRequest, NextResponse } from "next/server"
-import { ADMIN_PASSCODE } from "@/lib/admin-config"
+import { adminActionAuthorized } from "@/lib/admin-auth"
 import { buildUserAudit } from "@/lib/security-audit-service"
 
 // Admin Security Audit — full per-account report (identity, login selfie,
@@ -11,7 +11,7 @@ export const dynamic = "force-dynamic"
 
 export async function GET(req: NextRequest) {
   const passcode = req.headers.get("x-admin-passcode") ?? req.nextUrl.searchParams.get("p") ?? ""
-  if (String(passcode) !== ADMIN_PASSCODE) {
+  if (!(await adminActionAuthorized(passcode))) {
     return NextResponse.json({ ok: false, error: "Administrator authorization failed." }, { status: 401 })
   }
 

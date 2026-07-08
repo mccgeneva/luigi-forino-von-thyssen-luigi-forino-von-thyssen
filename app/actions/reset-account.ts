@@ -1,6 +1,6 @@
 "use server"
 
-import { ADMIN_PASSCODE } from "@/lib/admin-config"
+import { adminActionAuthorized } from "@/lib/admin-auth"
 import { query } from "@/lib/db"
 import { getDynamicUserById } from "@/lib/admin-users-db"
 import { resolveCurrentSession } from "@/lib/session-user"
@@ -86,7 +86,7 @@ export async function resetServerAccountDataForUser(
   passcode: string,
   targetUserId: string,
 ): Promise<ResetAccountResult> {
-  if (String(passcode) !== ADMIN_PASSCODE) {
+  if (!(await adminActionAuthorized(passcode))) {
     return { ok: false, error: "Administrator authorization failed." }
   }
 

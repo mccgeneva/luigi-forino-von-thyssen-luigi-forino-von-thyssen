@@ -103,6 +103,7 @@ import {
   type LeverageRequest,
 } from "@/lib/leverage-requests-store"
 import { ADMIN_PASSCODE, ADMIN_SESSION_KEY } from "@/lib/admin-config"
+import { verifyAdminGate, confirmAdminSession } from "@/app/actions/admin-session"
 import { resetServerAccountDataForUser } from "@/app/actions/reset-account"
 import { listUsers, type AdminUserView } from "@/app/actions/admin-users"
 import { AdminGatewaySection } from "@/components/dashboard/admin-gateway-section"
@@ -292,14 +293,38 @@ export default function AdminPage() {
   const [resetAccountsLoading, setResetAccountsLoading] = useState(false)
   const [resetTargetId, setResetTargetId] = useState<string>("")
 
-  // Restore unlock state for the current tab session.
+  // Restore unlock state for the current tab session — but only after the
+  // server re-confirms this session is an admin. A persisted flag alone (e.g.
+  // left in sessionStorage by a previous user who logged out on this device)
+  // can never unlock the panel; the server role check is authoritative.
   useEffect(() => {
+    let cancelled = false
+    let flagged = false
     try {
-      if (window.sessionStorage.getItem(ADMIN_SESSION_KEY) === "true") {
-        setUnlocked(true)
-      }
+      flagged = window.sessionStorage.getItem(ADMIN_SESSION_KEY) === "true"
     } catch {
-      // ignore
+      flagged = false
+    }
+    if (!flagged) return
+    ;(async () => {
+      try {
+        const stillAdmin = await confirmAdminSession()
+        if (cancelled) return
+        if (stillAdmin) {
+          setUnlocked(true)
+        } else {
+          try {
+            window.sessionStorage.removeItem(ADMIN_SESSION_KEY)
+          } catch {
+            // ignore
+          }
+        }
+      } catch {
+        // On error, stay locked and require an explicit unlock.
+      }
+    })()
+    return () => {
+      cancelled = true
     }
   }, [])
 
@@ -409,18 +434,35 @@ export default function AdminPage() {
     [dbPending],
   )
 
-  const handleUnlock = () => {
-    if (passcode.trim() === ADMIN_PASSCODE) {
-      setUnlocked(true)
-      setGateError(null)
-      setPasscode("")
-      try {
-        window.sessionStorage.setItem(ADMIN_SESSION_KEY, "true")
-      } catch {
-        // ignore
+  const [gateChecking, setGateChecking] = useState(false)
+  const handleUnlock = async () => {
+    if (gateChecking) return
+    setGateChecking(true)
+    setGateError(null)
+    try {
+      // Authorization is decided on the SERVER: the caller must be an admin
+      // account AND present the correct PIN. The browser never compares the
+      // secret, so it cannot be bypassed by reading the bundle or setting a
+      // client flag.
+      const res = await verifyAdminGate(passcode.trim())
+      if (res.ok) {
+        setUnlocked(true)
+        setGateError(null)
+        setPasscode("")
+        try {
+          window.sessionStorage.setItem(ADMIN_SESSION_KEY, "true")
+        } catch {
+          // ignore
+        }
+      } else if (res.reason === "forbidden") {
+        setGateError("This account is not authorized to access the Administrator Panel.")
+      } else {
+        setGateError("Incorrect administrator passcode. Please try again.")
       }
-    } else {
-      setGateError("Incorrect administrator passcode. Please try again.")
+    } catch {
+      setGateError("Could not verify administrator access. Please try again.")
+    } finally {
+      setGateChecking(false)
     }
   }
 
