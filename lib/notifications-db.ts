@@ -75,6 +75,24 @@ export async function insertNotification(n: NewNotification): Promise<Notificati
   return rowToNotification(rows[0])
 }
 
+/**
+ * Insert a notification with a CALLER-SUPPLIED deterministic id, ignoring the
+ * write if that id already exists. This gives exactly-once delivery for events
+ * that a lazy reconciler may re-attempt on every page load (e.g. one monthly
+ * treasury-interest debit → one notification, never duplicated on reload).
+ * Returns true only when a NEW row was actually created.
+ */
+export async function insertNotificationOnce(id: string, n: NewNotification): Promise<boolean> {
+  await ensureTable()
+  const { rowCount } = await query(
+    `INSERT INTO user_notifications (id, user_id, tone, title, body, href)
+     VALUES ($1,$2,$3,$4,$5,$6)
+     ON CONFLICT (id) DO NOTHING`,
+    [id, n.userId, n.tone ?? "info", n.title, n.body, n.href ?? null],
+  )
+  return (rowCount ?? 0) > 0
+}
+
 export async function listNotificationsForUser(userId: string, limit = 30): Promise<NotificationRecord[]> {
   await ensureTable()
   const { rows } = await query(
