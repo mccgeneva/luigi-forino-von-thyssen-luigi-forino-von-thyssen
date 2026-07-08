@@ -21,18 +21,28 @@ import { SESSION_COOKIE, IMPERSONATION_COOKIE } from "@/lib/auth"
 import { verifyImpersonation } from "@/lib/session-token"
 import { getDynamicUserById, getDynamicUserBySessionToken } from "@/lib/admin-users-db"
 
-/** Historical values, used only as fallbacks when env vars are unset. */
-const DEFAULT_ADMIN_EMAILS = ["president@mccpetroli.com", "admin@mccgva.ch"]
+/**
+ * The two canonical administrator accounts. These are ALWAYS authorized — they
+ * form a baseline that cannot be accidentally removed by a mis-formatted
+ * ADMIN_EMAILS value. This is deliberate: locking the proprietor out of the
+ * admin panel via an env typo would be worse than the (already server-gated)
+ * cost of not being able to revoke them through env alone.
+ */
+const BASELINE_ADMIN_EMAILS = ["president@mccpetroli.com", "admin@mccgva.ch"]
 const DEFAULT_ADMIN_PIN = "270476"
 
-/** The configured admin email allowlist (lowercased), from ADMIN_EMAILS. */
+/**
+ * The admin email allowlist (lowercased): the baseline admins, PLUS any extra
+ * emails configured in ADMIN_EMAILS. Extra entries can add admins but cannot
+ * remove the baseline accounts.
+ */
 export function adminEmails(): string[] {
   const raw = process.env.ADMIN_EMAILS ?? ""
-  const list = raw
+  const extra = raw
     .split(",")
     .map((e) => e.trim().toLowerCase())
     .filter(Boolean)
-  return list.length ? list : DEFAULT_ADMIN_EMAILS
+  return Array.from(new Set([...BASELINE_ADMIN_EMAILS, ...extra]))
 }
 
 /** The configured admin PIN, from ADMIN_PIN. Server-only — never sent to client. */
