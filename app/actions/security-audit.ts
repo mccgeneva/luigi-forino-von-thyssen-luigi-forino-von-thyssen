@@ -11,7 +11,7 @@
 // shared service so there is a single source of truth.
 // ---------------------------------------------------------------------------
 
-import { ADMIN_PASSCODE } from "@/lib/admin-config"
+import { adminActionAuthorized } from "@/lib/admin-auth"
 import {
   buildAuditOverview,
   buildUserAudit,
@@ -21,15 +21,15 @@ import {
 
 export type { AuditActorView, AuditOverview, UserAuditReport } from "@/lib/security-audit-service"
 
-function ok(passcode: string): boolean {
-  return passcode === ADMIN_PASSCODE
+async function ok(passcode: string): Promise<boolean> {
+  return adminActionAuthorized(passcode)
 }
 
 /** Overview for the picker: active actors + the full account directory. */
 export async function getAuditOverview(
   passcode: string,
 ): Promise<{ ok: boolean; data?: AuditOverview; error?: string }> {
-  if (!ok(passcode)) return { ok: false, error: "Invalid admin passcode." }
+  if (!(await ok(passcode))) return { ok: false, error: "Invalid admin passcode." }
   try {
     return { ok: true, data: await buildAuditOverview() }
   } catch (err) {
@@ -44,7 +44,7 @@ export async function getUserAudit(
   userId: string,
   opts?: { category?: string },
 ): Promise<{ ok: boolean; data?: UserAuditReport; error?: string }> {
-  if (!ok(passcode)) return { ok: false, error: "Invalid admin passcode." }
+  if (!(await ok(passcode))) return { ok: false, error: "Invalid admin passcode." }
   if (!userId) return { ok: false, error: "No account selected." }
   try {
     return { ok: true, data: await buildUserAudit(userId, opts) }

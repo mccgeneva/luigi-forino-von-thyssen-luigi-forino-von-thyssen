@@ -68,7 +68,7 @@ export interface VesselListResult {
 }
 
 export async function listVesselsAdmin(passcode: string, search?: string): Promise<VesselListResult> {
-  if (!adminOk(passcode)) return { ok: false, vessels: [], error: "Administrator authorization failed." }
+  if (!(await adminOk(passcode))) return { ok: false, vessels: [], error: "Administrator authorization failed." }
   try {
     return { ok: true, vessels: await dbListVessels(search) }
   } catch (err) {
@@ -91,7 +91,7 @@ function complianceSummary(c: VesselCompliance): string {
 }
 
 export async function upsertVesselAdmin(passcode: string, vessel: Vessel): Promise<VesselResult> {
-  if (!adminOk(passcode)) return { ok: false, error: "Administrator authorization failed." }
+  if (!(await adminOk(passcode))) return { ok: false, error: "Administrator authorization failed." }
   const imo = (vessel.imo ?? "").trim()
   if (!/^\d{7}$/.test(imo)) return { ok: false, error: "IMO number must be exactly 7 digits." }
   if (!vessel.name?.trim()) return { ok: false, error: "Vessel name is required." }
@@ -127,7 +127,7 @@ export async function upsertVesselAdmin(passcode: string, vessel: Vessel): Promi
 }
 
 export async function deleteVesselAdmin(passcode: string, imo: string): Promise<{ ok: boolean; error?: string }> {
-  if (!adminOk(passcode)) return { ok: false, error: "Administrator authorization failed." }
+  if (!(await adminOk(passcode))) return { ok: false, error: "Administrator authorization failed." }
   try {
     const existing = await dbGetVessel(imo)
     await dbDeleteVessel(imo)
@@ -160,7 +160,7 @@ export async function getVesselProviderStatus() {
  * manually. Linking a provider later needs no other code changes.
  */
 export async function importVesselFromProvider(passcode: string, imo: string): Promise<VesselResult> {
-  if (!adminOk(passcode)) return { ok: false, error: "Administrator authorization failed." }
+  if (!(await adminOk(passcode))) return { ok: false, error: "Administrator authorization failed." }
   const clean = (imo ?? "").trim()
   if (!/^\d{7}$/.test(clean)) return { ok: false, error: "IMO number must be exactly 7 digits." }
   // Reject structurally-invalid IMOs up front (official check-digit algorithm).
@@ -195,7 +195,7 @@ export async function importVesselFromProvider(passcode: string, imo: string): P
  * as import, so the admin sees name/type/flag/year populated before saving.
  */
 export async function lookupVesselDraftAdmin(passcode: string, imo: string): Promise<VesselResult> {
-  if (!adminOk(passcode)) return { ok: false, error: "Administrator authorization failed." }
+  if (!(await adminOk(passcode))) return { ok: false, error: "Administrator authorization failed." }
   const clean = (imo ?? "").trim()
   if (!/^\d{7}$/.test(clean)) return { ok: false, error: "IMO number must be exactly 7 digits." }
   if (!isValidImo(clean)) {
@@ -211,7 +211,7 @@ export async function lookupVesselDraftAdmin(passcode: string, imo: string): Pro
 
 /** Re-run the free compliance auto-check for a vessel already in the catalogue. */
 export async function rescreenVesselAdmin(passcode: string, imo: string): Promise<VesselResult> {
-  if (!adminOk(passcode)) return { ok: false, error: "Administrator authorization failed." }
+  if (!(await adminOk(passcode))) return { ok: false, error: "Administrator authorization failed." }
   const clean = (imo ?? "").trim()
   if (!/^\d{7}$/.test(clean)) return { ok: false, error: "IMO number must be exactly 7 digits." }
   try {
@@ -249,7 +249,7 @@ export interface DealListResult {
 }
 
 export async function listSpotDealsAdmin(passcode: string): Promise<DealListResult> {
-  if (!adminOk(passcode)) return { ok: false, deals: [], error: "Administrator authorization failed." }
+  if (!(await adminOk(passcode))) return { ok: false, deals: [], error: "Administrator authorization failed." }
   try {
     return { ok: true, deals: await listAllDeals() }
   } catch (err) {
@@ -285,7 +285,7 @@ export interface CreateSpotDealInput {
 }
 
 export async function createSpotDealAdmin(passcode: string, input: CreateSpotDealInput): Promise<DealResult> {
-  if (!adminOk(passcode)) return { ok: false, error: "Administrator authorization failed." }
+  if (!(await adminOk(passcode))) return { ok: false, error: "Administrator authorization failed." }
 
   const vessel = await dbGetVessel((input.vesselImo ?? "").trim())
   if (!vessel) return { ok: false, error: "Select a vessel from the catalogue." }
@@ -355,7 +355,7 @@ export async function createSpotDealAdmin(passcode: string, input: CreateSpotDea
 
 /** Publish an existing draft (broadcasts + makes it visible). */
 export async function publishSpotDealAdmin(passcode: string, id: string): Promise<DealResult> {
-  if (!adminOk(passcode)) return { ok: false, error: "Administrator authorization failed." }
+  if (!(await adminOk(passcode))) return { ok: false, error: "Administrator authorization failed." }
   try {
     const deal = await getDeal(id)
     if (!deal) return { ok: false, error: "Spot deal not found." }
@@ -386,7 +386,7 @@ export async function publishSpotDealAdmin(passcode: string, id: string): Promis
 
 /** Withdraw a deal so it disappears from the public board. */
 export async function withdrawSpotDealAdmin(passcode: string, id: string): Promise<DealResult> {
-  if (!adminOk(passcode)) return { ok: false, error: "Administrator authorization failed." }
+  if (!(await adminOk(passcode))) return { ok: false, error: "Administrator authorization failed." }
   try {
     const deal = await getDeal(id)
     if (!deal) return { ok: false, error: "Spot deal not found." }

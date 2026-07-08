@@ -2,7 +2,7 @@
 
 import { clearEnrollment } from "@/lib/biometric-db"
 import { getDynamicUserById } from "@/lib/admin-users-db"
-import { ADMIN_PASSCODE } from "@/lib/admin-config"
+import { adminActionAuthorized } from "@/lib/admin-auth"
 import { logActivity } from "@/app/actions/log-activity"
 
 // NOTE: Self-service enroll / status / disable used to live here as Server
@@ -22,7 +22,7 @@ export async function adminResetUserFace(
   userId: string,
   adminName?: string,
 ): Promise<{ ok: boolean; error?: string }> {
-  if (String(passcode) !== ADMIN_PASSCODE) {
+  if (!(await adminActionAuthorized(passcode))) {
     return { ok: false, error: "Administrator authorization failed." }
   }
   const target = await getDynamicUserById(userId)

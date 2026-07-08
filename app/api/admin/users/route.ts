@@ -1,5 +1,5 @@
 import { type NextRequest, NextResponse } from "next/server"
-import { ADMIN_PASSCODE } from "@/lib/admin-config"
+import { adminActionAuthorized } from "@/lib/admin-auth"
 import { normalizeAccountBadge } from "@/lib/account-tier"
 import { effectiveRelationship } from "@/lib/account-hierarchy"
 import { listDynamicUsers, type DynamicUserRecord } from "@/lib/admin-users-db"
@@ -49,7 +49,7 @@ export async function GET(req: NextRequest) {
   // Passcode gate — same shared client passcode the Server Action used. Accepts
   // either an x-admin-passcode header or a ?p= query param.
   const passcode = req.headers.get("x-admin-passcode") ?? req.nextUrl.searchParams.get("p") ?? ""
-  if (String(passcode) !== ADMIN_PASSCODE) {
+  if (!(await adminActionAuthorized(passcode))) {
     return NextResponse.json({ ok: false, error: "Administrator authorization failed." }, { status: 401 })
   }
 
@@ -81,7 +81,7 @@ export async function GET(req: NextRequest) {
 // every domain. The action field selects the operation.
 export async function POST(req: NextRequest) {
   const passcode = req.headers.get("x-admin-passcode") ?? ""
-  if (String(passcode) !== ADMIN_PASSCODE) {
+  if (!(await adminActionAuthorized(passcode))) {
     return NextResponse.json({ ok: false, error: "Administrator authorization failed." }, { status: 401 })
   }
 

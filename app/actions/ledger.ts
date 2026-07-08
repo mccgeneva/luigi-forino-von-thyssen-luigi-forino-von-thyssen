@@ -1,7 +1,7 @@
 "use server"
 
 import { query, isDatabaseConfigured } from "@/lib/db"
-import { ADMIN_PASSCODE } from "@/lib/admin-config"
+import { adminActionAuthorized } from "@/lib/admin-auth"
 import { type UserProfile } from "@/lib/users"
 import { resolveAccountProfileById, resolveCurrentSession, resolveDataOwnerIdFor } from "@/lib/session-user"
 import { getDynamicUserByEmail } from "@/lib/admin-users-db"
@@ -29,7 +29,7 @@ async function getDataOwnerId(): Promise<string | undefined> {
 async function requireAdmin(passcode: string): Promise<UserProfile> {
   const user = await getSessionUser()
   if (!user) throw new Error("Your session has expired. Please sign in again.")
-  if (String(passcode) !== ADMIN_PASSCODE) throw new Error("Administrator authorization failed.")
+  if (!(await adminActionAuthorized(passcode))) throw new Error("Administrator authorization failed.")
   return user
 }
 

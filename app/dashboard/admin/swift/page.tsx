@@ -7,7 +7,8 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { ADMIN_PASSCODE, ADMIN_SESSION_KEY } from "@/lib/admin-config"
+import { ADMIN_SESSION_KEY } from "@/lib/admin-config"
+import { verifyAdminGate, confirmAdminSession } from "@/app/actions/admin-session"
 import { AdminSwiftInspector } from "@/components/dashboard/admin-swift-inspector"
 import { SwiftRoutingQueue } from "@/components/admin/swift-routing-queue"
 
@@ -16,28 +17,64 @@ export default function AdminSwiftPage() {
   const [passcode, setPasscode] = useState("")
   const [gateError, setGateError] = useState<string | null>(null)
 
+  const [gateChecking, setGateChecking] = useState(false)
+
+  // A persisted unlock flag only re-unlocks after the SERVER re-confirms this
+  // session is an admin. The admin subtree layout already blocks non-admins, so
+  // this is defense-in-depth.
   useEffect(() => {
+    let cancelled = false
+    let flagged = false
     try {
-      if (window.sessionStorage.getItem(ADMIN_SESSION_KEY) === "true") {
-        setUnlocked(true)
-      }
+      flagged = window.sessionStorage.getItem(ADMIN_SESSION_KEY) === "true"
     } catch {
-      // ignore
+      flagged = false
+    }
+    if (!flagged) return
+    ;(async () => {
+      try {
+        if (await confirmAdminSession()) {
+          if (!cancelled) setUnlocked(true)
+        } else {
+          try {
+            window.sessionStorage.removeItem(ADMIN_SESSION_KEY)
+          } catch {
+            // ignore
+          }
+        }
+      } catch {
+        // stay locked on error
+      }
+    })()
+    return () => {
+      cancelled = true
     }
   }, [])
 
-  const handleUnlock = () => {
-    if (passcode.trim() === ADMIN_PASSCODE) {
-      setUnlocked(true)
-      setGateError(null)
-      setPasscode("")
-      try {
-        window.sessionStorage.setItem(ADMIN_SESSION_KEY, "true")
-      } catch {
-        // ignore
+  const handleUnlock = async () => {
+    if (gateChecking) return
+    setGateChecking(true)
+    setGateError(null)
+    try {
+      const res = await verifyAdminGate(passcode.trim())
+      if (res.ok) {
+        setUnlocked(true)
+        setGateError(null)
+        setPasscode("")
+        try {
+          window.sessionStorage.setItem(ADMIN_SESSION_KEY, "true")
+        } catch {
+          // ignore
+        }
+      } else if (res.reason === "forbidden") {
+        setGateError("This account is not authorized to access the Administrator Panel.")
+      } else {
+        setGateError("Incorrect administrator passcode. Please try again.")
       }
-    } else {
-      setGateError("Incorrect administrator passcode. Please try again.")
+    } catch {
+      setGateError("Could not verify administrator access. Please try again.")
+    } finally {
+      setGateChecking(false)
     }
   }
 

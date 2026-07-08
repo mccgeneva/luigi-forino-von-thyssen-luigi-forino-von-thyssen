@@ -8,12 +8,12 @@ import {
   setBeneficiaryStatus,
   deleteBeneficiary,
 } from "@/lib/beneficiaries-db"
-import { ADMIN_PASSCODE } from "@/lib/admin-config"
+import { adminActionAuthorized } from "@/lib/admin-auth"
 import { logActivity } from "@/app/actions/log-activity"
 import { resolveCurrentSession } from "@/lib/session-user"
 
-function requireAdmin(passcode: string): void {
-  if (String(passcode) !== ADMIN_PASSCODE) {
+async function requireAdmin(passcode: string): Promise<void> {
+  if (!(await adminActionAuthorized(passcode))) {
     throw new Error("Administrator authorization failed.")
   }
 }
@@ -108,7 +108,7 @@ export async function upsertMyBeneficiary(
 
 export async function adminListBeneficiaries(passcode: string, userId: string): Promise<BeneficiaryListResult> {
   try {
-    requireAdmin(passcode)
+    await requireAdmin(passcode)
     const rows = await listBeneficiariesForUser(userId)
     return { ok: true, beneficiaries: rows }
   } catch (err) {
@@ -123,7 +123,7 @@ export async function adminListBeneficiaries(passcode: string, userId: string): 
  */
 export async function adminListPendingKyc(passcode: string): Promise<BeneficiaryListResult> {
   try {
-    requireAdmin(passcode)
+    await requireAdmin(passcode)
     const rows = await listPendingKycBeneficiaries()
     return { ok: true, beneficiaries: rows }
   } catch (err) {
@@ -140,7 +140,7 @@ export async function adminUpsertBeneficiary(
   adminName?: string,
 ): Promise<BeneficiaryMutation> {
   try {
-    requireAdmin(passcode)
+    await requireAdmin(passcode)
     const row = await upsertBeneficiary(userId, id, data, status)
     await logActivity({
       action: "Administrator saved a beneficiary",
@@ -166,7 +166,7 @@ export async function adminSetBeneficiaryStatus(
   adminName?: string,
 ): Promise<BeneficiaryMutation> {
   try {
-    requireAdmin(passcode)
+    await requireAdmin(passcode)
     const row = await setBeneficiaryStatus(id, status)
     if (!row) return { ok: false, error: "Beneficiary not found." }
     await logActivity({
@@ -192,7 +192,7 @@ export async function adminDeleteBeneficiary(
   adminName?: string,
 ): Promise<BeneficiaryMutation> {
   try {
-    requireAdmin(passcode)
+    await requireAdmin(passcode)
     await deleteBeneficiary(id)
     await logActivity({
       action: "Administrator removed a beneficiary",

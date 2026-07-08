@@ -1,7 +1,7 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { get } from "@vercel/blob"
 import { resolveCurrentSession } from "@/lib/session-user"
-import { ADMIN_PASSCODE } from "@/lib/admin-config"
+import { adminActionAuthorized } from "@/lib/admin-auth"
 
 // Blob access + session resolution require the Node.js runtime.
 export const runtime = "nodejs"
@@ -17,7 +17,7 @@ export const runtime = "nodejs"
 //      the session cookie. This mirrors the other passcode-gated admin routes.
 export async function GET(request: NextRequest) {
   const passcode = request.nextUrl.searchParams.get("p") ?? request.headers.get("x-admin-passcode") ?? ""
-  const isAdmin = passcode !== "" && passcode === ADMIN_PASSCODE
+  const isAdmin = passcode !== "" && (await adminActionAuthorized(passcode))
   if (!isAdmin) {
     const session = await resolveCurrentSession()
     if (!session) {

@@ -1,6 +1,6 @@
 "use server"
 
-import { ADMIN_PASSCODE } from "@/lib/admin-config"
+import { adminActionAuthorized } from "@/lib/admin-auth"
 import {
   resolveCurrentSession,
   resolveAccountProfileById,
@@ -40,7 +40,7 @@ import type { UserProfile } from "@/lib/users"
 async function requireAdmin(passcode: string): Promise<UserProfile> {
   const session = await resolveCurrentSession()
   if (!session) throw new Error("Your session has expired. Please sign in again.")
-  if (String(passcode) !== ADMIN_PASSCODE) throw new Error("Administrator authorization failed.")
+  if (!(await adminActionAuthorized(passcode))) throw new Error("Administrator authorization failed.")
   return session.profile
 }
 

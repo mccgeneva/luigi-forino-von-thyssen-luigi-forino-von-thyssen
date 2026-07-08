@@ -1,6 +1,6 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { handleUpload, type HandleUploadBody } from "@vercel/blob/client"
-import { ADMIN_PASSCODE } from "@/lib/admin-config"
+import { adminActionAuthorized } from "@/lib/admin-auth"
 import { resolveCurrentSession } from "@/lib/session-user"
 
 // Token endpoint for browser → Blob direct uploads of SKR supporting documents
@@ -26,7 +26,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
         } catch {
           passcode = undefined
         }
-        const isAdmin = passcode === ADMIN_PASSCODE
+        const isAdmin = (await adminActionAuthorized(passcode))
         const session = isAdmin ? null : await resolveCurrentSession()
         if (!isAdmin && !session) {
           throw new Error("Unauthorized")

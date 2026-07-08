@@ -14,12 +14,12 @@ import {
   CERTIFICATE_TYPE_LABELS,
   type CertificateRequest,
 } from "@/lib/certificates-shared"
-import { ADMIN_PASSCODE } from "@/lib/admin-config"
+import { adminActionAuthorized } from "@/lib/admin-auth"
 import { logActivity } from "@/app/actions/log-activity"
 import { resolveCurrentSession, resolveAccountProfileById } from "@/lib/session-user"
 
-function requireAdmin(passcode: string): void {
-  if (String(passcode) !== ADMIN_PASSCODE) {
+async function requireAdmin(passcode: string): Promise<void> {
+  if (!(await adminActionAuthorized(passcode))) {
     throw new Error("Administrator authorization failed.")
   }
 }
@@ -90,7 +90,7 @@ export async function adminListCertificateRequests(
   userId: string,
 ): Promise<CertificateListResult> {
   try {
-    requireAdmin(passcode)
+    await requireAdmin(passcode)
     const rows = await listCertificateRequestsForUser(userId)
     return { ok: true, requests: rows.map((r) => r.request) }
   } catch (err) {
@@ -105,7 +105,7 @@ export async function adminListCertificateRequests(
  */
 export async function adminListPendingCertificates(passcode: string): Promise<CertificateRecordList> {
   try {
-    requireAdmin(passcode)
+    await requireAdmin(passcode)
     const rows = await listPendingCertificateRequests()
     return { ok: true, requests: rows.map((r) => ({ id: r.id, userId: r.userId, request: r.request })) }
   } catch (err) {
@@ -149,7 +149,7 @@ export async function adminDecideCertificate(
   adminName?: string,
 ): Promise<CertificateMutation> {
   try {
-    requireAdmin(passcode)
+    await requireAdmin(passcode)
     return await decideAndLog(
       id,
       (req) => (mode === "approve" ? applyApproval(req, note) : applyRejection(req, note)),
@@ -170,7 +170,7 @@ export async function adminReissueCertificate(
   adminName?: string,
 ): Promise<CertificateMutation> {
   try {
-    requireAdmin(passcode)
+    await requireAdmin(passcode)
     return await decideAndLog(
       id,
       (req) => applyReissue(req, note),

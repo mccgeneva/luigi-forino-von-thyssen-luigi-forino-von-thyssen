@@ -1,6 +1,6 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { handleUpload, type HandleUploadBody } from "@vercel/blob/client"
-import { ADMIN_PASSCODE } from "@/lib/admin-config"
+import { adminActionAuthorized } from "@/lib/admin-auth"
 
 // Token endpoint for browser → Blob direct uploads. Uploading the page images
 // straight from the admin's browser to Blob keeps the (large) image payload out
@@ -23,7 +23,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
         } catch {
           passcode = undefined
         }
-        if (passcode !== ADMIN_PASSCODE) {
+        if (!(await adminActionAuthorized(passcode))) {
           throw new Error("Unauthorized")
         }
         if (!pathname.startsWith("kyc/")) {

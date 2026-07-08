@@ -11,12 +11,12 @@ import {
   listAllSkrRequests,
   type SkrItemInput,
 } from "@/lib/skr-db"
-import { ADMIN_PASSCODE } from "@/lib/admin-config"
+import { adminActionAuthorized } from "@/lib/admin-auth"
 import { resolveCurrentSession } from "@/lib/session-user"
 import { listSelectableClients } from "@/app/actions/admin-users"
 
-function requireAdmin(passcode: string): void {
-  if (String(passcode) !== ADMIN_PASSCODE) {
+async function requireAdmin(passcode: string): Promise<void> {
+  if (!(await adminActionAuthorized(passcode))) {
     throw new Error("Administrator authorization failed.")
   }
 }
@@ -113,7 +113,7 @@ export async function addMySkrDocument(
 
 export async function adminListSkrRecords(passcode: string, userId: string): Promise<SkrListResult> {
   try {
-    requireAdmin(passcode)
+    await requireAdmin(passcode)
     const rows = await listSkrRecordsForUser(userId)
     return { ok: true, items: toRows(rows) }
   } catch (err) {
@@ -127,7 +127,7 @@ export async function adminReplaceSkrRecords(
   items: SkrItemInput[],
 ): Promise<SkrMutation> {
   try {
-    requireAdmin(passcode)
+    await requireAdmin(passcode)
     await replaceSkrRecordsForUser(userId, items)
     return { ok: true }
   } catch (err) {
@@ -137,7 +137,7 @@ export async function adminReplaceSkrRecords(
 
 export async function adminListSkrRequests(passcode: string, userId: string): Promise<SkrListResult> {
   try {
-    requireAdmin(passcode)
+    await requireAdmin(passcode)
     const rows = await listSkrRequestsForUser(userId)
     return { ok: true, items: toRows(rows) }
   } catch (err) {
@@ -151,7 +151,7 @@ export async function adminReplaceSkrRequests(
   items: SkrItemInput[],
 ): Promise<SkrMutation> {
   try {
-    requireAdmin(passcode)
+    await requireAdmin(passcode)
     await replaceSkrRequestsForUser(userId, items)
     return { ok: true }
   } catch (err) {
@@ -183,7 +183,7 @@ export type SkrOverviewResult =
  */
 export async function adminListAllSkr(passcode: string): Promise<SkrOverviewResult> {
   try {
-    requireAdmin(passcode)
+    await requireAdmin(passcode)
     const [records, requests, clients] = await Promise.all([
       listAllSkrRecords(),
       listAllSkrRequests(),

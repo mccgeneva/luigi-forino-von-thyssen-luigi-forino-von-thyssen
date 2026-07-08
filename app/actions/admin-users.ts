@@ -13,7 +13,7 @@
 // like the other administrator sections (gateway, treasury, ledger, …).
 // ---------------------------------------------------------------------------
 
-import { ADMIN_PASSCODE } from "@/lib/admin-config"
+import { adminActionAuthorized } from "@/lib/admin-auth"
 import { normalizeAccountBadge } from "@/lib/account-tier"
 import { logActivity } from "@/app/actions/log-activity"
 import {
@@ -61,8 +61,8 @@ export type AdminUserMutation =
   | { ok: true; user: AdminUserView; tempPassword?: string }
   | { ok: false; error: string }
 
-function requireAdmin(passcode: string): void {
-  if (String(passcode) !== ADMIN_PASSCODE) {
+async function requireAdmin(passcode: string): Promise<void> {
+  if (!(await adminActionAuthorized(passcode))) {
     throw new Error("Administrator authorization failed.")
   }
 }
@@ -282,7 +282,7 @@ async function resolveHierarchy(
 
 export async function listUsers(passcode: string): Promise<AdminUsersResult> {
   try {
-    requireAdmin(passcode)
+    await requireAdmin(passcode)
     const users = (await listDynamicUsers()).map(toView)
     return { ok: true, users }
   } catch (err) {
@@ -345,7 +345,7 @@ export async function resetUserPassword(
   adminName?: string,
 ): Promise<AdminUserMutation> {
   try {
-    requireAdmin(passcode)
+    await requireAdmin(passcode)
     const existing = await getDynamicUserById(id)
     if (!existing) return { ok: false, error: "User not found." }
     const tempPassword = newPassword?.trim() || generateTempPassword()
@@ -372,7 +372,7 @@ export async function updateUserStatus(
   adminName?: string,
 ): Promise<AdminUserMutation> {
   try {
-    requireAdmin(passcode)
+    await requireAdmin(passcode)
     const rec = await setDynamicUserStatus(id, status)
     if (!rec) return { ok: false, error: "User not found." }
 
@@ -474,7 +474,7 @@ export async function editUser(input: EditUserInput): Promise<AdminUserMutation>
 
 export async function removeUser(passcode: string, id: string, adminName?: string): Promise<AdminUsersResult> {
   try {
-    requireAdmin(passcode)
+    await requireAdmin(passcode)
     const existing = await getDynamicUserById(id)
     if (!existing) return { ok: false, error: "User not found." }
     await deleteDynamicUser(id)
@@ -582,7 +582,7 @@ export interface SelectableClient {
  */
 export async function listSelectableClients(passcode: string): Promise<SelectableClient[]> {
   try {
-    requireAdmin(passcode)
+    await requireAdmin(passcode)
     return (await listDynamicUsers())
       .filter((u) => u.status === "active")
       .map((u) => ({
@@ -606,7 +606,7 @@ export async function listSelectableClients(passcode: string): Promise<Selectabl
  */
 export async function listMasterCandidates(passcode: string, excludeId?: string): Promise<SelectableClient[]> {
   try {
-    requireAdmin(passcode)
+    await requireAdmin(passcode)
     return (await listDynamicUsers())
       .filter(
         (u) =>

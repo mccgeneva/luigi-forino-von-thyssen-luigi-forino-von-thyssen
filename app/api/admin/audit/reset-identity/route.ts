@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server"
-import { ADMIN_PASSCODE } from "@/lib/admin-config"
+import { adminActionAuthorized } from "@/lib/admin-auth"
 import { clearEnrollment } from "@/lib/biometric-db"
 import { getDynamicUserById } from "@/lib/admin-users-db"
 import { logActivity } from "@/app/actions/log-activity"
@@ -21,7 +21,7 @@ export const dynamic = "force-dynamic"
 export async function POST(req: Request) {
   const url = new URL(req.url)
   const passcode = req.headers.get("x-admin-passcode") || url.searchParams.get("p") || ""
-  if (String(passcode) !== ADMIN_PASSCODE) {
+  if (!(await adminActionAuthorized(passcode))) {
     return NextResponse.json({ ok: false, error: "Administrator authorization failed." }, { status: 401 })
   }
 

@@ -1,5 +1,5 @@
 import { type NextRequest, NextResponse } from "next/server"
-import { ADMIN_PASSCODE } from "@/lib/admin-config"
+import { adminActionAuthorized } from "@/lib/admin-auth"
 import { analyzeKycDocument, mapAnalysisToResult } from "@/lib/kyc-analyze"
 
 // The AI SDK must run on the Node.js runtime (never edge).
@@ -17,7 +17,7 @@ export async function POST(request: NextRequest) {
     const body = (await request.json()) as AnalyzeRequestBody
 
     // Gate behind the admin passcode — same secret used by the admin actions.
-    if (body.passcode !== ADMIN_PASSCODE) {
+    if (!(await adminActionAuthorized(body.passcode))) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
     }
 
