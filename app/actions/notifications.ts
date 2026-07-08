@@ -5,8 +5,69 @@ import {
   listNotificationsForUser,
   countUnreadForUser,
   markNotificationsRead,
+  insertNotificationOnce,
   type NotificationRecord,
 } from "@/lib/notifications-db"
+
+/** Money formatter for notification copy (e.g. "€12,500.00"). */
+function fmtEur(amount: number): string {
+  try {
+    return new Intl.NumberFormat("en-IE", { style: "currency", currency: "EUR" }).format(amount)
+  } catch {
+    return `€${amount.toFixed(2)}`
+  }
+}
+
+function fmtDate(iso: string): string {
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return iso
+  return d.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" })
+}
+
+export interface TreasuryInterestDebitNotice {
+  /** Stable per-charge key (e.g. the ledger entry id) — dedupes the notice. */
+  chargeId: string
+  /** Amount debited this month, in EUR. */
+  amount: number
+  /** Remaining Master Account (EUR) balance immediately after this debit. */
+  remainingBalance: number
+  /** ISO date of the next expected monthly deduction. */
+  nextDeductionAt: string
+  /** Optional human label for the financing tier (e.g. "Avant-garde"). */
+  tierLabel?: string
+}
+
+/**
+ * Emit exactly ONE notification for a monthly treasury-financing interest debit.
+ * Safe to call on every reconciler pass: the deterministic id derived from the
+ * charge means reloads never produce duplicate notices. Returns whether a new
+ * notification was actually created.
+ */
+export async function notifyTreasuryInterestDebit(
+  notice: TreasuryInterestDebitNotice,
+): Promise<{ ok: boolean; created: boolean }> {
+  const session = await resolveCurrentSession()
+  if (!session) return { ok: false, created: false }
+  try {
+    const tier = notice.tierLabel ? ` (${notice.tierLabel})` : ""
+    const body =
+      `${fmtEur(notice.amount)} was deducted from your Master Account as your monthly ` +
+      `Special Treasury Financing interest (3% p.a.)${tier}. ` +
+      `Remaining balance: ${fmtEur(notice.remainingBalance)}. ` +
+      `Next deduction: ${fmtDate(notice.nextDeductionAt)}.`
+    const created = await insertNotificationOnce(`TFI-${notice.chargeId}`, {
+      userId: session.id,
+      tone: "warning",
+      title: "Treasury financing interest charged",
+      body,
+      href: "/dashboard/leverage",
+    })
+    return { ok: true, created }
+  } catch (err) {
+    console.log("[v0] notifyTreasuryInterestDebit failed:", (err as Error).message)
+    return { ok: false, created: false }
+  }
+}
 
 export interface NotificationsSnapshot {
   items: NotificationRecord[]

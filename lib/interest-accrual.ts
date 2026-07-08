@@ -146,3 +146,14 @@ export function monthlyInterestAmount(principal: number, annualRate: number): nu
   if (!(principal > 0) || !(annualRate > 0)) return 0
   return round2((principal * annualRate) / 12)
 }
+
+/**
+ * The next calendar month-end strictly after `from` — i.e. the date the client
+ * should expect their next monthly interest deduction. If `from` is itself a
+ * month-end, this returns the FOLLOWING month-end.
+ */
+export function nextMonthEndAfter(from: Date = new Date()): Date {
+  const thisMonthEnd = endOfMonth(from.getFullYear(), from.getMonth())
+  if (thisMonthEnd > from) return thisMonthEnd
+  return endOfMonth(from.getFullYear(), from.getMonth() + 1)
+}
