@@ -28,9 +28,12 @@ import {
 import { decodeTraceToken, extractTraceToken, type TracePayload } from "@/lib/pdf-trace"
 import { geolocateIp, type IpGeo } from "@/lib/ip-geo"
 
-// Re-exported for existing consumers (e.g. components/admin/document-traceability)
-// that import the IpGeo type from this action module.
-export type { IpGeo }
+// NOTE: this is a "use server" module — it must ONLY export async Server Action
+// functions. Do NOT re-export types/values from here: Next's server-actions
+// transform turns a stray `export type { IpGeo }` into a runtime value export
+// of a type-only binding, which throws `ReferenceError: IpGeo is not defined`
+// at module-eval time and takes down EVERY server action on the route. Consumers
+// import the `IpGeo` type directly from "@/lib/ip-geo" instead.
 
 function adminOk(passcode: string): boolean {
   return passcode === ADMIN_PASSCODE

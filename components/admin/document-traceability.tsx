@@ -37,7 +37,8 @@ import {
   Building2,
 } from "lucide-react"
 import { ADMIN_PASSCODE } from "@/lib/admin-config"
-import { adminExtractTrace, adminListTraces, type TraceLookupResult, type IpGeo } from "@/app/actions/pdf-trace"
+import { adminExtractTrace, adminListTraces, type TraceLookupResult } from "@/app/actions/pdf-trace"
+import type { IpGeo } from "@/lib/ip-geo"
 import { extractTraceToken } from "@/lib/pdf-trace"
 import type { DocumentTrace } from "@/lib/pdf-trace-db"
 
