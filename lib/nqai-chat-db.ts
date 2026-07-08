@@ -153,11 +153,13 @@ async function migrateLegacyChat(userId: string): Promise<void> {
 // Threads
 // ---------------------------------------------------------------------------
 
-/** List a user's conversation threads, newest first (metadata only — fast). */
-export async function listNqaiThreads(userId: string): Promise<NqaiThreadSummary[]> {
-  if (!userId) return []
-  await ensureTables()
-  await migrateLegacyChat(userId).catch(() => {})
+/** Postgres "undefined_table" — the table hasn't been created in this DB yet. */
+function isUndefinedTable(err: unknown): boolean {
+  return (err as { code?: string })?.code === "42P01"
+}
+
+/** Run ONLY the thread-list SELECT (no DDL, no migration) — the fast hot path. */
+async function selectThreadRows(userId: string): Promise<Record<string, unknown>[]> {
   const { rows } = await query(
     `SELECT id, title, jsonb_array_length(messages) AS message_count, folder_id,
             preview, summary, pinned, archived, created_at, updated_at
@@ -166,21 +168,59 @@ export async function listNqaiThreads(userId: string): Promise<NqaiThreadSummary
        ORDER BY pinned DESC, updated_at DESC`,
     [userId],
   )
-  return rows.map((r) => {
-    const row = r as Record<string, unknown>
-    return {
-      id: String(row.id),
-      title: String(row.title ?? ""),
-      messageCount: Number(row.message_count ?? 0),
-      folderId: row.folder_id ? String(row.folder_id) : null,
-      preview: String(row.preview ?? ""),
-      summary: String(row.summary ?? ""),
-      pinned: Boolean(row.pinned),
-      archived: Boolean(row.archived),
-      createdAt: row.created_at ? new Date(row.created_at as string).toISOString() : "",
-      updatedAt: row.updated_at ? new Date(row.updated_at as string).toISOString() : "",
-    }
-  })
+  return rows as Record<string, unknown>[]
+}
+
+function mapThreadRow(row: Record<string, unknown>): NqaiThreadSummary {
+  return {
+    id: String(row.id),
+    title: String(row.title ?? ""),
+    messageCount: Number(row.message_count ?? 0),
+    folderId: row.folder_id ? String(row.folder_id) : null,
+    preview: String(row.preview ?? ""),
+    summary: String(row.summary ?? ""),
+    pinned: Boolean(row.pinned),
+    archived: Boolean(row.archived),
+    createdAt: row.created_at ? new Date(row.created_at as string).toISOString() : "",
+    updatedAt: row.updated_at ? new Date(row.updated_at as string).toISOString() : "",
+  }
+}
+
+/**
+ * List a user's conversation threads, newest first (metadata only).
+ *
+ * RESILIENCE: this is the hot path that populates the history panel, so it must
+ * NOT fail spuriously (an error here renders as an empty, "lost" history). We:
+ *  1. Try the plain SELECT FIRST — no DDL, no migration. For a user who already
+ *     has threads (the common case) this is a single cheap, retrying query.
+ *  2. Only if the table doesn't exist yet do we create it and retry.
+ *  3. Only run the one-time legacy migration when the user genuinely has zero
+ *     threads — keeping the heavy work off the path for established users.
+ * This throws on a real DB failure (so callers can distinguish "load failed"
+ * from "no threads") instead of masking it as an empty list.
+ */
+export async function listNqaiThreads(userId: string): Promise<NqaiThreadSummary[]> {
+  if (!userId) return []
+
+  let rows: Record<string, unknown>[]
+  try {
+    rows = await selectThreadRows(userId)
+  } catch (err) {
+    if (!isUndefinedTable(err)) throw err
+    // First-ever use in this database: create the schema, then retry once.
+    await ensureTables()
+    rows = await selectThreadRows(userId)
+  }
+
+  // Only attempt the legacy single-conversation migration when the user has no
+  // threads yet — never on the hot path for users who already have history.
+  if (rows.length === 0) {
+    await ensureTables()
+    await migrateLegacyChat(userId).catch(() => {})
+    rows = await selectThreadRows(userId).catch(() => rows)
+  }
+
+  return rows.map(mapThreadRow)
 }
 
 /** Load a single thread's transcript + memory, scoped to its owner. */
@@ -352,15 +392,31 @@ function mapFolder(row: Record<string, unknown>): NqaiFolder {
   }
 }
 
-/** List all of a user's folders (the client builds the tree from parentId). */
-export async function listNqaiFolders(userId: string): Promise<NqaiFolder[]> {
-  if (!userId) return []
-  await ensureTables()
+async function selectFolderRows(userId: string): Promise<Record<string, unknown>[]> {
   const { rows } = await query(
     `SELECT id, parent_id, name, created_at, updated_at FROM nqai_folders WHERE user_id = $1 ORDER BY name ASC`,
     [userId],
   )
-  return rows.map((r) => mapFolder(r as Record<string, unknown>))
+  return rows as Record<string, unknown>[]
+}
+
+/**
+ * List all of a user's folders (the client builds the tree from parentId).
+ * Fast path: try the SELECT first; only create the schema and retry if the
+ * table doesn't exist yet. Throws on a real DB failure so the caller can tell
+ * "load failed" apart from "no folders".
+ */
+export async function listNqaiFolders(userId: string): Promise<NqaiFolder[]> {
+  if (!userId) return []
+  let rows: Record<string, unknown>[]
+  try {
+    rows = await selectFolderRows(userId)
+  } catch (err) {
+    if (!isUndefinedTable(err)) throw err
+    await ensureTables()
+    rows = await selectFolderRows(userId)
+  }
+  return rows.map((r) => mapFolder(r))
 }
 
 /** Create a folder. parentId, when given, must belong to the caller. */

@@ -22,6 +22,12 @@ import { getNqaiUserSnapshot } from "@/lib/nqai-user-context"
 import { buildPersonalGreeting } from "@/lib/nqai-greeting"
 
 export interface NqaiBootstrap {
+  /**
+   * Whether the history actually loaded. `false` means a transient failure
+   * (no session yet, or a DB hiccup) — the client should RETRY rather than
+   * render an empty "no conversations" state, which would look like data loss.
+   */
+  ok: boolean
   /** A personalized one-line briefing shown under the canonical welcome. */
   greeting: string
   /** The user's stored conversation threads (metadata for the history panel). */
@@ -32,6 +38,8 @@ export interface NqaiBootstrap {
 
 /** Combined folder tree + thread metadata for the organizer/sidebar. */
 export interface NqaiOrganizer {
+  /** False on a load failure (client should retry, not clobber existing data). */
+  ok: boolean
   folders: NqaiFolder[]
   threads: NqaiThreadSummary[]
 }
@@ -45,21 +53,27 @@ export interface NqaiOrganizer {
 export async function bootstrapNqai(): Promise<NqaiBootstrap> {
   try {
     const session = await resolveCurrentSession()
-    if (!session) return { greeting: "", threads: [], folders: [] }
+    // No session resolved (e.g. transient cookie/DB read). Signal not-ok so the
+    // client retries instead of showing an empty, "lost history" state.
+    if (!session) return { ok: false, greeting: "", threads: [], folders: [] }
 
+    // The greeting is best-effort, but the thread/folder history is the whole
+    // point of the panel — if EITHER of those throws, surface ok:false so the
+    // client can retry rather than render an alarming empty history.
     const [threads, folders, snapshot] = await Promise.all([
-      listNqaiThreads(session.id).catch(() => [] as NqaiThreadSummary[]),
-      listNqaiFolders(session.id).catch(() => [] as NqaiFolder[]),
+      listNqaiThreads(session.id),
+      listNqaiFolders(session.id),
       getNqaiUserSnapshot().catch(() => null),
     ])
 
     return {
+      ok: true,
       greeting: buildPersonalGreeting(snapshot, threads.length > 0),
       threads,
       folders,
     }
   } catch {
-    return { greeting: "", threads: [], folders: [] }
+    return { ok: false, greeting: "", threads: [], folders: [] }
   }
 }
 
@@ -145,14 +159,16 @@ export async function archiveNqaiThreadAction(threadId: string, archived: boolea
 export async function listNqaiOrganizerAction(): Promise<NqaiOrganizer> {
   try {
     const session = await resolveCurrentSession()
-    if (!session) return { folders: [], threads: [] }
+    if (!session) return { ok: false, folders: [], threads: [] }
+    // Let a real DB error reject so we return ok:false — the client then keeps
+    // whatever it already had instead of blanking the panel to empty.
     const [folders, threads] = await Promise.all([
-      listNqaiFolders(session.id).catch(() => [] as NqaiFolder[]),
-      listNqaiThreads(session.id).catch(() => [] as NqaiThreadSummary[]),
+      listNqaiFolders(session.id),
+      listNqaiThreads(session.id),
     ])
-    return { folders, threads }
+    return { ok: true, folders, threads }
   } catch {
-    return { folders: [], threads: [] }
+    return { ok: false, folders: [], threads: [] }
   }
 }
 
