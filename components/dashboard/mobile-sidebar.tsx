@@ -38,12 +38,15 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
 import { SheetClose } from "@/components/ui/sheet"
+import { useIsAdmin } from "@/lib/use-current-user"
 
 type NavItem = {
   title: string
   href: string
   icon: LucideIcon
   badge?: string
+  /** Only rendered for authorized administrators. */
+  adminOnly?: boolean
 }
 
 type NavGroup = {
@@ -99,7 +102,7 @@ const navGroups: NavGroup[] = [
       { title: "Plans & Pricing", href: "/dashboard/plans", icon: DollarSign },
       { title: "Services & Compliance", href: "/dashboard/services", icon: Shield },
       { title: "Client Handbook", href: "/dashboard/handbook", icon: BookOpen },
-      { title: "Administrator", href: "/dashboard/admin", icon: ShieldCheck },
+      { title: "Administrator", href: "/dashboard/admin", icon: ShieldCheck, adminOnly: true },
       { title: "Settings", href: "/dashboard/settings", icon: Settings },
       { title: "Support", href: "/dashboard/support", icon: HelpCircle },
     ],
@@ -108,6 +111,16 @@ const navGroups: NavGroup[] = [
 
 export function MobileSidebar() {
   const pathname = usePathname()
+  const isAdmin = useIsAdmin()
+
+  // Hide admin-only destinations (e.g. Administrator) from non-admins. UX filter
+  // only — the admin routes are independently gated on the server.
+  const visibleNavGroups = navGroups
+    .map((group) => ({
+      ...group,
+      items: group.items.filter((item) => !item.adminOnly || isAdmin),
+    }))
+    .filter((group) => group.items.length > 0)
 
   // Open every group by default so all destinations (Send Money, Internal Transfers,
   // Treasury, Fiduciary, etc.) are immediately visible. Users can still collapse any group.
@@ -146,7 +159,7 @@ export function MobileSidebar() {
       {/* Scrollable dropdown navigation */}
       <nav className="min-h-0 flex-1 overflow-y-auto px-3 py-4 [scrollbar-width:thin]">
         <div className="space-y-1">
-          {navGroups.map((group) => {
+          {visibleNavGroups.map((group) => {
             const isOpen = openGroups[group.label] ?? false
             const hasActive = group.items.some((item) => item.href === pathname)
             return (

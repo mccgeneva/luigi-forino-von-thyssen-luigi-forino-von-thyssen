@@ -18,7 +18,7 @@ import { Badge } from "@/components/ui/badge"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Sheet, SheetContent, SheetTrigger, SheetTitle, SheetDescription } from "@/components/ui/sheet"
 import { MobileSidebar } from "./mobile-sidebar"
-import { useCurrentUser } from "@/lib/use-current-user"
+import { useCurrentUser, useIsAdmin } from "@/lib/use-current-user"
 import { BankekaHeaderButton } from "@/components/bankeka/bankeka-header-button"
 import type { NotificationsSnapshot } from "@/app/actions/notifications"
 
@@ -86,6 +86,7 @@ function TerminalClock() {
 
 export function DashboardHeader() {
   const user = useCurrentUser()
+  const isAdmin = useIsAdmin()
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
 
   // Live notifications from the DB (cross-device). Polls so a decision made by
@@ -293,12 +294,14 @@ export function DashboardHeader() {
                 Support
               </Link>
             </DropdownMenuItem>
-            <DropdownMenuItem asChild>
-              <Link href="/dashboard/admin">
-                <ShieldCheck className="mr-2 h-4 w-4" />
-                Administrator
-              </Link>
-            </DropdownMenuItem>
+            {isAdmin && (
+              <DropdownMenuItem asChild>
+                <Link href="/dashboard/admin">
+                  <ShieldCheck className="mr-2 h-4 w-4" />
+                  Administrator
+                </Link>
+              </DropdownMenuItem>
+            )}
             <DropdownMenuSeparator />
             <form action="/api/logout" method="POST">
               <DropdownMenuItem
