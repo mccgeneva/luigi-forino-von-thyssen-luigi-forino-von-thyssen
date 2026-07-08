@@ -16,6 +16,7 @@ import {
 import { USER_COOKIE } from "@/lib/user-scope"
 import { signSessionMeta, signImpersonation, verifyImpersonation } from "@/lib/session-token"
 import { ADMIN_PASSCODE } from "@/lib/admin-config"
+import { isAdminEmail } from "@/lib/admin-auth"
 import { resolveCurrentSession } from "@/lib/session-user"
 import { getDynamicUserById } from "@/lib/admin-users-db"
 import { logActivity } from "@/app/actions/log-activity"
@@ -89,6 +90,16 @@ export async function POST(req: NextRequest) {
     return NextResponse.json(
       { ok: false, error: "Your session has expired. Please sign in again." },
       { status: 401 },
+    )
+  }
+
+  // Authoritative role check: only an authorized administrator ACCOUNT may
+  // impersonate. The shared PIN alone is not sufficient — this is what stops a
+  // signed-in client from "acting as" another account (privilege escalation).
+  if (!isAdminEmail(adminSession.profile.email)) {
+    return NextResponse.json(
+      { ok: false, error: "This account is not authorized to perform administrator actions." },
+      { status: 403 },
     )
   }
 

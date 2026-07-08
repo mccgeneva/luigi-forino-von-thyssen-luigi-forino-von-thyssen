@@ -17,7 +17,7 @@
 // fetches a live record; otherwise it returns a clear, non-fatal message.
 // ---------------------------------------------------------------------------
 
-import { ADMIN_PASSCODE } from "@/lib/admin-config"
+import { adminActionAuthorized } from "@/lib/admin-auth"
 import { resolveCurrentSession } from "@/lib/session-user"
 import { logActivity } from "@/app/actions/log-activity"
 import { listDynamicUsers } from "@/lib/admin-users-db"
@@ -47,8 +47,8 @@ import {
 } from "@/lib/spot-deals-shared"
 import { fetchVesselByImo, providerStatus, screenVesselImo } from "@/lib/vessel-providers"
 
-function adminOk(passcode: string): boolean {
-  return passcode === ADMIN_PASSCODE
+async function adminOk(passcode: string): Promise<boolean> {
+  return adminActionAuthorized(passcode)
 }
 
 function newDealId(): string {

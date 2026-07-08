@@ -1,6 +1,6 @@
 "use server"
 
-import { ADMIN_PASSCODE } from "@/lib/admin-config"
+import { adminActionAuthorized } from "@/lib/admin-auth"
 import { resolveCurrentSession, resolveAccountProfileById, resolveDataOwnerIdFor } from "@/lib/session-user"
 import { logActivity } from "@/app/actions/log-activity"
 import {
@@ -50,8 +50,10 @@ import { MASTER_CONSENT_KINDS } from "@/lib/account-hierarchy"
 
 // --- Auth helpers -----------------------------------------------------------
 
-function adminOk(passcode: string): boolean {
-  return String(passcode) === ADMIN_PASSCODE
+// Server-side admin gate: the caller must be an authorized admin ACCOUNT and
+// present the correct PIN. Async because it resolves the session on the server.
+async function adminOk(passcode: string): Promise<boolean> {
+  return adminActionAuthorized(passcode)
 }
 
 // --- Client-facing ----------------------------------------------------------
@@ -204,7 +206,7 @@ export async function adminUpdateApprovalRecord(
   approvalId: string,
   patch: Record<string, unknown>,
 ): Promise<{ ok: boolean; error?: string }> {
-  if (!adminOk(passcode)) return { ok: false, error: "Administrator authorization failed." }
+  if (!(await adminOk(passcode))) return { ok: false, error: "Administrator authorization failed." }
   try {
     const existing = await getApprovalById(approvalId)
     if (!existing) return { ok: false, error: "This record could not be found." }
@@ -665,7 +667,7 @@ export async function adminListApprovals(
   passcode: string,
   filters?: { status?: ApprovalStatus; kind?: ApprovalKind; userId?: string },
 ): Promise<AdminApprovalsResult> {
-  if (!adminOk(passcode)) return { ok: false, error: "Administrator authorization failed." }
+  if (!(await adminOk(passcode))) return { ok: false, error: "Administrator authorization failed." }
   try {
     const requests = await listAllApprovals(filters)
     return { ok: true, requests }
@@ -676,7 +678,7 @@ export async function adminListApprovals(
 }
 
 export async function adminCountPending(passcode: string): Promise<Record<string, number>> {
-  if (!adminOk(passcode)) return {}
+  if (!(await adminOk(passcode))) return {}
   try {
     return await countPendingByKind()
   } catch (err) {
@@ -1050,7 +1052,7 @@ export async function adminDecideApproval(
   decision: "approved" | "rejected",
   note?: string,
 ): Promise<DecideResult> {
-  if (!adminOk(passcode)) return { ok: false, error: "Administrator authorization failed." }
+  if (!(await adminOk(passcode))) return { ok: false, error: "Administrator authorization failed." }
   if (decision === "rejected" && !note?.trim()) {
     return { ok: false, error: "A reason is required to reject a request." }
   }
@@ -1455,7 +1457,7 @@ export async function adminMarkCommodityDelivered(
   passcode: string,
   id: string,
 ): Promise<DecideResult> {
-  if (!adminOk(passcode)) return { ok: false, error: "Administrator authorization failed." }
+  if (!(await adminOk(passcode))) return { ok: false, error: "Administrator authorization failed." }
   try {
     const existing = await getApprovalById(id)
     if (!existing) return { ok: false, error: "Deal not found." }
@@ -1543,7 +1545,7 @@ export async function adminRevokeCommodityDeal(
   id: string,
   note?: string,
 ): Promise<DecideResult> {
-  if (!adminOk(passcode)) return { ok: false, error: "Administrator authorization failed." }
+  if (!(await adminOk(passcode))) return { ok: false, error: "Administrator authorization failed." }
   try {
     const existing = await getApprovalById(id)
     if (!existing) return { ok: false, error: "Deal not found." }
@@ -1772,7 +1774,7 @@ export async function adminIssueInstrument(
   userId: string,
   instrument: Record<string, unknown>,
 ): Promise<IssueInstrumentResult> {
-  if (!adminOk(passcode)) return { ok: false, error: "Administrator authorization failed." }
+  if (!(await adminOk(passcode))) return { ok: false, error: "Administrator authorization failed." }
   if (!userId) return { ok: false, error: "Select a client to issue to." }
 
   const id = String(instrument?.id ?? "").trim()
@@ -1973,7 +1975,7 @@ export async function adminBulkDecide(
   decision: "approved" | "rejected",
   note?: string,
 ): Promise<BulkDecideResult> {
-  if (!adminOk(passcode)) return { ok: false, decided: 0, failed: ids.length }
+  if (!(await adminOk(passcode))) return { ok: false, decided: 0, failed: ids.length }
   if (decision === "rejected" && !note?.trim()) {
     return { ok: false, decided: 0, failed: ids.length }
   }
