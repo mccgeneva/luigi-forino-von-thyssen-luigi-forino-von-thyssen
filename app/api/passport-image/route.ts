@@ -1,7 +1,7 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { get } from "@vercel/blob"
 import { resolveCurrentSession } from "@/lib/session-user"
-import { adminActionAuthorized } from "@/lib/admin-auth"
+import { verifyAdminPin } from "@/lib/admin-auth"
 
 // Blob access + session resolution require the Node.js runtime.
 export const runtime = "nodejs"
@@ -18,9 +18,12 @@ export const runtime = "nodejs"
 // through the admin-passcode-gated security-audit route, so the raw Blob URL is
 // never exposed in the app.
 export async function GET(request: NextRequest) {
+  // Read-only image proxy: a valid session OR the admin PIN (cookie-less new-tab
+  // / mobile-webview opens). The PIN branch intentionally does not require an
+  // admin session; escalation is blocked at the panel + action layer.
   const passcode = request.nextUrl.searchParams.get("p") ?? request.headers.get("x-admin-passcode") ?? ""
-  const isAdmin = passcode !== "" && (await adminActionAuthorized(passcode))
-  if (!isAdmin) {
+  const pinOk = passcode !== "" && verifyAdminPin(passcode)
+  if (!pinOk) {
     const session = await resolveCurrentSession()
     if (!session) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 })

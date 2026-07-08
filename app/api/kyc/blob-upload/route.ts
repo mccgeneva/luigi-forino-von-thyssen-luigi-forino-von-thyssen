@@ -1,6 +1,6 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { handleUpload, type HandleUploadBody } from "@vercel/blob/client"
-import { adminActionAuthorized } from "@/lib/admin-auth"
+import { verifyAdminPin } from "@/lib/admin-auth"
 
 // Token endpoint for browser → Blob direct uploads. Uploading the page images
 // straight from the admin's browser to Blob keeps the (large) image payload out
@@ -23,7 +23,10 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
         } catch {
           passcode = undefined
         }
-        if (!(await adminActionAuthorized(passcode))) {
+        // The upload token request does not carry the admin session cookie, so
+        // authorize on the admin PIN (passed in clientPayload). The uploaded
+        // path is constrained to "kyc/" below.
+        if (!verifyAdminPin(passcode)) {
           throw new Error("Unauthorized")
         }
         if (!pathname.startsWith("kyc/")) {
