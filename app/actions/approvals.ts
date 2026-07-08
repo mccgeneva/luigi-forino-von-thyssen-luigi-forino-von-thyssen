@@ -1023,11 +1023,27 @@ export async function reconcileMyApprovedCredits(): Promise<{ ok: boolean; appli
     let applied = 0
     for (const req of approved) {
       const entry = ledgerEntryForApproval(req)
-      // Back-fill both credits (incoming proceeds) and holds (reserved funds for
-      // approved commodity deals) so the balance reflects them on the same
-      // ledger it is read from, even for requests approved before the effect
-      // was wired in. Idempotent on `APPR-<id>`, so re-posting never doubles up.
-      if (entry && (entry.direction === "credit" || entry.status === "hold")) {
+      if (!entry) continue
+      // A DELIVERED commodity deal must settle: its reservation becomes a
+      // permanent `completed` debit (funds paid out to the supplier). Without
+      // this, a stale `hold` left behind by delivery (e.g. when a post-delivery
+      // amendment re-created the hold, or the one-time delivery settlement was
+      // bypassed) would stay frozen forever, because the credit/hold-only
+      // filter below would never overwrite it. `ledgerEntryForApproval` already
+      // returns this as a `completed` debit for delivered deals, so re-posting
+      // it (idempotent on `APPR-<id>`) unblocks the reserved funds on the next
+      // ledger hydration, cross-device.
+      const isDeliveredSettlement =
+        entry.direction === "debit" &&
+        entry.status === "completed" &&
+        HOLD_KINDS.has(req.kind) &&
+        (req.payload as { delivered?: boolean } | undefined)?.delivered === true
+      // Back-fill credits (incoming proceeds), holds (reserved funds for approved
+      // commodity deals) and delivered-settlement debits so the balance reflects
+      // them on the same ledger it is read from, even for requests approved
+      // before the effect was wired in. Idempotent on `APPR-<id>`, so re-posting
+      // never doubles up.
+      if (entry.direction === "credit" || entry.status === "hold" || isDeliveredSettlement) {
         // Post to the shared-data owner (Master for a sub) so the entry lands
         // on the same ledger the balance is read from.
         const ownerId = await resolveDataOwnerIdFor(req.userId)
