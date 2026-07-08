@@ -15,6 +15,7 @@ import { ADMIN_PASSCODE } from "@/lib/admin-config"
 import { geolocateIp, type IpGeo } from "@/lib/ip-geo"
 import { getIdentityStatus, getLastLoginSelfie, getAdminIdentityDetails, type IdentityStatus } from "@/lib/biometric-db"
 import { listDynamicUsers, getDynamicUserById } from "@/lib/admin-users-db"
+import type { SerializableUserProfile } from "@/lib/profile-types"
 import { listKycDocuments } from "@/lib/kyc-documents-db"
 import { blobFileUrl, type UploadedKycDocument, type KycDocument, type KycDocumentType } from "@/lib/kyc-types"
 import {
@@ -73,11 +74,9 @@ export interface ProfileKycDocView {
 }
 
 /** Build the profile-document views (incl. the original onboarding PDF) for a user. */
-async function buildProfileDocuments(
-  userId: string,
-): Promise<{ documents: ProfileKycDocView[]; pdfUrl: string | null }> {
-  const user = await getDynamicUserById(userId).catch(() => undefined)
-  const profile = user?.profile
+function buildProfileDocuments(
+  profile: SerializableUserProfile | null | undefined,
+): { documents: ProfileKycDocView[]; pdfUrl: string | null } {
   if (!profile) return { documents: [], pdfUrl: null }
   const docs = (profile.kycDocuments ?? []) as KycDocument[]
   const documents: ProfileKycDocView[] = docs
@@ -148,9 +147,17 @@ export async function buildAuditOverview(): Promise<AuditOverview> {
   }
 }
 
+/** Read the "country/nationality" value from a profile's detail rows, if present. */
+function profileCountry(profile: SerializableUserProfile | null | undefined): string | null {
+  if (!profile) return null
+  const rows = [...(profile.principal ?? []), ...(profile.companyInfo ?? [])]
+  const hit = rows.find((r) => /(country|nationality)/i.test(r.label) && r.value?.trim())
+  return hit?.value?.trim() || null
+}
+
 /** Full audit report for one account. */
 export async function buildUserAudit(userId: string, opts?: { category?: string }): Promise<UserAuditReport> {
-  const [stats, identity, adminIdentity, selfie, devices, events, documents, profile] = await Promise.all([
+  const [stats, identity, adminIdentity, selfie, devices, events, documents, user] = await Promise.all([
     getActorStats(userId),
     getIdentityStatus(userId),
     getAdminIdentityDetails(userId),
@@ -158,8 +165,15 @@ export async function buildUserAudit(userId: string, opts?: { category?: string 
     listUserDevices(userId),
     listAuditEvents({ userId, category: opts?.category, limit: 300 }),
     listKycDocuments(userId).catch(() => [] as UploadedKycDocument[]),
-    buildProfileDocuments(userId),
+    // Authoritative account record for THIS userId — the source of truth for the
+    // client's name/identity. Never derive identity from event `account` labels:
+    // those are free-text and have historically been polluted with the acting
+    // admin's name, which made every report show the admin ("returns myself").
+    getDynamicUserById(userId).catch(() => undefined),
   ])
+
+  const profile = user?.profile
+  const documentsProfile = buildProfileDocuments(profile)
 
   // Geolocate the most-recent distinct public IPs (cap the fan-out so a slow
   // geo service can't stall the report).
@@ -176,15 +190,30 @@ export async function buildUserAudit(userId: string, opts?: { category?: string 
   const located = await Promise.all(ips.map((ip) => geolocateIp(ip)))
   const locations = located.filter((l): l is IpGeo => !!l)
 
-  // Resolve the account label from stored data when the event trail lacks it.
+  // Resolve the account label AUTHORITATIVELY from the user's own profile — not
+  // from event `account` labels (which are polluted with the acting admin's
+  // name). Fall back to the biometric identity name, then the id, only if the
+  // account has no profile at all.
   const account =
-    events.find((e) => e.account)?.account || (identity.fullName ? `${identity.fullName}` : "") || userId
+    profile?.fullName?.trim() ||
+    profile?.company?.trim() ||
+    profile?.email?.trim() ||
+    (identity.fullName ? `${identity.fullName}` : "") ||
+    userId
+
+  // Enrich the (biometric) identity with the profile's own name/country so the
+  // report shows the correct client even before they complete biometric KYC.
+  const resolvedIdentity: IdentityStatus = {
+    ...identity,
+    fullName: identity.fullName || profile?.fullName?.trim() || null,
+    country: identity.country || profileCountry(profile),
+  }
 
   return {
     userId,
     account,
     stats,
-    identity,
+    identity: resolvedIdentity,
     passportNo: adminIdentity.passportNo,
     passportImageUrl: passportUrl(adminIdentity.passportImagePath),
     selfie: { url: selfieUrl(selfie?.url ?? null), at: selfie?.at ?? null },
@@ -192,7 +221,7 @@ export async function buildUserAudit(userId: string, opts?: { category?: string 
     locations,
     events,
     documents,
-    profileDocuments: profile.documents,
-    profileKycPdfUrl: profile.pdfUrl,
+    profileDocuments: documentsProfile.documents,
+    profileKycPdfUrl: documentsProfile.pdfUrl,
   }
 }
