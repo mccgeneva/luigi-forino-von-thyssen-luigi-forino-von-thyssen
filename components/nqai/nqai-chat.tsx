@@ -301,6 +301,10 @@ export function NqaiChat({ variant = "page" }: { variant?: "page" | "panel" }) {
   const [dragOver, setDragOver] = useState(false)
   // Multi-thread history state.
   const [threads, setThreads] = useState<NqaiThreadSummary[]>([])
+  // True only when a history LOAD actually failed (vs. the user genuinely
+  // having no saved conversations). Drives a "couldn't load — retry" state so a
+  // transient DB hiccup never looks like lost history.
+  const [historyLoadError, setHistoryLoadError] = useState(false)
   const [activeThreadId, setActiveThreadId] = useState<string | null>(null)
   const [loadingThreadId, setLoadingThreadId] = useState<string | null>(null)
   const [historyOpen, setHistoryOpen] = useState(false)
@@ -588,15 +592,32 @@ export function NqaiChat({ variant = "page" }: { variant?: "page" | "panel" }) {
   // On mount, fetch the personalized greeting and the user's thread history.
   // The console ALWAYS opens clean — we never seed the live transcript; the
   // user explicitly opens a thread from history to continue it.
+  const loadHistory = useCallback(async () => {
+    setHistoryLoadError(false)
+    // Retry a few times with backoff: the history panel is populated by a DB
+    // read that can transiently fail on a serverless cold start / Neon reset.
+    // We must not surface an empty "no conversations" state on a mere hiccup.
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const data = await bootstrapNqai()
+        if (data.ok) {
+          if (data.greeting) setGreeting(data.greeting)
+          setThreads(data.threads ?? [])
+          setFolders(data.folders ?? [])
+          return true
+        }
+      } catch {
+        /* fall through to retry */
+      }
+      await new Promise((r) => setTimeout(r, 400 * (attempt + 1)))
+    }
+    setHistoryLoadError(true)
+    return false
+  }, [])
+
   useEffect(() => {
     let active = true
-    bootstrapNqai()
-      .then((data) => {
-        if (!active) return
-        if (data.greeting) setGreeting(data.greeting)
-        setThreads(data.threads ?? [])
-        setFolders(data.folders ?? [])
-      })
+    loadHistory()
       .catch(() => {})
       .finally(() => {
         if (active) setBootstrapped(true)
@@ -604,7 +625,7 @@ export function NqaiChat({ variant = "page" }: { variant?: "page" | "panel" }) {
     return () => {
       active = false
     }
-  }, [])
+  }, [loadHistory])
 
   // Keep the thread-id ref in sync with state for the transport closure.
   const setActiveThread = useCallback((id: string | null) => {
@@ -616,10 +637,15 @@ export function NqaiChat({ variant = "page" }: { variant?: "page" | "panel" }) {
   const refreshThreads = useCallback(async () => {
     try {
       const next = await listNqaiOrganizerAction()
-      setThreads(next.threads)
-      setFolders(next.folders)
+      // Only overwrite local state on a confirmed-good load. On failure keep the
+      // existing threads/folders rather than blanking the panel to empty.
+      if (next.ok) {
+        setThreads(next.threads)
+        setFolders(next.folders)
+        setHistoryLoadError(false)
+      }
     } catch {
-      /* best-effort */
+      /* best-effort — preserve whatever is already displayed */
     }
   }, [])
 
@@ -922,6 +948,8 @@ export function NqaiChat({ variant = "page" }: { variant?: "page" | "panel" }) {
             props={organizerProps}
             onNewChat={handleNewChat}
             onOpenManager={() => setManagerOpen(true)}
+            loadError={historyLoadError}
+            onRetry={() => void loadHistory()}
           />
         </aside>
       )}
@@ -960,6 +988,8 @@ export function NqaiChat({ variant = "page" }: { variant?: "page" | "panel" }) {
                   setHistoryOpen(false)
                   setManagerOpen(true)
                 }}
+                loadError={historyLoadError}
+                onRetry={() => void loadHistory()}
               />
             </div>
           </aside>

@@ -30,6 +30,7 @@ import {
   Archive,
   ArchiveRestore,
   Check,
+  RefreshCw,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
@@ -1024,10 +1025,16 @@ export function FolderTreePanel({
   props,
   onNewChat,
   onOpenManager,
+  loadError = false,
+  onRetry,
 }: {
   props: OrganizerProps
   onNewChat: () => void
   onOpenManager: () => void
+  /** True when the last history load failed (distinct from "no conversations"). */
+  loadError?: boolean
+  /** Retry loading the history. */
+  onRetry?: () => void
 }) {
   const [sortMode, setSortMode] = useState<SortMode>("recent")
   const [showArchived, setShowArchived] = useState(false)
@@ -1102,6 +1109,19 @@ export function FolderTreePanel({
                 setHighlighted={search.setHighlighted}
               />
             </>
+          ) : empty && loadError ? (
+            <div className="flex flex-col items-start gap-2 px-2 py-3">
+              <p className="text-xs leading-relaxed text-muted-foreground">
+                Couldn&apos;t load your conversations just now. Your history is safe — this is only a
+                temporary connection issue.
+              </p>
+              {onRetry && (
+                <Button type="button" size="sm" variant="outline" onClick={onRetry} className="gap-1.5 text-[11px]">
+                  <RefreshCw className="h-3.5 w-3.5" />
+                  Retry
+                </Button>
+              )}
+            </div>
           ) : empty ? (
             <p className="px-2 py-3 text-xs leading-relaxed text-muted-foreground">
               No saved conversations yet. Your chats are stored privately and will appear here.
