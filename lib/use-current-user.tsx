@@ -30,6 +30,11 @@ import { SESSION_IDLE_MAX_AGE } from "@/lib/auth"
 
 const CurrentUserContext = createContext<UserProfile | null>(null)
 
+/** Whether the acting session is an authorized administrator. Resolved on the
+ *  server (allowlist + impersonation-aware) and used purely to decide whether to
+ *  SHOW admin navigation. Defaults to false so non-admins never see admin UI. */
+const IsAdminContext = createContext<boolean>(false)
+
 /** Imperative actions that let UI update the shared identity in place. Kept in a
  *  separate context so the many read-only `useCurrentUser()` consumers don't
  *  need to change. */
@@ -91,6 +96,10 @@ export function CurrentUserProvider({
     return profile
   })
 
+  // Seed the admin flag from the server-resolved identity so the correct nav is
+  // shown on first paint (no admin-link flash for non-admins).
+  const [isAdmin, setIsAdmin] = useState<boolean>(() => initialIdentity?.isAdmin ?? false)
+
   const initialId = initialIdentity?.id
 
   const refreshIdentity = useCallback(() => {
@@ -99,6 +108,7 @@ export function CurrentUserProvider({
         const profile = identityToProfile(identity)
         reconcileUserCookie(profile.id !== UNKNOWN_USER_ID ? profile.id : undefined)
         setUser(profile)
+        setIsAdmin(identity?.isAdmin ?? false)
       })
       .catch(() => {
         // ignore — keep the current identity on a transient failure.
@@ -121,6 +131,7 @@ export function CurrentUserProvider({
         const profile = identityToProfile(identity)
         reconcileUserCookie(profile.id !== UNKNOWN_USER_ID ? profile.id : undefined)
         setUser(profile)
+        setIsAdmin(identity?.isAdmin ?? false)
       })
       .catch(() => {
         // Network/transient error — keep the server-seeded identity rather than
@@ -139,7 +150,9 @@ export function CurrentUserProvider({
 
   return (
     <CurrentUserContext.Provider value={user}>
-      <CurrentUserActionsContext.Provider value={actions}>{children}</CurrentUserActionsContext.Provider>
+      <IsAdminContext.Provider value={isAdmin}>
+        <CurrentUserActionsContext.Provider value={actions}>{children}</CurrentUserActionsContext.Provider>
+      </IsAdminContext.Provider>
     </CurrentUserContext.Provider>
   )
 }
@@ -163,4 +176,14 @@ export function useCurrentUser(): UserProfile {
 export function useCurrentUserActions(): CurrentUserActions {
   const ctx = useContext(CurrentUserActionsContext)
   return ctx ?? { setAvatarUrl: () => {}, refreshIdentity: () => {} }
+}
+
+/**
+ * Whether the currently signed-in session is an authorized administrator.
+ * Server-resolved (allowlist + impersonation-aware). Use this to gate admin-only
+ * UI such as the Administrator navigation entry. Defaults to `false` outside a
+ * provider so admin UI is never shown by accident.
+ */
+export function useIsAdmin(): boolean {
+  return useContext(IsAdminContext)
 }

@@ -36,12 +36,15 @@ import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog"
 import { Button } from "@/components/ui/button"
 import { useBeneficiaries } from "@/lib/beneficiaries-store"
 import { useLedger } from "@/lib/ledger-store"
+import { useIsAdmin } from "@/lib/use-current-user"
 
 interface PageEntry {
   title: string
   href: string
   icon: LucideIcon
   keywords?: string
+  /** Only surfaced for authorized administrators. */
+  adminOnly?: boolean
 }
 
 const pages: PageEntry[] = [
@@ -60,7 +63,7 @@ const pages: PageEntry[] = [
   { title: "Plans & Pricing", href: "/dashboard/plans", icon: DollarSign, keywords: "subscription tier" },
   { title: "Services & Compliance", href: "/dashboard/services", icon: Shield, keywords: "kyc aml" },
   { title: "Client Handbook", href: "/dashboard/handbook", icon: BookOpen, keywords: "guide manual pdf" },
-  { title: "Administrator", href: "/dashboard/admin", icon: ShieldCheck, keywords: "approve reject admin" },
+  { title: "Administrator", href: "/dashboard/admin", icon: ShieldCheck, keywords: "approve reject admin", adminOnly: true },
   { title: "Settings", href: "/dashboard/settings", icon: Settings, keywords: "preferences account" },
   { title: "Support", href: "/dashboard/support", icon: HelpCircle, keywords: "help contact" },
 ]
@@ -70,6 +73,11 @@ export function GlobalSearch() {
   const router = useRouter()
   const { beneficiaries } = useBeneficiaries()
   const { entries } = useLedger()
+  const isAdmin = useIsAdmin()
+
+  // Hide admin-only pages from non-admins. UX filter only — the route is gated
+  // on the server regardless.
+  const visiblePages = useMemo(() => pages.filter((p) => !p.adminOnly || isAdmin), [isAdmin])
 
   // Open on Cmd/Ctrl+K.
   useEffect(() => {
@@ -142,7 +150,7 @@ export function GlobalSearch() {
               <CommandEmpty>No results found.</CommandEmpty>
 
               <CommandGroup heading="Pages">
-                {pages.map((p) => (
+                {visiblePages.map((p) => (
                   <CommandItem
                     key={p.href}
                     value={p.title}

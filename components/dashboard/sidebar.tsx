@@ -41,12 +41,15 @@ import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card"
+import { useIsAdmin } from "@/lib/use-current-user"
 
 type NavItem = {
   title: string
   href: string
   icon: LucideIcon
   badge?: string
+  /** Only rendered for authorized administrators. */
+  adminOnly?: boolean
 }
 
 type NavGroup = {
@@ -115,7 +118,7 @@ const navGroups: NavGroup[] = [
       { title: "Plans & Pricing", href: "/dashboard/plans", icon: DollarSign },
       { title: "Services & Compliance", href: "/dashboard/services", icon: Shield },
       { title: "Client Handbook", href: "/dashboard/handbook", icon: BookOpen },
-      { title: "Administrator", href: "/dashboard/admin", icon: ShieldCheck },
+      { title: "Administrator", href: "/dashboard/admin", icon: ShieldCheck, adminOnly: true },
       { title: "Settings", href: "/dashboard/settings", icon: Settings },
       { title: "Support", href: "/dashboard/support", icon: HelpCircle },
     ],
@@ -125,6 +128,16 @@ const navGroups: NavGroup[] = [
 export function DashboardSidebar() {
   const [collapsed, setCollapsed] = useState(false)
   const pathname = usePathname()
+  const isAdmin = useIsAdmin()
+
+  // Hide admin-only destinations (e.g. Administrator) from non-admins. This is a
+  // UX filter only — the admin routes are independently gated on the server.
+  const visibleNavGroups = navGroups
+    .map((group) => ({
+      ...group,
+      items: group.items.filter((item) => !item.adminOnly || isAdmin),
+    }))
+    .filter((group) => group.items.length > 0)
 
   const isActive = (href: string) => pathname === href
 
@@ -179,7 +192,7 @@ export function DashboardSidebar() {
         {collapsed ? (
           // Collapsed compact rail: one icon per group, hover opens a flyout dropdown of its pages.
           <div className="space-y-1">
-            {navGroups.map((group) => {
+            {visibleNavGroups.map((group) => {
               const GroupIcon = group.icon
               const active = groupContainsActive(group)
               return (
@@ -246,7 +259,7 @@ export function DashboardSidebar() {
         ) : (
           // Expanded: dynamic dropdown/accordion groups.
           <div className="space-y-2">
-            {navGroups.map((group) => {
+            {visibleNavGroups.map((group) => {
               const open = openGroups[group.label] ?? false
               return (
                 <Collapsible key={group.label} open={open} onOpenChange={() => toggleGroup(group.label)}>

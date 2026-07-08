@@ -537,12 +537,13 @@ export async function getMyProfile(): Promise<SerializableUserProfile | null> {
  * OWN identity.
  */
 export type MyIdentity =
-  | { kind: "static"; id: string; impersonator?: { id: string; name: string } }
+  | { kind: "static"; id: string; impersonator?: { id: string; name: string }; isAdmin: boolean }
   | {
       kind: "dynamic"
       id: string
       profile: SerializableUserProfile
       impersonator?: { id: string; name: string }
+      isAdmin: boolean
     }
 
 export async function getMyIdentity(): Promise<MyIdentity | null> {
@@ -550,14 +551,21 @@ export async function getMyIdentity(): Promise<MyIdentity | null> {
     const { resolveCurrentSession } = await import("@/lib/session-user")
     const session = await resolveCurrentSession()
     if (!session) return null
+    // Authoritative admin flag, resolved server-side from the acting account's
+    // email against the allowlist (impersonation-aware). The UI uses this only
+    // to decide whether to SHOW admin navigation — every admin route/action is
+    // still independently gated on the server, so hiding the link is a UX
+    // nicety, not the security boundary.
+    const { isCurrentSessionAdmin } = await import("@/lib/admin-auth")
+    const isAdmin = await isCurrentSessionAdmin()
     if (session.kind === "static") {
-      return { kind: "static", id: session.id, impersonator: session.impersonator }
+      return { kind: "static", id: session.id, impersonator: session.impersonator, isAdmin }
     }
     const rec = await getDynamicUserById(session.id)
     if (!rec) return null
     // Coerce the stored badge so legacy/blank tiers resolve to PRO / Avant-garde.
     const profile = { ...rec.profile, accountBadge: normalizeAccountBadge(rec.profile.accountBadge) }
-    return { kind: "dynamic", id: session.id, profile, impersonator: session.impersonator }
+    return { kind: "dynamic", id: session.id, profile, impersonator: session.impersonator, isAdmin }
   } catch {
     return null
   }
