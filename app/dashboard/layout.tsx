@@ -4,6 +4,7 @@ import { DashboardSidebar } from "@/components/dashboard/sidebar"
 import { DashboardHeader } from "@/components/dashboard/header"
 import { MarketTicker } from "@/components/dashboard/market-ticker"
 import { BackToTop } from "@/components/dashboard/back-to-top"
+import { PinchZoom } from "@/components/pinch-zoom"
 import { ActivityTracker } from "@/components/activity-tracker"
 import { CurrentUserProvider } from "@/lib/use-current-user"
 import { PdfViewerProvider } from "@/lib/pdf-viewer"
@@ -96,7 +97,11 @@ export default async function DashboardLayout({ children }: { children: React.Re
           <div className="flex flex-1 flex-col overflow-hidden">
             <DashboardHeader />
             <MarketTicker />
-            <main className="flex-1 overflow-y-auto p-4 pb-24 md:p-6 md:pb-24">{children}</main>
+            <main className="flex-1 overflow-hidden">
+              <PinchZoom>
+                <div className="p-4 pb-24 md:p-6 md:pb-24">{children}</div>
+              </PinchZoom>
+            </main>
           </div>
           <BackToTop />
         </div>
