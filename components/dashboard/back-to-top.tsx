@@ -13,9 +13,11 @@ export function BackToTop() {
   const [visible, setVisible] = useState(false)
   const [scroller, setScroller] = useState<HTMLElement | null>(null)
 
-  // The dashboard layout renders content inside a scrollable <main>.
+  // The dashboard layout renders content inside the pinch-zoom viewport
+  // (the actual scroll container), falling back to <main> if it isn't present.
   useEffect(() => {
-    const el = document.querySelector("main")
+    const el =
+      document.querySelector("[data-zoom-viewport]") ?? document.querySelector("main")
     setScroller(el instanceof HTMLElement ? el : null)
   }, [])
 
