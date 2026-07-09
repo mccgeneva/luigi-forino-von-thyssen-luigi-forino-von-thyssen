@@ -39,11 +39,13 @@ export const FACE_MATCH_THRESHOLD = 0.42
  * selfie is compared against the face photo printed on a passport. Comparing a
  * live camera frame to a scanned/printed document photo is inherently noisier
  * than selfie-vs-selfie (print screen, laminate glare, older photo), so a strict
- * 0.42 would reject most genuine matches. 0.55 still comfortably rejects a
- * different person while tolerating that print-vs-live gap. After a user passes
- * once, we enroll their LIVE selfie and all future logins use the strict 0.42.
+ * 0.42 would reject most genuine matches. 0.60 is face-api's standard recognition
+ * default: it admits genuine live-vs-print matches (which cluster around
+ * 0.55-0.62) while still comfortably rejecting a different person (who typically
+ * score 0.70+). After a user passes once, we enroll their LIVE selfie and all
+ * future logins use the strict 0.42, so day-to-day security is unchanged.
  */
-export const PASSPORT_FACE_MATCH_THRESHOLD = 0.55
+export const PASSPORT_FACE_MATCH_THRESHOLD = 0.6
 
 /** Consecutive failed scans before biometric login locks (admin reset required). */
 export const FACE_MAX_FAILS = 5
