@@ -13,6 +13,7 @@ import { PointerEventsGuard } from "@/components/pointer-events-guard"
 import { DemoSeedGate } from "@/components/demo-seed-gate"
 import { FundingCapitalReconciler } from "@/components/funding-capital-reconciler"
 import { TreasuryFinancingReconciler } from "@/components/treasury-financing-reconciler"
+import { LeverageInterestReconciler } from "@/components/leverage-interest-reconciler"
 import { BeneficiariesProvider } from "@/lib/beneficiaries-store"
 import { LedgerProvider } from "@/lib/ledger-store"
 import { PaymentRequestsProvider } from "@/lib/payment-requests-store"
@@ -72,6 +73,7 @@ export default async function DashboardLayout({ children }: { children: React.Re
       <PointerEventsGuard />
       <FundingCapitalReconciler />
       <TreasuryFinancingReconciler />
+      <LeverageInterestReconciler />
       <div className="flex h-dvh flex-col overflow-hidden bg-background">
         {/* Maintenance banner — only while an administrator is signed in as this client. */}
         {identity.impersonator && (

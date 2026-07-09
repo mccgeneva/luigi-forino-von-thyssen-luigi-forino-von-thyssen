@@ -102,6 +102,8 @@ import {
   LEVERAGE_ACCOUNTS,
   type LeverageRequest,
 } from "@/lib/leverage-requests-store"
+import { postedLeverageInterest } from "@/lib/leverage-financing"
+import { round2 } from "@/lib/interest-accrual"
 import { ADMIN_PASSCODE, ADMIN_SESSION_KEY } from "@/lib/admin-config"
 import { verifyAdminGate, confirmAdminSession } from "@/app/actions/admin-session"
 import { resetServerAccountDataForUser } from "@/app/actions/reset-account"
@@ -241,7 +243,7 @@ export default function AdminPage() {
     approveSwitchOff: approveLeverageSwitchOff,
     rejectSwitchOff: rejectLeverageSwitchOff,
   } = useLeverageRequests()
-  const { addReceipt, addDebit, balanceFor } = useLedger()
+  const { addReceipt, addDebit, balanceFor, entries: ledgerEntries } = useLedger()
   const logActivity = useActivityLog()
 
   const [rejectTarget, setRejectTarget] = useState<PaymentRequest | null>(null)
@@ -924,7 +926,13 @@ export default function AdminPage() {
   // Approve a switch-off: settle accrued interest and repay the borrowed
   // principal from the client's balance, then close the line.
   const handleApproveSwitchOff = (request: LeverageRequest) => {
-    const interest = accruedInterest(request, Date.now())
+    // Total lifetime interest, minus whatever has already been collected
+    // month-by-month by the LeverageInterestReconciler. At switch-off we only
+    // settle the REMAINDER so the client is never charged twice for the same
+    // accrued interest.
+    const totalInterest = accruedInterest(request, Date.now())
+    const alreadyPosted = postedLeverageInterest(request.id, ledgerEntries)
+    const interest = Math.max(0, round2(totalInterest - alreadyPosted))
     const now = new Date().toISOString()
     const repayRef = `LEV-RP-${Date.now().toString().slice(-8)}`
     const repayEntry = addDebit({

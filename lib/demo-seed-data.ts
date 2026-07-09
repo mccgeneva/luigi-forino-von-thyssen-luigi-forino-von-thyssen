@@ -158,7 +158,7 @@ export function leverageRequests() {
       leverageRatio: ratio,
       buyingPower: equity * ratio, // 2,000,000,000
       borrowedAmount: equity * (ratio - 1), // 1,800,000,000
-      interestRate: 0.018,
+      interestRate: 0.03,
       instrumentType: "Commodities & FX",
       notes: "Active leverage line — strong margin level",
       status: "approved",
