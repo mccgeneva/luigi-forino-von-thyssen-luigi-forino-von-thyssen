@@ -174,7 +174,117 @@ function classifyType(raw: string): Vessel["type"] {
   return "product"
 }
 
+/**
+ * Normalize an AIS navigational status (string label or numeric AIS code) into
+ * our internal VesselStatus. Falls back to "idle" for unknown / not-reported.
+ */
+function mapNavStatus(raw: unknown): Vessel["status"] {
+  const s = String(raw ?? "").toLowerCase().trim()
+  if (!s) return "idle"
+  // Numeric AIS navigational-status codes (ITU-R M.1371).
+  if (/^\d+$/.test(s)) {
+    const code = Number(s)
+    if (code === 1) return "anchored"
+    if (code === 5) return "moored"
+    if (code === 0 || code === 8) return "underway"
+    return "idle"
+  }
+  if (s.includes("anchor")) return "anchored"
+  if (s.includes("moor")) return "moored"
+  if (s.includes("load")) return "loading"
+  if (s.includes("discharg")) return "discharging"
+  if (s.includes("under way") || s.includes("underway") || s.includes("sailing") || s.includes("en route"))
+    return "underway"
+  return "idle"
+}
+
+/** Extract a [lat, lng] pair from the many shapes providers use for position. */
+function extractLatLng(row: Record<string, unknown>): { lat?: number; lng?: number } {
+  const pos = (row.last_known_position ?? row.lastPositionUpdate ?? row.position) as
+    | Record<string, unknown>
+    | undefined
+  const latRaw = row.latitude ?? row.lat ?? pos?.latitude ?? pos?.lat
+  const lngRaw = row.longitude ?? row.lon ?? row.lng ?? pos?.longitude ?? pos?.lon ?? pos?.lng
+  // GeoJSON geometry: { coordinates: [lng, lat] }
+  const coords = (pos?.coordinates ?? (row.geometry as Record<string, unknown>)?.coordinates) as
+    | unknown[]
+    | undefined
+  const lat = latRaw != null ? num(latRaw) : Array.isArray(coords) ? num(coords[1]) : undefined
+  const lng = lngRaw != null ? num(lngRaw) : Array.isArray(coords) ? num(coords[0]) : undefined
+  return {
+    lat: Number.isFinite(lat) && lat !== 0 ? lat : undefined,
+    lng: Number.isFinite(lng) && lng !== 0 ? lng : undefined,
+  }
+}
+
 type Adapter = (imo: string, token: string) => Promise<Vessel | { error: string }>
+
+// --- Kpler -----------------------------------------------------------------
+// Kpler is the premium maritime-intelligence source: full vessel master data,
+// live AIS position/voyage, and commodity cargo/trade-flow context — all keyed
+// by IMO. REST base is https://rest.sml.kpler.com with Bearer-token auth.
+// Field names vary across Kpler's tiers, so every read is defensive.
+const kpler: Adapter = async (imo, token) => {
+  const res = await fetch(`https://rest.sml.kpler.com/vessels?imo=${encodeURIComponent(imo)}`, {
+    headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
+    cache: "no-store",
+  })
+  if (!res.ok) {
+    if (res.status === 401 || res.status === 403) return { error: "Kpler rejected the API key (unauthorized)." }
+    return { error: `Kpler responded with ${res.status}.` }
+  }
+  const json = (await res.json()) as unknown
+  // Accept array, {data:[]}, {vessels:[]}, {nodes:[]} or a bare object.
+  const list = Array.isArray(json)
+    ? json
+    : ((json as Record<string, unknown>)?.data ??
+        (json as Record<string, unknown>)?.vessels ??
+        (json as Record<string, unknown>)?.nodes ??
+        (json ? [json] : [])) as unknown[]
+  const row = (Array.isArray(list) ? list[0] : undefined) as Record<string, unknown> | undefined
+  if (!row) return { error: "No vessel found for that IMO at Kpler." }
+
+  // Some tiers nest master fields under staticData and position under lastPositionUpdate.
+  const staticData = (row.staticData ?? row.static_data ?? {}) as Record<string, unknown>
+  const get = (...keys: string[]): unknown => {
+    for (const k of keys) {
+      if (row[k] != null) return row[k]
+      if (staticData[k] != null) return staticData[k]
+    }
+    return undefined
+  }
+
+  const typeRaw = String(
+    get("vessel_type", "vesselType", "type", "vessel_type_cargo", "ship_and_cargo_type") ?? "",
+  )
+  const type = classifyType(typeRaw)
+  const { lat, lng } = extractLatLng(row)
+  const cargoRaw = get("vessel_type_cargo", "ship_and_cargo_type", "cargo", "commodity", "last_cargo")
+
+  return {
+    imo,
+    name: String(get("name", "vessel_name", "shipname") ?? `IMO ${imo}`),
+    type,
+    vesselClass: typeRaw || undefined,
+    capacity: num(get("vessel_dwt_tons", "dead_weight_tonnage", "deadweight", "dwt", "capacity")),
+    capacityUnit: type === "gas" ? "CBM" : "DWT",
+    status: mapNavStatus(get("navigation_status", "nav_status", "status", "ais_status")),
+    location: String(get("destination", "current_port", "port", "last_port") ?? "Unknown"),
+    lat,
+    lng,
+    flag: (() => {
+      const f = get("flag_country", "flag_name", "flag")
+      return f ? String(f) : undefined
+    })(),
+    builtYear: (() => {
+      const y = get("build_year", "year_built", "built")
+      return y ? num(y) : undefined
+    })(),
+    cargo: cargoRaw ? String(cargoRaw) : undefined,
+    source: "kpler",
+    updatedAt: new Date().toISOString(),
+  }
+}
 
 // --- MarineTraffic ---------------------------------------------------------
 const marineTraffic: Adapter = async (imo, token) => {
@@ -257,6 +367,7 @@ const vesselFinder: Adapter = async (imo, token) => {
 }
 
 const PROVIDER_ADAPTERS: Record<VesselProviderId, Adapter> = {
+  kpler,
   marinetraffic: marineTraffic,
   datalastic,
   vesselfinder: vesselFinder,

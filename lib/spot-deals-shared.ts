@@ -45,7 +45,14 @@ export const VESSEL_STATUS_LABELS: Record<VesselStatus, string> = {
 }
 
 /** Where the row originated, for the audit trail / import provenance. */
-export type VesselSource = "manual" | "marinetraffic" | "datalastic" | "vesselfinder" | "compliance" | "seed"
+export type VesselSource =
+  | "manual"
+  | "kpler"
+  | "marinetraffic"
+  | "datalastic"
+  | "vesselfinder"
+  | "compliance"
+  | "seed"
 
 /**
  * Result of the free, token-free compliance auto-check that runs on every
@@ -78,7 +85,7 @@ export interface VesselCompliance {
 }
 
 /** Identifier for a live AIS / vessel-data provider the app can link to. */
-export type VesselProviderId = "marinetraffic" | "datalastic" | "vesselfinder"
+export type VesselProviderId = "kpler" | "marinetraffic" | "datalastic" | "vesselfinder"
 
 export interface VesselProviderInfo {
   id: VesselProviderId
@@ -96,6 +103,12 @@ export interface VesselProviderInfo {
  * adapter in lib/vessel-providers.ts to support it everywhere.
  */
 export const VESSEL_PROVIDERS: VesselProviderInfo[] = [
+  {
+    id: "kpler",
+    label: "Kpler",
+    envVar: "KPLER_API_KEY",
+    signupUrl: "https://www.kpler.com/",
+  },
   {
     id: "marinetraffic",
     label: "MarineTraffic",
