@@ -79,7 +79,10 @@ export function leverageRatiosFor(account: LeverageAccountKey): number[] {
 }
 
 // Annual debit interest rate charged on the borrowed (leveraged) funds.
-export const DEBIT_INTEREST_RATE = 0.018 // 1.8% per year
+// Leverage is DEBIT LENDING, billed at the same 3% p.a. as Special Treasury
+// Financing (charged monthly as 3% / 12). This is distinct from Project Finance,
+// which is an INVESTMENT product carrying a 1.8% p.a. ROI, not a debit rate.
+export const DEBIT_INTEREST_RATE = 0.03 // 3% per year
 
 // Risk thresholds expressed as a margin level percentage (equity / used margin).
 export const RISK_THRESHOLDS = {
