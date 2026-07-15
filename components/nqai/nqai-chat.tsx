@@ -314,6 +314,9 @@ export function NqaiChat({ variant = "page" }: { variant?: "page" | "panel" }) {
   const [focusedFolderId, setFocusedFolderId] = useState<string | null>(null)
   const [renamingId, setRenamingId] = useState<string | null>(null)
   const [managerOpen, setManagerOpen] = useState(false)
+  // True once the conversation is scrolled away from the top, so the
+  // Scroll-to-Top control appears only contextually (per the nav spec).
+  const [scrolledDown, setScrolledDown] = useState(false)
   const scrollRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -683,6 +686,22 @@ export function NqaiChat({ variant = "page" }: { variant?: "page" | "panel" }) {
     textareaRef.current?.focus()
   }, [])
 
+  // Jump straight back to the very top of the conversation.
+  const scrollToTop = useCallback(() => {
+    scrollRef.current?.scrollTo({ top: 0, behavior: "smooth" })
+  }, [])
+
+  // Reveal the Scroll-to-Top control only once the user has scrolled down a
+  // meaningful amount, so it stays out of the way at the top of a chat.
+  useEffect(() => {
+    const el = scrollRef.current
+    if (!el) return
+    const onScroll = () => setScrolledDown(el.scrollTop > 320)
+    onScroll()
+    el.addEventListener("scroll", onScroll, { passive: true })
+    return () => el.removeEventListener("scroll", onScroll)
+  }, [bootstrapped])
+
   // Clear the live transcript and start a fresh thread (clean welcome view).
   // The next message will lazily create a new thread id.
   const handleNewChat = useCallback(() => {
@@ -1000,10 +1019,68 @@ export function NqaiChat({ variant = "page" }: { variant?: "page" | "panel" }) {
           (tables, long tokens) can never widen the layout and push the composer's
           send button off the right edge of the viewport. */}
       <div className="relative flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-x-hidden">
-      {/* Persistent left-side scroll toggle — always available so the user can
-          move long content up/down and jump straight to the composer, even when
-          a mobile in-app browser chrome crowds the bottom of the screen. */}
-      <div className="pointer-events-none absolute left-1.5 top-1/2 z-30 -translate-y-1/2 sm:left-2">
+      {/* Persistent left-side control bar — grouped pills that stay visible and
+          non-overlapping at all times: (1) core actions (New Chat, History,
+          Stop), (2) a contextual Scroll-to-Top, and (3) scroll navigation
+          (page up/down + jump to composer). Kept vertically centred on the left
+          edge so long generated documents can always be navigated, even when a
+          mobile in-app browser chrome crowds the bottom of the screen. */}
+      <div className="pointer-events-none absolute left-1.5 top-1/2 z-30 flex -translate-y-1/2 flex-col gap-2 sm:left-2">
+        {/* Core actions */}
+        <div className="pointer-events-auto flex flex-col overflow-hidden rounded-full border border-border bg-card/95 shadow-lg backdrop-blur supports-[backdrop-filter]:bg-card/80">
+          <button
+            type="button"
+            onClick={handleNewChat}
+            disabled={busy}
+            className="flex h-11 w-11 items-center justify-center text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none active:bg-accent disabled:opacity-40"
+            aria-label="Start a new conversation"
+            title="New chat"
+          >
+            <Plus className="h-5 w-5" />
+          </button>
+          <button
+            type="button"
+            onClick={() => setHistoryOpen(true)}
+            className={cn(
+              "flex h-11 w-11 items-center justify-center border-t border-border text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none active:bg-accent",
+              // On the page variant a persistent history sidebar is already shown
+              // at lg+, so the drawer toggle is only needed below lg.
+              variant === "page" && "lg:hidden",
+            )}
+            aria-label="Open conversation history"
+            title="History"
+          >
+            <History className="h-5 w-5" />
+          </button>
+          {busy && (
+            <button
+              type="button"
+              onClick={() => stop()}
+              className="flex h-11 w-11 items-center justify-center border-t border-border text-destructive transition-colors hover:bg-destructive/10 focus-visible:outline-none active:bg-destructive/15"
+              aria-label="Stop generating"
+              title="Stop"
+            >
+              <Square className="h-4 w-4 fill-current" />
+            </button>
+          )}
+        </div>
+
+        {/* Contextual scroll-to-top — appears only after scrolling down */}
+        {scrolledDown && (
+          <div className="pointer-events-auto flex flex-col overflow-hidden rounded-full border border-primary/40 bg-card/95 shadow-lg backdrop-blur supports-[backdrop-filter]:bg-card/80">
+            <button
+              type="button"
+              onClick={scrollToTop}
+              className="flex h-11 w-11 items-center justify-center text-primary transition-colors hover:bg-primary/10 focus-visible:outline-none active:bg-primary/15"
+              aria-label="Scroll to top of conversation"
+              title="Back to top"
+            >
+              <ArrowUp className="h-5 w-5" />
+            </button>
+          </div>
+        )}
+
+        {/* Scroll navigation */}
         <div className="pointer-events-auto flex flex-col overflow-hidden rounded-full border border-border bg-card/95 shadow-lg backdrop-blur supports-[backdrop-filter]:bg-card/80">
           <button
             type="button"
