@@ -1065,21 +1065,6 @@ export function NqaiChat({ variant = "page" }: { variant?: "page" | "panel" }) {
           )}
         </div>
 
-        {/* Contextual scroll-to-top — appears only after scrolling down */}
-        {scrolledDown && (
-          <div className="pointer-events-auto flex flex-col overflow-hidden rounded-full border border-primary/40 bg-card/95 shadow-lg backdrop-blur supports-[backdrop-filter]:bg-card/80">
-            <button
-              type="button"
-              onClick={scrollToTop}
-              className="flex h-11 w-11 items-center justify-center text-primary transition-colors hover:bg-primary/10 focus-visible:outline-none active:bg-primary/15"
-              aria-label="Scroll to top of conversation"
-              title="Back to top"
-            >
-              <ArrowUp className="h-5 w-5" />
-            </button>
-          </div>
-        )}
-
         {/* Scroll navigation */}
         <div className="pointer-events-auto flex flex-col overflow-hidden rounded-full border border-border bg-card/95 shadow-lg backdrop-blur supports-[backdrop-filter]:bg-card/80">
           <button
@@ -1441,8 +1426,23 @@ export function NqaiChat({ variant = "page" }: { variant?: "page" | "panel" }) {
       {/* Composer */}
       <form
         onSubmit={onSubmit}
-        className="border-t border-border bg-card p-3 [padding-bottom:calc(0.75rem+env(safe-area-inset-bottom))]"
+        className="relative border-t border-border bg-card p-3 [padding-bottom:calc(0.75rem+env(safe-area-inset-bottom))]"
       >
+        {/* Floating "back to top" pill — centered just above the composer so it
+            sits right where the user is looking when scrolled to the bottom,
+            and never overlaps the send button on the right. Appears only once
+            the conversation has been scrolled down. */}
+        {scrolledDown && (
+          <button
+            type="button"
+            onClick={scrollToTop}
+            className="absolute -top-12 left-1/2 z-30 flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-border bg-card/95 px-3.5 py-2 text-xs font-medium text-foreground shadow-lg backdrop-blur transition-colors hover:border-primary/50 hover:text-primary supports-[backdrop-filter]:bg-card/80"
+            aria-label="Scroll to the start of the conversation"
+          >
+            <ArrowUp className="h-4 w-4" />
+            <span>Top</span>
+          </button>
+        )}
         <div className="mx-auto w-full max-w-3xl">
           <input
             ref={fileInputRef}
