@@ -1622,7 +1622,7 @@ export function NqaiChat({ variant = "page" }: { variant?: "page" | "panel" }) {
             type="button"
             onClick={scrollToTop}
             className="fixed left-1/2 z-[60] flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-primary/50 bg-primary px-4 py-2.5 text-sm font-semibold text-primary-foreground shadow-xl transition-transform active:scale-95"
-            style={{ bottom: "calc(5.5rem + env(safe-area-inset-bottom))" }}
+            style={{ bottom: "calc(9.5rem + env(safe-area-inset-bottom))" }}
             aria-label="Scroll to the start of the conversation"
           >
             <ArrowUp className="h-4 w-4" />
