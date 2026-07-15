@@ -662,45 +662,74 @@ export function NqaiChat({ variant = "page" }: { variant?: "page" | "panel" }) {
     prevStatusRef.current = status
   }, [status, refreshThreads])
 
+  // Resolve the element that ACTUALLY scrolls. Depending on the height chain
+  // of the surrounding layout (the dashboard wraps content in a pinch-zoom
+  // viewport), the conversation may scroll either its own inner container OR an
+  // ancestor scroll container. We pick whichever currently has real overflow so
+  // every scroll action + the "back to top" visibility work reliably.
+  const getScroller = useCallback((): HTMLElement | null => {
+    const inner = scrollRef.current
+    if (!inner) return null
+    if (inner.scrollHeight > inner.clientHeight + 4) return inner
+    let el: HTMLElement | null = inner.parentElement
+    while (el) {
+      const oy = getComputedStyle(el).overflowY
+      if ((oy === "auto" || oy === "scroll") && el.scrollHeight > el.clientHeight + 4) return el
+      el = el.parentElement
+    }
+    return inner
+  }, [])
+
   // Auto-scroll to the newest content as it streams in.
   useEffect(() => {
-    const el = scrollRef.current
+    const el = getScroller()
     if (el) el.scrollTo({ top: el.scrollHeight, behavior: "smooth" })
-  }, [messages, busy])
+  }, [messages, busy, getScroller])
 
   // Manual navigation for the persistent left-side scroll toggle. Long
   // generated documents (handbooks, tables, ASCII diagrams) can run for many
   // screens, so the user always needs a reliable way to move the conversation
   // up/down and to jump straight to the composer at the very bottom.
-  const scrollByPage = useCallback((direction: 1 | -1) => {
-    const el = scrollRef.current
-    if (!el) return
-    // Scroll ~85% of the visible height so a little context carries over.
-    el.scrollBy({ top: direction * el.clientHeight * 0.85, behavior: "smooth" })
-  }, [])
+  const scrollByPage = useCallback(
+    (direction: 1 | -1) => {
+      const el = getScroller()
+      if (!el) return
+      // Scroll ~85% of the visible height so a little context carries over.
+      el.scrollBy({ top: direction * el.clientHeight * 0.85, behavior: "smooth" })
+    },
+    [getScroller],
+  )
 
   const scrollToInput = useCallback(() => {
-    const el = scrollRef.current
+    const el = getScroller()
     if (el) el.scrollTo({ top: el.scrollHeight, behavior: "smooth" })
     // Focus the composer so the input + send button are immediately usable.
     textareaRef.current?.focus()
-  }, [])
+  }, [getScroller])
 
   // Jump straight back to the very top of the conversation.
   const scrollToTop = useCallback(() => {
-    scrollRef.current?.scrollTo({ top: 0, behavior: "smooth" })
-  }, [])
+    getScroller()?.scrollTo({ top: 0, behavior: "smooth" })
+  }, [getScroller])
 
-  // Reveal the Scroll-to-Top control only once the user has scrolled down a
-  // meaningful amount, so it stays out of the way at the top of a chat.
+  // Reveal the Scroll-to-Top control once the user has scrolled down. We listen
+  // on BOTH the inner container and the zoom viewport so it works no matter
+  // which one is the active scroller, and re-evaluate as the transcript grows.
   useEffect(() => {
-    const el = scrollRef.current
-    if (!el) return
-    const onScroll = () => setScrolledDown(el.scrollTop > 320)
-    onScroll()
-    el.addEventListener("scroll", onScroll, { passive: true })
-    return () => el.removeEventListener("scroll", onScroll)
-  }, [bootstrapped])
+    const inner = scrollRef.current
+    if (!inner) return
+    const candidates: HTMLElement[] = [inner]
+    const viewport = document.querySelector("[data-zoom-viewport]")
+    if (viewport instanceof HTMLElement && viewport !== inner) candidates.push(viewport)
+    const update = () => {
+      const active =
+        candidates.find((c) => c.scrollHeight > c.clientHeight + 4) ?? inner
+      setScrolledDown(active.scrollTop > 200)
+    }
+    update()
+    candidates.forEach((c) => c.addEventListener("scroll", update, { passive: true }))
+    return () => candidates.forEach((c) => c.removeEventListener("scroll", update))
+  }, [bootstrapped, messages])
 
   // Clear the live transcript and start a fresh thread (clean welcome view).
   // The next message will lazily create a new thread id.
