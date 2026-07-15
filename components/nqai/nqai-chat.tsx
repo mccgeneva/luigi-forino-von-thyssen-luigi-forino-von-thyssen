@@ -314,9 +314,6 @@ export function NqaiChat({ variant = "page" }: { variant?: "page" | "panel" }) {
   const [focusedFolderId, setFocusedFolderId] = useState<string | null>(null)
   const [renamingId, setRenamingId] = useState<string | null>(null)
   const [managerOpen, setManagerOpen] = useState(false)
-  // True once the conversation is scrolled away from the top, so the
-  // Scroll-to-Top control appears only contextually (per the nav spec).
-  const [scrolledDown, setScrolledDown] = useState(false)
   const scrollRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -707,29 +704,35 @@ export function NqaiChat({ variant = "page" }: { variant?: "page" | "panel" }) {
     textareaRef.current?.focus()
   }, [getScroller])
 
-  // Jump straight back to the very top of the conversation.
+  // Jump back to the very top of the conversation. Instead of guessing which
+  // single element scrolls, we scroll EVERY plausible container to the top at
+  // once — the inner container, any scrollable ancestor, the pinch-zoom
+  // viewport, and the window. Scrolling one that is already at the top is a
+  // harmless no-op, so this works regardless of the surrounding layout.
   const scrollToTop = useCallback(() => {
-    getScroller()?.scrollTo({ top: 0, behavior: "smooth" })
-  }, [getScroller])
-
-  // Reveal the Scroll-to-Top control once the user has scrolled down. We listen
-  // on BOTH the inner container and the zoom viewport so it works no matter
-  // which one is the active scroller, and re-evaluate as the transcript grows.
-  useEffect(() => {
+    const targets = new Set<Element | Window>()
     const inner = scrollRef.current
-    if (!inner) return
-    const candidates: HTMLElement[] = [inner]
-    const viewport = document.querySelector("[data-zoom-viewport]")
-    if (viewport instanceof HTMLElement && viewport !== inner) candidates.push(viewport)
-    const update = () => {
-      const active =
-        candidates.find((c) => c.scrollHeight > c.clientHeight + 4) ?? inner
-      setScrolledDown(active.scrollTop > 200)
+    if (inner) {
+      targets.add(inner)
+      let el: HTMLElement | null = inner.parentElement
+      while (el) {
+        const oy = getComputedStyle(el).overflowY
+        if (oy === "auto" || oy === "scroll") targets.add(el)
+        el = el.parentElement
+      }
     }
-    update()
-    candidates.forEach((c) => c.addEventListener("scroll", update, { passive: true }))
-    return () => candidates.forEach((c) => c.removeEventListener("scroll", update))
-  }, [bootstrapped, messages])
+    const viewport = document.querySelector("[data-zoom-viewport]")
+    if (viewport) targets.add(viewport)
+    if (document.scrollingElement) targets.add(document.scrollingElement)
+    targets.add(window)
+    targets.forEach((t) => {
+      try {
+        ;(t as HTMLElement | Window).scrollTo({ top: 0, behavior: "smooth" })
+      } catch {
+        /* ignore any element that can't be scrolled */
+      }
+    })
+  }, [])
 
   // Clear the live transcript and start a fresh thread (clean welcome view).
   // The next message will lazily create a new thread id.
@@ -1458,10 +1461,10 @@ export function NqaiChat({ variant = "page" }: { variant?: "page" | "panel" }) {
         className="relative border-t border-border bg-card p-3 [padding-bottom:calc(0.75rem+env(safe-area-inset-bottom))]"
       >
         {/* Floating "back to top" pill — centered just above the composer so it
-            sits right where the user is looking when scrolled to the bottom,
-            and never overlaps the send button on the right. Appears only once
-            the conversation has been scrolled down. */}
-        {scrolledDown && (
+            sits right where the user is looking, and never overlaps the send
+            button on the right. Shown whenever there is a conversation to scroll
+            through (no fragile scroll-position detection). */}
+        {messages.length > 0 && (
           <button
             type="button"
             onClick={scrollToTop}
