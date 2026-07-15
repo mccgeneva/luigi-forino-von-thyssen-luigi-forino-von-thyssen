@@ -32,6 +32,9 @@ import {
   ChevronUp,
   ChevronDown,
   CornerDownRight,
+  Zap,
+  Brain,
+  Check,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
@@ -56,6 +59,17 @@ import { usePdfViewer } from "@/lib/pdf-viewer"
 import { useCurrentUser } from "@/lib/use-current-user"
 import { generateNqaiDocumentPdf } from "@/lib/nqai-document-pdf"
 import { warmPdfLogos, pickPdfBrand, type PdfBrand } from "@/lib/pdf-logos"
+
+/** NQAi reasoning modes surfaced by the composer "Auto" pill. These are NQAi's
+ *  own capability tiers (never the underlying model names) — the server maps
+ *  them to the right compute: Auto lets NQAi choose per task, Fast favours
+ *  responsiveness, Max engages the deepest reasoning. */
+type NqaiMode = "auto" | "fast" | "max"
+const NQAI_MODES: { id: NqaiMode; label: string; icon: typeof Sparkles; desc: string }[] = [
+  { id: "auto", label: "Auto", icon: Sparkles, desc: "NQAi selects the right depth for each task" },
+  { id: "fast", label: "Fast", icon: Zap, desc: "Snappy replies for quick questions" },
+  { id: "max", label: "Max", icon: Brain, desc: "Deepest reasoning for complex analysis" },
+]
 
 /** Client-accepted upload types and the limit, mirrored by the upload route.
  *  Office/rich-text/tiff/bin are extracted or converted server-side into a
@@ -320,13 +334,25 @@ export function NqaiChat({ variant = "page" }: { variant?: "page" | "panel" }) {
   // The active thread id is read inside the transport at send time, so keep a
   // ref in sync with the state to avoid stale closures.
   const activeThreadIdRef = useRef<string | null>(null)
-  // Build the transport once; inject the current thread id into every request.
+  // Selected reasoning mode (Auto/Fast/Max). Kept in a ref so the transport
+  // closure reads the live value at send time without being rebuilt.
+  const [mode, setMode] = useState<NqaiMode>("auto")
+  const [modeMenuOpen, setModeMenuOpen] = useState(false)
+  const modeRef = useRef<NqaiMode>("auto")
+  modeRef.current = mode
+  // Build the transport once; inject the current thread id + mode into every request.
   const transportRef = useRef<DefaultChatTransport<UIMessage> | null>(null)
   if (!transportRef.current) {
     transportRef.current = new DefaultChatTransport<UIMessage>({
       api: "/api/nqai",
       prepareSendMessagesRequest: ({ body, messages, id }) => ({
-        body: { ...body, messages, id, threadId: activeThreadIdRef.current ?? "" },
+        body: {
+          ...body,
+          messages,
+          id,
+          threadId: activeThreadIdRef.current ?? "",
+          mode: modeRef.current,
+        },
       }),
     })
   }
@@ -339,6 +365,8 @@ export function NqaiChat({ variant = "page" }: { variant?: "page" | "panel" }) {
 
   const busy = status === "submitted" || status === "streaming"
   const hasConversation = messages.length > 0
+  const activeMode = NQAI_MODES.find((m) => m.id === mode) ?? NQAI_MODES[0]
+  const ActiveModeIcon = activeMode.icon
   // Track composer focus so we can hide the "Top" button while the
   // on-screen keyboard is open (a fixed-position button otherwise floats up
   // into the message text when the keyboard shrinks the viewport).
@@ -1594,6 +1622,77 @@ export function NqaiChat({ variant = "page" }: { variant?: "page" | "panel" }) {
               className="min-h-[22px] flex-1 resize-none bg-transparent text-[13px] leading-relaxed text-foreground placeholder:text-muted-foreground focus:outline-none"
               aria-label="Message NQAi"
             />
+            {/* Reasoning-mode selector — the "Auto" pill. Rounded, dark-theme
+                styled; opens a small menu to switch between NQAi's own Auto /
+                Fast / Max tiers. The choice is sent with every message. */}
+            <div className="relative shrink-0 self-end">
+              {modeMenuOpen && (
+                <>
+                  <button
+                    type="button"
+                    aria-hidden
+                    tabIndex={-1}
+                    onClick={() => setModeMenuOpen(false)}
+                    className="fixed inset-0 z-40 cursor-default"
+                  />
+                  <div
+                    role="menu"
+                    className="absolute bottom-full right-0 z-50 mb-2 w-64 overflow-hidden rounded-xl border border-border bg-card p-1 shadow-xl"
+                  >
+                    {NQAI_MODES.map((m) => {
+                      const Icon = m.icon
+                      const active = m.id === mode
+                      return (
+                        <button
+                          key={m.id}
+                          type="button"
+                          role="menuitemradio"
+                          aria-checked={active}
+                          onClick={() => {
+                            setMode(m.id)
+                            setModeMenuOpen(false)
+                          }}
+                          className={cn(
+                            "flex w-full items-start gap-2.5 rounded-lg px-2.5 py-2 text-left transition-colors",
+                            active ? "bg-primary/10" : "hover:bg-accent",
+                          )}
+                        >
+                          <Icon
+                            className={cn(
+                              "mt-0.5 h-4 w-4 shrink-0",
+                              active ? "text-primary" : "text-muted-foreground",
+                            )}
+                          />
+                          <span className="flex-1">
+                            <span className="flex items-center gap-1.5 text-sm font-medium text-foreground">
+                              {m.label}
+                              {active && <Check className="h-3.5 w-3.5 text-primary" />}
+                            </span>
+                            <span className="mt-0.5 block text-[11px] leading-snug text-muted-foreground">
+                              {m.desc}
+                            </span>
+                          </span>
+                        </button>
+                      )
+                    })}
+                  </div>
+                </>
+              )}
+              <button
+                type="button"
+                onClick={() => setModeMenuOpen((o) => !o)}
+                disabled={busy}
+                className="flex h-8 items-center gap-1.5 rounded-full border border-border bg-background px-3 text-xs font-medium text-foreground transition-colors hover:border-primary/50 hover:text-primary disabled:opacity-50"
+                aria-haspopup="menu"
+                aria-expanded={modeMenuOpen}
+                aria-label={`NQAi reasoning mode: ${activeMode.label}. Tap to change.`}
+                title="NQAi reasoning mode"
+              >
+                <ActiveModeIcon className="h-3.5 w-3.5" />
+                <span>{activeMode.label}</span>
+                <ChevronDown className="h-3 w-3 opacity-60" />
+              </button>
+            </div>
             {busy ? (
               <Button
                 type="button"
