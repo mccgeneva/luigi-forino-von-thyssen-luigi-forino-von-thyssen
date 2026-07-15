@@ -39,7 +39,9 @@ export function BackToTop() {
       onClick={scrollToTop}
       aria-label="Back to top"
       className={cn(
-        "fixed bottom-6 right-6 z-50 flex h-11 w-11 items-center justify-center rounded-full",
+        // Pinned bottom-LEFT so it never overlaps the NQAi composer's send
+        // button (which is always bottom-right). h-12/w-12 keeps a >=44px touch target.
+        "fixed bottom-6 left-6 z-50 flex h-12 w-12 items-center justify-center rounded-full",
         "border border-border bg-primary text-primary-foreground shadow-lg",
         "transition-all duration-300 hover:opacity-90",
         visible ? "translate-y-0 opacity-100" : "pointer-events-none translate-y-4 opacity-0"
