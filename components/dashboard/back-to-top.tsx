@@ -1,6 +1,7 @@
 "use client"
 
 import { useEffect, useState } from "react"
+import { usePathname } from "next/navigation"
 import { ArrowUp } from "lucide-react"
 import { cn } from "@/lib/utils"
 
@@ -12,6 +13,12 @@ import { cn } from "@/lib/utils"
 export function BackToTop() {
   const [visible, setVisible] = useState(false)
   const [scroller, setScroller] = useState<HTMLElement | null>(null)
+  const pathname = usePathname()
+
+  // The NQAi chat page has its own dedicated scroll controls (page up/down +
+  // jump-to-composer) and a bottom-right send button, so the global control is
+  // redundant there and would collide with the composer. Hide it on that route.
+  const hidden = pathname?.startsWith("/dashboard/nqai") ?? false
 
   // The dashboard layout renders content inside the pinch-zoom viewport
   // (the actual scroll container), falling back to <main> if it isn't present.
@@ -33,15 +40,16 @@ export function BackToTop() {
     scroller?.scrollTo({ top: 0, behavior: "smooth" })
   }
 
+  if (hidden) return null
+
   return (
     <button
       type="button"
       onClick={scrollToTop}
       aria-label="Back to top"
       className={cn(
-        // Pinned bottom-LEFT so it never overlaps the NQAi composer's send
-        // button (which is always bottom-right). h-12/w-12 keeps a >=44px touch target.
-        "fixed bottom-6 left-6 z-50 flex h-12 w-12 items-center justify-center rounded-full",
+        // Pinned bottom-right. h-12/w-12 keeps a >=44px touch target.
+        "fixed bottom-6 right-6 z-50 flex h-12 w-12 items-center justify-center rounded-full",
         "border border-border bg-primary text-primary-foreground shadow-lg",
         "transition-all duration-300 hover:opacity-90",
         visible ? "translate-y-0 opacity-100" : "pointer-events-none translate-y-4 opacity-0"
