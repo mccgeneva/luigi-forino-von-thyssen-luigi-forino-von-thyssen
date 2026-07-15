@@ -1,6 +1,7 @@
 "use client"
 
 import { useCallback, useEffect, useRef, useState } from "react"
+import { createPortal } from "react-dom"
 import { useChat } from "@ai-sdk/react"
 import { DefaultChatTransport, type UIMessage } from "ai"
 import { Streamdown } from "streamdown"
@@ -339,6 +340,9 @@ export function NqaiChat({ variant = "page" }: { variant?: "page" | "panel" }) {
 
   const busy = status === "submitted" || status === "streaming"
   const hasConversation = messages.length > 0
+  // Gate the portal so it only renders client-side (avoids SSR/hydration issues).
+  const [mounted, setMounted] = useState(false)
+  useEffect(() => setMounted(true), [])
   const uploadingFiles = attachments.some((a) => a.status === "uploading")
   const readyFiles = attachments.filter((a) => a.status === "ready" && a.url)
   const canSend = !busy && !uploadingFiles && (input.trim().length > 0 || readyFiles.length > 0)
@@ -1460,21 +1464,6 @@ export function NqaiChat({ variant = "page" }: { variant?: "page" | "panel" }) {
         onSubmit={onSubmit}
         className="relative border-t border-border bg-card p-3 [padding-bottom:calc(0.75rem+env(safe-area-inset-bottom))]"
       >
-        {/* Floating "back to top" pill — centered just above the composer so it
-            sits right where the user is looking, and never overlaps the send
-            button on the right. Shown whenever there is a conversation to scroll
-            through (no fragile scroll-position detection). */}
-        {messages.length > 0 && (
-          <button
-            type="button"
-            onClick={scrollToTop}
-            className="absolute -top-12 left-1/2 z-30 flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-border bg-card/95 px-3.5 py-2 text-xs font-medium text-foreground shadow-lg backdrop-blur transition-colors hover:border-primary/50 hover:text-primary supports-[backdrop-filter]:bg-card/80"
-            aria-label="Scroll to the start of the conversation"
-          >
-            <ArrowUp className="h-4 w-4" />
-            <span>Top</span>
-          </button>
-        )}
         <div className="mx-auto w-full max-w-3xl">
           <input
             ref={fileInputRef}
@@ -1621,6 +1610,26 @@ export function NqaiChat({ variant = "page" }: { variant?: "page" | "panel" }) {
       {managerOpen && (
         <NqaiManager props={organizerProps} onNewChat={handleNewChat} onClose={() => setManagerOpen(false)} />
       )}
+
+      {/* Persistent "back to top" button. Rendered via a portal to document.body
+          with FIXED positioning so it is always pinned to the bottom of the
+          screen — immune to the pinch-zoom wrapper's transforms and to whichever
+          element actually scrolls. Tapping it scrolls every container to the top. */}
+      {mounted &&
+        hasConversation &&
+        createPortal(
+          <button
+            type="button"
+            onClick={scrollToTop}
+            className="fixed left-1/2 z-[60] flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-primary/50 bg-primary px-4 py-2.5 text-sm font-semibold text-primary-foreground shadow-xl transition-transform active:scale-95"
+            style={{ bottom: "calc(5.5rem + env(safe-area-inset-bottom))" }}
+            aria-label="Scroll to the start of the conversation"
+          >
+            <ArrowUp className="h-4 w-4" />
+            <span>Top</span>
+          </button>,
+          document.body,
+        )}
     </div>
   )
 }
