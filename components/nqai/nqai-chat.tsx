@@ -343,6 +343,10 @@ export function NqaiChat({ variant = "page" }: { variant?: "page" | "panel" }) {
   // Gate the portal so it only renders client-side (avoids SSR/hydration issues).
   const [mounted, setMounted] = useState(false)
   useEffect(() => setMounted(true), [])
+  // Track composer focus so we can hide the floating "Top" button while the
+  // on-screen keyboard is open (a fixed-position button otherwise floats up
+  // into the message text when the keyboard shrinks the viewport).
+  const [composerFocused, setComposerFocused] = useState(false)
   const uploadingFiles = attachments.some((a) => a.status === "uploading")
   const readyFiles = attachments.filter((a) => a.status === "ready" && a.url)
   const canSend = !busy && !uploadingFiles && (input.trim().length > 0 || readyFiles.length > 0)
@@ -1555,6 +1559,8 @@ export function NqaiChat({ variant = "page" }: { variant?: "page" | "panel" }) {
             <textarea
               ref={textareaRef}
               value={input}
+              onFocus={() => setComposerFocused(true)}
+              onBlur={() => setComposerFocused(false)}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === "Enter" && !e.shiftKey) {
@@ -1617,6 +1623,7 @@ export function NqaiChat({ variant = "page" }: { variant?: "page" | "panel" }) {
           element actually scrolls. Tapping it scrolls every container to the top. */}
       {mounted &&
         hasConversation &&
+        !composerFocused &&
         createPortal(
           <button
             type="button"
