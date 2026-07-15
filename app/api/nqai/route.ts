@@ -1,4 +1,4 @@
-import { nqaiChatModel } from "@/lib/ai-models"
+import { nqaiChatModel, docAnalysisModel } from "@/lib/ai-models"
 import {
   convertToModelMessages,
   generateText,
@@ -36,6 +36,10 @@ export const maxDuration = 300
 
 // Fast Sonnet chat tier from the shared platform backend (lib/ai-models.ts).
 const NQAI_MODEL = nqaiChatModel()
+// Highest-reasoning tier — engaged by the composer's "Max" mode (and by "Auto"
+// when the turn carries attachments that warrant deeper analysis). Auxiliary
+// passes (title/summary/profile) always stay on the fast tier for cost.
+const NQAI_DEEP_MODEL = docAnalysisModel()
 
 // How many of the most recent messages are replayed verbatim to the model.
 // Anything older is folded into the rolling memory summary to bound token cost.
@@ -382,10 +386,12 @@ export async function POST(req: Request) {
 
   let messages: UIMessage[] = []
   let threadId = ""
+  let mode: "auto" | "fast" | "max" = "auto"
   try {
     const body = await req.json()
     messages = body.messages ?? []
     threadId = typeof body.threadId === "string" ? body.threadId : ""
+    if (body.mode === "fast" || body.mode === "max" || body.mode === "auto") mode = body.mode
   } catch {
     return new Response(JSON.stringify({ error: "Invalid request body." }), {
       status: 400,
@@ -472,8 +478,19 @@ export async function POST(req: Request) {
     ...withConversationCacheBreakpoint(conversation),
   ]
 
+  // Map the client's chosen NQAi mode to the right compute tier:
+  //   • fast → always the responsive Sonnet chat tier
+  //   • max  → always the deepest-reasoning Opus tier
+  //   • auto → Opus when this turn carries attachments (document/vision work
+  //            benefits from deeper reasoning), otherwise the fast Sonnet tier.
+  const hasAttachments = replayMessages.some((m) =>
+    m.parts?.some((p) => (p as { type?: string }).type === "file"),
+  )
+  const useDeepModel = mode === "max" || (mode === "auto" && hasAttachments)
+  const activeModel = useDeepModel ? NQAI_DEEP_MODEL : NQAI_MODEL
+
   const result = streamText({
-    model: NQAI_MODEL,
+    model: activeModel,
     messages: modelMessages,
     tools: createNqaiTools({ senderName }),
     // Allow several tool round-trips (e.g. discover deals → verify a vessel →
