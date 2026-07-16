@@ -67,6 +67,7 @@ import { useInstrumentRequests, type Instrument } from "@/lib/instrument-request
 import { useLedger } from "@/lib/ledger-store"
 import { InstrumentMarketplace } from "@/components/dashboard/instrument-marketplace"
 import { IsinTools, type IsinAcquisitionRequest } from "@/components/instruments/isin-tools"
+import { EdgarTools } from "@/components/instruments/edgar-tools"
 import { buildInstrumentIdentifiers } from "@/lib/instrument-identifiers"
 import {
   MARKET_INSTRUMENT_TYPES,
@@ -798,8 +799,9 @@ export default function InstrumentsPage() {
         <TabsList>
           <TabsTrigger value="portfolio">My Portfolio</TabsTrigger>
           <TabsTrigger value="marketplace">Marketplace</TabsTrigger>
-          <TabsTrigger value="isin-tools">ISIN Tools</TabsTrigger>
-        </TabsList>
+            <TabsTrigger value="isin-tools">ISIN Tools</TabsTrigger>
+            <TabsTrigger value="edgar">SEC / EDGAR</TabsTrigger>
+          </TabsList>
 
         <TabsContent value="portfolio" className="space-y-6">
       {/* Stats */}
@@ -1333,6 +1335,15 @@ export default function InstrumentsPage() {
               </Card>
             )
           })()}
+        </TabsContent>
+
+        <TabsContent value="edgar" className="space-y-4">
+          <EdgarTools
+            title="Pull issuer filings from SEC.gov &amp; EDGAR"
+            description="Search any SEC-registered issuing bank or corporate by name or ticker to automatically pull its prospectuses, registration statements and filing documents straight from the SEC's official EDGAR systems."
+            onLog={logActivity}
+            logCategory="Bank Instruments"
+          />
         </TabsContent>
       </Tabs>
 
