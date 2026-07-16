@@ -1498,15 +1498,15 @@ export function NqaiChat({ variant = "page" }: { variant?: "page" | "panel" }) {
             never land in the middle of the message text. No fixed/portal, so it
             is immune to the pinch-zoom wrapper's transforms. */}
         {hasConversation && !composerFocused && (
-          <div className="pointer-events-none absolute inset-x-0 bottom-full flex justify-center pb-2">
+          <div className="pointer-events-none absolute inset-x-0 bottom-full flex justify-end px-3 pb-2">
             <button
               type="button"
               onClick={scrollToTop}
-              className="pointer-events-auto flex items-center gap-1.5 rounded-full border border-primary/50 bg-primary px-4 py-2.5 text-sm font-semibold text-primary-foreground shadow-xl transition-transform active:scale-95"
+              className="pointer-events-auto flex h-9 w-9 items-center justify-center rounded-full border border-primary/50 bg-primary/90 text-primary-foreground shadow-lg backdrop-blur transition-transform active:scale-90"
               aria-label="Scroll to the start of the conversation"
+              title="Back to top"
             >
               <ArrowUp className="h-4 w-4" />
-              <span>Top</span>
             </button>
           </div>
         )}
