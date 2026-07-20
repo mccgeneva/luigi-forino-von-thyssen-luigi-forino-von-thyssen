@@ -35,7 +35,7 @@ export const SESSION_MAX_AGE = 60 * 60 * 8
 // which is what makes "closed the browser and came back later" log you out even
 // when the browser tries to restore the cookie. The proxy slides this window
 // forward on every authenticated request, so active users are never disrupted.
-export const SESSION_IDLE_MAX_AGE = 60 * 5 // 5 minutes
+export const SESSION_IDLE_MAX_AGE = 60 * 15 // 15 minutes
 
 // Cookie attributes. The v0 preview renders the app inside a cross-origin
 // iframe, where browsers only store/send cookies marked `SameSite=None; Secure`.

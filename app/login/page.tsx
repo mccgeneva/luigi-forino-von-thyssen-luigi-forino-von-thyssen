@@ -11,7 +11,7 @@ export const metadata: Metadata = {
 const EXPIRED_MESSAGES: Record<string, string> = {
   expiry: "Your session expired. Please sign in again.",
   "tab-close": "You were signed out because the browser tab was closed.",
-  inactivity: "You were signed out after 5 minutes of inactivity.",
+  inactivity: "You were signed out after 15 minutes of inactivity.",
 }
 
 export default async function LoginPage({
