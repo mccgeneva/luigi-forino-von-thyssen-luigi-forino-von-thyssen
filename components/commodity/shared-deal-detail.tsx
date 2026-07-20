@@ -395,7 +395,7 @@ export function SharedDealDetail({ view }: { view: SharedDealView }) {
                 beneficiaryBic: deal.receivingBankBic || undefined,
                 beneficiaryName: deal.receivingBank || deal.sellerName,
                 beneficiaryCountry: deal.destinationCountry || undefined,
-                baseDate: view.live.submittedAt,
+                baseDate: view.live.submittedAt || new Date().toISOString(),
                 direction: "outgoing",
               }}
             />
