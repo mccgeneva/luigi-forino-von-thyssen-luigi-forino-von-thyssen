@@ -44,6 +44,8 @@ import {
   Ban,
   ArrowRight,
   Handshake,
+  Share2,
+  Search,
 } from "lucide-react"
 import { ADMIN_PASSCODE } from "@/lib/admin-config"
 import { listSelectableClients, type SelectableClient } from "@/app/actions/admin-users"
@@ -53,6 +55,7 @@ import {
   adminBulkDecide,
   adminMarkCommodityDelivered,
   adminRevokeCommodityDeal,
+  adminShareCommodityDeal,
 } from "@/app/actions/approvals"
 import {
   getClientFinancialSnapshotAdmin,
@@ -198,6 +201,12 @@ export function PendingApprovals({ initialKind }: { initialKind?: ApprovalKind }
   const [revokeTarget, setRevokeTarget] = useState<{ id: string; label: string } | null>(null)
   const [revokeReason, setRevokeReason] = useState("")
 
+  // Share-deal dialog state (commodity). Sends a read-only visibility copy to
+  // one or more other clients — no funds move.
+  const [shareTarget, setShareTarget] = useState<{ id: string; label: string; ownerId: string } | null>(null)
+  const [shareSelected, setShareSelected] = useState<Set<string>>(new Set())
+  const [shareSearch, setShareSearch] = useState("")
+
   // Client financial-snapshot dialog (due-diligence before approving).
   const [clientView, setClientView] = useState<{
     open: boolean
@@ -332,6 +341,40 @@ export function PendingApprovals({ initialKind }: { initialKind?: ApprovalKind }
     toast.success("Deal revoked. The reserved funds have been released back to the client's balance.")
     setRevokeTarget(null)
     setRevokeReason("")
+    mutate()
+  }
+
+  const openShare = (id: string, label: string, ownerId: string) => {
+    setShareTarget({ id, label, ownerId })
+    setShareSelected(new Set())
+    setShareSearch("")
+  }
+
+  const toggleShareRecipient = (id: string) => {
+    setShareSelected((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  const confirmShare = async () => {
+    if (!shareTarget || shareSelected.size === 0) return
+    setActing(true)
+    const res = await adminShareCommodityDeal(ADMIN_PASSCODE, shareTarget.id, Array.from(shareSelected))
+    setActing(false)
+    if (!res.ok) {
+      toast.error(res.error)
+      return
+    }
+    const names = (res.sharedWith ?? []).map((r) => r.name).join(", ")
+    toast.success(
+      `Deal shared (read-only) with ${res.sharedWith?.length ?? 0} client${(res.sharedWith?.length ?? 0) === 1 ? "" : "s"}${names ? `: ${names}` : ""}.`,
+    )
+    setShareTarget(null)
+    setShareSelected(new Set())
+    setShareSearch("")
     mutate()
   }
 
@@ -609,27 +652,41 @@ export function PendingApprovals({ initialKind }: { initialKind?: ApprovalKind }
                       </Button>
                     </div>
                   )}
-                  {canMarkDelivered && (
-                    <div className="flex shrink-0 items-center gap-1.5">
+                  {req.kind === "commodity" && req.status === "approved" && (
+                    <div className="flex shrink-0 flex-wrap items-center justify-end gap-1.5">
+                      {canMarkDelivered && (
+                        <>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="h-8 gap-1 text-emerald-600"
+                            disabled={acting}
+                            onClick={() => markDelivered(req.id)}
+                            title="Confirm the commodity has been delivered. Locks the deal so the client can no longer revoke it."
+                          >
+                            <PackageCheck className="h-3.5 w-3.5" /> Mark delivered
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="h-8 gap-1 text-destructive"
+                            disabled={acting}
+                            onClick={() => setRevokeTarget({ id: req.id, label: `${req.title}` })}
+                            title="Revoke this approved deal and release the reserved funds back to the client."
+                          >
+                            <Ban className="h-3.5 w-3.5" /> Revoke
+                          </Button>
+                        </>
+                      )}
                       <Button
                         size="sm"
                         variant="outline"
-                        className="h-8 gap-1 text-emerald-600"
+                        className="h-8 gap-1 text-primary"
                         disabled={acting}
-                        onClick={() => markDelivered(req.id)}
-                        title="Confirm the commodity has been delivered. Locks the deal so the client can no longer revoke it."
+                        onClick={() => openShare(req.id, req.title, req.userId)}
+                        title="Share a read-only copy of this deal with other clients for visibility. No funds move."
                       >
-                        <PackageCheck className="h-3.5 w-3.5" /> Mark delivered
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        className="h-8 gap-1 text-destructive"
-                        disabled={acting}
-                        onClick={() => setRevokeTarget({ id: req.id, label: `${req.title}` })}
-                        title="Revoke this approved deal and release the reserved funds back to the client."
-                      >
-                        <Ban className="h-3.5 w-3.5" /> Revoke
+                        <Share2 className="h-3.5 w-3.5" /> Share
                       </Button>
                     </div>
                   )}
@@ -702,6 +759,99 @@ export function PendingApprovals({ initialKind }: { initialKind?: ApprovalKind }
             <Button variant="destructive" onClick={confirmRevoke} disabled={acting}>
               {acting ? <Loader2 className="mr-1 h-4 w-4 animate-spin" /> : <Ban className="mr-1 h-4 w-4" />}
               Revoke &amp; release funds
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Share commodity deal (read-only) with other clients */}
+      <Dialog open={shareTarget !== null} onOpenChange={(o) => !o && !acting && setShareTarget(null)}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Share2 className="h-4 w-4 text-primary" />
+              Share deal with clients
+            </DialogTitle>
+            <DialogDescription className="text-pretty">
+              {shareTarget ? (
+                <>
+                  Send a <span className="font-medium text-foreground">read-only</span> copy of{" "}
+                  <span className="font-medium text-foreground">{shareTarget.label}</span> to the selected
+                  clients. It appears in their Commodity Transactions for visibility only — no funds are
+                  reserved or moved, and they cannot edit, revoke or act on it.
+                </>
+              ) : null}
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-3">
+            <div className="relative">
+              <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                value={shareSearch}
+                onChange={(e) => setShareSearch(e.target.value)}
+                placeholder="Search clients by name, company or email…"
+                className="pl-8 text-base md:text-sm"
+              />
+            </div>
+
+            {(() => {
+              const q = shareSearch.trim().toLowerCase()
+              const recipients = clients.filter((c) => {
+                if (shareTarget && c.id === shareTarget.ownerId) return false
+                if (!q) return true
+                return (
+                  c.fullName.toLowerCase().includes(q) ||
+                  c.company.toLowerCase().includes(q) ||
+                  c.email.toLowerCase().includes(q)
+                )
+              })
+              if (recipients.length === 0) {
+                return (
+                  <p className="rounded-md border border-dashed border-border py-6 text-center text-sm text-muted-foreground">
+                    No matching clients.
+                  </p>
+                )
+              }
+              return (
+                <ul className="max-h-64 space-y-1 overflow-y-auto rounded-md border border-border p-1">
+                  {recipients.map((c) => {
+                    const checked = shareSelected.has(c.id)
+                    return (
+                      <li key={c.id}>
+                        <button
+                          type="button"
+                          onClick={() => toggleShareRecipient(c.id)}
+                          className="flex w-full items-center gap-3 rounded-md px-2 py-2 text-left hover:bg-muted"
+                        >
+                          <Checkbox checked={checked} className="pointer-events-none" aria-hidden />
+                          <span className="min-w-0 flex-1">
+                            <span className="block truncate text-sm font-medium text-foreground">
+                              {c.fullName}
+                              {c.company ? <span className="text-muted-foreground"> · {c.company}</span> : null}
+                            </span>
+                            <span className="block truncate text-xs text-muted-foreground">{c.email}</span>
+                          </span>
+                        </button>
+                      </li>
+                    )
+                  })}
+                </ul>
+              )
+            })()}
+
+            <p className="text-xs text-muted-foreground">
+              {shareSelected.size} client{shareSelected.size === 1 ? "" : "s"} selected
+            </p>
+          </div>
+
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setShareTarget(null)} disabled={acting}>
+              Cancel
+            </Button>
+            <Button onClick={confirmShare} disabled={acting || shareSelected.size === 0}>
+              {acting ? <Loader2 className="mr-1 h-4 w-4 animate-spin" /> : <Share2 className="mr-1 h-4 w-4" />}
+              Share read-only
             </Button>
           </DialogFooter>
         </DialogContent>
