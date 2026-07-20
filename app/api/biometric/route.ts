@@ -25,7 +25,7 @@ export const runtime = "nodejs"
 /** Current user's own enrollment status (for the profile / security card). */
 export async function GET(): Promise<NextResponse> {
   const session = await resolveCurrentSession()
-  const empty: FaceState = { enrolled: false, locked: false, failCount: 0, enrolledAt: null }
+  const empty: FaceState = { enrolled: false, locked: false, failCount: 0, enrolledAt: null, lockedAt: null }
   if (!session) return NextResponse.json(empty)
   try {
     const state = await getFaceState(session.id)

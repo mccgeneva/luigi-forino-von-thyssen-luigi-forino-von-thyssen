@@ -47,8 +47,18 @@ export const FACE_MATCH_THRESHOLD = 0.42
  */
 export const PASSPORT_FACE_MATCH_THRESHOLD = 0.6
 
-/** Consecutive failed scans before biometric login locks (admin reset required). */
+/** Consecutive failed scans before biometric login locks. */
 export const FACE_MAX_FAILS = 5
+
+/**
+ * How long a biometric lock lasts before it automatically clears, letting a
+ * genuine user self-recover without waiting for an administrator. Face matching
+ * fails easily in the real world (poor lighting, low-quality front cameras,
+ * in-app browser webviews that degrade the camera), so a permanent lock created
+ * far too much login friction. An administrator can still reset instantly at any
+ * time; this is just the automatic fallback.
+ */
+export const FACE_LOCK_COOLDOWN_MS = 30 * 60 * 1000 // 30 minutes
 
 /** Login challenge validity — long enough to scan, short enough to be safe. */
 const CHALLENGE_TTL_MS = 2 * 60 * 1000

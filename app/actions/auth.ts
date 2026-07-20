@@ -29,6 +29,8 @@ import {
   matchesEnrolled,
   matchesPassport,
   isValidDescriptor,
+  FACE_LOCK_COOLDOWN_MS,
+  FACE_MAX_FAILS,
 } from "@/lib/biometric"
 import {
   getFaceState,
@@ -225,6 +227,21 @@ async function establishSessionAndRedirect(matchedUser: AuthMatch, email: string
   redirect(POST_LOGIN_PATH)
 }
 
+/**
+ * User-facing message for a biometric lock. Since the lock now auto-clears after
+ * FACE_LOCK_COOLDOWN_MS, we tell the user roughly how long until they can retry,
+ * while still offering the instant administrator-reset path.
+ */
+function lockedMessage(lockedAt: string | null): string {
+  const lockedMs = lockedAt ? Date.parse(lockedAt) : NaN
+  if (Number.isFinite(lockedMs)) {
+    const remaining = FACE_LOCK_COOLDOWN_MS - (Date.now() - lockedMs)
+    const minutes = Math.max(1, Math.ceil(remaining / 60000))
+    return `Face ID is temporarily locked after too many failed attempts. It will unlock automatically in about ${minutes} minute${minutes === 1 ? "" : "s"}, or contact your administrator to reset it now.`
+  }
+  return "Face ID is temporarily locked after too many failed attempts. Please wait a few minutes and try again, or contact your administrator to reset it now."
+}
+
 async function logFailedLogin(email: string, reason: string): Promise<void> {
   await logActivity({
     action: "Login failed",
@@ -258,10 +275,7 @@ export async function login(_prevState: LoginState, formData: FormData): Promise
       if (face.locked) {
         await logFailedLogin(email, "biometric locked")
         await clearAllSessionCookies()
-        return {
-          error:
-            "Face ID is locked after too many failed attempts. Please contact your administrator to reset it.",
-        }
+        return { error: lockedMessage(face.lockedAt) }
       }
       return {
         faceRequired: true,
@@ -331,7 +345,7 @@ export async function completeFaceLogin(
     return { error: "Face ID is no longer set up for this account. Please sign in with your password." }
   }
   if (face.locked) {
-    return { error: "Face ID is locked. Please contact your administrator to reset it." }
+    return { error: lockedMessage(face.lockedAt) }
   }
 
   const enrolled = decryptDescriptors(await getEncryptedDescriptor(uid))
@@ -346,13 +360,14 @@ export async function completeFaceLogin(
       details: { email: rec.email, distance: distance.toFixed(3), failCount, result: locked ? "locked" : "denied" },
     })
     if (locked) {
-      return { error: "Face ID locked after too many failed attempts. Please contact your administrator to reset it." }
+      // Just locked → the full cooldown remains from now.
+      return { error: lockedMessage(new Date().toISOString()) }
     }
-    const remaining = Math.max(0, 5 - failCount)
+    const remaining = Math.max(0, FACE_MAX_FAILS - failCount)
     return {
       faceRequired: true,
       challenge,
-      error: `Face not recognized. Please try again${remaining ? ` (${remaining} attempt${remaining === 1 ? "" : "s"} left)` : ""}.`,
+      error: `Face not recognized. Move to a well-lit spot, hold the phone at eye level, and keep your whole face in frame. Please try again${remaining ? ` (${remaining} attempt${remaining === 1 ? "" : "s"} left)` : ""}.`,
     }
   }
 

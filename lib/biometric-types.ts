@@ -10,6 +10,8 @@ export interface FaceState {
   locked: boolean
   failCount: number
   enrolledAt: string | null
+  /** When the lock was applied, used to auto-clear it after the cooldown. */
+  lockedAt: string | null
 }
 
 /**
