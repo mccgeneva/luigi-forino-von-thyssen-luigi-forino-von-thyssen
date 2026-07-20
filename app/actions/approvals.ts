@@ -1792,6 +1792,115 @@ export async function adminShareCommodityDeal(
   }
 }
 
+export interface SharedDealView {
+  ok: boolean
+  error?: string
+  sharedApprovalId?: string
+  sharedFromName?: string
+  sharedAt?: string
+  /** True when the owner's original deal can no longer be found: we fall back
+   *  to the snapshot captured at share time. */
+  sourceMissing?: boolean
+  live?: {
+    /** The deal record — LIVE from the owner's deal when available, so vessel
+     *  stage, documents, SWIFT refs and settlement reflect the current state. */
+    record: Record<string, unknown>
+    status: string
+    decidedAt?: string
+    decisionNote?: string
+    delivered: boolean
+    deliveredAt?: string
+    submittedAt?: string
+  }
+}
+
+/**
+ * Read a deal that an administrator shared (read-only) with the signed-in
+ * client, resolving the LIVE state from the owner's original deal so the
+ * recipient always sees the current documents, workflow/vessel stage, SWIFT
+ * exchange and payment/settlement status — not a frozen copy.
+ *
+ * Security: the caller must own the shared copy (`shared.userId` maps to their
+ * data owner) and it must actually be a `sharedReadOnly` commodity row. Only
+ * then do we dereference `sourceApprovalId` to read the owner's live record.
+ * Nothing here mutates state or touches any balance.
+ */
+export async function getSharedDealView(sharedApprovalId: string): Promise<SharedDealView> {
+  const session = await resolveCurrentSession()
+  if (!session) return { ok: false, error: "You must be signed in to view this deal." }
+
+  try {
+    const ownerId = await resolveDataOwnerIdFor(session.id)
+    const shared = await getApprovalById(sharedApprovalId)
+    if (!shared) return { ok: false, error: "This shared deal could not be found." }
+
+    const sharedPayload = (shared.payload ?? {}) as {
+      sharedReadOnly?: boolean
+      sharedFromName?: string
+      sourceApprovalId?: string
+      record?: Record<string, unknown>
+    }
+
+    // Must be the recipient of this shared copy, and it must be a shared row.
+    if (shared.userId !== ownerId || sharedPayload.sharedReadOnly !== true) {
+      return { ok: false, error: "You do not have access to this deal." }
+    }
+
+    const sharedFromName = sharedPayload.sharedFromName || "MCC Capital"
+    const sharedAt = shared.decidedAt ?? shared.createdAt
+
+    // Prefer the owner's LIVE deal; fall back to the shared snapshot if the
+    // original has since been removed.
+    const source = sharedPayload.sourceApprovalId
+      ? await getApprovalById(sharedPayload.sourceApprovalId)
+      : null
+
+    if (source) {
+      const srcPayload = (source.payload ?? {}) as {
+        record?: Record<string, unknown>
+        delivered?: boolean
+        deliveredAt?: string
+      }
+      return {
+        ok: true,
+        sharedApprovalId: shared.id,
+        sharedFromName,
+        sharedAt,
+        live: {
+          record: srcPayload.record ?? {},
+          status: source.status,
+          decidedAt: source.decidedAt ?? undefined,
+          decisionNote: source.decisionNote ?? undefined,
+          delivered: srcPayload.delivered === true,
+          deliveredAt: srcPayload.deliveredAt,
+          submittedAt: source.createdAt,
+        },
+      }
+    }
+
+    // Snapshot fallback.
+    return {
+      ok: true,
+      sharedApprovalId: shared.id,
+      sharedFromName,
+      sharedAt,
+      sourceMissing: true,
+      live: {
+        record: sharedPayload.record ?? {},
+        status: shared.status,
+        decidedAt: shared.decidedAt ?? undefined,
+        decisionNote: shared.decisionNote ?? undefined,
+        delivered: (shared.payload as { delivered?: boolean } | undefined)?.delivered === true,
+        deliveredAt: (shared.payload as { deliveredAt?: string } | undefined)?.deliveredAt,
+        submittedAt: shared.createdAt,
+      },
+    }
+  } catch (err) {
+    console.log("[v0] getSharedDealView failed:", (err as Error).message)
+    return { ok: false, error: "This deal could not be loaded. Please try again." }
+  }
+}
+
 /**
  * The signed-in Master's consent queue: Sub-account requests routed to them for
  * a second-gate decision. `pendingOnly` returns just those still awaiting the
