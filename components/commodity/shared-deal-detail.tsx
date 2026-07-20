@@ -32,6 +32,7 @@ import {
   AccordionTrigger,
 } from "@/components/ui/accordion"
 import { SwiftGpiTracker } from "@/components/swift-gpi-tracker"
+import { DealVesselDocsView } from "@/components/commodity/deal-vessel-docs-view"
 import { DEAL_STAGES, type CommodityDeal, type DealDocument, type DealStatus } from "@/lib/commodity-deals-store"
 import { formatQuantityWithEquivalent, formatUnitPriceFor } from "@/lib/petroleum-products"
 import type { SharedDealView } from "@/app/actions/approvals"
@@ -336,6 +337,10 @@ export function SharedDealDetail({ view }: { view: SharedDealView }) {
           />
         </CardContent>
       </Card>
+
+      {/* Assigned vessel (with sanctions screening) + administrator-issued deal
+          documents (real PDFs) — read-only, streamed via the authorized proxy. */}
+      <DealVesselDocsView vessel={deal.vessel} documents={deal.documents} />
 
       {/* Documents (POP / POF) */}
       <Card>
