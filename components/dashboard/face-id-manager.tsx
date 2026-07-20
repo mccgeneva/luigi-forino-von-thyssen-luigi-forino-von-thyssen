@@ -22,7 +22,7 @@ import type { FaceState } from "@/lib/biometric-types"
 
 const ENROLL_SAMPLES = 3
 
-const NOT_ENROLLED: FaceState = { enrolled: false, locked: false, failCount: 0, enrolledAt: null }
+const NOT_ENROLLED: FaceState = { enrolled: false, locked: false, failCount: 0, enrolledAt: null, lockedAt: null }
 
 // Biometric enroll/status/disable go through a Route Handler (NOT a Server
 // Action): Server Action POSTs are silently rejected on this app's production

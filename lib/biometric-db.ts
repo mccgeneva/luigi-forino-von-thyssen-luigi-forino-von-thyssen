@@ -6,7 +6,7 @@
 
 import "server-only"
 import { query } from "@/lib/db"
-import { FACE_MAX_FAILS } from "@/lib/biometric"
+import { FACE_MAX_FAILS, FACE_LOCK_COOLDOWN_MS } from "@/lib/biometric"
 import type { FaceState, IdentityStatus } from "@/lib/biometric-types"
 
 export type { FaceState, IdentityStatus }
@@ -19,6 +19,9 @@ async function ensureColumns(): Promise<void> {
   await query(`ALTER TABLE admin_users ADD COLUMN IF NOT EXISTS face_descriptor text`)
   await query(`ALTER TABLE admin_users ADD COLUMN IF NOT EXISTS face_fail_count integer NOT NULL DEFAULT 0`)
   await query(`ALTER TABLE admin_users ADD COLUMN IF NOT EXISTS face_locked boolean NOT NULL DEFAULT false`)
+  // When the biometric lock was applied — used to auto-clear it after the
+  // FACE_LOCK_COOLDOWN_MS window so genuine users can self-recover.
+  await query(`ALTER TABLE admin_users ADD COLUMN IF NOT EXISTS face_locked_at timestamptz`)
   await query(`ALTER TABLE admin_users ADD COLUMN IF NOT EXISTS face_enrolled_at timestamptz`)
   // Identity-verification (passport + selfie) gate. We store ONLY non-sensitive
   // summary fields for display/audit — never the passport image itself, which is
@@ -78,21 +81,49 @@ export async function getLastLoginSelfie(
   }
 }
 
-/** Lightweight enrollment status for UI and login gating (no descriptor data). */
+/**
+ * Lightweight enrollment status for UI and login gating (no descriptor data).
+ *
+ * Self-healing: if the account is locked but the lock is older than
+ * FACE_LOCK_COOLDOWN_MS, we clear the lock + fail counter here and report it as
+ * unlocked. This is the single gating read used by every login path, so the
+ * cooldown auto-unlock applies everywhere without special-casing callers.
+ */
 export async function getFaceState(userId: string): Promise<FaceState> {
-  if (!userId) return { enrolled: false, locked: false, failCount: 0, enrolledAt: null }
+  if (!userId) return { enrolled: false, locked: false, failCount: 0, enrolledAt: null, lockedAt: null }
   await ensureColumns()
   const { rows } = await query(
-    `SELECT face_descriptor, face_fail_count, face_locked, face_enrolled_at FROM admin_users WHERE id = $1`,
+    `SELECT face_descriptor, face_fail_count, face_locked, face_locked_at, face_enrolled_at FROM admin_users WHERE id = $1`,
     [userId],
   )
   const row = rows[0]
-  if (!row) return { enrolled: false, locked: false, failCount: 0, enrolledAt: null }
+  if (!row) return { enrolled: false, locked: false, failCount: 0, enrolledAt: null, lockedAt: null }
+
+  let locked = !!row.face_locked
+  let failCount = (row.face_fail_count as number) ?? 0
+  let lockedAt: string | null = (row.face_locked_at as Date)?.toISOString?.() ?? (row.face_locked_at as string | null)
+
+  if (locked) {
+    const lockedMs = lockedAt ? Date.parse(lockedAt) : NaN
+    // Treat a lock with no timestamp (legacy pre-cooldown locks) as eligible to
+    // clear, so nobody stays permanently stuck from the old behavior.
+    if (!Number.isFinite(lockedMs) || Date.now() - lockedMs >= FACE_LOCK_COOLDOWN_MS) {
+      await query(
+        `UPDATE admin_users SET face_locked = false, face_fail_count = 0, face_locked_at = NULL, updated_at = now() WHERE id = $1`,
+        [userId],
+      )
+      locked = false
+      failCount = 0
+      lockedAt = null
+    }
+  }
+
   return {
     enrolled: !!row.face_descriptor,
-    locked: !!row.face_locked,
-    failCount: (row.face_fail_count as number) ?? 0,
+    locked,
+    failCount,
     enrolledAt: (row.face_enrolled_at as Date)?.toISOString?.() ?? (row.face_enrolled_at as string | null),
+    lockedAt,
   }
 }
 
@@ -109,7 +140,7 @@ export async function saveEncryptedDescriptor(userId: string, blob: string): Pro
   await ensureColumns()
   await query(
     `UPDATE admin_users
-        SET face_descriptor = $2, face_fail_count = 0, face_locked = false,
+        SET face_descriptor = $2, face_fail_count = 0, face_locked = false, face_locked_at = NULL,
             face_enrolled_at = now(), updated_at = now()
       WHERE id = $1`,
     [userId, blob],
@@ -126,7 +157,7 @@ export async function clearEnrollment(userId: string): Promise<void> {
   await ensureColumns()
   await query(
     `UPDATE admin_users
-        SET face_descriptor = NULL, face_fail_count = 0, face_locked = false,
+        SET face_descriptor = NULL, face_fail_count = 0, face_locked = false, face_locked_at = NULL,
             face_enrolled_at = NULL,
             identity_verified = false, identity_verified_at = NULL,
             identity_country = NULL, identity_full_name = NULL, identity_passport_last4 = NULL,
@@ -241,6 +272,7 @@ export async function registerFailure(userId: string): Promise<{ failCount: numb
     `UPDATE admin_users
         SET face_fail_count = face_fail_count + 1,
             face_locked = (face_fail_count + 1) >= $2,
+            face_locked_at = CASE WHEN (face_fail_count + 1) >= $2 THEN now() ELSE face_locked_at END,
             updated_at = now()
       WHERE id = $1
       RETURNING face_fail_count, face_locked`,

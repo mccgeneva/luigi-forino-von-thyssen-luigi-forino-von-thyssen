@@ -2,7 +2,7 @@
 
 import { useActionState, useState } from "react"
 import { useFormStatus } from "react-dom"
-import { Lock, Mail, ShieldCheck, AlertCircle, ScanFace, ArrowLeft } from "lucide-react"
+import { Lock, Mail, ShieldCheck, AlertCircle, ScanFace, ArrowLeft, Info } from "lucide-react"
 import { login, completeFaceLogin, type LoginState } from "@/app/actions/auth"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -93,6 +93,19 @@ function FaceStep({
           <span>{error}</span>
         </div>
       )}
+
+      <div className="rounded-lg border border-border bg-muted/40 px-3 py-2.5 text-xs text-muted-foreground">
+        <div className="mb-1 flex items-center gap-1.5 font-medium text-foreground">
+          <Info className="h-3.5 w-3.5 text-primary" />
+          Tips for a quick scan
+        </div>
+        <ul className="ml-5 list-disc space-y-0.5 text-pretty">
+          <li>Face a window or light — avoid backlight and shadows.</li>
+          <li>Hold the phone at eye level with your whole face in frame.</li>
+          <li>Remove sunglasses, hats, or masks.</li>
+          <li>Open this page in Safari or Chrome — camera access is blocked inside in-app browsers (Instagram, WhatsApp, etc.).</li>
+        </ul>
+      </div>
 
       <Button type="button" variant="ghost" onClick={onBack} className="w-full gap-2">
         <ArrowLeft className="h-4 w-4" />
