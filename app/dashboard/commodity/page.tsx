@@ -2,6 +2,7 @@
 
 import Link from "next/link"
 import { useMemo, useState } from "react"
+import { DealVesselDocsView } from "@/components/commodity/deal-vessel-docs-view"
 import {
   Ship,
   Building2,
@@ -1377,6 +1378,9 @@ export default function CommodityTradingPage() {
                             <span className="text-xs text-muted-foreground">{nextStage.description}</span>
                           </div>
                         )}
+
+                        {/* Vessel + administrator-issued deal documents (read-only). */}
+                        <DealVesselDocsView vessel={deal.vessel} documents={deal.documents} />
 
                         <Accordion type="single" collapsible className="w-full">
                           <AccordionItem value="gpi" className="border-b-0">
