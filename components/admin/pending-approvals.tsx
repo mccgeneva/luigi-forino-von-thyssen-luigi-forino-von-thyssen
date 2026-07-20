@@ -46,6 +46,7 @@ import {
   Handshake,
   Share2,
   Search,
+  Eye,
 } from "lucide-react"
 import { ADMIN_PASSCODE } from "@/lib/admin-config"
 import { listSelectableClients, type SelectableClient } from "@/app/actions/admin-users"
@@ -573,7 +574,13 @@ export function PendingApprovals({ initialKind }: { initialKind?: ApprovalKind }
             {filtered.map((req) => {
               const isPending = req.status === "pending"
               const isDelivered = req.payload?.delivered === true
-              const canMarkDelivered = req.kind === "commodity" && req.status === "approved" && !isDelivered
+              // A shared read-only copy is a recipient-owned mirror of another
+              // client's deal. It must never expose admin management actions —
+              // documents, vessel, sharing and delivery are managed on the
+              // original deal only.
+              const isSharedCopy = (req.payload as { sharedReadOnly?: boolean } | undefined)?.sharedReadOnly === true
+              const canMarkDelivered =
+                req.kind === "commodity" && req.status === "approved" && !isDelivered && !isSharedCopy
               return (
                 <li
                   key={req.id}
@@ -653,7 +660,7 @@ export function PendingApprovals({ initialKind }: { initialKind?: ApprovalKind }
                       </Button>
                     </div>
                   )}
-                  {req.kind === "commodity" && req.status === "approved" && (
+                  {req.kind === "commodity" && req.status === "approved" && !isSharedCopy && (
                     <div className="flex shrink-0 flex-wrap items-center justify-end gap-1.5">
                       {canMarkDelivered && (
                         <>
@@ -690,6 +697,13 @@ export function PendingApprovals({ initialKind }: { initialKind?: ApprovalKind }
                       >
                         <Share2 className="h-3.5 w-3.5" /> Share
                       </Button>
+                    </div>
+                  )}
+                  {req.kind === "commodity" && req.status === "approved" && isSharedCopy && (
+                    <div className="flex shrink-0 items-center justify-end">
+                      <Badge variant="outline" className="gap-1 text-muted-foreground">
+                        <Eye className="h-3.5 w-3.5" /> Shared read-only copy
+                      </Badge>
                     </div>
                   )}
                 </li>
