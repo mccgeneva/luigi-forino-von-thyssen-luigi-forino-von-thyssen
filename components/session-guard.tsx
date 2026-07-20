@@ -24,8 +24,8 @@ const LAST_ACTIVITY = "mcc_last_activity"
 const HEARTBEAT = "mcc_heartbeat"
 
 // Keep the client-side idle window in lock step with the server-enforced
-// SESSION_IDLE_MAX_AGE (5 minutes) in lib/auth.ts.
-const INACTIVITY_LIMIT = 5 * 60 * 1000 // 5 minutes
+// SESSION_IDLE_MAX_AGE (15 minutes) in lib/auth.ts.
+const INACTIVITY_LIMIT = 15 * 60 * 1000 // 15 minutes
 const WARNING_BEFORE = 60 * 1000 // warn 60s before inactivity logout
 const TICK = 1000
 // How long the heartbeat may lapse before we treat the gap as a browser
@@ -84,7 +84,7 @@ function isEmbeddedPreview(): boolean {
  *  - the session lifetime expires,
  *  - the browser tab/window was closed and later reopened (detected via a
  *    liveness heartbeat that survives mobile sessionStorage restoration), or
- *  - the user has been inactive for 5 minutes.
+ *  - the user has been inactive for 15 minutes.
  *
  * The auth cookie is httpOnly, so termination calls the `expireSession` server
  * action to actually delete it; this component handles detection and UX.
@@ -113,7 +113,7 @@ export function SessionGuard() {
       const messages: Record<ExpireReason, string> = {
         expiry: "Your session has expired. Please sign in again.",
         "tab-close": "Session ended because the tab was closed. Please sign in again.",
-        inactivity: "Signed out due to 5 minutes of inactivity. Please sign in again.",
+        inactivity: "Signed out due to 15 minutes of inactivity. Please sign in again.",
       }
       toast.dismiss("inactivity-warning")
       toast.error(messages[reason], { id: "session-ended" })

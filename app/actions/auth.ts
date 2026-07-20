@@ -673,7 +673,7 @@ export type ExpireReason = "expiry" | "tab-close" | "inactivity"
 const EXPIRE_REASON_LABELS: Record<ExpireReason, string> = {
   expiry: "session expired",
   "tab-close": "browser tab or window closed",
-  inactivity: "inactive for 5 minutes",
+  inactivity: "inactive for 15 minutes",
 }
 
 // Securely terminates the session from the client (cookie is httpOnly, so only
