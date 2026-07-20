@@ -38,6 +38,9 @@ import {
 import { KIND_LABELS, KIND_HREF, type ApprovalKind } from "@/lib/approval-kinds"
 import { parseQuantityString } from "@/lib/petroleum-products"
 import { getDynamicUserByEmail } from "@/lib/admin-users-db"
+import { getVessel as dbGetVessel } from "@/lib/spot-deals-db"
+import { fetchVesselByImo, screenVesselImo } from "@/lib/vessel-providers"
+import { isValidImo, VESSEL_TYPE_LABELS, type Vessel } from "@/lib/spot-deals-shared"
 import {
   recordGatewayDepositForApproval,
   backfillGatewayDepositsForUser,
@@ -1898,6 +1901,313 @@ export async function getSharedDealView(sharedApprovalId: string): Promise<Share
   } catch (err) {
     console.log("[v0] getSharedDealView failed:", (err as Error).message)
     return { ok: false, error: "This deal could not be loaded. Please try again." }
+  }
+}
+
+// --- Admin: deal documents (real PDFs) + vessel ----------------------------
+
+/** Minimal shape of a stored deal-document version (mirrors the client store). */
+interface StoredDocVersion {
+  version: number
+  fileName: string
+  reference: string
+  issuedBy: string
+  issueDate: string
+  notes: string
+  uploadedAt: string
+  blobPathname?: string
+  fileSize?: number
+  contentType?: string
+}
+interface StoredDoc {
+  id: string
+  module: "POP" | "POF" | "DEAL"
+  docType: string
+  status: "submitted" | "verified" | "rejected"
+  currentVersion: number
+  versions: StoredDocVersion[]
+  swiftRef?: string
+  decidedAt?: string
+  decisionNote?: string
+}
+
+export interface DealDocInput {
+  docType: string
+  reference?: string
+  issuedBy?: string
+  issueDate?: string
+  notes?: string
+  swiftRef?: string
+  fileName: string
+  blobPathname?: string
+  fileSize?: number
+  contentType?: string
+}
+
+/**
+ * Load an approved commodity deal for admin document/vessel management, refusing
+ * shared read-only copies (those are visibility-only mirrors — never mutate them,
+ * always operate on the owner's source deal).
+ */
+async function loadCommodityForAdmin(
+  id: string,
+): Promise<{ ok: true; req: ApprovalRequest; record: Record<string, unknown> } | { ok: false; error: string }> {
+  const existing = await getApprovalById(id)
+  if (!existing) return { ok: false, error: "Deal not found." }
+  if (existing.kind !== "commodity") return { ok: false, error: "Only commodity deals are supported here." }
+  if ((existing.payload as { sharedReadOnly?: boolean } | undefined)?.sharedReadOnly === true) {
+    return { ok: false, error: "This is a shared read-only copy. Manage the original deal instead." }
+  }
+  const record = ((existing.payload?.record ?? {}) as Record<string, unknown>) || {}
+  return { ok: true, req: existing, record }
+}
+
+async function persistRecord(req: ApprovalRequest, record: Record<string, unknown>): Promise<void> {
+  await updateApprovalPayload(req.id, { ...(req.payload ?? {}), record })
+}
+
+async function notifyOwnerDoc(req: ApprovalRequest, title: string, body: string): Promise<void> {
+  try {
+    await insertNotification({
+      userId: req.userId,
+      tone: "info",
+      title,
+      body,
+      href: KIND_HREF.commodity ?? "/dashboard/commodity",
+    })
+  } catch (err) {
+    console.log("[v0] deal-doc notification failed:", (err as Error).message)
+  }
+}
+
+async function logDeal(req: ApprovalRequest, action: string, details: Record<string, unknown>): Promise<void> {
+  try {
+    const target = await resolveAccountProfileById(req.userId)
+    await logActivity({
+      action,
+      category: "Administration / Approvals",
+      user: "Administrator",
+      details: { referenceId: req.id, owner: `${target.fullName} — ${target.email}`, ...details },
+    })
+  } catch (err) {
+    console.log("[v0] deal activity log failed:", (err as Error).message)
+  }
+}
+
+/**
+ * Administrator adds (or re-versions) a DEAL document on an approved commodity
+ * deal. The PDF binary lives in private Blob; here we persist its metadata +
+ * pathname onto the owner's deal record so it surfaces live (read-only) to the
+ * deal owner and any shared-deal recipients. No balance/ledger effect.
+ */
+export async function adminAddDealDocument(
+  passcode: string,
+  id: string,
+  input: DealDocInput,
+): Promise<DecideResult> {
+  if (!(await adminOk(passcode))) return { ok: false, error: "Administrator authorization failed." }
+  if (!input?.docType?.trim()) return { ok: false, error: "A document type is required." }
+  if (!input?.fileName?.trim()) return { ok: false, error: "A file is required." }
+  try {
+    const loaded = await loadCommodityForAdmin(id)
+    if (!loaded.ok) return { ok: false, error: loaded.error }
+    const { req, record } = loaded
+
+    const now = new Date().toISOString()
+    const docs = Array.isArray(record.documents) ? ([...record.documents] as StoredDoc[]) : []
+    const version: StoredDocVersion = {
+      version: 1,
+      fileName: input.fileName.trim(),
+      reference: (input.reference ?? "").trim(),
+      issuedBy: (input.issuedBy ?? "").trim(),
+      issueDate: (input.issueDate ?? "").trim(),
+      notes: (input.notes ?? "").trim(),
+      uploadedAt: now,
+      blobPathname: input.blobPathname,
+      fileSize: input.fileSize,
+      contentType: input.contentType,
+    }
+    const doc: StoredDoc = {
+      id: `DDOC-${Date.now().toString(36).toUpperCase()}${Math.random().toString(36).slice(2, 6).toUpperCase()}`,
+      module: "DEAL",
+      docType: input.docType.trim(),
+      status: "submitted",
+      currentVersion: 1,
+      versions: [version],
+      swiftRef: input.swiftRef?.trim() || undefined,
+    }
+    record.documents = [...docs, doc]
+    await persistRecord(req, record)
+
+    await notifyOwnerDoc(
+      req,
+      "New deal document available",
+      `MCC Capital added "${doc.docType}" to your commodity deal "${req.title}". Open the deal to view the document.`,
+    )
+    await logDeal(req, `Administrator added deal document "${doc.docType}" to "${req.title}"`, {
+      document: doc.docType,
+      fileName: version.fileName,
+    })
+
+    const updated = await getApprovalById(id)
+    return updated ? { ok: true, request: updated } : { ok: false, error: "The document could not be saved." }
+  } catch (err) {
+    console.log("[v0] adminAddDealDocument failed:", (err as Error).message)
+    return { ok: false, error: "The document could not be added. Please try again." }
+  }
+}
+
+/** Administrator sets a deal document's verification status. */
+export async function adminSetDealDocumentStatus(
+  passcode: string,
+  id: string,
+  documentId: string,
+  status: "submitted" | "verified" | "rejected",
+  note?: string,
+): Promise<DecideResult> {
+  if (!(await adminOk(passcode))) return { ok: false, error: "Administrator authorization failed." }
+  try {
+    const loaded = await loadCommodityForAdmin(id)
+    if (!loaded.ok) return { ok: false, error: loaded.error }
+    const { req, record } = loaded
+
+    const docs = Array.isArray(record.documents) ? ([...record.documents] as StoredDoc[]) : []
+    const idx = docs.findIndex((d) => d.id === documentId)
+    if (idx === -1) return { ok: false, error: "Document not found on this deal." }
+    docs[idx] = { ...docs[idx], status, decidedAt: new Date().toISOString(), decisionNote: note?.trim() || undefined }
+    record.documents = docs
+    await persistRecord(req, record)
+
+    await logDeal(req, `Administrator marked deal document "${docs[idx].docType}" as ${status} on "${req.title}"`, {
+      document: docs[idx].docType,
+      status,
+    })
+
+    const updated = await getApprovalById(id)
+    return updated ? { ok: true, request: updated } : { ok: false, error: "The document could not be updated." }
+  } catch (err) {
+    console.log("[v0] adminSetDealDocumentStatus failed:", (err as Error).message)
+    return { ok: false, error: "The document status could not be updated. Please try again." }
+  }
+}
+
+/** Administrator removes a deal document from an approved commodity deal. */
+export async function adminRemoveDealDocument(
+  passcode: string,
+  id: string,
+  documentId: string,
+): Promise<DecideResult> {
+  if (!(await adminOk(passcode))) return { ok: false, error: "Administrator authorization failed." }
+  try {
+    const loaded = await loadCommodityForAdmin(id)
+    if (!loaded.ok) return { ok: false, error: loaded.error }
+    const { req, record } = loaded
+
+    const docs = Array.isArray(record.documents) ? ([...record.documents] as StoredDoc[]) : []
+    const removed = docs.find((d) => d.id === documentId)
+    if (!removed) return { ok: false, error: "Document not found on this deal." }
+    record.documents = docs.filter((d) => d.id !== documentId)
+    await persistRecord(req, record)
+
+    await logDeal(req, `Administrator removed deal document "${removed.docType}" from "${req.title}"`, {
+      document: removed.docType,
+    })
+
+    const updated = await getApprovalById(id)
+    return updated ? { ok: true, request: updated } : { ok: false, error: "The document could not be removed." }
+  } catch (err) {
+    console.log("[v0] adminRemoveDealDocument failed:", (err as Error).message)
+    return { ok: false, error: "The document could not be removed. Please try again." }
+  }
+}
+
+/**
+ * Administrator attaches (and verifies) a vessel to an approved commodity deal.
+ * Reuses the existing IMO check-digit validation + free OFAC sanctions screening
+ * and the vessel catalogue. A denormalised snapshot (with its compliance verdict)
+ * is stored on the deal so it surfaces live/read-only to the owner and shared
+ * recipients. No balance effect.
+ */
+export async function adminAttachDealVessel(
+  passcode: string,
+  id: string,
+  imo: string,
+): Promise<DecideResult> {
+  if (!(await adminOk(passcode))) return { ok: false, error: "Administrator authorization failed." }
+  const clean = (imo ?? "").trim()
+  if (!/^\d{7}$/.test(clean)) return { ok: false, error: "IMO number must be exactly 7 digits." }
+  if (!isValidImo(clean)) {
+    return { ok: false, error: "That IMO fails the official check-digit validation — it is not a real IMO number." }
+  }
+  try {
+    const loaded = await loadCommodityForAdmin(id)
+    if (!loaded.ok) return { ok: false, error: loaded.error }
+    const { req, record } = loaded
+
+    // Prefer the catalogue record (richer identity data) and refresh its OFAC
+    // screening; otherwise resolve via public registry + screening.
+    let snapshot: Vessel
+    const existing = await dbGetVessel(clean)
+    if (existing) {
+      const compliance = await screenVesselImo(clean)
+      snapshot = { ...existing, compliance, updatedAt: new Date().toISOString() }
+    } else {
+      const res = await fetchVesselByImo(clean)
+      if ("error" in res) return { ok: false, error: res.error }
+      snapshot = res.vessel
+    }
+
+    record.vessel = snapshot
+    await persistRecord(req, record)
+
+    const verdict =
+      snapshot.compliance?.status === "flagged"
+        ? "FLAGGED on sanctions screening"
+        : snapshot.compliance?.status === "unverified"
+          ? "screening unverified"
+          : "clear on sanctions screening"
+
+    await notifyOwnerDoc(
+      req,
+      "Vessel assigned to your deal",
+      `MCC Capital assigned the vessel "${snapshot.name}" (IMO ${snapshot.imo}) to your commodity deal "${req.title}".`,
+    )
+    await logDeal(req, `Administrator assigned vessel ${snapshot.name} (IMO ${snapshot.imo}) to "${req.title}"`, {
+      vessel: snapshot.name,
+      imo: snapshot.imo,
+      vesselType: VESSEL_TYPE_LABELS[snapshot.type],
+      compliance: verdict,
+    })
+
+    const updated = await getApprovalById(id)
+    return updated ? { ok: true, request: updated } : { ok: false, error: "The vessel could not be assigned." }
+  } catch (err) {
+    console.log("[v0] adminAttachDealVessel failed:", (err as Error).message)
+    return { ok: false, error: "The vessel could not be assigned. Please try again." }
+  }
+}
+
+/** Administrator detaches the vessel from an approved commodity deal. */
+export async function adminDetachDealVessel(passcode: string, id: string): Promise<DecideResult> {
+  if (!(await adminOk(passcode))) return { ok: false, error: "Administrator authorization failed." }
+  try {
+    const loaded = await loadCommodityForAdmin(id)
+    if (!loaded.ok) return { ok: false, error: loaded.error }
+    const { req, record } = loaded
+    const prev = record.vessel as Vessel | undefined
+    delete record.vessel
+    await persistRecord(req, record)
+    if (prev) {
+      await logDeal(req, `Administrator removed vessel ${prev.name} (IMO ${prev.imo}) from "${req.title}"`, {
+        vessel: prev.name,
+        imo: prev.imo,
+      })
+    }
+    const updated = await getApprovalById(id)
+    return updated ? { ok: true, request: updated } : { ok: false, error: "The vessel could not be removed." }
+  } catch (err) {
+    console.log("[v0] adminDetachDealVessel failed:", (err as Error).message)
+    return { ok: false, error: "The vessel could not be removed. Please try again." }
   }
 }
 

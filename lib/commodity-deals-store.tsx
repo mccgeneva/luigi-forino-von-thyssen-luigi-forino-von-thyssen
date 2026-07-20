@@ -5,6 +5,7 @@ import { generateUetr } from "@/lib/swift-gpi"
 import { mirrorSubmission, mapApprovalStatus, type ApprovalRecord } from "@/lib/approval-sync"
 import { useServerRequestList } from "@/lib/use-server-request-list"
 import { useLedger } from "@/lib/ledger-store"
+import type { Vessel } from "@/lib/spot-deals-shared"
 import {
   revokeMyCommodityDeal,
   updateMyApprovalRecord,
@@ -41,11 +42,33 @@ export type DealCategory =
 // Instrument backing the value of the deal.
 export type InstrumentType = "Cash" | "SBLC" | "BG" | "Securities" | "Commodity" | "DLC"
 
-export type DocModule = "POP" | "POF"
+// "POP" (seller proof-of-product) and "POF" (buyer proof-of-funds) are the
+// client-managed modules; "DEAL" is the administrator-managed deal-document
+// catalogue (POI, ICPO, POF letters, POP, SGS, proof of payment, allocation,
+// free-to-resell, sold, etc.) attached directly to an approved deal.
+export type DocModule = "POP" | "POF" | "DEAL"
 
 export type DocStatus = "submitted" | "verified" | "rejected"
 
-// A single immutable version of a document record (metadata only — no binaries).
+/** The fixed catalogue of administrator-issued deal documents. */
+export const DEAL_DOC_TYPES = [
+  "Passport / Photo ID (POI)",
+  "ICPO",
+  "Proof of Funds (POF)",
+  "Partial POP",
+  "Full POP",
+  "SGS / Inspection Report",
+  "Proof of Payment (SWIFT)",
+  "Allocated / Reserved",
+  "Free to Resell",
+  "Sold",
+  "Contract (SPA)",
+  "Other",
+] as const
+
+// A single immutable version of a document record. Metadata is always present;
+// when the administrator uploads a real file, the binary lives in private Blob
+// storage and is referenced by `blobPathname` (served via the /api/file proxy).
 export interface DealDocumentVersion {
   version: number
   fileName: string // descriptive file name, e.g. "BL-2024-0042.pdf"
@@ -54,6 +77,12 @@ export interface DealDocumentVersion {
   issueDate: string // ISO yyyy-mm-dd
   notes: string
   uploadedAt: string // ISO timestamp
+  /** Private Blob pathname of the uploaded PDF, if any (never the raw URL). */
+  blobPathname?: string
+  /** Size of the uploaded file in bytes, for display. */
+  fileSize?: number
+  /** MIME type of the uploaded file (expected application/pdf). */
+  contentType?: string
 }
 
 export interface DealDocument {
@@ -148,8 +177,13 @@ export interface CommodityDeal {
   stage: DealStage
   status: DealStatus
 
-  // Embedded document records (POP + POF)
+  // Embedded document records (POP + POF + admin-issued DEAL documents)
   documents: DealDocument[]
+
+  /** Vessel assigned to carry the cargo, attached & verified by the admin.
+   *  A denormalised snapshot (with its compliance screening) so the deal stays
+   *  intact even if the vessel catalogue row later changes. */
+  vessel?: Vessel
 
   submittedAt: string
   decidedAt?: string

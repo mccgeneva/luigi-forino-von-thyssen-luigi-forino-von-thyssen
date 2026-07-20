@@ -63,6 +63,7 @@ import {
 } from "@/app/actions/ledger"
 import { APPROVAL_KINDS, KIND_LABELS, type ApprovalKind } from "@/lib/approval-kinds"
 import type { ApprovalRequest, ApprovalStatus } from "@/lib/approvals-db"
+import { DealDocsVesselDialog } from "@/components/admin/deal-docs-vessel-dialog"
 
 const STATUS_OPTIONS: { value: ApprovalStatus | "all"; label: string }[] = [
   { value: "pending", label: "Pending" },
@@ -678,6 +679,7 @@ export function PendingApprovals({ initialKind }: { initialKind?: ApprovalKind }
                           </Button>
                         </>
                       )}
+                      <DealDocsVesselDialog req={req} onChanged={() => mutate()} />
                       <Button
                         size="sm"
                         variant="outline"
