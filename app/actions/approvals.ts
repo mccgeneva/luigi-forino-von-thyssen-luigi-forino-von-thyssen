@@ -181,6 +181,9 @@ export async function updateMyApprovalRecord(
     if (!existing || existing.userId !== session.id) {
       return { ok: false, error: "This record could not be found." }
     }
+    if ((existing.payload as { sharedReadOnly?: boolean } | undefined)?.sharedReadOnly === true) {
+      return { ok: false, error: "This deal was shared with you for reference only and cannot be edited." }
+    }
     const prevPayload = existing.payload ?? {}
     const prevRecord = (prevPayload.record as Record<string, unknown> | undefined) ?? {}
     const nextPayload = { ...prevPayload, record: { ...prevRecord, ...patch } }
@@ -248,6 +251,9 @@ export async function revokeMyCommodityDeal(
     }
     if (existing.status !== "approved") {
       return { ok: false, error: "Only an approved deal can be revoked." }
+    }
+    if ((existing.payload as { sharedReadOnly?: boolean } | undefined)?.sharedReadOnly === true) {
+      return { ok: false, error: "This deal was shared with you for reference only and cannot be revoked." }
     }
     if (existing.payload?.delivered === true) {
       return { ok: false, error: "This deal has been delivered and can no longer be revoked." }
@@ -473,6 +479,9 @@ export async function requestDealAmendment(
     if (original.kind !== "commodity") {
       return { ok: false, error: "Only commodity deals can be amended." }
     }
+    if ((original.payload as { sharedReadOnly?: boolean } | undefined)?.sharedReadOnly === true) {
+      return { ok: false, error: "This deal was shared with you for reference only and cannot be amended." }
+    }
     if (original.status !== "approved") {
       return { ok: false, error: "Only an approved deal can be amended." }
     }
@@ -620,6 +629,9 @@ export async function addDealNegotiationNote(
     if (original.kind !== "commodity") {
       return { ok: false, error: "Notes can only be added to commodity deals." }
     }
+    if ((original.payload as { sharedReadOnly?: boolean } | undefined)?.sharedReadOnly === true) {
+      return { ok: false, error: "This deal was shared with you for reference only and cannot be annotated." }
+    }
 
     const payload = (original.payload ?? {}) as { record?: Record<string, unknown> }
     const record = (payload.record ?? {}) as Record<string, unknown>
@@ -714,6 +726,13 @@ const HOLD_KINDS = new Set<ApprovalKind>(["commodity"])
  * means re-applying never double-posts.
  */
 function ledgerEntryForApproval(req: ApprovalRequest): LedgerEntry | null {
+  // A read-only SHARED copy (an admin showed this deal to another client for
+  // visibility only) must NEVER touch the recipient's balance — no hold, no
+  // credit, no settlement — on approval, reconcile or backfill. Returning null
+  // here is the single chokepoint that guarantees zero financial effect.
+  if ((req.payload as { sharedReadOnly?: boolean } | undefined)?.sharedReadOnly === true) {
+    return null
+  }
   // A delivered commodity deal has been PAID OUT to the supplier: its reservation
   // must settle (a permanent `completed` debit), never remain a `hold`. Because
   // this builder also runs on every reconcile/backfill, leaving it as a hold here
@@ -1624,6 +1643,152 @@ export async function adminRevokeCommodityDeal(
   } catch (err) {
     console.log("[v0] adminRevokeCommodityDeal failed:", (err as Error).message)
     return { ok: false, error: "The deal could not be revoked. Please try again." }
+  }
+}
+
+// --- Admin: share a commodity deal (read-only) with other clients ----------
+
+export interface ShareDealResult {
+  ok: boolean
+  error?: string
+  sharedWith?: { name: string; email: string }[]
+}
+
+/**
+ * Administrator SHARES an existing commodity deal with one or more other clients
+ * for visibility only. Each recipient gets an independent, read-only COPY in
+ * their own Commodity Transactions — born approved, marked `sharedReadOnly` so
+ * `ledgerEntryForApproval` returns null and it NEVER touches their balance (no
+ * hold, credit or settlement, ever, including on reconcile/backfill). The
+ * original owner's deal is untouched apart from an append-only `sharedWith`
+ * audit entry. Recipients cannot mutate the copy (guards below refuse it).
+ */
+export async function adminShareCommodityDeal(
+  passcode: string,
+  sourceId: string,
+  recipientIds: string[],
+): Promise<ShareDealResult> {
+  if (!(await adminOk(passcode))) return { ok: false, error: "Administrator authorization failed." }
+  const ids = Array.from(
+    new Set((recipientIds ?? []).map((s) => String(s ?? "").trim()).filter(Boolean)),
+  )
+  if (ids.length === 0) return { ok: false, error: "Select at least one recipient to share with." }
+
+  try {
+    const source = await getApprovalById(sourceId)
+    if (!source) return { ok: false, error: "Deal not found." }
+    if (source.kind !== "commodity") return { ok: false, error: "Only commodity deals can be shared." }
+
+    const record = (source.payload?.record ?? {}) as Record<string, unknown>
+    if (!record || typeof record !== "object" || !(record as { id?: unknown }).id) {
+      return { ok: false, error: "This deal has no shareable detail record." }
+    }
+
+    const sourceOwnerId = await resolveDataOwnerIdFor(source.userId)
+    const sharerName = "MCC Capital"
+    const shared: { name: string; email: string }[] = []
+
+    for (const rid of ids) {
+      let recipientOwnerId: string
+      try {
+        recipientOwnerId = await resolveDataOwnerIdFor(rid)
+      } catch {
+        continue
+      }
+      // Never share a deal back onto its own owner.
+      if (recipientOwnerId === sourceOwnerId) continue
+
+      // Idempotency: skip if this recipient already holds a shared copy of this
+      // exact source deal, so repeated shares never pile up duplicates.
+      try {
+        const existingForUser = await listApprovalsForUser(recipientOwnerId)
+        const already = existingForUser.some(
+          (a) =>
+            a.kind === "commodity" &&
+            (a.payload as { sourceApprovalId?: string } | undefined)?.sourceApprovalId === source.id,
+        )
+        if (already) continue
+      } catch {
+        // If the lookup fails, fall through and create the copy anyway.
+      }
+
+      const profile = await resolveAccountProfileById(recipientOwnerId)
+
+      // Read-only snapshot of the deal record; the store detects these markers
+      // and renders it non-interactive.
+      const sharedRecord = { ...record, readOnly: true, shared: true, sharedFromName: sharerName }
+
+      const created = await insertApproval({
+        userId: recipientOwnerId,
+        kind: "commodity",
+        title: source.title,
+        summary: `${source.summary || source.title} — shared with you by ${sharerName} for visibility (read-only).`,
+        amount: source.amount,
+        currency: source.currency,
+        payload: {
+          record: sharedRecord,
+          sharedReadOnly: true,
+          sharedFromUserId: source.userId,
+          sharedFromName: sharerName,
+          sourceApprovalId: source.id,
+        },
+      })
+      await decideApproval(created.id, "approved", "Shared by administrator (read-only)")
+
+      try {
+        await insertNotification({
+          userId: recipientOwnerId,
+          tone: "info",
+          title: "Commodity deal shared with you",
+          body: `${sharerName} shared the commodity deal "${source.title}" with you for visibility. It appears in your Commodity Transactions as read-only.`,
+          href: KIND_HREF.commodity ?? "/dashboard/commodity",
+        })
+      } catch (err) {
+        console.log("[v0] share notification failed:", (err as Error).message)
+      }
+
+      shared.push({ name: profile.fullName || profile.email, email: profile.email })
+    }
+
+    if (shared.length === 0) {
+      return { ok: false, error: "No new recipients received this deal (already shared or invalid)." }
+    }
+
+    // Append-only share audit on the source deal (owner-visible provenance).
+    try {
+      const prevShared = (source.payload?.sharedWith as unknown[] | undefined) ?? []
+      const nowIso = new Date().toISOString()
+      const additions = shared.map((s) => ({ name: s.name, email: s.email, at: nowIso }))
+      await updateApprovalPayload(source.id, {
+        ...(source.payload ?? {}),
+        sharedWith: [...prevShared, ...additions],
+      })
+    } catch (err) {
+      console.log("[v0] share source payload update failed:", (err as Error).message)
+    }
+
+    try {
+      const target = await resolveAccountProfileById(source.userId)
+      await logActivity({
+        action: `Administrator shared commodity deal "${source.title}" with ${shared.length} recipient(s)`,
+        category: "Administration / Approvals",
+        user: "Administrator",
+        details: {
+          referenceId: source.id,
+          owner: `${target.fullName} — ${target.email}`,
+          recipients: shared.map((s) => `${s.name} — ${s.email}`).join("; "),
+          effect: "Read-only visibility copy (no financial effect)",
+          action: "Shared",
+        },
+      })
+    } catch (err) {
+      console.log("[v0] share activity log failed:", (err as Error).message)
+    }
+
+    return { ok: true, sharedWith: shared }
+  } catch (err) {
+    console.log("[v0] adminShareCommodityDeal failed:", (err as Error).message)
+    return { ok: false, error: "The deal could not be shared. Please try again." }
   }
 }
 

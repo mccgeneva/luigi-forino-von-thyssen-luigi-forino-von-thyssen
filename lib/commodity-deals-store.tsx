@@ -170,6 +170,14 @@ export interface CommodityDeal {
   pendingAmendment?: DealAmendment
   /** Past amendments (approved/rejected) for the audit trail. */
   amendmentHistory?: DealAmendment[]
+
+  // --- Admin-shared (read-only) deals -------------------------------------
+  /** True when this deal is a read-only copy an admin shared for visibility. */
+  readOnly?: boolean
+  /** Alias kept alongside `readOnly` for the shared marker. */
+  shared?: boolean
+  /** Who shared it (e.g. "MCC Capital"), shown on the read-only card. */
+  sharedFromName?: string
 }
 
 /**
@@ -185,6 +193,11 @@ function dealFromApproval(rec: ApprovalRecord): CommodityDeal | null {
   if (!base || typeof base !== "object" || !base.id) return null
   const status = mapApprovalStatus(rec.status) as DealStatus
   const delivered = (rec.payload?.delivered as boolean | undefined) ?? base.delivered
+  // A copy an administrator shared with this user for visibility only. It is
+  // rendered read-only and excluded from the owner's counts/uploads/actions.
+  const sharedReadOnly = (rec.payload?.sharedReadOnly as boolean | undefined) === true
+  const sharedFromName =
+    (rec.payload?.sharedFromName as string | undefined) ?? base.sharedFromName
   return {
     ...base,
     approvalId: rec.id,
@@ -194,6 +207,9 @@ function dealFromApproval(rec: ApprovalRecord): CommodityDeal | null {
     deliveredAt: (rec.payload?.deliveredAt as string | undefined) ?? base.deliveredAt,
     decidedAt: rec.decidedAt ?? base.decidedAt,
     decisionNote: rec.decisionNote ?? base.decisionNote,
+    readOnly: sharedReadOnly || base.readOnly,
+    shared: sharedReadOnly || base.shared,
+    sharedFromName,
   }
 }
 
@@ -318,6 +334,10 @@ export function CommodityDealsProvider({ children }: { children: React.ReactNode
    * so it follows the user across devices and the admin sees the latest state.
    */
   const persistDeal = (deal: CommodityDeal | null) => {
+    // A read-only copy shared with this user must never be written back — the
+    // server would refuse anyway, but we short-circuit to avoid a wasted call
+    // and any local state drift.
+    if (deal?.readOnly || deal?.shared) return
     if (deal?.approvalId) {
       void updateMyApprovalRecord(deal.approvalId, { ...deal }).then(() => void refresh())
     }
