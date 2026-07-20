@@ -26,6 +26,8 @@ import {
   Handshake,
   MessageSquare,
   Send,
+  Share2,
+  Eye,
 } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -394,9 +396,22 @@ export default function CommodityTradingPage() {
     }))
   }
 
-  const sortedDeals = useMemo(
-    () => [...deals].sort((a, b) => new Date(b.submittedAt).getTime() - new Date(a.submittedAt).getTime()),
+  // Deals shared with this client by an admin for visibility are READ-ONLY and
+  // must not mix into the owner's own deals: they are excluded from the active
+  // count, the workflow list, and document uploads, and shown in their own
+  // section instead.
+  const ownedDeals = useMemo(() => deals.filter((d) => !d.readOnly && !d.shared), [deals])
+  const sharedDeals = useMemo(
+    () =>
+      deals
+        .filter((d) => d.readOnly || d.shared)
+        .sort((a, b) => new Date(b.submittedAt).getTime() - new Date(a.submittedAt).getTime()),
     [deals],
+  )
+
+  const sortedDeals = useMemo(
+    () => [...ownedDeals].sort((a, b) => new Date(b.submittedAt).getTime() - new Date(a.submittedAt).getTime()),
+    [ownedDeals],
   )
 
   // The Deals tab counter reflects only OPEN deals. A deal is deducted once it is
@@ -432,7 +447,7 @@ export default function CommodityTradingPage() {
     // is immediately available. Idempotent: if a tracked deal already exists for
     // this cargo, just jump to it instead of creating a duplicate.
     if (mode === "accepted") {
-      const existing = deals.find((d) => d.spotDealId === deal.id)
+      const existing = ownedDeals.find((d) => d.spotDealId === deal.id)
       if (existing) {
         openTrackedDeal(existing.id)
         return
@@ -1404,6 +1419,85 @@ export default function CommodityTradingPage() {
               )}
             </CardContent>
           </Card>
+
+          {/* Read-only deals an administrator shared with this client for
+              visibility. These are NOT actionable — no advance, revoke,
+              amend, notes or document uploads — and never affect the balance. */}
+          {hydrated && sharedDeals.length > 0 && (
+            <Card className="border-primary/30 bg-card">
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2 text-base font-semibold">
+                  <Share2 className="h-4 w-4 text-primary" />
+                  Shared with you
+                  <Badge variant="secondary" className="ml-1 h-5 px-1.5 text-[10px]">
+                    {sharedDeals.length}
+                  </Badge>
+                </CardTitle>
+                <p className="text-xs text-muted-foreground">
+                  Deals shared by MCC Capital for your visibility. Read-only — for reference only, with no
+                  effect on your balance.
+                </p>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                {sharedDeals.map((deal) => (
+                  <div
+                    key={deal.approvalId ?? deal.id}
+                    className="rounded-lg border border-border bg-muted/30 p-4"
+                  >
+                    <div className="flex flex-wrap items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <p className="truncate text-sm font-medium text-foreground">{deal.title}</p>
+                          <StatusBadge status={deal.status} />
+                          <Badge
+                            variant="outline"
+                            className="gap-1 border-primary/30 text-[10px] text-primary"
+                          >
+                            <Eye className="h-3 w-3" /> Read-only
+                          </Badge>
+                        </div>
+                        <p className="mt-0.5 text-xs text-muted-foreground">
+                          Shared by {deal.sharedFromName || "MCC Capital"}
+                          {deal.sellerName ? ` · Seller: ${deal.sellerName}` : ""}
+                        </p>
+                      </div>
+                      <div className="text-right">
+                        <p className="text-sm font-semibold text-foreground">
+                          {formatCurrency(deal.approxValue, deal.currency)}
+                        </p>
+                        {deal.quantity ? (
+                          <p className="text-xs text-muted-foreground">{deal.quantity}</p>
+                        ) : null}
+                      </div>
+                    </div>
+                    <div className="mt-3 grid grid-cols-2 gap-x-4 gap-y-1.5 text-xs sm:grid-cols-3">
+                      {deal.commodity ? (
+                        <div>
+                          <span className="text-muted-foreground">Commodity</span>
+                          <p className="truncate font-medium text-foreground">{deal.commodity}</p>
+                        </div>
+                      ) : null}
+                      {deal.tradeStructure ? (
+                        <div>
+                          <span className="text-muted-foreground">Structure</span>
+                          <p className="font-medium text-foreground">{deal.tradeStructure}</p>
+                        </div>
+                      ) : null}
+                      {deal.originCountry || deal.destinationCountry ? (
+                        <div>
+                          <span className="text-muted-foreground">Route</span>
+                          <p className="truncate font-medium text-foreground">
+                            {deal.originCountry || "—"}
+                            {deal.destinationCountry ? ` → ${deal.destinationCountry}` : ""}
+                          </p>
+                        </div>
+                      ) : null}
+                    </div>
+                  </div>
+                ))}
+              </CardContent>
+            </Card>
+          )}
         </TabsContent>
 
         {/* PROOF OF PRODUCT TAB */}
