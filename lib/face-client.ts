@@ -36,10 +36,16 @@ async function ensureModels(): Promise<typeof FaceApi> {
       faceapi = await import("@vladmandic/face-api")
     }
     if (!modelsPromise) {
+      // Load all three model weight sets in PARALLEL rather than sequentially.
+      // They are independent ~2MB fetches, so parallelizing roughly cuts the
+      // cold-start wait to the slowest single file instead of the sum of all
+      // three — a noticeable speed-up on mobile connections.
       modelsPromise = (async () => {
-        await faceapi!.nets.tinyFaceDetector.loadFromUri(MODEL_URL)
-        await faceapi!.nets.faceLandmark68Net.loadFromUri(MODEL_URL)
-        await faceapi!.nets.faceRecognitionNet.loadFromUri(MODEL_URL)
+        await Promise.all([
+          faceapi!.nets.tinyFaceDetector.loadFromUri(MODEL_URL),
+          faceapi!.nets.faceLandmark68Net.loadFromUri(MODEL_URL),
+          faceapi!.nets.faceRecognitionNet.loadFromUri(MODEL_URL),
+        ])
       })()
     }
     await modelsPromise

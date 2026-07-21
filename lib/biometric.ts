@@ -27,12 +27,19 @@ import {
 export const DESCRIPTOR_LENGTH = 128
 
 /**
- * STRICT match threshold (euclidean distance on the descriptor). face-api's
- * common default is ~0.5; 0.42 is tighter, minimizing false accepts at the cost
- * of demanding good capture conditions. A scan matches only if its distance to
- * an enrolled sample is <= this value.
+ * Match threshold (euclidean distance on the descriptor) for enrolled
+ * selfie-vs-selfie login. face-api's standard recognition default is ~0.6.
+ *
+ * We previously ran an aggressive 0.42, but that rejected too many GENUINE
+ * users: the same person under different lighting, angle, distance, or a
+ * lower-quality front camera routinely scans at 0.45-0.60, while a DIFFERENT
+ * person almost always scores 0.70+. 0.42 sat inside the genuine-match band and
+ * caused frequent false rejections (real support cases at ~0.53). 0.55 admits
+ * genuine matches with real-world capture variance while preserving a healthy
+ * gap from impostors. A scan matches only if its distance to an enrolled sample
+ * is <= this value.
  */
-export const FACE_MATCH_THRESHOLD = 0.42
+export const FACE_MATCH_THRESHOLD = 0.55
 
 /**
  * LOOSER threshold used ONLY for the identity-verification gate, where a LIVE
@@ -43,7 +50,7 @@ export const FACE_MATCH_THRESHOLD = 0.42
  * default: it admits genuine live-vs-print matches (which cluster around
  * 0.55-0.62) while still comfortably rejecting a different person (who typically
  * score 0.70+). After a user passes once, we enroll their LIVE selfie and all
- * future logins use the strict 0.42, so day-to-day security is unchanged.
+ * future logins use the tighter selfie-only threshold, so day-to-day security is unchanged.
  */
 export const PASSPORT_FACE_MATCH_THRESHOLD = 0.6
 

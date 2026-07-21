@@ -1,9 +1,10 @@
 "use client"
 
-import { useActionState, useState } from "react"
+import { useActionState, useEffect, useState } from "react"
 import { useFormStatus } from "react-dom"
 import { Lock, Mail, ShieldCheck, AlertCircle, ScanFace, ArrowLeft, Info } from "lucide-react"
 import { login, completeFaceLogin, type LoginState } from "@/app/actions/auth"
+import { preloadFaceModels } from "@/lib/face-client"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -82,7 +83,7 @@ function FaceStep({
         </p>
       </div>
 
-      <FaceCapture onCapture={handleCapture} actionLabel="Verify my face" autoStart captureSelfie />
+      <FaceCapture onCapture={handleCapture} actionLabel="Verify my face" autoStart autoScan captureSelfie />
 
       {error && (
         <div
@@ -119,6 +120,14 @@ export function LoginForm() {
   const [state, formAction] = useActionState<LoginState, FormData>(login, {})
   // Local flag lets the user back out of a second-factor step to the password form.
   const [backToPassword, setBackToPassword] = useState(false)
+
+  // Warm the ~7MB face models in the background as soon as the login screen
+  // loads, so that if the user is routed to a face / identity step the scanner
+  // is already ready and the very first match is near-instant. Non-blocking and
+  // failure-safe — the capture UI still handles a real load failure.
+  useEffect(() => {
+    void preloadFaceModels().catch(() => {})
+  }, [])
 
   const showFaceStep = state?.faceRequired && state.challenge && !backToPassword
   const showIdentityStep = state?.identityRequired && state.challenge && !backToPassword
