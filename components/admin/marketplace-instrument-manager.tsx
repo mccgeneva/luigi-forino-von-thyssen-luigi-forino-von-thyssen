@@ -174,45 +174,51 @@ export function MarketplaceInstrumentManager() {
   const publish = async () => {
     const typeMeta = MARKET_INSTRUMENT_TYPES.find((t) => t.code === form.typeCode)
     setPublishing(true)
-    const res = await publishInstrument(ADMIN_PASSCODE, {
-      isin: form.isin,
-      cusip: form.cusip || null,
-      commonCode: form.commonCode || null,
-      bankName: form.bankName,
-      bankBic: form.bankBic,
-      bankCountry: form.bankCountry,
-      type: form.typeCode,
-      typeFull: typeMeta?.full ?? form.typeCode,
-      faceValue: Number.parseFloat(form.faceValue.replace(/,/g, "")),
-      currency: form.currency,
-      tenorMonths: Number.parseInt(form.tenorMonths, 10) || 12,
-      rating: form.rating,
-      assignable: form.assignable,
-      monetizable: form.monetizable,
-      verifiedSource: form.verifiedSource,
-      attestEuroclear: form.attestEuroclear,
-      attestClearstream: form.attestClearstream,
-      attestSwift: form.attestSwift,
-      issueDate: form.issueDate || null,
-      maturityDate: form.maturityDate || null,
-      issuerDetails: form.issuerDetails || null,
-      beneficiaryTerms: form.beneficiaryTerms || null,
-      deliveryMethod: form.deliveryMethod || null,
-      governingLaw: form.governingLaw || null,
-      notes: form.notes || null,
-      printoutUrl: form.printoutUrl || null,
-    })
-    setPublishing(false)
-    if (!res.ok) {
-      toast.error(res.error)
-      return
+    try {
+      const res = await publishInstrument(ADMIN_PASSCODE, {
+        isin: form.isin,
+        cusip: form.cusip || null,
+        commonCode: form.commonCode || null,
+        bankName: form.bankName,
+        bankBic: form.bankBic,
+        bankCountry: form.bankCountry,
+        type: form.typeCode,
+        typeFull: typeMeta?.full ?? form.typeCode,
+        faceValue: Number.parseFloat(form.faceValue.replace(/,/g, "")),
+        currency: form.currency,
+        tenorMonths: Number.parseInt(form.tenorMonths, 10) || 12,
+        rating: form.rating,
+        assignable: form.assignable,
+        monetizable: form.monetizable,
+        verifiedSource: form.verifiedSource,
+        attestEuroclear: form.attestEuroclear,
+        attestClearstream: form.attestClearstream,
+        attestSwift: form.attestSwift,
+        issueDate: form.issueDate || null,
+        maturityDate: form.maturityDate || null,
+        issuerDetails: form.issuerDetails || null,
+        beneficiaryTerms: form.beneficiaryTerms || null,
+        deliveryMethod: form.deliveryMethod || null,
+        governingLaw: form.governingLaw || null,
+        notes: form.notes || null,
+        printoutUrl: form.printoutUrl || null,
+      })
+      if (!res.ok) {
+        toast.error(res.error)
+        return
+      }
+      setInstruments(res.instruments)
+      setForm({ ...EMPTY_FORM })
+      setVerify({ loading: false, checked: false })
+      toast.success("Instrument published", {
+        description: `${res.instrument.type} ${res.instrument.isin} is now live in the marketplace.`,
+      })
+    } catch (err) {
+      console.log("[v0] publish failed:", (err as Error)?.message)
+      toast.error("Could not publish the instrument. Please try again.")
+    } finally {
+      setPublishing(false)
     }
-    setInstruments(res.instruments)
-    setForm({ ...EMPTY_FORM })
-    setVerify({ loading: false, checked: false })
-    toast.success("Instrument published", {
-      description: `${res.instrument.type} ${res.instrument.isin} is now live in the marketplace.`,
-    })
   }
 
   const toggleAvailability = async (inst: MarketplaceInstrument) => {

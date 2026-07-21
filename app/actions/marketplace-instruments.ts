@@ -327,27 +327,31 @@ export async function publishInstrument(
   }
 
   // Live registry verification against Bloomberg (OpenFIGI).
+  // Only performed for Bloomberg-sourced instruments: bilateral bank instruments
+  // published under Euroclear/Clearstream are never exchange-listed, so calling
+  // OpenFIGI for them only adds latency (and, if the API stalls, a hang). Those
+  // are gated by their real Common Code instead.
   let verifiedFigi: string | null = null
   let verifiedName: string | null = null
   let bloombergListed = false
-  try {
-    const mapping = await mapIsinServer(isin)
-    if (mapping.listed && mapping.matches[0]) {
-      bloombergListed = true
-      verifiedFigi = mapping.matches[0].figi ?? null
-      verifiedName = mapping.matches[0].name ?? mapping.matches[0].securityDescription ?? null
-    }
-    // Bloomberg provenance is a HARD gate: the ISIN must resolve live.
-    if (source === "bloomberg" && !mapping.listed) {
-      return {
-        ok: false,
-        error:
-          "This ISIN does not resolve to a listed security on Bloomberg. Bilateral instruments (SBLC/BG/private MTNs) are not Bloomberg-listed — publish them as Euroclear or Clearstream with their Common Code instead.",
+  if (source === "bloomberg") {
+    try {
+      const mapping = await mapIsinServer(isin)
+      if (mapping.listed && mapping.matches[0]) {
+        bloombergListed = true
+        verifiedFigi = mapping.matches[0].figi ?? null
+        verifiedName = mapping.matches[0].name ?? mapping.matches[0].securityDescription ?? null
       }
-    }
-  } catch (err) {
-    console.log("[v0] publishInstrument verification failed:", (err as Error).message)
-    if (source === "bloomberg") {
+      // Bloomberg provenance is a HARD gate: the ISIN must resolve live.
+      if (!mapping.listed) {
+        return {
+          ok: false,
+          error:
+            "This ISIN does not resolve to a listed security on Bloomberg. Bilateral instruments (SBLC/BG/private MTNs) are not Bloomberg-listed — publish them as Euroclear or Clearstream with their Common Code instead.",
+        }
+      }
+    } catch (err) {
+      console.log("[v0] publishInstrument verification failed:", (err as Error).message)
       return { ok: false, error: "Bloomberg verification is temporarily unavailable. Please try again." }
     }
   }
