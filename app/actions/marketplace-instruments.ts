@@ -5,7 +5,7 @@ import { adminActionAuthorized } from "@/lib/admin-auth"
 import { type UserProfile } from "@/lib/users"
 import { resolveCurrentSession } from "@/lib/session-user"
 import { logActivity } from "@/app/actions/log-activity"
-import { isValidIsin } from "@/lib/instrument-identifiers"
+import { isValidIsin, isValidCusip } from "@/lib/instrument-identifiers"
 import { mapIsinServer } from "@/lib/openfigi-server"
 
 // ---------------------------------------------------------------------------
@@ -32,9 +32,21 @@ import { mapIsinServer } from "@/lib/openfigi-server"
 
 export type VerifiedSource = "bloomberg" | "euroclear" | "clearstream"
 
+/** The four trusted verification registries shown per instrument. */
+export type VerificationRegistry = "bloomberg" | "euroclear" | "clearstream" | "swift"
+
+/**
+ * Per-registry verification provenance. Each value is the ISO timestamp the
+ * instrument was confirmed against that registry, or null if not verified.
+ * Bloomberg is set automatically when the ISIN resolves live via OpenFIGI;
+ * Euroclear / Clearstream / SWIFT are admin-attested with the date recorded.
+ */
+export type Verifications = Record<VerificationRegistry, string | null>
+
 export interface MarketplaceInstrument {
   id: string
   isin: string
+  cusip: string | null
   commonCode: string | null
   bankName: string
   bankBic: string
@@ -53,6 +65,8 @@ export interface MarketplaceInstrument {
   verifiedFigi: string | null
   verifiedName: string | null
   verifiedAt: string | null
+  // Per-registry verification status (Bloomberg/Euroclear/Clearstream/SWIFT)
+  verifications: Verifications
   // Printout / tearsheet fields
   issueDate: string | null
   maturityDate: string | null
@@ -67,6 +81,7 @@ export interface MarketplaceInstrument {
 
 export interface PublishInstrumentInput {
   isin: string
+  cusip?: string | null
   commonCode?: string | null
   bankName: string
   bankBic?: string
@@ -80,6 +95,10 @@ export interface PublishInstrumentInput {
   assignable?: boolean
   monetizable?: boolean
   verifiedSource: VerifiedSource
+  // Admin attestations that the instrument was confirmed against each registry.
+  attestEuroclear?: boolean
+  attestClearstream?: boolean
+  attestSwift?: boolean
   issueDate?: string | null
   maturityDate?: string | null
   issuerDetails?: string | null
@@ -147,7 +166,19 @@ async function ensureTable(): Promise<void> {
        updated_at        timestamptz NOT NULL DEFAULT now()
      )`,
   )
+  // Backward-compatible additive columns (CUSIP + multi-registry attestations).
+  await query(`ALTER TABLE marketplace_instruments ADD COLUMN IF NOT EXISTS cusip text`)
+  await query(`ALTER TABLE marketplace_instruments ADD COLUMN IF NOT EXISTS attested_bloomberg timestamptz`)
+  await query(`ALTER TABLE marketplace_instruments ADD COLUMN IF NOT EXISTS attested_euroclear timestamptz`)
+  await query(`ALTER TABLE marketplace_instruments ADD COLUMN IF NOT EXISTS attested_clearstream timestamptz`)
+  await query(`ALTER TABLE marketplace_instruments ADD COLUMN IF NOT EXISTS attested_swift timestamptz`)
   ensured = true
+}
+
+function toIso(v: unknown): string | null {
+  if (!v) return null
+  if (v instanceof Date) return v.toISOString()
+  return String(v)
 }
 
 function toDateString(v: unknown): string | null {
@@ -161,6 +192,7 @@ function rowToInstrument(row: Record<string, unknown>): MarketplaceInstrument {
   return {
     id: row.id as string,
     isin: row.isin as string,
+    cusip: (row.cusip as string | null) ?? null,
     commonCode: (row.common_code as string | null) ?? null,
     bankName: row.bank_name as string,
     bankBic: (row.bank_bic as string) ?? "",
@@ -178,6 +210,20 @@ function rowToInstrument(row: Record<string, unknown>): MarketplaceInstrument {
     verifiedFigi: (row.verified_figi as string | null) ?? null,
     verifiedName: (row.verified_name as string | null) ?? null,
     verifiedAt: (row.verified_at as Date)?.toISOString?.() ?? (row.verified_at as string | null) ?? null,
+    verifications: {
+      // Fall back to the legacy single-source columns for rows created before
+      // per-registry attestation existed, so nothing is mis-reported.
+      bloomberg:
+        toIso(row.attested_bloomberg) ??
+        (row.verified_source === "bloomberg" ? toIso(row.verified_at) : null),
+      euroclear:
+        toIso(row.attested_euroclear) ??
+        (row.verified_source === "euroclear" ? toIso(row.verified_at) : null),
+      clearstream:
+        toIso(row.attested_clearstream) ??
+        (row.verified_source === "clearstream" ? toIso(row.verified_at) : null),
+      swift: toIso(row.attested_swift),
+    },
     issueDate: toDateString(row.issue_date),
     maturityDate: toDateString(row.maturity_date),
     issuerDetails: (row.issuer_details as string | null) ?? null,
@@ -264,6 +310,14 @@ export async function publishInstrument(
     return { ok: false, error: "Common Code must be exactly 9 digits (Euroclear/Clearstream), or left blank." }
   }
 
+  // CUSIP is optional, but when supplied it must be a real, check-digit-valid
+  // 9-character CUSIP — never fabricated or auto-corrected.
+  const cusipRaw = (input.cusip ?? "").trim().toUpperCase()
+  const cusip = cusipRaw || null
+  if (cusip && !isValidCusip(cusip)) {
+    return { ok: false, error: "Invalid CUSIP — it must be 9 characters with a correct check digit, or left blank." }
+  }
+
   // Euroclear/Clearstream provenance requires the real ICSD Common Code.
   if ((source === "euroclear" || source === "clearstream") && !cc.value) {
     return {
@@ -275,9 +329,11 @@ export async function publishInstrument(
   // Live registry verification against Bloomberg (OpenFIGI).
   let verifiedFigi: string | null = null
   let verifiedName: string | null = null
+  let bloombergListed = false
   try {
     const mapping = await mapIsinServer(isin)
     if (mapping.listed && mapping.matches[0]) {
+      bloombergListed = true
       verifiedFigi = mapping.matches[0].figi ?? null
       verifiedName = mapping.matches[0].name ?? mapping.matches[0].securityDescription ?? null
     }
@@ -298,25 +354,37 @@ export async function publishInstrument(
 
   const id = `MKT-${Date.now().toString(36).toUpperCase()}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`
 
+  // Per-registry attestation timestamps. Bloomberg is set only when the ISIN
+  // actually resolved live; the ICSDs/SWIFT are set from the admin attestation
+  // (the primary source is always treated as attested).
+  const nowTs = new Date()
+  const attestedBloomberg = bloombergListed ? nowTs : null
+  const attestedEuroclear = input.attestEuroclear || source === "euroclear" ? nowTs : null
+  const attestedClearstream = input.attestClearstream || source === "clearstream" ? nowTs : null
+  const attestedSwift = input.attestSwift ? nowTs : null
+
   try {
     await ensureTable()
     await query(
       `INSERT INTO marketplace_instruments (
-         id, isin, common_code, bank_name, bank_bic, bank_country, type, type_full,
+         id, isin, cusip, common_code, bank_name, bank_bic, bank_country, type, type_full,
          face_value, currency, tenor_months, rating, assignable, monetizable, available,
          verified_source, verified_figi, verified_name, verified_at,
+         attested_bloomberg, attested_euroclear, attested_clearstream, attested_swift,
          issue_date, maturity_date, issuer_details, beneficiary_terms, delivery_method,
          governing_law, notes, printout_url, created_by, created_at, updated_at
        ) VALUES (
-         $1, $2, $3, $4, $5, $6, $7, $8,
-         $9, $10, $11, $12, $13, $14, true,
-         $15, $16, $17, now(),
-         $18, $19, $20, $21, $22,
-         $23, $24, $25, $26, now(), now()
+         $1, $2, $3, $4, $5, $6, $7, $8, $9,
+         $10, $11, $12, $13, $14, $15, true,
+         $16, $17, $18, now(),
+         $19, $20, $21, $22,
+         $23, $24, $25, $26, $27,
+         $28, $29, $30, $31, now(), now()
        )`,
       [
         id,
         isin,
+        cusip,
         cc.value,
         input.bankName.trim(),
         (input.bankBic ?? "").trim(),
@@ -332,6 +400,10 @@ export async function publishInstrument(
         source,
         verifiedFigi,
         verifiedName,
+        attestedBloomberg,
+        attestedEuroclear,
+        attestedClearstream,
+        attestedSwift,
         input.issueDate || null,
         input.maturityDate || null,
         (input.issuerDetails ?? "").trim() || null,

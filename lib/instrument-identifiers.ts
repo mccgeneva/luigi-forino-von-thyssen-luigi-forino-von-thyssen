@@ -188,6 +188,26 @@ export function generateCusip(): string {
   return base + check
 }
 
+/**
+ * Validate a 9-character US CUSIP: 8 alphanumerics + a correct check digit.
+ * `*`, `@`, `#` are technically valid CUSIP characters but never used by real
+ * issuers, so we reject them. Returns true only for a structurally valid CUSIP
+ * whose check digit is correct — we never fabricate or "fix" one.
+ */
+export function isValidCusip(cusip: string): boolean {
+  const v = (cusip || "").trim().toUpperCase()
+  if (!/^[0-9A-Z]{8}[0-9]$/.test(v)) return false
+  const ALPHA = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+  let sum = 0
+  for (let i = 0; i < 8; i++) {
+    let val = ALPHA.indexOf(v[i])
+    if (i % 2 === 1) val *= 2
+    sum += Math.floor(val / 10) + (val % 10)
+  }
+  const check = (10 - (sum % 10)) % 10
+  return check === Number.parseInt(v[8], 10)
+}
+
 /** Unique instrument serial / SWIFT documentary reference. */
 export function generateSerialNumber(typeCode: string, date = new Date()): string {
   const stamp = date.toISOString().slice(0, 10).replace(/-/g, "")

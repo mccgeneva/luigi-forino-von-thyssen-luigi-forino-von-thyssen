@@ -28,6 +28,7 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { ADMIN_PASSCODE } from "@/lib/admin-config"
+import { isValidCusip } from "@/lib/instrument-identifiers"
 import { MARKET_INSTRUMENT_TYPES } from "@/lib/instrument-marketplace"
 import {
   getAdminMarketplaceInstruments,
@@ -64,6 +65,7 @@ interface VerifyState {
 
 const EMPTY_FORM = {
   isin: "",
+  cusip: "",
   commonCode: "",
   bankName: "",
   bankBic: "",
@@ -76,6 +78,9 @@ const EMPTY_FORM = {
   assignable: true,
   monetizable: true,
   verifiedSource: "euroclear" as VerifiedSource,
+  attestEuroclear: false,
+  attestClearstream: false,
+  attestSwift: false,
   issueDate: "",
   maturityDate: "",
   issuerDetails: "",
@@ -117,6 +122,7 @@ export function MarketplaceInstrumentManager() {
   }, [])
 
   const isinLooksValid = /^[A-Za-z]{2}[A-Za-z0-9]{9}\d$/.test(form.isin.trim())
+  const cusipLooksValid = form.cusip.trim() === "" || isValidCusip(form.cusip.trim())
 
   const runVerify = async () => {
     const isin = form.isin.trim().toUpperCase()
@@ -159,16 +165,18 @@ export function MarketplaceInstrumentManager() {
 
   const canPublish = useMemo(() => {
     if (!isinLooksValid || !form.bankName.trim() || !form.faceValue.trim()) return false
+    if (!cusipLooksValid) return false
     if (form.verifiedSource === "bloomberg") return verify.checked && verify.listed === true
     // Euroclear / Clearstream require a 9-digit Common Code.
     return /^\d{9}$/.test(form.commonCode.trim())
-  }, [isinLooksValid, form, verify])
+  }, [isinLooksValid, cusipLooksValid, form, verify])
 
   const publish = async () => {
     const typeMeta = MARKET_INSTRUMENT_TYPES.find((t) => t.code === form.typeCode)
     setPublishing(true)
     const res = await publishInstrument(ADMIN_PASSCODE, {
       isin: form.isin,
+      cusip: form.cusip || null,
       commonCode: form.commonCode || null,
       bankName: form.bankName,
       bankBic: form.bankBic,
@@ -182,6 +190,9 @@ export function MarketplaceInstrumentManager() {
       assignable: form.assignable,
       monetizable: form.monetizable,
       verifiedSource: form.verifiedSource,
+      attestEuroclear: form.attestEuroclear,
+      attestClearstream: form.attestClearstream,
+      attestSwift: form.attestSwift,
       issueDate: form.issueDate || null,
       maturityDate: form.maturityDate || null,
       issuerDetails: form.issuerDetails || null,
@@ -279,6 +290,24 @@ export function MarketplaceInstrumentManager() {
               />
             </div>
 
+            {/* CUSIP */}
+            <div className="space-y-1.5">
+              <Label htmlFor="mkt-cusip">CUSIP (optional, US issuers)</Label>
+              <Input
+                id="mkt-cusip"
+                value={form.cusip}
+                onChange={(e) => setField("cusip", e.target.value.toUpperCase().replace(/[^0-9A-Z]/g, "").slice(0, 9))}
+                placeholder="9 chars, e.g. 037833100"
+                className="font-mono"
+              />
+              {form.cusip && !cusipLooksValid ? (
+                <p className="flex items-start gap-1.5 text-[11px] text-amber-600 dark:text-amber-400">
+                  <XCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                  CUSIP must be 9 characters with a valid check digit.
+                </p>
+              ) : null}
+            </div>
+
             {/* Verification source */}
             <div className="space-y-1.5">
               <Label>Verification source</Label>
@@ -353,6 +382,44 @@ export function MarketplaceInstrumentManager() {
                 <Label htmlFor="mkt-rating">Issuer rating</Label>
                 <Input id="mkt-rating" value={form.rating} onChange={(e) => setField("rating", e.target.value.toUpperCase())} placeholder="AAA" />
               </div>
+            </div>
+          </div>
+
+          {/* Multi-registry verification attestations */}
+          <div className="rounded-md border border-border/60 bg-card p-3">
+            <p className="mb-1 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+              Trusted-source verification
+            </p>
+            <p className="mb-3 text-[11px] text-muted-foreground text-pretty">
+              Bloomberg is confirmed automatically when the ISIN resolves live. Tick the registries you have confirmed
+              this instrument against — the date is recorded and shown to customers. Attest only what is genuinely
+              verified; nothing here is assumed.
+            </p>
+            <div className="flex flex-wrap items-center gap-x-6 gap-y-3">
+              <span className="flex items-center gap-2 text-sm">
+                <BadgeCheck
+                  className={cn(
+                    "h-4 w-4",
+                    verify.listed ? "text-emerald-600 dark:text-emerald-400" : "text-muted-foreground/50",
+                  )}
+                />
+                Bloomberg
+                <span className="text-[11px] text-muted-foreground">
+                  {verify.listed ? "live-verified" : "verify ISIN above"}
+                </span>
+              </span>
+              <label className="flex items-center gap-2 text-sm text-muted-foreground">
+                <Switch checked={form.attestEuroclear} onCheckedChange={(c) => setField("attestEuroclear", c)} />
+                Euroclear
+              </label>
+              <label className="flex items-center gap-2 text-sm text-muted-foreground">
+                <Switch checked={form.attestClearstream} onCheckedChange={(c) => setField("attestClearstream", c)} />
+                Clearstream
+              </label>
+              <label className="flex items-center gap-2 text-sm text-muted-foreground">
+                <Switch checked={form.attestSwift} onCheckedChange={(c) => setField("attestSwift", c)} />
+                SWIFT
+              </label>
             </div>
           </div>
 

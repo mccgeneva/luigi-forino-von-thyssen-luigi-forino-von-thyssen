@@ -10,13 +10,8 @@ import {
   DialogDescription,
 } from "@/components/ui/dialog"
 import { Badge } from "@/components/ui/badge"
-import type { MarketplaceInstrument, VerifiedSource } from "@/app/actions/marketplace-instruments"
-
-const SOURCE_LABEL: Record<VerifiedSource, string> = {
-  bloomberg: "Bloomberg (live-verified)",
-  euroclear: "Euroclear",
-  clearstream: "Clearstream",
-}
+import { VerificationBadges, verifiedCount } from "@/components/dashboard/verification-badges"
+import type { MarketplaceInstrument } from "@/app/actions/marketplace-instruments"
 
 function money(value: number, currency: string): string {
   try {
@@ -84,13 +79,14 @@ export function InstrumentPrintout({
             </div>
             <Badge variant="outline" className="gap-1 rounded-sm border-primary/30 bg-primary/5 font-mono text-[10px] text-primary">
               <ShieldCheck className="h-3 w-3" />
-              {SOURCE_LABEL[i.verifiedSource]}
+              {verifiedCount(i.verifications)} source{verifiedCount(i.verifications) === 1 ? "" : "s"} verified
             </Badge>
           </div>
 
           <div className="mt-3 grid gap-x-8 sm:grid-cols-2">
             <div>
               <Row label="ISIN" value={i.isin} mono />
+              {i.cusip ? <Row label="CUSIP" value={i.cusip} mono /> : null}
               <Row label="Common Code" value={i.commonCode ?? "Pending ICSD admission"} mono />
               <Row label="Instrument type" value={`${i.type} — ${i.typeFull}`} />
               <Row label="Face value" value={money(i.faceValue, i.currency)} mono />
@@ -135,13 +131,14 @@ export function InstrumentPrintout({
           </div>
 
           <div className="mt-4 rounded-md border border-border bg-muted/40 p-3">
-            <p className="flex items-center gap-1.5 text-[11px] text-muted-foreground text-pretty">
-              <ShieldCheck className="h-3.5 w-3.5 shrink-0 text-primary" />
-              Verified via <span className="font-medium text-foreground">{SOURCE_LABEL[i.verifiedSource]}</span>
-              {i.verifiedFigi ? <> · Bloomberg ID <span className="font-mono text-foreground">{i.verifiedFigi}</span></> : null}
-              {i.verifiedName ? <> · {i.verifiedName}</> : null}
-              {i.verifiedAt ? <> · as of {new Date(i.verifiedAt).toLocaleDateString("en-GB")}</> : null}
-            </p>
+            <p className="mb-2 text-[11px] uppercase tracking-wider text-muted-foreground">Trusted-source verification</p>
+            <VerificationBadges verifications={i.verifications} showDates />
+            {i.verifiedFigi || i.verifiedName ? (
+              <p className="mt-2 text-[11px] text-muted-foreground text-pretty">
+                {i.verifiedFigi ? <>Bloomberg ID <span className="font-mono text-foreground">{i.verifiedFigi}</span></> : null}
+                {i.verifiedName ? <> · {i.verifiedName}</> : null}
+              </p>
+            ) : null}
           </div>
         </div>
 
