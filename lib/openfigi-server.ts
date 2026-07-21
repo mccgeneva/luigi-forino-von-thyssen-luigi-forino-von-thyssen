@@ -41,6 +41,22 @@ function apiKeyHeaders(): Record<string, string> {
   return headers
 }
 
+/**
+ * fetch with a hard timeout. OpenFIGI can be slow or rate-limited; without a
+ * ceiling a stalled request would hang the caller (e.g. the publish flow)
+ * forever. On timeout the request is aborted and the error propagates so the
+ * caller can degrade gracefully.
+ */
+async function fetchWithTimeout(url: string, init: RequestInit, ms = 8000): Promise<Response> {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), ms)
+  try {
+    return await fetch(url, { ...init, signal: controller.signal })
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 /** A lightly validated ISIN (2 letters + 9 alnum + 1 digit). */
 export function looksLikeIsin(v: string): boolean {
   return /^[A-Z]{2}[A-Z0-9]{9}\d$/.test(v.trim().toUpperCase())
@@ -51,7 +67,7 @@ export async function mapIsinServer(isin: string): Promise<IsinMappingResult> {
   if (!looksLikeIsin(isin)) {
     return { listed: false, matches: [], reason: "Invalid ISIN format" }
   }
-  const res = await fetch(`${OPENFIGI_BASE}/mapping`, {
+  const res = await fetchWithTimeout(`${OPENFIGI_BASE}/mapping`, {
     method: "POST",
     headers: apiKeyHeaders(),
     cache: "no-store",
@@ -71,7 +87,7 @@ export async function mapIsinServer(isin: string): Promise<IsinMappingResult> {
 
 /** Free-text Bloomberg-style security search (name / ticker). */
 export async function searchFigiServer(query: string): Promise<{ matches: FigiRecord[]; reason?: string }> {
-  const res = await fetch(`${OPENFIGI_BASE}/search`, {
+  const res = await fetchWithTimeout(`${OPENFIGI_BASE}/search`, {
     method: "POST",
     headers: apiKeyHeaders(),
     cache: "no-store",
