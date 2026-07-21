@@ -250,7 +250,7 @@ export function PassportVerify({
         </div>
       ) : (
         <div className="space-y-4">
-          <FaceCapture onCapture={handleSelfie} actionLabel="Take selfie & verify" autoStart captureSelfie />
+          <FaceCapture onCapture={handleSelfie} actionLabel="Take selfie & verify" autoStart autoScan captureSelfie />
           <Button
             type="button"
             variant="ghost"

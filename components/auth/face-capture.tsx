@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 import { Camera, Loader2, ScanFace, AlertTriangle } from "lucide-react"
 import { cn } from "@/lib/utils"
-import { captureDescriptor, FaceModelLoadError } from "@/lib/face-client"
+import { captureDescriptor, preloadFaceModels, FaceModelLoadError } from "@/lib/face-client"
 
 type Phase = "idle" | "loading" | "ready" | "scanning" | "error"
 
@@ -31,6 +31,16 @@ interface FaceCaptureProps {
   actionLabel?: string
   /** Auto-start the camera on mount (login uses this for a fast path). */
   autoStart?: boolean
+  /**
+   * Hands-free capture: once the camera is live, continuously look for a face
+   * and submit automatically as soon as one is confidently detected — no button
+   * tap required. Only for single-sample flows (login / identity selfie).
+   *
+   * IMPORTANT: auto-scan makes exactly ONE server submission per session. After
+   * a rejected match it stops and waits for a manual tap, so it can never
+   * hammer the server or silently burn through the failed-attempt lockout.
+   */
+  autoScan?: boolean
   /**
    * When true, also grab a small JPEG snapshot of the live frame and pass it to
    * `onCapture`. Used by the LOGIN flow so an administrator can later confirm
@@ -76,6 +86,7 @@ export function FaceCapture({
   actionLabel = "Scan face",
   autoStart = false,
   captureSelfie = false,
+  autoScan = false,
 }: FaceCaptureProps) {
   const videoRef = useRef<HTMLVideoElement>(null)
   const streamRef = useRef<MediaStream | null>(null)
@@ -83,6 +94,9 @@ export function FaceCapture({
   const [message, setMessage] = useState<string>("")
   const [progress, setProgress] = useState(0)
   const busyRef = useRef(false)
+  // When true, hands-free auto-scan is paused until the user taps to retry.
+  // Set after a rejected match so we never auto-resubmit in a loop.
+  const [autoPaused, setAutoPaused] = useState(false)
 
   const stopCamera = useCallback(() => {
     streamRef.current?.getTracks().forEach((t) => t.stop())
@@ -141,9 +155,99 @@ export function FaceCapture({
   }, [])
 
   useEffect(() => {
-    if (autoStart) void startCamera()
+    if (autoStart) {
+      // Warm the ~7MB face models in PARALLEL with the camera permission
+      // prompt, so by the time the video is live the scanner is already ready
+      // and the first match is near-instant. Failures here are non-fatal — the
+      // scan path will surface a proper message if models truly can't load.
+      void preloadFaceModels().catch(() => {})
+      void startCamera()
+    }
     return () => stopCamera()
   }, [autoStart, startCamera, stopCamera])
+
+  // Submit a SINGLE captured descriptor (the hands-free auto-scan path). Makes
+  // exactly one server call; on rejection it pauses auto-scan so the user must
+  // tap to retry — this is what prevents an auto-resubmit loop.
+  const submitDescriptor = useCallback(
+    async (descriptor: number[]): Promise<void> => {
+      if (busyRef.current) return
+      busyRef.current = true
+      setPhase("scanning")
+      setMessage("")
+      setProgress(100)
+      try {
+        const selfie = captureSelfie && videoRef.current ? grabSelfieFrame(videoRef.current) : undefined
+        const res = await onCapture(descriptor, selfie)
+        if (res && res.ok === false) {
+          setPhase("ready")
+          setMessage(res.error || "")
+          setAutoPaused(true)
+        } else {
+          stopCamera()
+          setPhase("idle")
+        }
+      } catch (err) {
+        if (err instanceof FaceModelLoadError) {
+          setPhase("ready")
+          setMessage(
+            "Couldn’t load the face scanner." +
+              (isInAppBrowser() ? IN_APP_HINT : " Check your connection and try again."),
+          )
+          setAutoPaused(true)
+        } else {
+          setPhase("error")
+          setMessage("Something went wrong during the scan. Please try again.")
+        }
+      } finally {
+        busyRef.current = false
+        setProgress(0)
+      }
+    },
+    [onCapture, captureSelfie, stopCamera],
+  )
+
+  // Hands-free scanning: while the camera is live, poll for a face LOCALLY and
+  // submit the instant one is found — no button tap. The single server call is
+  // inside submitDescriptor, which pauses auto-scan on failure, so this loop can
+  // never hammer the server or silently exhaust the lockout.
+  useEffect(() => {
+    if (!autoScan || autoPaused || phase !== "ready") return
+    let cancelled = false
+    setMessage("Looking for your face — hold still.")
+    ;(async () => {
+      while (!cancelled) {
+        if (busyRef.current || !videoRef.current) {
+          await new Promise((r) => setTimeout(r, 250))
+          continue
+        }
+        let descriptor: number[] | null = null
+        try {
+          descriptor = await captureDescriptor(videoRef.current)
+        } catch (err) {
+          if (cancelled) return
+          if (err instanceof FaceModelLoadError) {
+            setPhase("ready")
+            setMessage(
+              "Couldn’t load the face scanner." +
+                (isInAppBrowser() ? IN_APP_HINT : " Check your connection and tap to retry."),
+            )
+            setAutoPaused(true)
+            return
+          }
+        }
+        if (cancelled) return
+        if (descriptor) {
+          void submitDescriptor(descriptor)
+          return
+        }
+        await new Promise((r) => setTimeout(r, 400))
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [autoScan, autoPaused, phase, submitDescriptor])
 
   const handleScan = useCallback(async () => {
     if (busyRef.current || !videoRef.current) return
@@ -266,10 +370,20 @@ export function FaceCapture({
           <Camera className="h-4 w-4" aria-hidden="true" />
           Enable camera
         </button>
+      ) : autoScan && !autoPaused ? (
+        // Hands-free: no tap needed — we auto-submit the moment a face is found.
+        <div
+          className="inline-flex h-11 items-center justify-center gap-2 rounded-md bg-primary/10 px-5 text-sm font-semibold text-primary"
+          role="status"
+          aria-live="polite"
+        >
+          <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+          {phase === "scanning" ? "Verifying…" : "Looking for your face…"}
+        </div>
       ) : (
         <button
           type="button"
-          onClick={handleScan}
+          onClick={autoScan ? () => setAutoPaused(false) : handleScan}
           disabled={phase !== "ready"}
           className="inline-flex h-11 items-center justify-center gap-2 rounded-md bg-primary px-5 text-sm font-semibold text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-60"
         >
