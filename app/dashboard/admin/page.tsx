@@ -128,6 +128,7 @@ import { BalanceManager } from "@/components/admin/balance-manager"
 import { SkrManager } from "@/components/admin/skr-manager"
 import { SkrOverview } from "@/components/admin/skr-overview"
 import { InstrumentIssuer } from "@/components/admin/instrument-issuer"
+import { MarketplaceInstrumentManager } from "@/components/admin/marketplace-instrument-manager"
 import { CardManager } from "@/components/admin/card-manager"
 import { CertificateManager } from "@/components/admin/certificate-manager"
 import { BankekaBroadcastManager } from "@/components/admin/bankeka-broadcast-manager"
@@ -2459,6 +2460,8 @@ export default function AdminPage() {
       <div className="space-y-6">
       {/* Issue a bank instrument directly into a client's portfolio */}
       <InstrumentIssuer />
+      {/* Publish real, registry-verified instruments to the client marketplace */}
+      <MarketplaceInstrumentManager />
       {/* Pending instrument requests */}
       <Card id="section-instruments" className="bg-card border-border">
         <CardHeader>
