@@ -31,10 +31,13 @@ export function verifiedCount(v: Verifications): number {
 export function VerificationBadges({
   verifications,
   size = "sm",
+  showDates = false,
   className,
 }: {
   verifications: Verifications
   size?: "sm" | "xs"
+  /** When true, verified chips also render the attestation date inline. */
+  showDates?: boolean
   className?: string
 }) {
   return (
@@ -56,6 +59,7 @@ export function VerificationBadges({
           >
             {verified ? <CheckCircle2 className="h-3 w-3" /> : <MinusCircle className="h-3 w-3" />}
             {REGISTRY_LABELS[r]}
+            {showDates && verified && at ? <span className="opacity-70">· {fmtDate(at)}</span> : null}
           </span>
         )
       })}
