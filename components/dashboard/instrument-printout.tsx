@@ -9,7 +9,9 @@ import {
   DialogTitle,
   DialogDescription,
 } from "@/components/ui/dialog"
+import { useState } from "react"
 import type { MarketplaceInstrument, Verifications } from "@/app/actions/marketplace-instruments"
+import { resolveBankLogo } from "@/lib/bank-logo"
 
 /* ---------------------------------------------------------------------------
  * Formatting helpers (shared by the preview and the standalone print doc)
@@ -72,6 +74,14 @@ function esc(s: unknown): string {
 function buildReportHtml(i: MarketplaceInstrument): string {
   const now = new Date()
   const ticker = `${i.bankBic || i.isin.slice(0, 4)} ${i.type}`.toUpperCase()
+  const logo = resolveBankLogo(i.bankName, i.bankBic, 128)
+
+  // Real issuer logo with a two-step CDN fallback, then a monogram crest.
+  const crest = logo.logoUrl
+    ? `<div class="crest"><img class="crestimg" src="${esc(logo.logoUrl)}" alt="${esc(i.bankName)} logo"
+        onerror="if(!this.dataset.alt){this.dataset.alt=1;this.src='${esc(logo.altLogoUrl || "")}';}else{this.style.display='none';this.parentNode.querySelector('.mono').style.display='flex';}"/>
+        <span class="mono">${esc(logo.monogram)}</span></div>`
+    : `<div class="crest"><span class="mono" style="display:flex">${esc(logo.monogram)}</span></div>`
 
   const row = (label: string, value: string, mono = true) =>
     `<div class="row"><span class="lbl">${esc(label)}</span><span class="dots"></span><span class="val ${
@@ -147,6 +157,12 @@ function buildReportHtml(i: MarketplaceInstrument): string {
   .cmd .rt{margin-left:auto;color:#7f8794;font-size:10px;}
   /* masthead */
   .mast{display:flex;justify-content:space-between;align-items:flex-start;padding:14px;background:#000;border-bottom:1px solid #1f1f1f;}
+  .mleft{display:flex;gap:12px;align-items:flex-start;}
+  .crest{width:46px;height:46px;flex:none;border:1px solid #2a2a2a;border-radius:5px;background:#fff;
+    display:flex;align-items:center;justify-content:center;overflow:hidden;}
+  .crest .crestimg{max-width:82%;max-height:82%;object-fit:contain;}
+  .crest .mono{display:none;width:100%;height:100%;align-items:center;justify-content:center;
+    background:#111;color:#ff8a00;font-weight:700;font-size:16px;letter-spacing:1px;}
   .mast .tkr{color:#ff8a00;font-size:20px;font-weight:700;letter-spacing:1px;}
   .mast .nm{color:#e8e6e1;font-size:13px;margin-top:2px;}
   .mast .sub{color:#7f8794;font-size:10px;margin-top:4px;text-transform:uppercase;letter-spacing:1px;}
@@ -192,13 +208,16 @@ function buildReportHtml(i: MarketplaceInstrument): string {
     <span class="rt">PAGE 1/1 &nbsp;·&nbsp; ${esc(fmtDateTime(now))} UTC</span></div>
 
   <div class="mast">
-    <div>
-      <div class="tkr">${esc(ticker)}</div>
-      <div class="nm">${esc(i.verifiedName || i.bankName)}</div>
-      <div class="sub">${esc(i.typeFull)} · ${esc(i.currency)} ${esc(money(i.faceValue, i.currency))}</div>
-      <span class="vbadge">${verifiedCount(i.verifications)} REGISTRY SOURCE${
-        verifiedCount(i.verifications) === 1 ? "" : "S"
-      } VERIFIED</span>
+    <div class="mleft">
+      ${crest}
+      <div>
+        <div class="tkr">${esc(ticker)}</div>
+        <div class="nm">${esc(i.verifiedName || i.bankName)}</div>
+        <div class="sub">${esc(i.typeFull)} · ${esc(i.currency)} ${esc(money(i.faceValue, i.currency))}</div>
+        <span class="vbadge">${verifiedCount(i.verifications)} REGISTRY SOURCE${
+          verifiedCount(i.verifications) === 1 ? "" : "S"
+        } VERIFIED</span>
+      </div>
     </div>
     <div class="brand"><div class="b1">MCC · BTP</div><div class="b2">INSTITUTIONAL DESK</div></div>
   </div>
@@ -242,6 +261,32 @@ function PreviewRow({ label, value, mono }: { label: string; value: string; mono
       <span className={`whitespace-nowrap text-right text-[11px] ${mono ? "text-[#ffd08a]" : "text-[#e8e6e1]"}`}>
         {value || "—"}
       </span>
+    </div>
+  )
+}
+
+/** Real issuer logo for the on-screen preview, with monogram crest fallback. */
+function BankCrest({ bankName, bic }: { bankName: string; bic: string | null }) {
+  const logo = resolveBankLogo(bankName, bic, 128)
+  // step 0 = primary CDN, 1 = alternate CDN, 2 = monogram fallback
+  const [step, setStep] = useState(logo.logoUrl ? 0 : 2)
+  const src = step === 0 ? logo.logoUrl : step === 1 ? logo.altLogoUrl : null
+
+  return (
+    <div className="flex h-[46px] w-[46px] flex-none items-center justify-center overflow-hidden rounded-[5px] border border-[#2a2a2a] bg-white">
+      {src ? (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img
+          src={src || "/placeholder.svg"}
+          alt={`${bankName} logo`}
+          className="max-h-[82%] max-w-[82%] object-contain"
+          onError={() => setStep((s) => s + 1)}
+        />
+      ) : (
+        <span className="flex h-full w-full items-center justify-center bg-[#111] text-base font-bold tracking-wide text-[#ff8a00]">
+          {logo.monogram}
+        </span>
+      )}
     </div>
   )
 }
@@ -294,7 +339,9 @@ export function InstrumentPrintout({
           </div>
           {/* masthead */}
           <div className="flex items-start justify-between gap-3 border-b border-[#1f1f1f] bg-black px-3 py-3">
-            <div className="min-w-0">
+            <div className="flex min-w-0 items-start gap-3">
+              <BankCrest bankName={i.bankName} bic={i.bankBic} />
+              <div className="min-w-0">
               <p className="truncate text-lg font-bold tracking-wider text-[#ff8a00]">{ticker}</p>
               <p className="truncate text-[13px] text-[#e8e6e1]">{i.verifiedName || i.bankName}</p>
               <p className="mt-1 text-[10px] uppercase tracking-wider text-[#7f8794]">
@@ -303,6 +350,7 @@ export function InstrumentPrintout({
               <span className="mt-1.5 inline-block border border-[#1f5c3a] bg-[#0c1f14] px-1.5 py-0.5 text-[9px] tracking-wider text-[#3ad07a]">
                 {vCount} REGISTRY SOURCE{vCount === 1 ? "" : "S"} VERIFIED
               </span>
+              </div>
             </div>
             <div className="text-right">
               <p className="font-bold tracking-widest text-[#ff8a00]">MCC · BTP</p>
