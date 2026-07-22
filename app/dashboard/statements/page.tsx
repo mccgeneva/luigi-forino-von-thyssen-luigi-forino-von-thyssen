@@ -31,6 +31,7 @@ import { useCurrentUser } from "@/lib/use-current-user"
 import { useLedger, convertCurrency, type LedgerEntry } from "@/lib/ledger-store"
 import { useActivityLog } from "@/components/activity-tracker"
 import { generateStatementPdf } from "@/lib/statement-pdf"
+import { findAddress } from "@/lib/holder-identity"
 import { usePdfViewer } from "@/lib/pdf-viewer"
 import { exportToCsv } from "@/lib/export-utils"
 import { StatementDocument } from "@/components/dashboard/statement-document"
@@ -96,15 +97,16 @@ export default function StatementsPage() {
   const bankName = bankingValue(banking, "Bank Name")
   const bankAddress = bankingValue(banking, "Bank Address")
   const companyInfo = (user.companyInfo ?? []) as { label: string; value: string }[]
-  const holderAddress =
-    bankingValue(banking, "Beneficiary Address") ||
-    bankingValue(companyInfo, "Registered Address") ||
-    bankingValue(companyInfo, "Address")
+  const principal = (user.principal ?? []) as { label: string; value: string }[]
+  // The customer's postal address may live in any of the profile arrays under a
+  // variety of KYC-extracted labels (Registered / Beneficiary / Residential /
+  // Legal Address, ...), so use the shared robust finder across all of them
+  // instead of a fixed list of labels.
+  const holderAddress = findAddress(banking, companyInfo, principal)
   const iban = bankingValue(banking, "IBAN")
   const bic = bankingValue(banking, "BIC / SWIFT")
   // Legal representative (the natural person acting for the entity), shown in
   // parentheses after the holder name. Omitted when it equals the holder name.
-  const principal = (user.principal ?? []) as { label: string; value: string }[]
   const rep = bankingValue(principal, "Represented By") || user.fullName
   const holderRepresentative = rep && rep !== holderName ? rep : undefined
 
@@ -524,6 +526,8 @@ export default function StatementsPage() {
       <StatementDocument
         holderName={holderName}
         holderCompany={user.company}
+        holderRepresentative={holderRepresentative}
+        holderAddress={holderAddress}
         bankName={bankName}
         bankAddress={bankAddress}
         iban={iban}
