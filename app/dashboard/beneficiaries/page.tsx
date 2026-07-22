@@ -170,7 +170,7 @@ export default function BeneficiariesPage() {
   const [savingBeneficiary, setSavingBeneficiary] = useState(false)
   const logActivity = useActivityLog()
   const { show } = usePdfViewer()
-  const { holderName, holderCompany, holderAddress } = useHolderIdentity()
+  const { holderName, holderCompany, holderAddress, holderRepresentative } = useHolderIdentity()
   const router = useRouter()
 
   const viewBeneficiary = (ben: Beneficiary) => {
@@ -537,6 +537,7 @@ export default function BeneficiariesPage() {
       holderName,
       holderCompany,
       holderAddress,
+      holderRepresentative,
       meta: [{ label: "Records", value: `${beneficiaries.length}` }],
       columns: [
         { key: "name", header: "Name" },

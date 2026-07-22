@@ -35,6 +35,8 @@ export interface TablePdfInput {
   /** Account holder / entity the export belongs to (shown in the meta block). */
   holderName?: string
   holderCompany?: string
+  /** Full name of the legal representative, shown in parentheses after the name. */
+  holderRepresentative?: string
   /** Account holder's registered / correspondence address (shown under the name). */
   holderAddress?: string
   /** Extra key/value rows shown beneath the title (period, filters, totals…). */
@@ -103,7 +105,13 @@ export function generateTablePdf(input: TablePdfInput): PdfDoc {
   // --- Meta block (only on the first page, before the table) ----------------
   // We compute its height so the table starts below it on page 1.
   const metaLines: string[] = []
-  if (input.holderName) metaLines.push(input.holderName)
+  // Holder name with the legal representative's full name appended in
+  // parentheses, e.g. "MCC Petroli Company Inc (Louis Thyssen)".
+  if (input.holderName) {
+    metaLines.push(
+      input.holderRepresentative ? `${input.holderName} (${input.holderRepresentative})` : input.holderName,
+    )
+  }
   if (input.holderCompany) metaLines.push(input.holderCompany)
   // Registered / correspondence address, wrapped to the page width so a long
   // address becomes one or more additional lines under the account holder name.

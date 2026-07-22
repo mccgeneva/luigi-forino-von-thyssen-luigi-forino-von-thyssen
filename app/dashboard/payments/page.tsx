@@ -140,7 +140,7 @@ export default function PaymentsPage() {
   const { beneficiaries } = useBeneficiaries()
   const logActivity = useActivityLog()
   const { show } = usePdfViewer()
-  const { holderName, holderCompany, holderAddress } = useHolderIdentity()
+  const { holderName, holderCompany, holderAddress, holderRepresentative } = useHolderIdentity()
   const { balanceFor, entries } = useLedger()
   const { requests, addRequest } = usePaymentRequests()
 
@@ -565,6 +565,7 @@ export default function PaymentsPage() {
       holderName,
       holderCompany,
       holderAddress,
+      holderRepresentative,
       meta: [{ label: "Records", value: `${filteredPayments.length}` }],
       columns: [
         { key: "date", header: "Date" },

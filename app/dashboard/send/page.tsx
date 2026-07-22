@@ -119,7 +119,7 @@ export default function SendMoneyPage() {
   const logActivity = useActivityLog()
   const { entries, balanceFor, refresh, hydrated } = useLedger()
   const { show } = usePdfViewer()
-  const { holderName, holderCompany, holderAddress } = useHolderIdentity()
+  const { holderName, holderCompany, holderAddress, holderRepresentative } = useHolderIdentity()
   const { requests, addRequest } = usePaymentRequests()
 
   // Resolve the acting sender from the authoritative signed-in identity (which
@@ -408,6 +408,7 @@ export default function SendMoneyPage() {
       holderName,
       holderCompany,
       holderAddress,
+      holderRepresentative,
       meta: [{ label: "Records", value: `${filteredHistory.length}` }],
       columns: [
         { key: "date", header: "Date" },
