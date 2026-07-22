@@ -109,6 +109,9 @@ export function CertificateDocument(props: CertificateDocProps) {
     ...(props.iban ? ([["IBAN", props.iban]] as [string, string][]) : []),
     ...(props.bic ? ([["BIC / SWIFT", props.bic]] as [string, string][]) : []),
     ["Account", props.accountLabel],
+    // Explicitly names the platform owner/operator so the account holder (client)
+    // and settlement bank are never mistaken for the party that owns the platform.
+    ["Platform Operator", "NAFTAhub plc"],
   ]
 
   return (
