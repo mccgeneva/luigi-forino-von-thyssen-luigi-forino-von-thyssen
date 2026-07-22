@@ -206,13 +206,25 @@ export function CertificateDocument(props: CertificateDocProps) {
           </table>
         </div>
 
-        {/* Signature + seal */}
+        {/* Authorised signatory block + seal. Issued certificates carry the real
+            MCC signatory block (transparent PNG, blends on the dark card); draft
+            previews keep the empty signature line. */}
         <div className="mt-6 flex items-end justify-between gap-4">
-          <div>
-            <div className="h-8 w-44 border-b border-foreground" />
-            <p className="mt-1 text-xs font-semibold text-foreground">Authorised Signatory</p>
-            <p className="text-[11px] text-muted-foreground">MCC Capital — Compliance Office</p>
-          </div>
+          {isDraft ? (
+            <div>
+              <div className="h-8 w-44 border-b border-foreground" />
+              <p className="mt-1 text-xs font-semibold text-foreground">Authorised Signatory</p>
+              <p className="text-[11px] text-muted-foreground">MCC Capital — Compliance Office</p>
+            </div>
+          ) : (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img
+              src="/certificates/mcc-signature-light.png"
+              alt="Authorised signatory: MCC Holding S.A., Geneva, Switzerland — official signature"
+              className="h-auto w-72 max-w-[68%] select-none"
+              draggable={false}
+            />
+          )}
           <div className="flex h-24 w-24 shrink-0 flex-col items-center justify-center rounded-full border-2 border-primary text-center">
             <span className="text-[10px] font-bold text-primary">MCC CAPITAL</span>
             <span className="text-[7px] text-muted-foreground">GENEVA · SWITZERLAND</span>

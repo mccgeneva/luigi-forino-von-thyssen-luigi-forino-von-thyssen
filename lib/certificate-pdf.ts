@@ -6,6 +6,14 @@ import { jsPDF } from "jspdf"
 import type { CertificateType } from "@/lib/certificates-store"
 import type { GeneratedPdf } from "@/lib/pdf-core"
 import { drawBrandMark } from "@/lib/pdf-logos"
+import { SIGNATURE_PNG_DARK, SIGNATURE_ASPECT } from "@/lib/certificate-signature"
+
+// Places the official MCC authorised-signatory block (real signature + mcc mark
+// + registered addresses + TAX ID) on an issued certificate. The PNG has a
+// transparent background so it blends onto the white certificate page.
+function drawSignatureBlock(doc: jsPDF, x: number, topY: number, width: number) {
+  doc.addImage(SIGNATURE_PNG_DARK, "PNG", x, topY, width, width * SIGNATURE_ASPECT, undefined, "FAST")
+}
 
 export interface InstrumentCertificateData {
   id: string
@@ -519,21 +527,14 @@ export function generateAccountCertificate(data: AccountCertificateData): Genera
   })
   y += rows.length * 20 + 14
 
-  // --- Signature + seal -----------------------------------------------------
-  const sigY = Math.min(y + 30, pageHeight - margin - 96)
-  doc.setDrawColor(...BRAND.ink)
-  doc.setLineWidth(0.5)
-  doc.line(margin, sigY, margin + 190, sigY)
-  doc.setTextColor(...BRAND.ink)
-  doc.setFont("helvetica", "bold")
-  doc.setFontSize(9)
-  doc.text("Authorised Signatory", margin, sigY + 14)
-  doc.setFont("helvetica", "normal")
-  doc.setFontSize(8)
-  doc.setTextColor(...BRAND.slate)
-  doc.text("MCC Capital — Compliance Office", margin, sigY + 26)
-
-  drawSeal(doc, pageWidth - margin - 56, sigY + 2, 42)
+  // --- Authorised signatory block + official seal ---------------------------
+  // Real MCC authorised-signatory block (signature, mcc mark, registered
+  // addresses, TAX ID) on the left; vector security seal on the right.
+  const sigW = 288
+  const sigH = sigW * SIGNATURE_ASPECT
+  const sigTop = Math.min(y + 12, pageHeight - margin - 60 - sigH)
+  drawSignatureBlock(doc, margin, sigTop, sigW)
+  drawSeal(doc, pageWidth - margin - 52, sigTop + sigH / 2, 40)
 
   // --- Security footer ------------------------------------------------------
   const footY = pageHeight - margin - 30
@@ -720,21 +721,12 @@ export function generateSkrCertificate(data: SkrCertificateData): GeneratedPdf {
   })
   y += rows.length * 20 + 14
 
-  // --- Signature + seal -----------------------------------------------------
-  const sigY = Math.min(y + 30, pageHeight - margin - 96)
-  doc.setDrawColor(...BRAND.ink)
-  doc.setLineWidth(0.5)
-  doc.line(margin, sigY, margin + 190, sigY)
-  doc.setTextColor(...BRAND.ink)
-  doc.setFont("helvetica", "bold")
-  doc.setFontSize(9)
-  doc.text("Authorised Signatory", margin, sigY + 14)
-  doc.setFont("helvetica", "normal")
-  doc.setFontSize(8)
-  doc.setTextColor(...BRAND.slate)
-  doc.text("MCC Capital — Custody & Compliance Office", margin, sigY + 26)
-
-  drawSeal(doc, pageWidth - margin - 56, sigY + 2, 42)
+  // --- Authorised signatory block + official seal ---------------------------
+  const sigW = 288
+  const sigH = sigW * SIGNATURE_ASPECT
+  const sigTop = Math.min(y + 12, pageHeight - margin - 60 - sigH)
+  drawSignatureBlock(doc, margin, sigTop, sigW)
+  drawSeal(doc, pageWidth - margin - 52, sigTop + sigH / 2, 40)
 
   // --- Security footer ------------------------------------------------------
   const footY = pageHeight - margin - 30
