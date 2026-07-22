@@ -521,18 +521,26 @@ export function generateAccountCertificate(data: AccountCertificateData): Genera
   ]
 
   doc.setFontSize(9.5)
+  const valueX = pageWidth - margin - 12
   rows.forEach((row, i) => {
     const rowY = y + i * 20
     if (i % 2 === 0) {
       doc.setFillColor(250, 250, 251)
       doc.rect(margin, rowY - 13, contentWidth, 20, "F")
     }
-    doc.setTextColor(...BRAND.slate)
-    doc.setFont("helvetica", "normal")
-    doc.text(row[0], margin + 12, rowY)
-    doc.setTextColor(...BRAND.ink)
+    // Role label kept immediately to the LEFT of its value (both grouped on the
+    // right edge) rather than at the far-left margin. On zoomed mobile PDF
+    // viewers the left margin is cropped off; grouping guarantees every value's
+    // role ("Account Holder", "Platform Operator", ...) is always visible, so
+    // the account holder, settlement bank and platform owner can never be
+    // mistaken for one another.
     doc.setFont("helvetica", "bold")
-    doc.text(row[1], pageWidth - margin - 12, rowY, { align: "right" })
+    doc.setTextColor(...BRAND.ink)
+    doc.text(row[1], valueX, rowY, { align: "right" })
+    const valueWidth = doc.getTextWidth(row[1])
+    doc.setFont("helvetica", "normal")
+    doc.setTextColor(...BRAND.slate)
+    doc.text(`${row[0]}:`, valueX - valueWidth - 10, rowY, { align: "right" })
   })
   y += rows.length * 20 + 14
 
