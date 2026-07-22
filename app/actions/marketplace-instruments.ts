@@ -8,7 +8,7 @@ import { logActivity } from "@/app/actions/log-activity"
 import { isValidIsin, isValidCusip } from "@/lib/instrument-identifiers"
 import { mapIsinServer } from "@/lib/openfigi-server"
 import { resolveIsinEntity } from "@/lib/gleif-server"
-import { lookupBankByBic } from "@/lib/iban-swift"
+import { lookupBankByBic, lookupBankByName } from "@/lib/iban-swift"
 import { getCountryByCode } from "@/lib/countries"
 
 // ---------------------------------------------------------------------------
@@ -377,6 +377,31 @@ export async function enrichInstrumentFromIsin(passcode: string, isin: string): 
           e.issuerDetails = line
           sources.push("Bank directory")
         }
+      }
+    } catch {
+      // non-fatal
+    }
+  }
+
+  // 5) GLEIF frequently returns a legal name + address but NO BIC, and some
+  //    ISINs don't resolve there at all. Cross-reference the resolved issuer /
+  //    security name against the curated bank directory to fill any remaining
+  //    SWIFT/BIC, registered address, bank name or country from real data.
+  const nameForLookup = e.bankName || e.securityName
+  if (nameForLookup && (!e.bankBic || !e.issuerDetails || !e.bankCountry || !e.bankName)) {
+    try {
+      const byName = await lookupBankByName(nameForLookup)
+      if (byName) {
+        if (!e.bankName && byName.name) e.bankName = byName.name
+        if (!e.bankBic && byName.bic) e.bankBic = byName.bic
+        if (!e.bankCountry && byName.country) e.bankCountry = byName.country
+        if (!e.issuerDetails) {
+          const line = [byName.address, byName.city, byName.postalCode, byName.country]
+            .filter((p) => p && String(p).trim())
+            .join(", ")
+          if (line) e.issuerDetails = line
+        }
+        if (!sources.includes("Bank directory")) sources.push("Bank directory")
       }
     } catch {
       // non-fatal

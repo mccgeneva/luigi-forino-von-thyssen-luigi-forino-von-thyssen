@@ -302,6 +302,67 @@ export async function lookupBankByBic(raw: string): Promise<BankInfo | null> {
   return delay(info)
 }
 
+// Corporate-form / geography words that carry no brand meaning, so they must
+// not drive a directory match (e.g. "HSBC HOLDINGS PLC" should match on HSBC).
+const NAME_STOPWORDS = new Set([
+  "BANK", "BANQUE", "BANCA", "BANCO", "AG", "SA", "PLC", "NV", "NA",
+  "LTD", "LIMITED", "INC", "CORP", "CORPORATION", "GROUP", "HOLDINGS", "HOLDING",
+  "THE", "OF", "AND", "CO", "COMPANY", "SPA", "AS", "UAB", "AB", "PANK", "BANKAS",
+  "BANKA", "EUROPE", "INTERNATIONAL", "SCHWEIZ", "SWITZERLAND", "SUISSE",
+  "FINANCIAL", "SERVICES", "TRUST", "PUBLIC", "JOINT", "STOCK",
+])
+
+/** Uppercase, strip diacritics + punctuation, drop corporate-form stopwords. */
+function brandTokens(name: string): string[] {
+  return (name || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toUpperCase()
+    .replace(/[^A-Z0-9\s]/g, " ")
+    .split(/\s+/)
+    .filter((t) => t.length > 1 && !NAME_STOPWORDS.has(t))
+}
+
+/**
+ * Resolve a bank from the curated directory by its free-text legal / issuer
+ * name (e.g. from GLEIF or OpenFIGI). Matches on shared brand tokens, with a
+ * 4-character stem match so brand variants align (CITIGROUP↔CITIBANK). Returns
+ * only a confident single best match — otherwise null, so we never guess.
+ */
+export async function lookupBankByName(rawName: string): Promise<BankInfo | null> {
+  const q = brandTokens(rawName)
+  if (!q.length) return delay(null)
+
+  let best: DirectoryEntry | undefined
+  let bestScore = 0
+  for (const e of BANK_DIRECTORY) {
+    const et = brandTokens(e.name)
+    let score = 0
+    for (const qt of q) {
+      for (const t of et) {
+        if (qt === t) score += 2
+        else if (qt.length >= 4 && t.length >= 4 && qt.slice(0, 4) === t.slice(0, 4)) score += 1
+      }
+    }
+    if (score > bestScore) {
+      bestScore = score
+      best = e
+    }
+  }
+  if (!best || bestScore === 0) return delay(null)
+
+  return delay({
+    name: best.name,
+    city: best.city,
+    country: countryName(best.countryCode) ?? best.countryCode,
+    countryCode: best.countryCode,
+    bic: best.primaryBic,
+    address: best.address,
+    postalCode: best.postalCode,
+    branch: "Head Office",
+  })
+}
+
 export async function lookupBankByIban(raw: string): Promise<BankInfo | null> {
   const result = validateIban(raw)
   if (!result.valid || !result.countryCode) return delay(null)
