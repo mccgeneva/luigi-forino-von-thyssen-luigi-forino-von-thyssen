@@ -30,17 +30,38 @@ import {
 import { ADMIN_PASSCODE } from "@/lib/admin-config"
 import { isValidCusip, getInstrumentTypeRules } from "@/lib/instrument-identifiers"
 import { MARKET_INSTRUMENT_TYPES } from "@/lib/instrument-marketplace"
-import {
-  getAdminMarketplaceInstruments,
-  publishInstrument,
-  enrichInstrumentFromIsin,
-  setInstrumentAvailability,
-  removeInstrument,
-  type MarketplaceInstrument,
-  type VerifiedSource,
+import type {
+  MarketplaceInstrument,
+  VerifiedSource,
+  PublishInstrumentInput,
+  EnrichResult,
+  MarketplaceResult,
+  PublishResult,
 } from "@/app/actions/marketplace-instruments"
 import { toast } from "sonner"
 import { cn } from "@/lib/utils"
+
+// All admin marketplace mutations go through a Route Handler, NOT Server
+// Actions. Server Action POSTs are silently rejected on this app's production
+// domains + mobile in-app webviews (the cause of "Could not publish the
+// instrument"). Route Handlers are exempt from that Origin/Host check.
+async function marketplaceApi<T>(payload: Record<string, unknown>): Promise<T> {
+  const res = await fetch("/api/admin/marketplace", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "x-admin-passcode": ADMIN_PASSCODE },
+    body: JSON.stringify(payload),
+  })
+  return (await res.json()) as T
+}
+
+async function fetchAdminInstruments(): Promise<MarketplaceResult> {
+  const res = await fetch(`/api/admin/marketplace`, {
+    method: "GET",
+    headers: { "x-admin-passcode": ADMIN_PASSCODE },
+    cache: "no-store",
+  })
+  return (await res.json()) as MarketplaceResult
+}
 
 const CURRENCIES = ["USD", "EUR", "GBP", "CHF", "AED", "SGD", "HKD", "JPY"]
 const SOURCE_LABEL: Record<VerifiedSource, string> = {
@@ -107,7 +128,7 @@ export function MarketplaceInstrumentManager() {
 
   useEffect(() => {
     let active = true
-    getAdminMarketplaceInstruments(ADMIN_PASSCODE)
+    fetchAdminInstruments()
       .then((res) => {
         if (!active) return
         if (!res.ok) {
@@ -169,7 +190,7 @@ export function MarketplaceInstrumentManager() {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ isin }),
         }).then((r) => r.json()),
-        enrichInstrumentFromIsin(ADMIN_PASSCODE, isin),
+        marketplaceApi<EnrichResult>({ action: "enrich", isin }),
       ])
 
       // Auto-fill empty fields from the real retrieved reference data.
@@ -228,7 +249,7 @@ export function MarketplaceInstrumentManager() {
     const typeMeta = MARKET_INSTRUMENT_TYPES.find((t) => t.code === form.typeCode)
     setPublishing(true)
     try {
-      const res = await publishInstrument(ADMIN_PASSCODE, {
+      const input: PublishInstrumentInput = {
         isin: form.isin,
         cusip: form.cusip || null,
         commonCode: form.commonCode || null,
@@ -255,7 +276,8 @@ export function MarketplaceInstrumentManager() {
         governingLaw: form.governingLaw || null,
         notes: form.notes || null,
         printoutUrl: form.printoutUrl || null,
-      })
+      }
+      const res = await marketplaceApi<PublishResult>({ action: "publish", input })
       if (!res.ok) {
         toast.error(res.error)
         return
@@ -276,7 +298,11 @@ export function MarketplaceInstrumentManager() {
 
   const toggleAvailability = async (inst: MarketplaceInstrument) => {
     setBusyId(inst.id)
-    const res = await setInstrumentAvailability(ADMIN_PASSCODE, inst.id, !inst.available)
+    const res = await marketplaceApi<MarketplaceResult>({
+      action: "availability",
+      id: inst.id,
+      available: !inst.available,
+    })
     setBusyId(null)
     if (!res.ok) return toast.error(res.error)
     setInstruments(res.instruments)
@@ -284,7 +310,7 @@ export function MarketplaceInstrumentManager() {
 
   const remove = async (inst: MarketplaceInstrument) => {
     setBusyId(inst.id)
-    const res = await removeInstrument(ADMIN_PASSCODE, inst.id)
+    const res = await marketplaceApi<MarketplaceResult>({ action: "remove", id: inst.id })
     setBusyId(null)
     if (!res.ok) return toast.error(res.error)
     setInstruments(res.instruments)
