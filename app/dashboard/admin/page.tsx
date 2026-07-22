@@ -400,6 +400,35 @@ export default function AdminPage() {
     }
   }, [unlocked])
 
+  // Count of certificate requests awaiting an administrator decision (across
+  // EVERY client). Certificate requests live in their own DB table, separate
+  // from the approvals backbone, so without this the Certificates tile would
+  // always read 0 — leaving the admin to believe there is "nothing to approve"
+  // even while a client's request is pending. Read via the certificates Route
+  // Handler (not a Server Action) so it is reliable on production/webviews.
+  const [pendingCertificateCount, setPendingCertificateCount] = useState(0)
+  useEffect(() => {
+    if (!unlocked) return
+    let cancelled = false
+    ;(async () => {
+      try {
+        const res = await fetch("/api/admin/certificates", {
+          headers: { "x-admin-passcode": ADMIN_PASSCODE },
+          cache: "no-store",
+        })
+        const json = (await res.json()) as { ok: boolean; requests?: unknown[] }
+        if (!cancelled && json.ok && Array.isArray(json.requests)) {
+          setPendingCertificateCount(json.requests.length)
+        }
+      } catch {
+        // Non-fatal: the Certificates tile just shows 0 if the count can't load.
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [unlocked, activeView])
+
   // Cross-client pending counts from the DB-backed approvals backbone. Unlike
   // the localStorage stores above (which only ever see the ADMIN's own browser
   // data), this reflects requests submitted by ANY client. It is the source of
@@ -1950,7 +1979,7 @@ export default function AdminPage() {
         { id: "swiftrouting", label: "SWIFT Routing", description: "Review client SWIFT messages and route them to the chosen beneficiary.", icon: Send, count: pendingSwiftRoutingCount },
         { id: "reconciliation", label: "Reconciliation", description: "Automated payment reconciliation engine.", icon: Repeat, count: 0 },
         { id: "treasury", label: "Treasury Services", description: "Security deposits and 1:10 leverage.", icon: Landmark, count: 0 },
-        { id: "certificates", label: "Certificates", description: "Issue and re-issue official certificates.", icon: ScrollText, count: 0 },
+        { id: "certificates", label: "Certificates", description: "Issue and re-issue official certificates.", icon: ScrollText, count: pendingCertificateCount },
         { id: "bankeka", label: "Bankeka Messenger", description: "Broadcast secure messages and reply to clients.", icon: MessageSquareText, count: 0 },
       ],
     },
