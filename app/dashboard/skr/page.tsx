@@ -47,6 +47,7 @@ import { toast } from "sonner"
 import { useActivityLog } from "@/components/activity-tracker"
 import { exportToCsv } from "@/lib/export-utils"
 import { generateTablePdf, tablePdfFilename } from "@/lib/table-pdf"
+import { useHolderIdentity } from "@/lib/holder-identity"
 import { usePdfViewer } from "@/lib/pdf-viewer"
 import { generateSkrCertificate } from "@/lib/certificate-pdf"
 import { blobFileUrl } from "@/lib/kyc-types"
@@ -141,6 +142,7 @@ export default function SkrPage() {
   }, [records])
 
   const { show } = usePdfViewer()
+  const { holderName, holderCompany, holderAddress } = useHolderIdentity()
 
   const uploadDocument = async (record: SkrRecord, file: File) => {
     const MAX = 25 * 1024 * 1024
@@ -192,6 +194,9 @@ export default function SkrPage() {
     const doc = generateTablePdf({
       title: "Safe Keeping Receipt Statement",
       refPrefix: "SKR",
+      holderName,
+      holderCompany,
+      holderAddress,
       meta: [
         { label: "SKR Reference", value: record.id },
         { label: "Status", value: SKR_STATUS_LABELS[record.status] },

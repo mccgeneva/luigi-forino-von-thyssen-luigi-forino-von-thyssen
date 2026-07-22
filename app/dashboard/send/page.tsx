@@ -45,6 +45,7 @@ import { useCurrentUser } from "@/lib/use-current-user"
 import type { TransferDirectoryEntry } from "@/lib/users"
 import { exportToCsv } from "@/lib/export-utils"
 import { generateTablePdf, tablePdfFilename } from "@/lib/table-pdf"
+import { useHolderIdentity } from "@/lib/holder-identity"
 import { usePdfViewer } from "@/lib/pdf-viewer"
 import {
   DropdownMenu,
@@ -118,6 +119,7 @@ export default function SendMoneyPage() {
   const logActivity = useActivityLog()
   const { entries, balanceFor, refresh, hydrated } = useLedger()
   const { show } = usePdfViewer()
+  const { holderName, holderCompany, holderAddress } = useHolderIdentity()
   const { requests, addRequest } = usePaymentRequests()
 
   // Resolve the acting sender from the authoritative signed-in identity (which
@@ -403,6 +405,9 @@ export default function SendMoneyPage() {
     const doc = generateTablePdf({
       title: "Transfer History",
       refPrefix: "SND",
+      holderName,
+      holderCompany,
+      holderAddress,
       meta: [{ label: "Records", value: `${filteredHistory.length}` }],
       columns: [
         { key: "date", header: "Date" },

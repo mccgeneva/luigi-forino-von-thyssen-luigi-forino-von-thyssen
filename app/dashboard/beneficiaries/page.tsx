@@ -74,6 +74,7 @@ import {
 import { upsertMyBeneficiary } from "@/app/actions/beneficiaries"
 import { exportToCsv, importCsvFile } from "@/lib/export-utils"
 import { generateTablePdf, tablePdfFilename } from "@/lib/table-pdf"
+import { useHolderIdentity } from "@/lib/holder-identity"
 import { usePdfViewer } from "@/lib/pdf-viewer"
 import { VerifiedBankField } from "@/components/verified-bank-field"
 import { CountryCombobox } from "@/components/country-combobox"
@@ -169,6 +170,7 @@ export default function BeneficiariesPage() {
   const [savingBeneficiary, setSavingBeneficiary] = useState(false)
   const logActivity = useActivityLog()
   const { show } = usePdfViewer()
+  const { holderName, holderCompany, holderAddress } = useHolderIdentity()
   const router = useRouter()
 
   const viewBeneficiary = (ben: Beneficiary) => {
@@ -532,6 +534,9 @@ export default function BeneficiariesPage() {
     const doc = generateTablePdf({
       title: "Beneficiary Register",
       refPrefix: "BEN",
+      holderName,
+      holderCompany,
+      holderAddress,
       meta: [{ label: "Records", value: `${beneficiaries.length}` }],
       columns: [
         { key: "name", header: "Name" },
