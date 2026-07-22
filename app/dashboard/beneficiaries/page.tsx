@@ -22,6 +22,8 @@ import {
   FileText,
   Download,
   Upload,
+  Ban,
+  RotateCcw,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -114,6 +116,8 @@ function getStatusBadge(status: BeneficiaryStatus) {
       return <Badge className="bg-orange-500/10 text-orange-400 border-orange-500/20">Suspended</Badge>
     case "blocked":
       return <Badge className="bg-red-500/10 text-red-400 border-red-500/20">Blocked</Badge>
+    case "cancelled":
+      return <Badge className="bg-muted text-muted-foreground border-border">Cancelled</Badge>
   }
 }
 
@@ -155,6 +159,8 @@ export default function BeneficiariesPage() {
   const [selectedBeneficiary, setSelectedBeneficiary] = useState<Beneficiary | null>(null)
   const [isAddDialogOpen, setIsAddDialogOpen] = useState(false)
   const [isViewDialogOpen, setIsViewDialogOpen] = useState(false)
+  // When set, the dialog is editing an existing payee rather than adding one.
+  const [editingBeneficiary, setEditingBeneficiary] = useState<Beneficiary | null>(null)
   const [newBeneficiaryType, setNewBeneficiaryType] = useState<BeneficiaryType>("corporate")
   const [activeTab, setActiveTab] = useState("all")
   const { beneficiaries, setBeneficiaries } = useBeneficiaries()
@@ -212,18 +218,93 @@ export default function BeneficiariesPage() {
     })
   }
 
+  // Open the shared dialog pre-filled with this payee's details for editing.
   const editBeneficiary = (ben: Beneficiary) => {
+    setEditingBeneficiary(ben)
+    setNewBeneficiaryType(ben.type)
+    setForm({
+      name: ben.name ?? "",
+      alias: ben.alias ?? "",
+      dateOfBirth: ben.dateOfBirth ?? "",
+      nationality: ben.nationality ?? "",
+      registrationNumber: ben.registrationNumber ?? "",
+      vatNumber: ben.vatNumber ?? "",
+      beneficiaryAddress: ben.beneficiaryAddress ?? "",
+      beneficiaryCity: ben.beneficiaryCity ?? "",
+      beneficiaryPostalCode: ben.beneficiaryPostalCode ?? "",
+      beneficiaryCountry: ben.beneficiaryCountry ?? "",
+      iban: ben.iban ?? "",
+      accountNumber: ben.accountNumber ?? "",
+      swiftBic: ben.swiftBic ?? "",
+      currency: ben.currency ?? "",
+      bankName: ben.bankName ?? "",
+      bankAddress: ben.bankAddress ?? "",
+      bankCountry: ben.bankCountry ?? "",
+      correspondentBank: ben.correspondentBank ?? "",
+      correspondentSwift: ben.correspondentSwift ?? "",
+      intermediaryBank: ben.intermediaryBank ?? "",
+      intermediarySwift: ben.intermediarySwift ?? "",
+      notes: ben.notes ?? "",
+    })
+    setFormError(null)
+    setIsAddDialogOpen(true)
+  }
+
+  // Cancel = deactivate but KEEP the record (audit history), so it can no longer
+  // be paid and can be reactivated later. Persist to the server first.
+  const cancelBeneficiary = async (ben: Beneficiary) => {
+    if (ben.status === "cancelled") return
+    const updated: Beneficiary = { ...ben, status: "cancelled", isFavorite: false }
+    const saved = await upsertMyBeneficiary(
+      updated.id,
+      updated as unknown as Record<string, unknown>,
+      updated.status,
+    )
+    if (!saved.ok) {
+      toast.error("Could not cancel beneficiary", { description: saved.error })
+      return
+    }
+    setBeneficiaries((prev) => prev.map((b) => (b.id === ben.id ? updated : b)))
     logActivity({
-      action: `Requested edits to beneficiary ${ben.name}`,
+      action: `Cancelled beneficiary ${ben.name}`,
       category: "Beneficiary Management",
       details: {
-        summary: `Client requested changes to the beneficiary "${ben.name}" (${ben.id}).`,
+        summary: `Client cancelled the beneficiary "${ben.name}" (${ben.id}). The record is retained for audit and can be reactivated.`,
+        beneficiaryId: ben.id,
+        name: ben.name,
+        previousStatus: ben.status,
+      },
+    })
+    toast.success("Beneficiary cancelled", {
+      description: `${ben.name} is deactivated. You can reactivate it anytime.`,
+    })
+  }
+
+  // Reactivate a cancelled payee. Because reactivation re-enables payments, it
+  // returns to Pending for admin re-approval (never silently back to Active).
+  const reactivateBeneficiary = async (ben: Beneficiary) => {
+    const updated: Beneficiary = { ...ben, status: "pending", kycVerified: false }
+    const saved = await upsertMyBeneficiary(
+      updated.id,
+      updated as unknown as Record<string, unknown>,
+      updated.status,
+    )
+    if (!saved.ok) {
+      toast.error("Could not reactivate beneficiary", { description: saved.error })
+      return
+    }
+    setBeneficiaries((prev) => prev.map((b) => (b.id === ben.id ? updated : b)))
+    logActivity({
+      action: `Reactivated beneficiary ${ben.name}`,
+      category: "Beneficiary Management",
+      details: {
+        summary: `Client reactivated the cancelled beneficiary "${ben.name}" (${ben.id}). It is pending admin re-approval before payments can resume.`,
         beneficiaryId: ben.id,
         name: ben.name,
       },
     })
-    toast.info("Edit request submitted", {
-      description: "Beneficiary changes require KYC re-verification.",
+    toast.success("Beneficiary reactivated", {
+      description: `${ben.name} is pending re-approval.`,
     })
   }
 
@@ -283,18 +364,42 @@ export default function BeneficiariesPage() {
       return
     }
 
+    const editing = editingBeneficiary
+    const nextAccountNumber = form.accountNumber.trim() || form.iban.trim()
+    const nextSwift = form.swiftBic.trim().toUpperCase()
+
+    // Re-approval rule: editing an already-approved payee only forces a return
+    // to Pending when BANK ROUTING details change. Cosmetic edits (alias, notes,
+    // address, tax IDs) keep the payee Active — full self-service, no re-check.
+    const bankRoutingChanged =
+      !!editing &&
+      ((form.iban.trim() || undefined) !== (editing.iban || undefined) ||
+        nextAccountNumber !== editing.accountNumber ||
+        nextSwift !== editing.swiftBic ||
+        form.bankName.trim() !== editing.bankName ||
+        form.bankAddress.trim() !== editing.bankAddress ||
+        form.bankCountry !== editing.bankCountry ||
+        (form.correspondentSwift.trim().toUpperCase() || undefined) !== (editing.correspondentSwift || undefined) ||
+        (form.intermediarySwift.trim().toUpperCase() || undefined) !== (editing.intermediarySwift || undefined))
+
+    const nextStatus: BeneficiaryStatus = editing
+      ? editing.status === "active" && bankRoutingChanged
+        ? "pending"
+        : editing.status
+      : "pending"
+
     const newBeneficiary: Beneficiary = {
-      // Must be globally unique. A length-based id (e.g. BEN-003) collides with
-      // an existing id after any deletion, and the server upsert
-      // (ON CONFLICT (id) DO UPDATE) would then silently OVERWRITE that record
-      // instead of inserting — so the "new" beneficiary appears to vanish.
-      id: `BEN-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`.toUpperCase(),
+      // Editing keeps the existing id (so the server upsert updates in place);
+      // adding mints a globally-unique id. A length-based id (e.g. BEN-003)
+      // collides after any deletion and the upsert (ON CONFLICT (id) DO UPDATE)
+      // would then overwrite that record — so the "new" one appears to vanish.
+      id: editing ? editing.id : `BEN-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`.toUpperCase(),
       type: newBeneficiaryType,
       name: form.name.trim(),
       alias: form.alias.trim() || undefined,
-      accountNumber: form.accountNumber.trim() || form.iban.trim(),
+      accountNumber: nextAccountNumber,
       iban: form.iban.trim() || undefined,
-      swiftBic: form.swiftBic.trim().toUpperCase(),
+      swiftBic: nextSwift,
       bankName: form.bankName.trim(),
       bankAddress: form.bankAddress.trim(),
       bankCountry: form.bankCountry,
@@ -303,13 +408,16 @@ export default function BeneficiariesPage() {
       beneficiaryCountry: form.beneficiaryCountry,
       beneficiaryPostalCode: form.beneficiaryPostalCode.trim() || undefined,
       currency: form.currency,
-      status: "pending",
-      isFavorite: false,
-      createdAt: new Date().toISOString().split("T")[0],
-      totalTransactions: 0,
-      totalVolume: 0,
-      kycVerified: false,
-      riskLevel: "low",
+      status: nextStatus,
+      isFavorite: editing ? editing.isFavorite : false,
+      createdAt: editing ? editing.createdAt : new Date().toISOString().split("T")[0],
+      lastUsed: editing?.lastUsed,
+      totalTransactions: editing ? editing.totalTransactions : 0,
+      totalVolume: editing ? editing.totalVolume : 0,
+      // Bank-routing changes reset KYC; cosmetic edits keep prior verification.
+      kycVerified: editing ? (bankRoutingChanged ? false : editing.kycVerified) : false,
+      riskLevel: editing ? editing.riskLevel : "low",
+      amlScreeningDate: editing?.amlScreeningDate,
       registrationNumber: form.registrationNumber.trim() || undefined,
       vatNumber: form.vatNumber.trim() || undefined,
       dateOfBirth: form.dateOfBirth || undefined,
@@ -338,32 +446,55 @@ export default function BeneficiariesPage() {
       return
     }
 
-    setBeneficiaries((prev) => [newBeneficiary, ...prev])
-    logActivity({
-      action: `Added ${newBeneficiary.type} beneficiary: ${newBeneficiary.name}`,
-      category: "Beneficiary Management",
-      details: {
-        summary: `Client added a new ${newBeneficiary.type} beneficiary "${newBeneficiary.name}" with account ${newBeneficiary.iban ?? newBeneficiary.accountNumber} at ${newBeneficiary.bankName} (${newBeneficiary.bankCountry}), SWIFT/BIC ${newBeneficiary.swiftBic}, currency ${newBeneficiary.currency}. KYC pending.`,
-        name: newBeneficiary.name,
-        alias: newBeneficiary.alias ?? "(none)",
-        type: newBeneficiary.type,
-        iban: newBeneficiary.iban ?? "(none)",
-        accountNumber: newBeneficiary.accountNumber,
-        swiftBic: newBeneficiary.swiftBic,
-        bankName: newBeneficiary.bankName,
-        bankCountry: newBeneficiary.bankCountry,
-        beneficiaryCountry: newBeneficiary.beneficiaryCountry,
-        currency: newBeneficiary.currency,
-        correspondentBank: newBeneficiary.correspondentBank ?? "(none)",
-        intermediaryBank: newBeneficiary.intermediaryBank ?? "(none)",
-        status: "Pending KYC verification",
-      },
-    })
-    toast.success("Beneficiary added", {
-      description: `${newBeneficiary.name} was saved and is pending KYC verification.`,
-    })
+    if (editing) {
+      setBeneficiaries((prev) => prev.map((b) => (b.id === newBeneficiary.id ? newBeneficiary : b)))
+      logActivity({
+        action: `Modified beneficiary: ${newBeneficiary.name}`,
+        category: "Beneficiary Management",
+        details: {
+          summary: bankRoutingChanged
+            ? `Client modified bank details of "${newBeneficiary.name}" (${newBeneficiary.id}). Because routing details changed, the payee returned to Pending for re-approval.`
+            : `Client updated non-banking details of "${newBeneficiary.name}" (${newBeneficiary.id}). Bank routing unchanged, so the payee remains ${newBeneficiary.status}.`,
+          name: newBeneficiary.name,
+          beneficiaryId: newBeneficiary.id,
+          bankRoutingChanged: bankRoutingChanged ? "yes" : "no",
+          resultingStatus: newBeneficiary.status,
+        },
+      })
+      toast.success("Beneficiary updated", {
+        description: bankRoutingChanged
+          ? `${newBeneficiary.name} was updated and is pending re-approval (bank details changed).`
+          : `${newBeneficiary.name} was updated.`,
+      })
+    } else {
+      setBeneficiaries((prev) => [newBeneficiary, ...prev])
+      logActivity({
+        action: `Added ${newBeneficiary.type} beneficiary: ${newBeneficiary.name}`,
+        category: "Beneficiary Management",
+        details: {
+          summary: `Client added a new ${newBeneficiary.type} beneficiary "${newBeneficiary.name}" with account ${newBeneficiary.iban ?? newBeneficiary.accountNumber} at ${newBeneficiary.bankName} (${newBeneficiary.bankCountry}), SWIFT/BIC ${newBeneficiary.swiftBic}, currency ${newBeneficiary.currency}. KYC pending.`,
+          name: newBeneficiary.name,
+          alias: newBeneficiary.alias ?? "(none)",
+          type: newBeneficiary.type,
+          iban: newBeneficiary.iban ?? "(none)",
+          accountNumber: newBeneficiary.accountNumber,
+          swiftBic: newBeneficiary.swiftBic,
+          bankName: newBeneficiary.bankName,
+          bankCountry: newBeneficiary.bankCountry,
+          beneficiaryCountry: newBeneficiary.beneficiaryCountry,
+          currency: newBeneficiary.currency,
+          correspondentBank: newBeneficiary.correspondentBank ?? "(none)",
+          intermediaryBank: newBeneficiary.intermediaryBank ?? "(none)",
+          status: "Pending KYC verification",
+        },
+      })
+      toast.success("Beneficiary added", {
+        description: `${newBeneficiary.name} was saved and is pending KYC verification.`,
+      })
+    }
     setForm(emptyForm)
     setFormError(null)
+    setEditingBeneficiary(null)
     setIsAddDialogOpen(false)
   }
 
@@ -535,18 +666,38 @@ export default function BeneficiariesPage() {
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
-          <Dialog open={isAddDialogOpen} onOpenChange={setIsAddDialogOpen}>
+          <Dialog
+            open={isAddDialogOpen}
+            onOpenChange={(open) => {
+              setIsAddDialogOpen(open)
+              if (!open) {
+                setEditingBeneficiary(null)
+                setForm(emptyForm)
+                setFormError(null)
+              }
+            }}
+          >
             <DialogTrigger asChild>
-              <Button size="sm" className="gap-2 bg-primary">
+              <Button
+                size="sm"
+                className="gap-2 bg-primary"
+                onClick={() => {
+                  setEditingBeneficiary(null)
+                  setForm(emptyForm)
+                  setFormError(null)
+                }}
+              >
                 <Plus className="h-4 w-4" />
                 Add Beneficiary
               </Button>
             </DialogTrigger>
             <DialogContent className="max-w-3xl max-h-[90vh] overflow-y-auto">
               <DialogHeader>
-                <DialogTitle>Add New Beneficiary</DialogTitle>
+                <DialogTitle>{editingBeneficiary ? "Modify Beneficiary" : "Add New Beneficiary"}</DialogTitle>
                 <DialogDescription>
-                  Enter beneficiary details for payment processing
+                  {editingBeneficiary
+                    ? "Update this payee. Changing bank routing details will send it back for re-approval."
+                    : "Enter beneficiary details for payment processing"}
                 </DialogDescription>
               </DialogHeader>
 
@@ -808,7 +959,7 @@ export default function BeneficiariesPage() {
                   Cancel
                 </Button>
                 <Button onClick={handleAddBeneficiary} disabled={savingBeneficiary}>
-                  {savingBeneficiary ? "Saving…" : "Add Beneficiary"}
+                  {savingBeneficiary ? "Saving…" : editingBeneficiary ? "Save Changes" : "Add Beneficiary"}
                 </Button>
               </DialogFooter>
             </DialogContent>
@@ -896,6 +1047,7 @@ export default function BeneficiariesPage() {
                   <SelectItem value="pending">Pending</SelectItem>
                   <SelectItem value="suspended">Suspended</SelectItem>
                   <SelectItem value="blocked">Blocked</SelectItem>
+                  <SelectItem value="cancelled">Cancelled</SelectItem>
                 </SelectContent>
               </Select>
               <Select value={typeFilter} onValueChange={setTypeFilter}>
@@ -1033,13 +1185,24 @@ export default function BeneficiariesPage() {
                             </DropdownMenuItem>
                             <DropdownMenuItem onClick={() => editBeneficiary(ben)}>
                               <Edit className="mr-2 h-4 w-4" />
-                              Edit
+                              Modify
                             </DropdownMenuItem>
                             <DropdownMenuItem onClick={() => duplicateBeneficiary(ben)}>
                               <Copy className="mr-2 h-4 w-4" />
                               Duplicate
                             </DropdownMenuItem>
                             <DropdownMenuSeparator />
+                            {ben.status === "cancelled" ? (
+                              <DropdownMenuItem onClick={() => reactivateBeneficiary(ben)}>
+                                <RotateCcw className="mr-2 h-4 w-4" />
+                                Reactivate
+                              </DropdownMenuItem>
+                            ) : (
+                              <DropdownMenuItem onClick={() => cancelBeneficiary(ben)}>
+                                <Ban className="mr-2 h-4 w-4" />
+                                Cancel
+                              </DropdownMenuItem>
+                            )}
                             <DropdownMenuItem
                               className="text-red-400"
                               onClick={() => deleteBeneficiary(ben)}

@@ -8,7 +8,7 @@ import { demoBeneficiaries } from "@/lib/demo-beneficiaries"
 import { validateIban } from "@/lib/iban-swift"
 
 export type BeneficiaryType = "individual" | "corporate" | "financial_institution"
-export type BeneficiaryStatus = "active" | "pending" | "suspended" | "blocked"
+export type BeneficiaryStatus = "active" | "pending" | "suspended" | "blocked" | "cancelled"
 
 export interface Beneficiary {
   id: string
