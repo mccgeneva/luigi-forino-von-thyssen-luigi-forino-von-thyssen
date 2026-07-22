@@ -24,6 +24,8 @@ export interface StatementInput {
   holderName: string
   /** Entity / company name. */
   holderCompany?: string
+  /** Account holder's registered / correspondence address. */
+  holderAddress?: string
   bankName?: string
   iban?: string
   bic?: string
@@ -184,6 +186,7 @@ export function generateStatementPdf(input: StatementInput): GeneratedPdf {
   doc.setTextColor(...BRAND.slate)
   ;[
     input.holderCompany,
+    input.holderAddress,
     input.bankName ? `Bank: ${input.bankName}` : "",
     input.iban ? `IBAN: ${input.iban}` : "",
     input.bic ? `BIC/SWIFT: ${input.bic}` : "",

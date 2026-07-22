@@ -35,6 +35,8 @@ export interface TablePdfInput {
   /** Account holder / entity the export belongs to (shown in the meta block). */
   holderName?: string
   holderCompany?: string
+  /** Account holder's registered / correspondence address (shown under the name). */
+  holderAddress?: string
   /** Extra key/value rows shown beneath the title (period, filters, totals…). */
   meta?: TablePdfMeta[]
   /** Optional heading printed directly above the table (e.g. "Transaction History"). */
@@ -103,6 +105,14 @@ export function generateTablePdf(input: TablePdfInput): PdfDoc {
   const metaLines: string[] = []
   if (input.holderName) metaLines.push(input.holderName)
   if (input.holderCompany) metaLines.push(input.holderCompany)
+  // Registered / correspondence address, wrapped to the page width so a long
+  // address becomes one or more additional lines under the account holder name.
+  if (input.holderAddress) {
+    doc.setFont("helvetica", "normal")
+    doc.setFontSize(9)
+    const wrapped = doc.splitTextToSize(input.holderAddress, pageWidth - margin * 2) as string[]
+    wrapped.forEach((w) => metaLines.push(w))
+  }
   const metaPairs = input.meta ?? []
   const sectionTitleHeight = input.sectionTitle ? 22 : 0
   const firstPageTableTop = 78 + 20 + 18 + metaLines.length * 13 + metaPairs.length * 13 + 16 + sectionTitleHeight
