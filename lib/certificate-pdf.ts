@@ -515,6 +515,9 @@ export function generateAccountCertificate(data: AccountCertificateData): Genera
     ...(data.iban ? ([["IBAN", data.iban]] as [string, string][]) : []),
     ...(data.bic ? ([["BIC / SWIFT", data.bic]] as [string, string][]) : []),
     ["Account", data.accountLabel],
+    // Explicitly names the platform owner/operator so the account holder (client)
+    // and settlement bank are never mistaken for the party that owns the platform.
+    ["Platform Operator", "NAFTAhub plc"],
   ]
 
   doc.setFontSize(9.5)
