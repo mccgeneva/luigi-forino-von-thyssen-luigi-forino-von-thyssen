@@ -7,6 +7,9 @@ import { resolveCurrentSession } from "@/lib/session-user"
 import { logActivity } from "@/app/actions/log-activity"
 import { isValidIsin, isValidCusip } from "@/lib/instrument-identifiers"
 import { mapIsinServer } from "@/lib/openfigi-server"
+import { resolveIsinEntity } from "@/lib/gleif-server"
+import { lookupBankByBic } from "@/lib/iban-swift"
+import { getCountryByCode } from "@/lib/countries"
 
 // ---------------------------------------------------------------------------
 // Marketplace bank-instrument catalogue (REAL data only).
@@ -273,6 +276,114 @@ function normalizeCommonCode(raw: string | null | undefined): { ok: true; value:
   if (!v) return { ok: true, value: null }
   if (!/^\d{9}$/.test(v)) return { ok: false }
   return { ok: true, value: v }
+}
+
+// ---------------------------------------------------------------------------
+// Admin: auto-fill reference data for an ISIN from REAL sources only.
+//
+// Combines three authoritative sources and returns only what they actually
+// yield — anything unknown stays blank for the admin to complete. Nothing here
+// is generated or guessed:
+//   • ISIN prefix  → issuer country (deterministic ISO 3166).
+//   • OpenFIGI     → security / issuer name, instrument type (Bloomberg-listed).
+//   • GLEIF        → legal entity name, registered address, SWIFT/BIC, country.
+//   • Local BIC directory → street address / city enrichment for a known BIC.
+// ---------------------------------------------------------------------------
+export interface InstrumentEnrichment {
+  bankName: string | null
+  bankBic: string | null
+  bankCountry: string | null
+  issuerDetails: string | null
+  securityName: string | null
+  securityType: string | null
+  bloombergListed: boolean
+  /** Human-readable list of the sources that actually contributed data. */
+  sources: string[]
+}
+
+export type EnrichResult =
+  | { ok: true; enrichment: InstrumentEnrichment }
+  | { ok: false; error: string }
+
+export async function enrichInstrumentFromIsin(passcode: string, isin: string): Promise<EnrichResult> {
+  try {
+    await requireAdmin(passcode)
+  } catch {
+    return { ok: false, error: "Not authorized." }
+  }
+
+  const clean = (isin || "").trim().toUpperCase()
+  if (!isValidIsin(clean)) {
+    return { ok: false, error: "Enter a valid 12-character ISIN first." }
+  }
+
+  const sources: string[] = []
+  const e: InstrumentEnrichment = {
+    bankName: null,
+    bankBic: null,
+    bankCountry: null,
+    issuerDetails: null,
+    securityName: null,
+    securityType: null,
+    bloombergListed: false,
+    sources,
+  }
+
+  // 1) Country from the ISIN prefix (deterministic, always real).
+  const prefix = clean.slice(0, 2)
+  const prefixCountry = getCountryByCode(prefix)
+  if (prefixCountry) {
+    e.bankCountry = prefixCountry.name
+    sources.push("ISIN country prefix")
+  }
+
+  // 2) OpenFIGI (Bloomberg) + 3) GLEIF, in parallel — both real, both optional.
+  const [figi, gleif] = await Promise.all([
+    mapIsinServer(clean).catch(() => null),
+    resolveIsinEntity(clean).catch(() => null),
+  ])
+
+  if (figi?.listed && figi.matches[0]) {
+    e.bloombergListed = true
+    const m = figi.matches[0]
+    e.securityName = m.name ?? m.securityDescription ?? null
+    e.securityType = m.securityType2 ?? m.securityType ?? null
+    if (e.securityName || e.securityType) sources.push("Bloomberg / OpenFIGI")
+  }
+
+  if (gleif) {
+    if (gleif.legalName) e.bankName = gleif.legalName
+    if (gleif.bic) e.bankBic = gleif.bic
+    if (gleif.address) e.issuerDetails = gleif.address
+    // GLEIF's legal-address country is more precise than the ISIN prefix.
+    if (gleif.countryCode) {
+      const c = getCountryByCode(gleif.countryCode)
+      if (c) e.bankCountry = c.name
+    }
+    if (gleif.legalName || gleif.bic || gleif.address) sources.push("GLEIF (LEI registry)")
+  }
+
+  // 4) If we have a BIC but GLEIF gave no street address, enrich from the local
+  //    curated bank directory (also real, curated data).
+  if (e.bankBic && !e.issuerDetails) {
+    try {
+      const info = await lookupBankByBic(e.bankBic)
+      if (info) {
+        if (!e.bankName && info.name) e.bankName = info.name
+        const line = [info.address, info.city, info.postalCode, info.country]
+          .filter((p) => p && String(p).trim())
+          .join(", ")
+        if (line) {
+          e.issuerDetails = line
+          sources.push("Bank directory")
+        }
+      }
+    } catch {
+      // non-fatal
+    }
+  }
+
+  return { ok: true, enrichment: e }
 }
 
 // ---------------------------------------------------------------------------
