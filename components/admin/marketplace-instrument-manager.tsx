@@ -28,11 +28,12 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { ADMIN_PASSCODE } from "@/lib/admin-config"
-import { isValidCusip } from "@/lib/instrument-identifiers"
+import { isValidCusip, getInstrumentTypeRules } from "@/lib/instrument-identifiers"
 import { MARKET_INSTRUMENT_TYPES } from "@/lib/instrument-marketplace"
 import {
   getAdminMarketplaceInstruments,
   publishInstrument,
+  enrichInstrumentFromIsin,
   setInstrumentAvailability,
   removeInstrument,
   type MarketplaceInstrument,
@@ -121,8 +122,37 @@ export function MarketplaceInstrumentManager() {
     }
   }, [])
 
+  // Fill the standards-based governing law + delivery method from the selected
+  // instrument type (real ICC rules: ISP98 / URDG758 / book-entry) when blank.
+  useEffect(() => {
+    const rules = getInstrumentTypeRules(form.typeCode)
+    setForm((f) => {
+      const next = { ...f }
+      if (!f.governingLaw.trim()) next.governingLaw = rules.governingLaw
+      if (!f.deliveryMethod.trim()) next.deliveryMethod = rules.deliveryMethod
+      return next
+    })
+  }, [form.typeCode])
+
   const isinLooksValid = /^[A-Za-z]{2}[A-Za-z0-9]{9}\d$/.test(form.isin.trim())
   const cusipLooksValid = form.cusip.trim() === "" || isValidCusip(form.cusip.trim())
+
+  // Fill only the fields the admin has left blank, so real retrieved data never
+  // clobbers something the admin deliberately typed. Returns the labels filled.
+  const autoFill = (patch: Partial<typeof EMPTY_FORM>): string[] => {
+    const filled: string[] = []
+    setForm((f) => {
+      const next = { ...f }
+      for (const [k, v] of Object.entries(patch) as [keyof typeof EMPTY_FORM, string][]) {
+        if (v && !String(f[k] ?? "").trim()) {
+          ;(next as Record<string, unknown>)[k] = v
+          filled.push(k)
+        }
+      }
+      return next
+    })
+    return filled
+  }
 
   const runVerify = async () => {
     const isin = form.isin.trim().toUpperCase()
@@ -132,30 +162,53 @@ export function MarketplaceInstrumentManager() {
     }
     setVerify({ loading: true, checked: false })
     try {
-      const res = await fetch("/api/openfigi", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ isin }),
-      })
-      const data = await res.json()
-      if (!data.ok) {
-        setVerify({ loading: false, checked: true, note: data.error ?? "Verification unavailable." })
+      // Run the Bloomberg proxy check and the real-source enrichment together.
+      const [res, enrich] = await Promise.all([
+        fetch("/api/openfigi", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ isin }),
+        }).then((r) => r.json()),
+        enrichInstrumentFromIsin(ADMIN_PASSCODE, isin),
+      ])
+
+      // Auto-fill empty fields from the real retrieved reference data.
+      let autoNote = ""
+      if (enrich.ok) {
+        const en = enrich.enrichment
+        autoFill({
+          bankName: en.bankName ?? "",
+          bankBic: en.bankBic ?? "",
+          bankCountry: en.bankCountry ?? "",
+          issuerDetails: en.issuerDetails ?? "",
+        })
+        if (en.sources.length) {
+          autoNote = ` · Auto-filled from ${en.sources.join(", ")}`
+        }
+      }
+
+      if (!res.ok) {
+        setVerify({
+          loading: false,
+          checked: true,
+          note: `${res.error ?? "Bloomberg verification unavailable."}${autoNote}`,
+        })
         return
       }
-      if (data.listed && data.matches?.length) {
-        const m = data.matches[0]
+      if (res.listed && res.matches?.length) {
+        const m = res.matches[0]
         setVerify({
           loading: false,
           checked: true,
           listed: true,
-          note: `Listed on Bloomberg · ${m.figi}${m.name ? ` · ${m.name}` : ""}${m.securityType ? ` · ${m.securityType}` : ""}`,
+          note: `Listed on Bloomberg · ${m.figi}${m.name ? ` · ${m.name}` : ""}${m.securityType ? ` · ${m.securityType}` : ""}${autoNote}`,
         })
       } else {
         setVerify({
           loading: false,
           checked: true,
           listed: false,
-          note: "Valid ISIN, but not Bloomberg-listed. Publish as Euroclear/Clearstream with its Common Code.",
+          note: `Valid ISIN, but not Bloomberg-listed. Publish as Euroclear/Clearstream with its Common Code.${autoNote}`,
         })
       }
     } catch {
@@ -250,9 +303,12 @@ export function MarketplaceInstrumentManager() {
         </CardTitle>
         <p className="text-sm text-muted-foreground text-pretty">
           Publish only instruments that carry a <span className="font-medium text-foreground">real ISIN</span> verified
-          against Bloomberg, Euroclear, or Clearstream. Nothing is generated automatically — the marketplace shows
-          exactly what you publish here, and the Common Code is stored as you enter it (it is assigned by the ICSD, not
-          derived from the ISIN).
+          against Bloomberg, Euroclear, or Clearstream. Enter the ISIN and press{" "}
+          <span className="font-medium text-foreground">Verify &amp; auto-fill</span> — the bank name, SWIFT/BIC,
+          registered address and country are retrieved from real sources (Bloomberg / OpenFIGI, the GLEIF LEI registry,
+          ISIN country prefix) and fill the empty fields automatically. Anything a source does not return stays blank
+          for you to complete — nothing is ever guessed, and the Common Code is stored exactly as you enter it (it is
+          assigned by the ICSD, not derived from the ISIN).
         </p>
       </CardHeader>
       <CardContent className="space-y-6">
@@ -271,9 +327,9 @@ export function MarketplaceInstrumentManager() {
                   className="font-mono"
                 />
                 <Button type="button" variant="outline" onClick={runVerify} disabled={verify.loading || !isinLooksValid} className="shrink-0 gap-1.5 bg-transparent">
-                  {verify.loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <BadgeCheck className="h-4 w-4" />}
-                  Verify
-                </Button>
+          {verify.loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <BadgeCheck className="h-4 w-4" />}
+            Verify &amp; auto-fill
+          </Button>
               </div>
               {verify.checked && verify.note ? (
                 <p className={cn("flex items-start gap-1.5 text-[11px]", verify.listed ? "text-emerald-600 dark:text-emerald-400" : "text-muted-foreground")}>
