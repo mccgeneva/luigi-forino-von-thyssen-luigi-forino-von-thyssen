@@ -30,7 +30,7 @@ function findValue(items: ProfileItem[] | undefined, label: string): string | un
 // the profile arrays: prefer an explicit registered / beneficiary / company
 // address, then fall back to any label that mentions "address" — while never
 // mistaking an "email address" row for a postal address.
-function findAddress(...groups: (ProfileItem[] | undefined)[]): string | undefined {
+export function findAddress(...groups: (ProfileItem[] | undefined)[]): string | undefined {
   const all = groups.flatMap((g) => g ?? [])
   const isAddress = (label: string) => {
     const l = label.toLowerCase()

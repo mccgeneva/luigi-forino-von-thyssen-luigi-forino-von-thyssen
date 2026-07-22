@@ -22,6 +22,10 @@ export interface StatementDocEntry {
 export interface StatementDocProps {
   holderName: string
   holderCompany?: string
+  /** Full name of the legal representative, shown in parentheses after the name. */
+  holderRepresentative?: string
+  /** Account holder's registered / correspondence address. */
+  holderAddress?: string
   bankName?: string
   bankAddress?: string
   iban?: string
@@ -149,10 +153,14 @@ export function StatementDocument(props: StatementDocProps) {
         <div className="grid gap-6 sm:grid-cols-2">
           <div>
             <p className="text-[11px] font-semibold uppercase tracking-wider text-primary">Account Holder</p>
-            <p className="mt-1.5 text-sm font-semibold text-foreground">{props.holderName || "—"}</p>
-            <div className="mt-1 space-y-0.5 text-xs text-muted-foreground">
-              {props.holderCompany && <p>{props.holderCompany}</p>}
-              {props.bankName && <p>Bank: {props.bankName}</p>}
+          <p className="mt-1.5 text-sm font-semibold text-foreground">
+            {props.holderName || "—"}
+            {props.holderRepresentative ? ` (${props.holderRepresentative})` : ""}
+          </p>
+          <div className="mt-1 space-y-0.5 text-xs text-muted-foreground">
+            {props.holderCompany && <p>{props.holderCompany}</p>}
+            {props.holderAddress && <p>{props.holderAddress}</p>}
+            {props.bankName && <p>Bank: {props.bankName}</p>}
               {props.bankAddress && <p>{props.bankAddress}</p>}
               {props.iban && <p>IBAN: {props.iban}</p>}
               {props.bic && <p>BIC/SWIFT: {props.bic}</p>}
