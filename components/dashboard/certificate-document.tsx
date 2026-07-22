@@ -239,6 +239,10 @@ export function CertificateDocument(props: CertificateDocProps) {
             document is electronically generated and watermarked; verify authenticity by quoting the reference and
             verification code to your MCC Capital relationship manager.
           </p>
+          <p className="mt-1.5 text-[9px] leading-relaxed text-muted-foreground">
+            Platform owned &amp; operated by NAFTAhub plc. MCC Capital is the settlement institution; this certificate is
+            issued in respect of the named account holder and does not confer any ownership of the platform.
+          </p>
         </div>
       </div>
     </Card>

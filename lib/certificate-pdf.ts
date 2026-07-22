@@ -223,6 +223,12 @@ export function generateInstrumentCertificate(data: InstrumentCertificateData): 
     { align: "right" },
   )
 
+  // Platform-owner credit — the platform is owned/operated by NAFTAhub plc,
+  // distinct from the instrument issuer and the settlement institution.
+  doc.setFont("helvetica", "italic")
+  doc.setFontSize(6.5)
+  doc.text("Platform owned & operated by NAFTAhub plc.", margin, sigY + 26)
+
   return { doc, filename: `MCC-Certificate-${data.id}.pdf`, title: "Instrument Certificate" }
 }
 
@@ -548,6 +554,14 @@ export function generateAccountCertificate(data: AccountCertificateData): Genera
   const secLines = doc.splitTextToSize(security, contentWidth)
   doc.text(secLines, margin, footY)
 
+  // Platform-owner credit — disambiguates the account holder (client) and the
+  // settlement bank from the party that owns/operates the platform.
+  const ownerY = footY + secLines.length * 8 + 4
+  doc.setFont("helvetica", "italic")
+  doc.setFontSize(6.5)
+  const owner = `Platform owned & operated by NAFTAhub plc. MCC Capital is the settlement institution; this certificate is issued in respect of the named account holder and does not confer any ownership of the platform.`
+  doc.text(doc.splitTextToSize(owner, contentWidth), margin, ownerY)
+
   return { doc, filename: `${data.reference}.pdf`, title: "Account Certificate" }
 }
 
@@ -739,6 +753,14 @@ export function generateSkrCertificate(data: SkrCertificateData): GeneratedPdf {
   const security = `Security features: unique reference ${data.reference} · verification code ${data.verificationCode} · issued ${new Date().toLocaleString("en-GB")}. This safe keeping receipt is electronically generated and watermarked; verify its authenticity by quoting the reference and verification code to your MCC Capital relationship manager.`
   const secLines = doc.splitTextToSize(security, contentWidth)
   doc.text(secLines, margin, footY)
+
+  // Platform-owner credit — disambiguates account holder / settlement bank from
+  // the party that owns and operates the platform.
+  const ownerY = footY + secLines.length * 8 + 4
+  doc.setFont("helvetica", "italic")
+  doc.setFontSize(6.5)
+  const owner = `Platform owned & operated by NAFTAhub plc. MCC Capital is the settlement institution; this receipt is issued in respect of the named account holder and does not confer any ownership of the platform.`
+  doc.text(doc.splitTextToSize(owner, contentWidth), margin, ownerY)
 
   return { doc, filename: `MCC-SKR-Certificate-${data.reference}.pdf`, title: "Safe Keeping Receipt Certificate" }
 }
