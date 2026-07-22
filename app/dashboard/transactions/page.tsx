@@ -60,13 +60,7 @@ import { usePdfViewer } from "@/lib/pdf-viewer"
 import { useActivityLog } from "@/components/activity-tracker"
 import { toast } from "sonner"
 import { useLedger, convertCurrency } from "@/lib/ledger-store"
-import { useCurrentUser } from "@/lib/use-current-user"
-
-// Pull a labelled value out of one of the user's profile arrays (banking /
-// company info). Labels are matched case-insensitively.
-function profileValue(items: { label: string; value: string }[], label: string): string | undefined {
-  return items.find((b) => b.label.toLowerCase() === label.toLowerCase())?.value
-}
+import { useHolderIdentity } from "@/lib/holder-identity"
 
 // The core multi-currency accounts every client holds. Transactions for all of
 // these settle into the master account, so the page must surface them — not
@@ -127,18 +121,10 @@ export default function TransactionsPage() {
   const router = useRouter()
   const { entries } = useLedger()
   const { show } = usePdfViewer()
-  const user = useCurrentUser()
 
   // Account-holder identity + registered address printed at the top of the
-  // exported PDF ("PREPARED FOR" block), mirroring the certificates/statements.
-  const banking = (user.banking ?? []) as { label: string; value: string }[]
-  const companyInfo = (user.companyInfo ?? []) as { label: string; value: string }[]
-  const holderName = profileValue(banking, "Account Holder") || user.company || user.fullName
-  const holderCompany = user.company && user.company !== holderName ? user.company : undefined
-  const holderAddress =
-    profileValue(banking, "Beneficiary Address") ||
-    profileValue(companyInfo, "Registered Address") ||
-    profileValue(companyInfo, "Address")
+  // exported PDF ("PREPARED FOR" block), shared with every other extract page.
+  const { holderName, holderCompany, holderAddress } = useHolderIdentity()
 
   // Build the transaction list from the persisted ledger so every recorded
   // incoming payment (and outgoing payment) appears here automatically. The 2%

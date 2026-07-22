@@ -5,6 +5,7 @@ import { toast } from "sonner"
 import { useActivityLog } from "@/components/activity-tracker"
 import { exportToCsv } from "@/lib/export-utils"
 import { generateTablePdf, tablePdfFilename } from "@/lib/table-pdf"
+import { useHolderIdentity } from "@/lib/holder-identity"
 import { usePdfViewer } from "@/lib/pdf-viewer"
 import {
   DropdownMenu,
@@ -158,6 +159,7 @@ export default function SwiftPage() {
 
   const logActivity = useActivityLog()
   const { show } = usePdfViewer()
+  const { holderName, holderCompany, holderAddress } = useHolderIdentity()
 
   const handleExportPdf = () => {
     if (filteredMessages.length === 0) {
@@ -167,6 +169,9 @@ export default function SwiftPage() {
     const doc = generateTablePdf({
       title: "SWIFT Message Log",
       refPrefix: "SWF",
+      holderName,
+      holderCompany,
+      holderAddress,
       meta: [{ label: "Records", value: `${filteredMessages.length}` }],
       columns: [
         { key: "date", header: "Date" },

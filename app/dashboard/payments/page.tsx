@@ -57,6 +57,7 @@ import { usePaymentRequests, type PaymentRequest } from "@/lib/payment-requests-
 import { requestPaymentRecall } from "@/app/actions/approvals"
 import { exportToCsv } from "@/lib/export-utils"
 import { generateTablePdf, tablePdfFilename } from "@/lib/table-pdf"
+import { useHolderIdentity } from "@/lib/holder-identity"
 import { usePdfViewer } from "@/lib/pdf-viewer"
 import { VerifiedBankField } from "@/components/verified-bank-field"
 import { validateIban, validateBic } from "@/lib/iban-swift"
@@ -139,6 +140,7 @@ export default function PaymentsPage() {
   const { beneficiaries } = useBeneficiaries()
   const logActivity = useActivityLog()
   const { show } = usePdfViewer()
+  const { holderName, holderCompany, holderAddress } = useHolderIdentity()
   const { balanceFor, entries } = useLedger()
   const { requests, addRequest } = usePaymentRequests()
 
@@ -560,6 +562,9 @@ export default function PaymentsPage() {
     const doc = generateTablePdf({
       title: "Payment History",
       refPrefix: "PAY",
+      holderName,
+      holderCompany,
+      holderAddress,
       meta: [{ label: "Records", value: `${filteredPayments.length}` }],
       columns: [
         { key: "date", header: "Date" },

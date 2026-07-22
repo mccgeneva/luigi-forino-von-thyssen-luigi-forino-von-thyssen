@@ -61,6 +61,7 @@ import { cn } from "@/lib/utils"
 import { useActivityLog } from "@/components/activity-tracker"
 import { exportToCsv } from "@/lib/export-utils"
 import { generateTablePdf, tablePdfFilename } from "@/lib/table-pdf"
+import { useHolderIdentity } from "@/lib/holder-identity"
 import { usePdfViewer } from "@/lib/pdf-viewer"
 import { toast } from "sonner"
 import { useInstrumentRequests, type Instrument } from "@/lib/instrument-requests-store"
@@ -213,6 +214,7 @@ export default function InstrumentsPage() {
   const logActivity = useActivityLog()
   const router = useRouter()
   const { show } = usePdfViewer()
+  const { holderName, holderCompany, holderAddress } = useHolderIdentity()
 
   const handleCopyBankingDetails = () => {
     const text = BANKING_DETAILS.map((r) => `${r.label}: ${r.value}`).join("\n")
@@ -641,6 +643,9 @@ export default function InstrumentsPage() {
     const doc = generateTablePdf({
       title: "Bank Instruments Register",
       refPrefix: "INS",
+      holderName,
+      holderCompany,
+      holderAddress,
       meta: [{ label: "Records", value: `${filteredInstruments.length}` }],
       columns: [
         { key: "id", header: "Reference" },
