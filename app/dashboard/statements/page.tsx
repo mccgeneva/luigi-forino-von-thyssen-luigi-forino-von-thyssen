@@ -102,6 +102,11 @@ export default function StatementsPage() {
     bankingValue(companyInfo, "Address")
   const iban = bankingValue(banking, "IBAN")
   const bic = bankingValue(banking, "BIC / SWIFT")
+  // Legal representative (the natural person acting for the entity), shown in
+  // parentheses after the holder name. Omitted when it equals the holder name.
+  const principal = (user.principal ?? []) as { label: string; value: string }[]
+  const rep = bankingValue(principal, "Represented By") || user.fullName
+  const holderRepresentative = rep && rep !== holderName ? rep : undefined
 
   // Build the list of selectable accounts from the user's real ledger so the
   // options always reflect the currencies and instrument activity they hold.
@@ -224,6 +229,7 @@ export default function StatementsPage() {
       generateStatementPdf({
         holderName,
         holderCompany: user.company,
+        holderRepresentative,
         holderAddress,
         bankName,
         iban,

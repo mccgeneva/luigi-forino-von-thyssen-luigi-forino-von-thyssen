@@ -16,6 +16,9 @@ export interface HolderIdentity {
   holderName?: string
   holderCompany?: string
   holderAddress?: string
+  /** Full name of the natural person legally representing the account holder,
+   *  shown in parentheses after the holder/company name on exported documents. */
+  holderRepresentative?: string
 }
 
 function findValue(items: ProfileItem[] | undefined, label: string): string | undefined {
@@ -53,6 +56,12 @@ export function useHolderIdentity(): HolderIdentity {
     const holderName = findValue(banking, "Account Holder") || company || fullName || undefined
     const holderCompany = company && company !== holderName ? company : undefined
     const holderAddress = findAddress(banking, companyInfo, principal)
-    return { holderName, holderCompany, holderAddress }
+    // Legal representative (the natural person acting for the entity). The
+    // profile stores this under the principal "Represented By" row, falling back
+    // to the account's full legal/representative name. We omit it when it is the
+    // same as the holder name (i.e. an individual account, not an entity).
+    const rep = findValue(principal, "Represented By") || fullName || undefined
+    const holderRepresentative = rep && rep !== holderName ? rep : undefined
+    return { holderName, holderCompany, holderAddress, holderRepresentative }
   }, [user])
 }

@@ -159,7 +159,7 @@ export default function SwiftPage() {
 
   const logActivity = useActivityLog()
   const { show } = usePdfViewer()
-  const { holderName, holderCompany, holderAddress } = useHolderIdentity()
+  const { holderName, holderCompany, holderAddress, holderRepresentative } = useHolderIdentity()
 
   const handleExportPdf = () => {
     if (filteredMessages.length === 0) {
@@ -172,6 +172,7 @@ export default function SwiftPage() {
       holderName,
       holderCompany,
       holderAddress,
+      holderRepresentative,
       meta: [{ label: "Records", value: `${filteredMessages.length}` }],
       columns: [
         { key: "date", header: "Date" },

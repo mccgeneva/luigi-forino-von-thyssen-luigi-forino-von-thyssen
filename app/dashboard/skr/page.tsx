@@ -142,7 +142,7 @@ export default function SkrPage() {
   }, [records])
 
   const { show } = usePdfViewer()
-  const { holderName, holderCompany, holderAddress } = useHolderIdentity()
+  const { holderName, holderCompany, holderAddress, holderRepresentative } = useHolderIdentity()
 
   const uploadDocument = async (record: SkrRecord, file: File) => {
     const MAX = 25 * 1024 * 1024
@@ -197,6 +197,7 @@ export default function SkrPage() {
       holderName,
       holderCompany,
       holderAddress,
+      holderRepresentative,
       meta: [
         { label: "SKR Reference", value: record.id },
         { label: "Status", value: SKR_STATUS_LABELS[record.status] },

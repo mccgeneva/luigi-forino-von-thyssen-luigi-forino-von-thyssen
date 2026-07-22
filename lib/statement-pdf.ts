@@ -24,6 +24,8 @@ export interface StatementInput {
   holderName: string
   /** Entity / company name. */
   holderCompany?: string
+  /** Full name of the legal representative, shown in parentheses after the name. */
+  holderRepresentative?: string
   /** Account holder's registered / correspondence address. */
   holderAddress?: string
   bankName?: string
@@ -179,8 +181,15 @@ export function generateStatementPdf(input: StatementInput): GeneratedPdf {
   doc.setTextColor(...BRAND.ink)
   doc.setFont("helvetica", "bold")
   doc.setFontSize(12)
-  doc.text(input.holderName || "—", margin, ly)
-  ly += 15
+  // Holder name with the legal representative in parentheses, e.g.
+  // "MCC Petroli Company Inc (Louis Thyssen)".
+  const holderLine = input.holderRepresentative
+    ? `${input.holderName || "—"} (${input.holderRepresentative})`
+    : input.holderName || "—"
+  doc.splitTextToSize(holderLine, colWidth).forEach((w: string) => {
+    doc.text(w, margin, ly)
+    ly += 15
+  })
   doc.setFont("helvetica", "normal")
   doc.setFontSize(9)
   doc.setTextColor(...BRAND.slate)

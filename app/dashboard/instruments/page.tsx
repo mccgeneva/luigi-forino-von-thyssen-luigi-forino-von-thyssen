@@ -214,7 +214,7 @@ export default function InstrumentsPage() {
   const logActivity = useActivityLog()
   const router = useRouter()
   const { show } = usePdfViewer()
-  const { holderName, holderCompany, holderAddress } = useHolderIdentity()
+  const { holderName, holderCompany, holderAddress, holderRepresentative } = useHolderIdentity()
 
   const handleCopyBankingDetails = () => {
     const text = BANKING_DETAILS.map((r) => `${r.label}: ${r.value}`).join("\n")
@@ -646,6 +646,7 @@ export default function InstrumentsPage() {
       holderName,
       holderCompany,
       holderAddress,
+      holderRepresentative,
       meta: [{ label: "Records", value: `${filteredInstruments.length}` }],
       columns: [
         { key: "id", header: "Reference" },

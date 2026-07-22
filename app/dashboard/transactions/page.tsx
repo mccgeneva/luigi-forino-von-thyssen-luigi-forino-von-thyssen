@@ -124,7 +124,7 @@ export default function TransactionsPage() {
 
   // Account-holder identity + registered address printed at the top of the
   // exported PDF ("PREPARED FOR" block), shared with every other extract page.
-  const { holderName, holderCompany, holderAddress } = useHolderIdentity()
+  const { holderName, holderCompany, holderAddress, holderRepresentative } = useHolderIdentity()
 
   // Build the transaction list from the persisted ledger so every recorded
   // incoming payment (and outgoing payment) appears here automatically. The 2%
@@ -305,6 +305,7 @@ export default function TransactionsPage() {
       holderName,
       holderCompany,
       holderAddress,
+      holderRepresentative,
       meta: [
         { label: "Records", value: `${filteredTransactions.length}` },
         { label: "Period", value: formatRangeLabel() === "Date Range" ? "All dates" : formatRangeLabel() },
