@@ -32,12 +32,36 @@ import { listSelectableClients, type SelectableClient } from "@/app/actions/admi
 // id no longer resolves to an account. Never a real account.
 const FALLBACK_CLIENT: SelectableClient = { id: "", fullName: "—", company: "—", email: "", kind: "dynamic" }
 import { CERTIFICATE_TYPE_LABELS, type CertificateRequest } from "@/lib/certificates-store"
-import {
-  adminListCertificateRequests,
-  adminListPendingCertificates,
-  adminDecideCertificate,
-  adminReissueCertificate,
+import type {
+  CertificateListResult,
+  CertificateRecordList,
+  CertificateMutation,
 } from "@/app/actions/certificates"
+
+// Admin certificate reads/decisions go through a Route Handler, NOT direct
+// Server Actions. Server Action POSTs can be silently rejected on this app's
+// production domains + mobile in-app webviews, which left the approval queue
+// empty ("nothing to approve") even while a client's request was pending in the
+// database. Route Handlers are exempt from that Origin/Host check. Mirrors the
+// /api/admin/marketplace and /api/admin/users fixes.
+async function certAdminGet<T>(params?: Record<string, string>): Promise<T> {
+  const qs = params ? `?${new URLSearchParams(params).toString()}` : ""
+  const res = await fetch(`/api/admin/certificates${qs}`, {
+    method: "GET",
+    headers: { "x-admin-passcode": ADMIN_PASSCODE },
+    cache: "no-store",
+  })
+  return (await res.json()) as T
+}
+
+async function certAdminPost<T>(payload: Record<string, unknown>): Promise<T> {
+  const res = await fetch("/api/admin/certificates", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "x-admin-passcode": ADMIN_PASSCODE },
+    body: JSON.stringify(payload),
+  })
+  return (await res.json()) as T
+}
 
 const statusStyles: Record<CertificateRequest["status"], string> = {
   pending: "border-amber-500/20 bg-amber-500/10 text-amber-400",
@@ -94,7 +118,7 @@ export function CertificateManager() {
 
   const reload = (userId: string) => {
     setLoading(true)
-    return adminListCertificateRequests(ADMIN_PASSCODE, userId)
+    return certAdminGet<CertificateListResult>({ userId })
       .then((res) => {
         // Ignore a stale response if the admin switched clients meanwhile.
         if (userId !== targetUserId) return
@@ -109,11 +133,12 @@ export function CertificateManager() {
 
   const reloadPending = () => {
     setPendingLoading(true)
-    return adminListPendingCertificates(ADMIN_PASSCODE)
+    return certAdminGet<CertificateRecordList>()
       .then((res) => {
         if (res.ok) setPendingAll(res.requests)
+        else toast.error("Could not load pending certificates", { description: res.error })
       })
-      .catch(() => {})
+      .catch(() => toast.error("Could not load pending certificates"))
       .finally(() => setPendingLoading(false))
   }
 
@@ -147,7 +172,13 @@ export function CertificateManager() {
     if (!decision) return
     const { req, mode } = decision
     setWorking(true)
-    const res = await adminDecideCertificate(ADMIN_PASSCODE, req.id, mode, note, targetUser.fullName)
+    const res = await certAdminPost<CertificateMutation>({
+      action: "decide",
+      id: req.id,
+      mode,
+      note,
+      adminName: targetUser.fullName,
+    })
     setWorking(false)
     if (!res.ok) {
       toast.error("Action failed", { description: res.error })
@@ -172,7 +203,11 @@ export function CertificateManager() {
 
   const reissue = async (req: CertificateRequest) => {
     setWorking(true)
-    const res = await adminReissueCertificate(ADMIN_PASSCODE, req.id, undefined, targetUser.fullName)
+    const res = await certAdminPost<CertificateMutation>({
+      action: "reissue",
+      id: req.id,
+      adminName: targetUser.fullName,
+    })
     setWorking(false)
     if (!res.ok) {
       toast.error("Re-issue failed", { description: res.error })
