@@ -43,6 +43,7 @@ const STATUS_STYLES: Record<string, string> = {
   pending: "bg-amber-500/10 text-amber-600 border-amber-500/20",
   suspended: "bg-orange-500/10 text-orange-600 border-orange-500/20",
   blocked: "bg-destructive/10 text-destructive border-destructive/20",
+  cancelled: "bg-muted text-muted-foreground border-border",
 }
 
 const CURRENCIES = ["EUR", "GBP", "USD", "CHF"]
@@ -535,6 +536,7 @@ export function BeneficiaryManager() {
                     <SelectItem value="pending">Pending</SelectItem>
                     <SelectItem value="suspended">Suspended</SelectItem>
                     <SelectItem value="blocked">Blocked</SelectItem>
+                    <SelectItem value="cancelled">Cancelled</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
