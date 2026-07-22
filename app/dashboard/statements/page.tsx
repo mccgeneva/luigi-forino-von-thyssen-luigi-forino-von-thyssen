@@ -95,6 +95,11 @@ export default function StatementsPage() {
   const holderName = bankingValue(banking, "Account Holder") || user.fullName || user.company
   const bankName = bankingValue(banking, "Bank Name")
   const bankAddress = bankingValue(banking, "Bank Address")
+  const companyInfo = (user.companyInfo ?? []) as { label: string; value: string }[]
+  const holderAddress =
+    bankingValue(banking, "Beneficiary Address") ||
+    bankingValue(companyInfo, "Registered Address") ||
+    bankingValue(companyInfo, "Address")
   const iban = bankingValue(banking, "IBAN")
   const bic = bankingValue(banking, "BIC / SWIFT")
 
@@ -219,6 +224,7 @@ export default function StatementsPage() {
       generateStatementPdf({
         holderName,
         holderCompany: user.company,
+        holderAddress,
         bankName,
         iban,
         bic,
