@@ -6,6 +6,7 @@ import {
   getCertificateRequest,
   upsertCertificateRequest,
   replaceCertificateRequestsForUser,
+  deleteCertificateRequestForUser,
 } from "@/lib/certificates-db"
 import {
   applyApproval,
@@ -77,6 +78,42 @@ export async function syncMyCertificateRequests(
     const session = await resolveCurrentSession()
     if (!session) return { ok: false, error: "No active session." }
     await replaceCertificateRequestsForUser(session.id, items)
+    return { ok: true }
+  } catch (err) {
+    return { ok: false, error: friendlyError(err) }
+  }
+}
+
+/**
+ * Permanently delete one of the CURRENT user's own certificate requests (e.g.
+ * one that is no longer needed or has expired). Ownership is enforced in the DB
+ * query (id + session user id) so a client can never remove another account's
+ * records. Writes an audit-log entry for traceability.
+ */
+export async function deleteMyCertificateRequest(id: string): Promise<CertificateMutation> {
+  try {
+    const session = await resolveCurrentSession()
+    if (!session) return { ok: false, error: "No active session." }
+
+    // Load first (scoped read) so we can record what was removed in the audit log.
+    const row = await getCertificateRequest(id)
+    if (!row || row.userId !== session.id) {
+      return { ok: false, error: "Certificate not found." }
+    }
+
+    const removed = await deleteCertificateRequestForUser(session.id, id)
+    if (!removed) return { ok: false, error: "Certificate not found." }
+
+    await logActivity({
+      action: "Client deleted a certificate",
+      category: "Certificates",
+      details: {
+        certificate: CERTIFICATE_TYPE_LABELS[row.request.type],
+        reference: row.request.reference,
+        status: row.request.status,
+        result: "deleted",
+      },
+    })
     return { ok: true }
   } catch (err) {
     return { ok: false, error: friendlyError(err) }

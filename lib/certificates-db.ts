@@ -92,6 +92,23 @@ export async function getCertificateRequest(id: string): Promise<StoredCertifica
   return rows[0] ? toStored(rows[0]) : null
 }
 
+/**
+ * Delete a single certificate request owned by a specific user.
+ *
+ * The query is scoped by BOTH the request id and the owning user_id so a client
+ * can only ever remove their own records — there is no row-level security on
+ * Neon, so this per-query ownership filter is the security boundary. Returns
+ * true when a row was actually removed.
+ */
+export async function deleteCertificateRequestForUser(userId: string, id: string): Promise<boolean> {
+  await ensureTable()
+  const { rowCount } = await query(
+    `DELETE FROM certificate_requests WHERE id = $1 AND user_id = $2`,
+    [id, userId],
+  )
+  return (rowCount ?? 0) > 0
+}
+
 /** Insert or replace a single certificate request for a user. */
 export async function upsertCertificateRequest(
   userId: string,

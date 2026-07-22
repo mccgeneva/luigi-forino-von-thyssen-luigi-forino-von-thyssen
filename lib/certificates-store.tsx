@@ -6,7 +6,7 @@ import {
   type CertificateRequest,
   type NewCertificateInput,
 } from "@/lib/certificates-shared"
-import { syncMyCertificateRequests } from "@/app/actions/certificates"
+import { syncMyCertificateRequests, deleteMyCertificateRequest } from "@/app/actions/certificates"
 
 // Read through the GET Route Handler (`/api/certificates`), NOT the
 // `getMyCertificateRequests` Server Action: Server Actions are serialized with
@@ -51,6 +51,8 @@ interface CertificatesContextValue {
   addRequest: (input: NewCertificateInput) => CertificateRequest
   /** Append a "Downloaded" audit event when an approved certificate is generated. */
   recordDownload: (id: string) => void
+  /** Permanently delete one of the user's own certificates. Resolves to true on success. */
+  deleteRequest: (id: string) => Promise<boolean>
   /** Force a re-read from the durable server copy (e.g. after returning to the tab). */
   refresh: () => void
 }
@@ -136,9 +138,25 @@ export function CertificateRequestsProvider({ children }: { children: React.Reac
     )
   }
 
+  // Delete goes through a DEDICATED server action, not the mirror sync (whose
+  // merge intentionally never deletes so a stale client payload can't wipe an
+  // administrator's records). We optimistically drop the row locally, then ask
+  // the server to remove it; on failure we re-read to restore the true state.
+  const deleteRequest: CertificatesContextValue["deleteRequest"] = async (id) => {
+    const prev = requests
+    skipNextSync.current = true
+    setRequests((list) => list.filter((r) => r.id !== id))
+    const res = await deleteMyCertificateRequest(id).catch(() => ({ ok: false as const, error: "network" }))
+    if (!res.ok) {
+      setRequests(prev)
+      return false
+    }
+    return true
+  }
+
   return (
     <CertificatesContext.Provider
-      value={{ requests, hydrated, addRequest, recordDownload, refresh: loadFromServer }}
+      value={{ requests, hydrated, addRequest, recordDownload, deleteRequest, refresh: loadFromServer }}
     >
       {children}
     </CertificatesContext.Provider>

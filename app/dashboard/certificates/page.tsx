@@ -16,6 +16,7 @@ import {
   FileText,
   History,
   Plus,
+  Trash2,
 } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -91,7 +92,7 @@ function formatTimestamp(iso?: string): string {
 export default function CertificatesPage() {
   const user = useCurrentUser()
   const { balanceFor, totalIn, currencies } = useLedger()
-  const { requests, hydrated, addRequest, recordDownload } = useCertificateRequests()
+  const { requests, hydrated, addRequest, recordDownload, deleteRequest } = useCertificateRequests()
   const logActivity = useActivityLog()
   const { show } = usePdfViewer()
   const router = useRouter()
@@ -115,6 +116,8 @@ export default function CertificatesPage() {
   // ---- Preview / audit dialogs ---------------------------------------------
   const [previewReq, setPreviewReq] = useState<CertificateRequest | null>(null)
   const [auditReq, setAuditReq] = useState<CertificateRequest | null>(null)
+  const [deleteReq, setDeleteReq] = useState<CertificateRequest | null>(null)
+  const [deleting, setDeleting] = useState(false)
 
   const accountOptions = useMemo(() => {
     const opts = [{ id: "master", label: "Master Account — All Currencies" }]
@@ -259,6 +262,32 @@ export default function CertificatesPage() {
         version: `Revision ${req.version}`,
       },
     })
+  }
+
+  const confirmDelete = async () => {
+    if (!deleteReq) return
+    setDeleting(true)
+    const ok = await deleteRequest(deleteReq.id)
+    setDeleting(false)
+    if (!ok) {
+      toast.error("Could not delete certificate", {
+        description: "Please try again in a moment.",
+      })
+      return
+    }
+    logActivity({
+      action: `Deleted ${CERTIFICATE_TYPE_LABELS[deleteReq.type]}`,
+      category: "Certificates",
+      details: {
+        summary: `Client removed the ${CERTIFICATE_TYPE_LABELS[deleteReq.type]} (${deleteReq.reference}) from their certificates.`,
+        reference: deleteReq.reference,
+        status: statusLabel[deleteReq.status],
+      },
+    })
+    toast.success("Certificate deleted", {
+      description: `${CERTIFICATE_TYPE_LABELS[deleteReq.type]} (${deleteReq.reference}) has been removed.`,
+    })
+    setDeleteReq(null)
   }
 
   const pendingCount = requests.filter((r) => r.status === "pending").length
@@ -407,6 +436,16 @@ export default function CertificatesPage() {
                       >
                         <Download className="mr-1.5 h-4 w-4" />
                         PDF
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => setDeleteReq(req)}
+                        title="Delete certificate"
+                        className="text-muted-foreground hover:bg-red-500/10 hover:text-red-400"
+                      >
+                        <Trash2 className="h-4 w-4" />
+                        <span className="sr-only">Delete certificate</span>
                       </Button>
                     </div>
                   </div>
@@ -594,6 +633,33 @@ export default function CertificatesPage() {
               ))}
             </ol>
           )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Delete confirmation dialog */}
+      <Dialog open={!!deleteReq} onOpenChange={(o) => !o && !deleting && setDeleteReq(null)}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Delete certificate?</DialogTitle>
+            <DialogDescription>
+              {deleteReq
+                ? `This permanently removes the ${CERTIFICATE_TYPE_LABELS[deleteReq.type]} (${deleteReq.reference}) from your certificates. This action cannot be undone.`
+                : ""}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDeleteReq(null)} disabled={deleting}>
+              Cancel
+            </Button>
+            <Button
+              onClick={confirmDelete}
+              disabled={deleting}
+              className="bg-red-500 text-white hover:bg-red-600 disabled:opacity-50"
+            >
+              <Trash2 className="mr-2 h-4 w-4" />
+              {deleting ? "Deleting…" : "Delete"}
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
     </div>
