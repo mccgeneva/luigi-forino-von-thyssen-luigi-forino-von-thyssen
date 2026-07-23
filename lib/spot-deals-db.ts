@@ -108,6 +108,32 @@ async function ensureTables(): Promise<void> {
     )
   }
 
+  // One-time correction for two seed rows whose IMO was valid but pointed at the
+  // WRONG vessel identity (verified against Datadocked's live AIS records):
+  //   9793753  →  "Folegandros"   (was mislabelled "Nissos Rhenia")
+  //   9666077  →  "CS Imperative" (was mislabelled "Stena Impulse")
+  // The IMOs are unchanged, so the earlier `DO NOTHING` seed never refreshed
+  // them. We update in place, scoped to source='seed' so admin edits survive.
+  const correctionMarker = await query<{ name: string }>(
+    `INSERT INTO schema_migrations (name) VALUES ('vessels_real_imo_v2_identity_fix')
+     ON CONFLICT (name) DO NOTHING
+     RETURNING name`,
+  )
+  if (correctionMarker.rows.length > 0) {
+    const now = new Date().toISOString()
+    for (const imo of ["9793753", "9666077"]) {
+      const seed = VESSEL_SEED.find((v) => v.imo === imo)
+      if (!seed) continue
+      const vessel: Vessel = { ...seed, source: "seed", updatedAt: now }
+      await query(
+        `UPDATE vessels
+            SET name = $2, type = $3, status = $4, location = $5, cargo = $6, payload = $7, updated_at = $8
+          WHERE imo = $1 AND source = 'seed'`,
+        [vessel.imo, vessel.name, vessel.type, vessel.status, vessel.location, vessel.cargo ?? null, JSON.stringify(vessel), now],
+      )
+    }
+  }
+
   ensured = true
 }
 
