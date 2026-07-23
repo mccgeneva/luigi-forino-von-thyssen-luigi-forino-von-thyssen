@@ -96,6 +96,7 @@ import {
   type CreateSpotDealInput,
 } from "@/app/actions/spot-deals"
 import { VESSEL_PROVIDERS, type VesselCompliance } from "@/lib/spot-deals-shared"
+import { AisFeedStatus } from "@/components/dashboard/vessel-live-position"
 
 const CURRENCIES = ["USD", "EUR", "GBP", "CHF", "AED", "SGD"]
 const INCOTERMS = ["FOB", "CIF", "CFR", "FCA", "DES", "DAP"]
@@ -433,6 +434,11 @@ function VesselCatalogue({ onVesselsChanged }: { onVesselsChanged: (v: Vessel[])
                 Free compliance auto-check active — official IMO validation + OFAC sanctions screening, no token
                 required.
               </span>
+            </div>
+            {/* Real-time AIS position feed status (same indicator clients see). */}
+            <div className="flex items-center justify-between gap-2 border-t border-border/60 pt-2">
+              <span className="text-xs text-muted-foreground">Real-time AIS position feed</span>
+              <AisFeedStatus />
             </div>
           </div>
 
