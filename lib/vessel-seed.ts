@@ -51,17 +51,19 @@ export const VESSEL_SEED: SeedVessel[] = [
     cargo: "Murban Crude",
   },
   {
+    // Corrected: IMO 9793753 resolves on Datadocked to "Folegandros"
+    // (Crude Oil Tanker), not the previously-labelled "Nissos Rhenia".
     imo: "9793753",
-    name: "Nissos Rhenia",
+    name: "Folegandros",
     type: "crude",
-    vesselClass: "VLCC",
-    capacity: 318744,
+    vesselClass: "Suezmax",
+    capacity: 157000,
     capacityUnit: "DWT",
-    status: "loading",
-    location: "Ras Tanura, Saudi Arabia",
+    status: "moored",
+    location: "Trieste, Italy",
     flag: "Marshall Islands",
-    builtYear: 2020,
-    cargo: "Arab Heavy Crude",
+    builtYear: 2019,
+    cargo: "Crude Oil",
   },
   {
     imo: "9853852",
@@ -105,15 +107,17 @@ export const VESSEL_SEED: SeedVessel[] = [
 
   // --- Refined product tankers ---------------------------------------------
   {
+    // Corrected: IMO 9666077 resolves on Datadocked to "CS Imperative"
+    // (Chemical/Oil Products Tanker), not the previously-labelled "Stena Impulse".
     imo: "9666077",
-    name: "Stena Impulse",
+    name: "CS Imperative",
     type: "product",
     vesselClass: "MR",
     capacity: 49762,
     capacityUnit: "DWT",
-    status: "loading",
-    location: "Jubail, Saudi Arabia",
-    flag: "Denmark",
+    status: "anchored",
+    location: "Brass Anchorage, Nigeria",
+    flag: "United States",
     builtYear: 2016,
     cargo: "EN590 10ppm Diesel",
   },
