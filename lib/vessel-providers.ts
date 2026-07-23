@@ -367,7 +367,72 @@ const vesselFinder: Adapter = async (imo, token) => {
   }
 }
 
+// --- Datadocked -----------------------------------------------------------
+// Datadocked exposes a single real-time endpoint keyed by IMO or MMSI that
+// returns both light master data (name, specific type, destination) and the
+// live AIS fix (lat/lng, speed, course, nav status). Auth is an `x-api-key`
+// header. Deadweight/flag/build-year aren't published here, so those stay for
+// the admin to complete on import.
+const DATADOCKED_BASE = "https://datadocked.com/api/vessels_operations/get-vessel-location"
+
+async function datadockedFetch(imo: string, token: string): Promise<Record<string, unknown> | { error: string }> {
+  const res = await fetch(`${DATADOCKED_BASE}?imo_or_mmsi=${encodeURIComponent(imo)}`, {
+    headers: { accept: "application/json", "x-api-key": token },
+    cache: "no-store",
+  })
+  if (!res.ok) {
+    if (res.status === 401 || res.status === 403) return { error: "Datadocked rejected the API key (unauthorized)." }
+    if (res.status === 404) return { error: "No vessel found for that IMO/MMSI at Datadocked." }
+    return { error: `Datadocked responded with ${res.status}.` }
+  }
+  const json = (await res.json()) as Record<string, unknown> | null
+  if (!json || (!json.latitude && !json.name)) {
+    return { error: "No live data reported for that IMO/MMSI at Datadocked." }
+  }
+  return json
+}
+
+/**
+ * Datadocked reports time as "Jul 23, 2026 04:07 UTC". V8's Date parser is
+ * unreliable with a bare "UTC" suffix, so normalise it to "GMT" first; fall
+ * back to now() when the string can't be parsed.
+ */
+function parseDatadockedTime(v: unknown): string {
+  const raw = String(v ?? "").trim()
+  if (raw) {
+    const d = new Date(raw.replace(/\bUTC\b/i, "GMT"))
+    if (!Number.isNaN(d.getTime())) return d.toISOString()
+  }
+  return new Date().toISOString()
+}
+
+const datadocked: Adapter = async (imo, token) => {
+  const row = await datadockedFetch(imo, token)
+  if ("error" in row) return row
+  const typeRaw = String(row.typeSpecific ?? "")
+  const type = classifyType(typeRaw)
+  const { lat, lng } = extractLatLng(row)
+  return {
+    imo,
+    name: String(row.name ?? `IMO ${imo}`),
+    type,
+    vesselClass: typeRaw || undefined,
+    capacity: 0,
+    capacityUnit: type === "gas" ? "CBM" : "DWT",
+    status: mapNavStatus(row.navigationalStatus),
+    location: String(row.destination ?? row.lastPort ?? "Unknown"),
+    lat,
+    lng,
+    flag: undefined,
+    builtYear: undefined,
+    cargo: undefined,
+    source: "datadocked",
+    updatedAt: new Date().toISOString(),
+  }
+}
+
 const PROVIDER_ADAPTERS: Record<VesselProviderId, Adapter> = {
+  datadocked,
   kpler,
   marinetraffic: marineTraffic,
   datalastic,
@@ -543,7 +608,32 @@ const vesselFinderPosition: PositionAdapter = async (imo, token) => {
   return genericPositionFromRow(imo, row)
 }
 
+// --- Datadocked position ---------------------------------------------------
+// Same real-time endpoint as the master-data adapter; speed is already in whole
+// knots (e.g. "0.1"), so no tenths-of-a-knot conversion is applied here.
+const datadockedPosition: PositionAdapter = async (imo, token) => {
+  const row = await datadockedFetch(imo, token)
+  if ("error" in row) return row
+  const { lat, lng } = extractLatLng(row)
+  if (lat == null || lng == null) return { error: "Datadocked returned no coordinates for that vessel." }
+  const rawSpeed = num(row.speed)
+  return {
+    imo,
+    lat,
+    lng,
+    status: mapNavStatus(row.navigationalStatus),
+    speedKnots: Number.isFinite(rawSpeed) && rawSpeed >= 0 ? Math.round(rawSpeed * 10) / 10 : undefined,
+    courseDeg: (() => {
+      const c = num(row.course)
+      return Number.isFinite(c) && c > 0 ? c : undefined
+    })(),
+    destination: row.destination ? String(row.destination) : undefined,
+    timestamp: parseDatadockedTime(row.positionReceived ?? row.updateTime),
+  }
+}
+
 const POSITION_ADAPTERS: Record<VesselProviderId, PositionAdapter> = {
+  datadocked: datadockedPosition,
   kpler: kplerPosition,
   marinetraffic: marineTrafficPosition,
   datalastic: datalasticPosition,
