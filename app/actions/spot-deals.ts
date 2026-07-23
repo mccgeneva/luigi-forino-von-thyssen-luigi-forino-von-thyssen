@@ -44,8 +44,9 @@ import {
   type Vessel,
   type SpotDeal,
   type VesselCompliance,
+  type VesselLivePosition,
 } from "@/lib/spot-deals-shared"
-import { fetchVesselByImo, providerStatus, screenVesselImo } from "@/lib/vessel-providers"
+import { fetchVesselByImo, fetchVesselPosition, providerStatus, screenVesselImo } from "@/lib/vessel-providers"
 
 async function adminOk(passcode: string): Promise<boolean> {
   return adminActionAuthorized(passcode)
@@ -151,6 +152,56 @@ export async function deleteVesselAdmin(passcode: string, imo: string): Promise<
 /** Token-free view of which live vessel-data provider (if any) is connected. */
 export async function getVesselProviderStatus() {
   return providerStatus()
+}
+
+export interface LivePositionResult {
+  /** Whether a live AIS provider is connected at all. */
+  connected: boolean
+  /** Human label of the active provider, e.g. "MarineTraffic". */
+  providerLabel?: string
+  /** The live AIS fix, when available. */
+  position?: VesselLivePosition
+  /** Present when connected but the fix could not be obtained. */
+  error?: string
+}
+
+/**
+ * Real-time AIS position for a single vessel, for the client "live position"
+ * indicators. Session-gated (any authenticated user) since it exposes only
+ * public vessel-tracking data. When a provider is connected we also persist the
+ * fresh coordinates/status onto the catalogue row so master views stay current;
+ * we NEVER synthesise a position when no provider is linked — the caller gets
+ * `connected: false` and shows an honest "unavailable" state.
+ */
+export async function refreshVesselPosition(imo: string): Promise<LivePositionResult> {
+  const session = await resolveCurrentSession()
+  if (!session) return { connected: false, error: "No active session." }
+  const clean = (imo ?? "").trim()
+  if (!/^\d{7}$/.test(clean)) return { connected: false, error: "Invalid IMO." }
+
+  const result = await fetchVesselPosition(clean)
+  if (!result.connected) return { connected: false }
+  if ("error" in result) return { connected: true, providerLabel: result.providerLabel, error: result.error }
+
+  // Persist the live fix onto the catalogue row (best-effort — never block the
+  // live read on a write failure).
+  try {
+    const existing = await dbGetVessel(clean)
+    if (existing) {
+      await dbUpsertVessel({
+        ...existing,
+        lat: result.position.lat,
+        lng: result.position.lng,
+        status: result.position.status,
+        location: result.position.destination || existing.location,
+        updatedAt: new Date().toISOString(),
+      })
+    }
+  } catch (err) {
+    console.log("[v0] refreshVesselPosition persist failed:", (err as Error).message)
+  }
+
+  return { connected: true, providerLabel: result.providerLabel, position: result.position }
 }
 
 /**

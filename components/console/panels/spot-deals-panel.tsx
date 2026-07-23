@@ -7,6 +7,7 @@ import { Ship, Clock, Anchor, PackageOpen } from "lucide-react"
 import { ConsolePanel } from "@/components/console/console-panel"
 import { listLiveSpotDeals } from "@/app/actions/spot-deals"
 import { dealCountdown, type SpotDeal } from "@/lib/spot-deals-shared"
+import { AisFeedStatus } from "@/components/dashboard/vessel-live-position"
 import { cn } from "@/lib/utils"
 
 function Countdown({ expiresAt }: { expiresAt: string }) {
@@ -78,10 +79,11 @@ export function SpotDealsPanel({ initialDeals }: { initialDeals: SpotDeal[] }) {
           ))}
         </ul>
       )}
-      <div className="border-t border-border px-3 py-2">
+      <div className="flex items-center justify-between gap-2 border-t border-border px-3 py-2">
         <Link href="/dashboard/commodity" className="text-[11px] font-medium text-primary hover:underline">
           View full commodity desk →
         </Link>
+        <AisFeedStatus />
       </div>
     </ConsolePanel>
   )

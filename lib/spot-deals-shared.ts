@@ -47,6 +47,7 @@ export const VESSEL_STATUS_LABELS: Record<VesselStatus, string> = {
 /** Where the row originated, for the audit trail / import provenance. */
 export type VesselSource =
   | "manual"
+  | "datadocked"
   | "kpler"
   | "marinetraffic"
   | "datalastic"
@@ -85,7 +86,7 @@ export interface VesselCompliance {
 }
 
 /** Identifier for a live AIS / vessel-data provider the app can link to. */
-export type VesselProviderId = "kpler" | "marinetraffic" | "datalastic" | "vesselfinder"
+export type VesselProviderId = "datadocked" | "kpler" | "marinetraffic" | "datalastic" | "vesselfinder"
 
 export interface VesselProviderInfo {
   id: VesselProviderId
@@ -103,6 +104,12 @@ export interface VesselProviderInfo {
  * adapter in lib/vessel-providers.ts to support it everywhere.
  */
 export const VESSEL_PROVIDERS: VesselProviderInfo[] = [
+  {
+    id: "datadocked",
+    label: "Datadocked",
+    envVar: "DATADOCKED_API_KEY",
+    signupUrl: "https://datadocked.com/",
+  },
   {
     id: "kpler",
     label: "Kpler",
@@ -128,6 +135,27 @@ export const VESSEL_PROVIDERS: VesselProviderInfo[] = [
     signupUrl: "https://api.vesselfinder.com/docs/",
   },
 ]
+
+/**
+ * A single real-time AIS position fix for a vessel. Returned by the live
+ * position endpoint and rendered by the client "live position" indicators.
+ * Purely a data shape — safe to import on client and server.
+ */
+export interface VesselLivePosition {
+  imo: string
+  lat: number
+  lng: number
+  /** Normalised navigational status. */
+  status: VesselStatus
+  /** Speed over ground in knots, when reported. */
+  speedKnots?: number
+  /** Course over ground in degrees, when reported. */
+  courseDeg?: number
+  /** Destination / nearest port label, when reported. */
+  destination?: string
+  /** ISO timestamp of the AIS fix as reported by the provider. */
+  timestamp: string
+}
 
 export interface Vessel {
   /** IMO number — the stable, globally-unique vessel identifier (primary key). */
