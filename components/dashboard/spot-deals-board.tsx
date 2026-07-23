@@ -22,6 +22,7 @@ import {
 } from "@/lib/spot-deals-shared"
 import { listLiveSpotDeals, recordSpotDealInterest, acceptSpotDeal, listMyReservedSpotDeals } from "@/app/actions/spot-deals"
 import { useCommodityDeals, DEAL_STAGES, type CommodityDeal } from "@/lib/commodity-deals-store"
+import { AisFeedStatus, VesselLivePositionLine } from "@/components/dashboard/vessel-live-position"
 
 const VESSEL_ICON: Record<VesselType, typeof Ship> = {
   crude: Droplet,
@@ -95,6 +96,10 @@ function SpotDealCard({
           <div className="flex items-center gap-1.5 text-muted-foreground">
             <Gauge className="h-3.5 w-3.5 shrink-0" />
             <span className="truncate">{deal.incoterm}</span>
+          </div>
+          {/* Real-time AIS position for this vessel (live provider only). */}
+          <div className="col-span-2 border-t border-border/60 pt-2">
+            <VesselLivePositionLine imo={deal.vesselImo} />
           </div>
         </div>
 
@@ -198,6 +203,9 @@ function ReservedDealCard({
           <div className="flex items-center gap-1.5 text-muted-foreground">
             <Gauge className="h-3.5 w-3.5 shrink-0" />
             <span className="truncate">{deal.incoterm}</span>
+          </div>
+          <div className="col-span-2 border-t border-border/60 pt-2">
+            <VesselLivePositionLine imo={deal.vesselImo} />
           </div>
         </div>
 
@@ -414,6 +422,14 @@ export function SpotDealsBoard({
 
   return (
     <div className="space-y-8">
+      {/* AIS feed connectivity — one honest indicator for the whole board. */}
+      <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border bg-card px-3 py-2">
+        <span className="text-xs text-muted-foreground">
+          Vessel positions are streamed from a live AIS provider.
+        </span>
+        <AisFeedStatus />
+      </div>
+
       {reservedSection}
 
       {liveDeals.length === 0 ? (

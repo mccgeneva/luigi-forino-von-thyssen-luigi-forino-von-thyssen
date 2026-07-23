@@ -5,6 +5,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { blobFileUrl } from "@/lib/kyc-types"
 import { VESSEL_TYPE_LABELS, VESSEL_STATUS_LABELS, type Vessel } from "@/lib/spot-deals-shared"
+import { VesselLivePositionLine } from "@/components/dashboard/vessel-live-position"
 
 /** A single stored document version (matches the commodity store shape). */
 interface DocVersion {
@@ -136,6 +137,11 @@ function VesselCard({ vessel }: { vessel: Vessel }) {
           <Field label="Status" value={VESSEL_STATUS_LABELS[vessel.status]} />
           <Field label="Location" value={vessel.location} icon={<Anchor className="h-3 w-3" />} />
           {vessel.cargo ? <Field label="Cargo" value={vessel.cargo} /> : null}
+        </div>
+
+        {/* Real-time AIS position (live provider only; honest state otherwise). */}
+        <div className="rounded-md border border-border bg-muted/30 p-2">
+          <VesselLivePositionLine imo={vessel.imo} />
         </div>
 
         {compliance?.status === "flagged" && compliance.matches.length > 0 ? (

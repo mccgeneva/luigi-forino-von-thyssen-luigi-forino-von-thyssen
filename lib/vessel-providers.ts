@@ -18,6 +18,7 @@ import {
   type Vessel,
   type VesselCompliance,
   type VesselComplianceStatus,
+  type VesselLivePosition,
   type VesselProviderId,
   type VesselProviderInfo,
 } from "@/lib/spot-deals-shared"
@@ -418,5 +419,158 @@ export async function fetchVesselByImo(
   } catch (err) {
     console.log(`[v0] vessel provider ${provider.id} failed:`, (err as Error).message)
     return { error: `Live import via ${provider.label} failed. Please add the vessel manually.`, compliance }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Live AIS positions.
+//
+// Master data (name, DWT, flag) rarely changes, but a vessel's POSITION does —
+// constantly. These adapters hit each provider's real-time position endpoint
+// and normalise the many field spellings into our `VesselLivePosition` shape.
+// They are ONLY reachable when a provider token is configured; there is no
+// fabricated/last-known fallback, so callers can trust that any value returned
+// here is a genuine live AIS fix.
+// ---------------------------------------------------------------------------
+
+type PositionAdapter = (imo: string, token: string) => Promise<VesselLivePosition | { error: string }>
+
+function isoFromEpoch(v: unknown): string {
+  // AIS providers report time as ISO strings or unix seconds/millis.
+  if (typeof v === "string" && v.trim()) {
+    const d = new Date(v)
+    if (!Number.isNaN(d.getTime())) return d.toISOString()
+  }
+  const n = Number(v)
+  if (Number.isFinite(n) && n > 0) {
+    const ms = n > 1e12 ? n : n * 1000
+    const d = new Date(ms)
+    if (!Number.isNaN(d.getTime())) return d.toISOString()
+  }
+  return new Date().toISOString()
+}
+
+// --- MarineTraffic position (PS07 exportvessel) ----------------------------
+// GET .../api/exportvessel/{key}/imo:{imo}/protocol:jsono → array of rows with
+// LAT, LON, SPEED (knots ×10 on some plans), COURSE, STATUS, TIMESTAMP.
+const marineTrafficPosition: PositionAdapter = async (imo, token) => {
+  const url = `https://services.marinetraffic.com/api/exportvessel/${token}/imo:${imo}/protocol:jsono/timespan:60`
+  const res = await fetch(url, { cache: "no-store" })
+  if (!res.ok) {
+    if (res.status === 401 || res.status === 403) return { error: "MarineTraffic rejected the API key (unauthorized)." }
+    return { error: `MarineTraffic positions responded with ${res.status}.` }
+  }
+  const data = (await res.json()) as Array<Record<string, unknown>>
+  const row = Array.isArray(data) ? data[0] : undefined
+  if (!row) return { error: "No live AIS position reported for that IMO in the last hour." }
+  const { lat, lng } = extractLatLng(row)
+  if (lat == null || lng == null) return { error: "MarineTraffic returned no coordinates for that vessel." }
+  // Speed is commonly transmitted in tenths of a knot.
+  const rawSpeed = num(row.SPEED ?? row.speed)
+  const speedKnots = rawSpeed > 102 ? rawSpeed / 10 : rawSpeed
+  return {
+    imo,
+    lat,
+    lng,
+    status: mapNavStatus(row.STATUS ?? row.status),
+    speedKnots: Number.isFinite(speedKnots) && speedKnots > 0 ? Math.round(speedKnots * 10) / 10 : undefined,
+    courseDeg: (() => {
+      const c = num(row.COURSE ?? row.course)
+      return Number.isFinite(c) && c > 0 ? c : undefined
+    })(),
+    destination: row.DESTINATION ? String(row.DESTINATION) : undefined,
+    timestamp: isoFromEpoch(row.TIMESTAMP ?? row.timestamp ?? row.LAST_POS),
+  }
+}
+
+// --- Generic position (Kpler / Datalastic / VesselFinder) ------------------
+// These providers embed position in their main vessel record; reuse the same
+// robust coordinate extractor used for master data.
+function genericPositionFromRow(imo: string, row: Record<string, unknown>): VesselLivePosition | { error: string } {
+  const { lat, lng } = extractLatLng(row)
+  if (lat == null || lng == null) return { error: "Provider returned no live coordinates for that vessel." }
+  const rawSpeed = num(row.speed ?? row.SPEED ?? row.sog)
+  return {
+    imo,
+    lat,
+    lng,
+    status: mapNavStatus(row.navigation_status ?? row.nav_status ?? row.status ?? row.STATUS),
+    speedKnots: Number.isFinite(rawSpeed) && rawSpeed > 0 ? Math.round(rawSpeed * 10) / 10 : undefined,
+    courseDeg: (() => {
+      const c = num(row.course ?? row.COURSE ?? row.cog)
+      return Number.isFinite(c) && c > 0 ? c : undefined
+    })(),
+    destination: (row.destination ?? row.DESTINATION ?? row.current_port) ? String(row.destination ?? row.DESTINATION ?? row.current_port) : undefined,
+    timestamp: isoFromEpoch(row.last_position_epoch ?? row.timestamp ?? row.last_position_UTC ?? row.TIMESTAMP),
+  }
+}
+
+const kplerPosition: PositionAdapter = async (imo, token) => {
+  const res = await fetch(`https://rest.sml.kpler.com/vessels?imo=${encodeURIComponent(imo)}`, {
+    headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
+    cache: "no-store",
+  })
+  if (!res.ok) return { error: `Kpler positions responded with ${res.status}.` }
+  const json = (await res.json()) as unknown
+  const list = Array.isArray(json)
+    ? json
+    : (((json as Record<string, unknown>)?.data ?? (json as Record<string, unknown>)?.vessels ?? (json ? [json] : [])) as unknown[])
+  const row = (Array.isArray(list) ? list[0] : undefined) as Record<string, unknown> | undefined
+  if (!row) return { error: "No vessel found for that IMO at Kpler." }
+  return genericPositionFromRow(imo, row)
+}
+
+const datalasticPosition: PositionAdapter = async (imo, token) => {
+  const res = await fetch(`https://api.datalastic.com/api/v0/vessel_pro?api-key=${token}&imo=${imo}`, {
+    cache: "no-store",
+  })
+  if (!res.ok) return { error: `Datalastic positions responded with ${res.status}.` }
+  const json = (await res.json()) as { data?: Record<string, unknown> }
+  if (!json?.data) return { error: "No vessel found for that IMO at Datalastic." }
+  return genericPositionFromRow(imo, json.data)
+}
+
+const vesselFinderPosition: PositionAdapter = async (imo, token) => {
+  const res = await fetch(`https://api.vesselfinder.com/vesselslist?userkey=${token}&imo=${imo}&format=json`, {
+    cache: "no-store",
+  })
+  if (!res.ok) return { error: `VesselFinder positions responded with ${res.status}.` }
+  const data = (await res.json()) as unknown
+  const row = (Array.isArray(data) ? (data[0] as Record<string, unknown>)?.AIS ?? data[0] : data) as
+    | Record<string, unknown>
+    | undefined
+  if (!row) return { error: "No vessel found for that IMO at VesselFinder." }
+  return genericPositionFromRow(imo, row)
+}
+
+const POSITION_ADAPTERS: Record<VesselProviderId, PositionAdapter> = {
+  kpler: kplerPosition,
+  marinetraffic: marineTrafficPosition,
+  datalastic: datalasticPosition,
+  vesselfinder: vesselFinderPosition,
+}
+
+/**
+ * Fetch a vessel's REAL-TIME AIS position from the connected provider. Returns
+ * `{ connected: false }` when no provider token is configured (so the UI can
+ * show an honest "live position unavailable" state instead of stale data), or
+ * the live fix / a provider error otherwise. Never throws.
+ */
+export async function fetchVesselPosition(
+  imo: string,
+): Promise<
+  | { connected: true; providerLabel: string; position: VesselLivePosition }
+  | { connected: true; providerLabel: string; error: string }
+  | { connected: false }
+> {
+  const provider = resolveProvider()
+  if (!provider) return { connected: false }
+  try {
+    const result = await POSITION_ADAPTERS[provider.id](imo, provider.token)
+    if ("error" in result) return { connected: true, providerLabel: provider.label, error: result.error }
+    return { connected: true, providerLabel: provider.label, position: result }
+  } catch (err) {
+    console.log(`[v0] vessel position ${provider.id} failed:`, (err as Error).message)
+    return { connected: true, providerLabel: provider.label, error: `Live position via ${provider.label} failed.` }
   }
 }

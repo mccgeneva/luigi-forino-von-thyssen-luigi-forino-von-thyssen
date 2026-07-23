@@ -129,6 +129,27 @@ export const VESSEL_PROVIDERS: VesselProviderInfo[] = [
   },
 ]
 
+/**
+ * A single real-time AIS position fix for a vessel. Returned by the live
+ * position endpoint and rendered by the client "live position" indicators.
+ * Purely a data shape — safe to import on client and server.
+ */
+export interface VesselLivePosition {
+  imo: string
+  lat: number
+  lng: number
+  /** Normalised navigational status. */
+  status: VesselStatus
+  /** Speed over ground in knots, when reported. */
+  speedKnots?: number
+  /** Course over ground in degrees, when reported. */
+  courseDeg?: number
+  /** Destination / nearest port label, when reported. */
+  destination?: string
+  /** ISO timestamp of the AIS fix as reported by the provider. */
+  timestamp: string
+}
+
 export interface Vessel {
   /** IMO number — the stable, globally-unique vessel identifier (primary key). */
   imo: string
