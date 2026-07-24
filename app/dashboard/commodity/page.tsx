@@ -30,6 +30,12 @@ import {
   Send,
   Share2,
   Eye,
+  Trash2,
+  Pencil,
+  PauseCircle,
+  PlayCircle,
+  Lock,
+  LockOpen,
 } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -82,7 +88,9 @@ import {
   type InstrumentType,
   type TradeStructure,
   type DealTerms,
+  type DealHold,
 } from "@/lib/commodity-deals-store"
+import type { EditableDealTerms } from "@/app/actions/approvals"
 import {
   PETROLEUM_PRODUCTS,
   COMMODITY_CATEGORIES,
@@ -303,6 +311,9 @@ export default function CommodityTradingPage() {
     revokeDeal,
     requestAmendment,
     addNegotiationNote,
+    setDealHold,
+    editDealTerms,
+    deleteDeal,
     hydrated,
   } = useCommodityDeals()
   const user = useCurrentUser()
@@ -343,6 +354,24 @@ export default function CommodityTradingPage() {
   const [noteText, setNoteText] = useState("")
   const [counterpartyText, setCounterpartyText] = useState("")
   const [savingNote, setSavingNote] = useState(false)
+  // Delete-confirmation dialog state.
+  const [deleteTarget, setDeleteTarget] = useState<CommodityDeal | null>(null)
+  const [deleting, setDeleting] = useState(false)
+  // Suspend/freeze/resume ("hold") dialog state.
+  const [holdTarget, setHoldTarget] = useState<{ deal: CommodityDeal; next: DealHold["state"] | null } | null>(null)
+  const [holdNote, setHoldNote] = useState("")
+  const [holdWorking, setHoldWorking] = useState(false)
+  // Edit-terms dialog state.
+  const [editTarget, setEditTarget] = useState<CommodityDeal | null>(null)
+  const [editForm, setEditForm] = useState({
+    value: "",
+    quantity: "",
+    unitPrice: "",
+    buyerName: "",
+    sellerName: "",
+    notes: "",
+  })
+  const [editing, setEditing] = useState(false)
 
   const set = <K extends keyof typeof form>(key: K, value: (typeof form)[K]) =>
     setForm((prev) => ({ ...prev, [key]: value }))
@@ -444,7 +473,7 @@ export default function CommodityTradingPage() {
       .join(" ")
       .trim()
 
-    // ACCEPTED → auto-create a tracked commodity deal so the full workflow
+    // ACCEPTED �� auto-create a tracked commodity deal so the full workflow
     // (payment / instruments, POF, POP, reserved-funds hold on approval, delivery)
     // is immediately available. Idempotent: if a tracked deal already exists for
     // this cargo, just jump to it instead of creating a duplicate.
@@ -729,6 +758,121 @@ export default function CommodityTradingPage() {
     setNoteText("")
     // Keep the dialog open with the (now persisted) latest data on next render.
     setNotesTarget((prev) => (prev ? { ...prev } : prev))
+  }
+
+  // --- Deal tools: delete / suspend / freeze / edit ------------------------
+
+  const handleDelete = async () => {
+    const deal = deleteTarget
+    if (!deal) return
+    setDeleting(true)
+    const res = await deleteDeal(deal.id)
+    setDeleting(false)
+    if (!res.ok) {
+      toast.error(res.error ?? "The deal could not be deleted.")
+      return
+    }
+    toast.success("Deal deleted", {
+      description:
+        deal.status === "approved"
+          ? `${deal.id} was deleted and the reserved ${formatCurrency(deal.approxValue, deal.currency)} released back to your available balance.`
+          : `${deal.id} was permanently removed.`,
+    })
+    logActivity({
+      action: `Client deleted commodity deal ${deal.id}`,
+      category: "Commodity Trading",
+      details: {
+        summary: `Client deleted deal ${deal.id} "${deal.title}". Any reserved funds released back to the available balance.`,
+        referenceId: deal.id,
+        uetr: deal.uetr,
+        decision: "Deleted",
+      },
+    })
+    setDeleteTarget(null)
+  }
+
+  // Open the hold dialog for a suspend, freeze, or resume action.
+  const openHold = (deal: CommodityDeal, next: DealHold["state"] | null) => {
+    setHoldNote("")
+    setHoldTarget({ deal, next })
+  }
+
+  const handleHold = async () => {
+    if (!holdTarget) return
+    const { deal, next } = holdTarget
+    setHoldWorking(true)
+    const res = await setDealHold(deal.id, next, holdNote.trim() || undefined)
+    setHoldWorking(false)
+    if (!res.ok) {
+      toast.error(res.error ?? "The change could not be saved.")
+      return
+    }
+    const verb = next === "frozen" ? "frozen" : next === "suspended" ? "suspended" : "resumed"
+    toast.success(`Deal ${verb}`, {
+      description:
+        next === "frozen"
+          ? `${deal.id} is locked — edits, revocation and deletion are blocked until you unfreeze it.`
+          : next === "suspended"
+            ? `${deal.id} is paused — the workflow and uploads are on hold until you resume it.`
+            : `${deal.id} is active again.`,
+    })
+    logActivity({
+      action: `Client ${verb} commodity deal ${deal.id}`,
+      category: "Commodity Trading",
+      details: { summary: `Client ${verb} deal ${deal.id} "${deal.title}".`, referenceId: deal.id, decision: verb },
+    })
+    setHoldTarget(null)
+  }
+
+  // Open the edit-terms dialog pre-filled with the deal's current terms. The
+  // price field is the UNIT price (per MT/BBL); the total value is recomputed
+  // server-side from unit price × quantity.
+  const openEdit = (deal: CommodityDeal) => {
+    const parsedQty = parseQuantityString(deal.quantity)
+    const currentUnitPrice =
+      parsedQty && deal.approxValue ? Math.round((deal.approxValue / parsedQty.amount) * 100) / 100 : 0
+    setEditForm({
+      value: deal.approxValue ? String(deal.approxValue) : "",
+      quantity: deal.quantity ?? "",
+      unitPrice: currentUnitPrice > 0 ? String(currentUnitPrice) : "",
+      buyerName: deal.buyerName ?? "",
+      sellerName: deal.sellerName ?? "",
+      notes: deal.notes ?? "",
+    })
+    setEditTarget(deal)
+  }
+
+  const handleSubmitEdit = async () => {
+    const deal = editTarget
+    if (!deal) return
+    const patch: EditableDealTerms = {
+      quantity: editForm.quantity.trim() || undefined,
+      buyerName: editForm.buyerName.trim() || undefined,
+      sellerName: editForm.sellerName.trim() || undefined,
+      notes: editForm.notes.trim() || undefined,
+    }
+    const unitPrice = Number.parseFloat(editForm.unitPrice.replace(/,/g, ""))
+    if (Number.isFinite(unitPrice) && unitPrice > 0) patch.unitPrice = unitPrice
+    const rawValue = Number.parseFloat(editForm.value.replace(/,/g, ""))
+    if (Number.isFinite(rawValue) && rawValue > 0) patch.approxValue = rawValue
+    if (!patch.unitPrice && !patch.approxValue) {
+      toast.error("Enter a valid unit price or total value.")
+      return
+    }
+    setEditing(true)
+    const res = await editDealTerms(deal.id, patch)
+    setEditing(false)
+    if (!res.ok) {
+      toast.error(res.error ?? "The change could not be saved.")
+      return
+    }
+    toast.success("Deal terms updated")
+    logActivity({
+      action: `Client edited commodity deal ${deal.id} terms`,
+      category: "Commodity Trading",
+      details: { summary: `Client edited terms of deal ${deal.id} "${deal.title}".`, referenceId: deal.id, decision: "Edited" },
+    })
+    setEditTarget(null)
   }
 
   return (
@@ -1185,15 +1329,43 @@ export default function CommodityTradingPage() {
                 sortedDeals.map((deal) => {
                   const nextStageIndex = DEAL_STAGES.findIndex((s) => s.key === deal.stage) + 1
                   const nextStage = DEAL_STAGES[nextStageIndex]
+                  // A held (suspended/frozen) deal's workflow is paused.
+                  const held = deal.hold?.state ?? null
                   const canAdvance =
-                    deal.status === "pending" && nextStage && nextStage.key !== "execution"
+                    deal.status === "pending" && nextStage && nextStage.key !== "execution" && !held
                   const popCount = deal.documents.filter((d) => d.module === "POP").length
                   const pofCount = deal.documents.filter((d) => d.module === "POF").length
+                  // Deal-management tools apply to a client's own editable deals
+                  // (never a read-only / shared-for-reference copy).
+                  const canManage = !deal.readOnly && !deal.shared
+                  // Terms are directly editable while the deal is NOT approved
+                  // (approved deals hold reserved funds → use amendment instead),
+                  // not delivered, and not frozen.
+                  const canEditTerms =
+                    canManage && !deal.delivered && held !== "frozen" && deal.status !== "approved"
                   return (
                     <div key={deal.id} id={`deal-${deal.id}`} className="scroll-mt-24 rounded-lg border border-border p-4">
                       <div className="flex flex-col gap-3">
                         <div className="flex flex-wrap items-center gap-2">
                           <StatusBadge status={deal.status} />
+                          {held === "suspended" && (
+                            <Badge
+                              variant="outline"
+                              className="border-amber-500/30 bg-amber-500/10 text-amber-600 dark:text-amber-400 text-[10px]"
+                            >
+                              <PauseCircle className="mr-1 h-3 w-3" />
+                              Suspended
+                            </Badge>
+                          )}
+                          {held === "frozen" && (
+                            <Badge
+                              variant="outline"
+                              className="border-sky-500/30 bg-sky-500/10 text-sky-600 dark:text-sky-400 text-[10px]"
+                            >
+                              <Lock className="mr-1 h-3 w-3" />
+                              Frozen
+                            </Badge>
+                          )}
                           {deal.delivered && (
                             <Badge
                               variant="outline"
@@ -1302,6 +1474,81 @@ export default function CommodityTradingPage() {
                           </p>
                         )}
 
+                        {/* Active hold banner — explains the paused / locked state. */}
+                        {held && (
+                          <div
+                            className={cn(
+                              "flex items-start gap-2 rounded-md border p-2 text-xs",
+                              held === "frozen"
+                                ? "border-sky-500/20 bg-sky-500/5 text-sky-600 dark:text-sky-400"
+                                : "border-amber-500/20 bg-amber-500/5 text-amber-600 dark:text-amber-400",
+                            )}
+                          >
+                            {held === "frozen" ? (
+                              <Lock className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                            ) : (
+                              <PauseCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                            )}
+                            <span>
+                              {held === "frozen"
+                                ? "This deal is frozen — edits, revocation and deletion are locked, and any reserved funds stay blocked until it is unfrozen."
+                                : "This deal is suspended — its workflow and document uploads are paused until it is resumed."}
+                              {deal.hold?.by === "admin" ? " (Placed by the Administrator.)" : ""}
+                              {deal.hold?.note ? ` Note: ${deal.hold.note}` : ""}
+                            </span>
+                          </div>
+                        )}
+
+                        {/* Deal-management tools: edit / suspend / freeze / delete. */}
+                        {canManage && (
+                          <div className="flex flex-wrap items-center gap-2 border-t border-border pt-3">
+                            <span className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                              Deal tools
+                            </span>
+                            {canEditTerms && (
+                              <Button size="sm" variant="outline" onClick={() => openEdit(deal)}>
+                                <Pencil className="mr-1 h-3.5 w-3.5" />
+                                Edit terms
+                              </Button>
+                            )}
+                            {/* Suspend / Resume */}
+                            {held === "suspended" ? (
+                              <Button size="sm" variant="outline" onClick={() => openHold(deal, null)}>
+                                <PlayCircle className="mr-1 h-3.5 w-3.5" />
+                                Resume
+                              </Button>
+                            ) : held !== "frozen" && !deal.delivered ? (
+                              <Button size="sm" variant="outline" onClick={() => openHold(deal, "suspended")}>
+                                <PauseCircle className="mr-1 h-3.5 w-3.5" />
+                                Suspend
+                              </Button>
+                            ) : null}
+                            {/* Freeze / Unfreeze */}
+                            {held === "frozen" ? (
+                              <Button size="sm" variant="outline" onClick={() => openHold(deal, null)}>
+                                <LockOpen className="mr-1 h-3.5 w-3.5" />
+                                Unfreeze
+                              </Button>
+                            ) : held !== "suspended" && !deal.delivered ? (
+                              <Button size="sm" variant="outline" onClick={() => openHold(deal, "frozen")}>
+                                <Lock className="mr-1 h-3.5 w-3.5" />
+                                Freeze
+                              </Button>
+                            ) : null}
+                            {/* Delete — blocked while frozen. */}
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="text-destructive"
+                              onClick={() => setDeleteTarget(deal)}
+                              disabled={held === "frozen"}
+                            >
+                              <Trash2 className="mr-1 h-3.5 w-3.5" />
+                              Delete
+                            </Button>
+                          </div>
+                        )}
+
                         {deal.status === "approved" && (
                           <div className="flex flex-wrap items-center gap-2">
                             {deal.delivered ? (
@@ -1315,7 +1562,7 @@ export default function CommodityTradingPage() {
                                   size="sm"
                                   variant="outline"
                                   onClick={() => openAmend(deal)}
-                                  disabled={deal.pendingAmendment?.status === "pending"}
+                                  disabled={deal.pendingAmendment?.status === "pending" || !!held}
                                 >
                                   <Handshake className="mr-1 h-3.5 w-3.5" />
                                   Negotiate / Amend
@@ -1334,6 +1581,7 @@ export default function CommodityTradingPage() {
                                   variant="outline"
                                   className="text-destructive"
                                   onClick={() => setRevokeTarget(deal)}
+                                  disabled={held === "frozen"}
                                 >
                                   <Ban className="mr-1 h-3.5 w-3.5" />
                                   Cancel / Revoke deal
@@ -1575,6 +1823,186 @@ export default function CommodityTradingPage() {
             <Button variant="destructive" onClick={handleConfirmRevoke} disabled={revoking}>
               {revoking ? <Loader2 className="mr-1 h-4 w-4 animate-spin" /> : <Ban className="mr-1 h-4 w-4" />}
               Revoke &amp; release funds
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Delete confirmation */}
+      <Dialog open={deleteTarget !== null} onOpenChange={(o) => !o && !deleting && setDeleteTarget(null)}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Trash2 className="h-4 w-4 text-destructive" />
+              Delete commodity deal
+            </DialogTitle>
+            <DialogDescription className="text-pretty">
+              {deleteTarget ? (
+                <>
+                  This permanently removes deal{" "}
+                  <span className="font-medium text-foreground">{deleteTarget.id}</span> ({deleteTarget.title}).
+                  {deleteTarget.status === "approved" ? (
+                    <>
+                      {" "}
+                      The reserved{" "}
+                      <span className="font-medium text-foreground">
+                        {formatCurrency(deleteTarget.approxValue, deleteTarget.currency)}
+                      </span>{" "}
+                      will be released back to your available balance first.
+                    </>
+                  ) : null}{" "}
+                  This cannot be undone.
+                </>
+              ) : null}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setDeleteTarget(null)} disabled={deleting}>
+              Keep deal
+            </Button>
+            <Button variant="destructive" onClick={handleDelete} disabled={deleting}>
+              {deleting ? <Loader2 className="mr-1 h-4 w-4 animate-spin" /> : <Trash2 className="mr-1 h-4 w-4" />}
+              Delete permanently
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Suspend / freeze / resume confirmation */}
+      <Dialog open={holdTarget !== null} onOpenChange={(o) => !o && !holdWorking && setHoldTarget(null)}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              {holdTarget?.next === "frozen" ? (
+                <Lock className="h-4 w-4 text-sky-500" />
+              ) : holdTarget?.next === "suspended" ? (
+                <PauseCircle className="h-4 w-4 text-amber-500" />
+              ) : (
+                <PlayCircle className="h-4 w-4 text-primary" />
+              )}
+              {holdTarget?.next === "frozen"
+                ? "Freeze deal"
+                : holdTarget?.next === "suspended"
+                  ? "Suspend deal"
+                  : "Resume deal"}
+            </DialogTitle>
+            <DialogDescription className="text-pretty">
+              {holdTarget?.next === "frozen"
+                ? "Freezing locks all edits, revocation and deletion, and keeps any reserved funds blocked until you unfreeze it."
+                : holdTarget?.next === "suspended"
+                  ? "Suspending pauses the deal workflow and document uploads. You can resume it at any time."
+                  : "This reactivates the deal and lifts the current hold."}
+            </DialogDescription>
+          </DialogHeader>
+          {holdTarget?.next ? (
+            <div className="space-y-1.5">
+              <Label htmlFor="hold-note">Note (optional)</Label>
+              <Textarea
+                id="hold-note"
+                value={holdNote}
+                onChange={(e) => setHoldNote(e.target.value)}
+                placeholder="Reason for placing this deal on hold…"
+                rows={2}
+              />
+            </div>
+          ) : null}
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setHoldTarget(null)} disabled={holdWorking}>
+              Cancel
+            </Button>
+            <Button onClick={handleHold} disabled={holdWorking}>
+              {holdWorking ? <Loader2 className="mr-1 h-4 w-4 animate-spin" /> : null}
+              {holdTarget?.next === "frozen"
+                ? "Freeze deal"
+                : holdTarget?.next === "suspended"
+                  ? "Suspend deal"
+                  : "Resume deal"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Edit deal terms (direct edit for non-approved deals) */}
+      <Dialog open={editTarget !== null} onOpenChange={(o) => !o && !editing && setEditTarget(null)}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Pencil className="h-4 w-4 text-primary" />
+              Edit deal terms
+            </DialogTitle>
+            <DialogDescription className="text-pretty">
+              Update the commercial terms for{" "}
+              <span className="font-medium text-foreground">{editTarget?.id}</span>. The total value is recomputed
+              from unit price × quantity.
+            </DialogDescription>
+          </DialogHeader>
+          {editTarget ? (
+            <div className="space-y-4">
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div className="space-y-1.5">
+                  <Label htmlFor="edit-unit">
+                    Unit price ({editTarget.currency} /{" "}
+                    {parseQuantityString(editForm.quantity || editTarget.quantity)?.unit === "bbl" ? "BBL" : "MT"})
+                  </Label>
+                  <Input
+                    id="edit-unit"
+                    inputMode="decimal"
+                    value={editForm.unitPrice}
+                    onChange={(e) => setEditForm((p) => ({ ...p, unitPrice: e.target.value }))}
+                    placeholder="e.g. 92.51"
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="edit-qty">Quantity</Label>
+                  <Input
+                    id="edit-qty"
+                    value={editForm.quantity}
+                    onChange={(e) => setEditForm((p) => ({ ...p, quantity: e.target.value }))}
+                    placeholder="e.g. 500,000 BBL"
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="edit-buyer">Buyer</Label>
+                  <Input
+                    id="edit-buyer"
+                    value={editForm.buyerName}
+                    onChange={(e) => setEditForm((p) => ({ ...p, buyerName: e.target.value }))}
+                    placeholder="Buyer name"
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="edit-seller">Seller</Label>
+                  <Input
+                    id="edit-seller"
+                    value={editForm.sellerName}
+                    onChange={(e) => setEditForm((p) => ({ ...p, sellerName: e.target.value }))}
+                    placeholder="Seller name"
+                  />
+                </div>
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="edit-notes">Notes</Label>
+                <Textarea
+                  id="edit-notes"
+                  value={editForm.notes}
+                  onChange={(e) => setEditForm((p) => ({ ...p, notes: e.target.value }))}
+                  placeholder="Optional notes"
+                  rows={2}
+                />
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Leave the unit price blank to keep the total value as entered. Approved deals can&apos;t be edited
+                here — use Negotiate / Amend so reserved funds adjust with sign-off.
+              </p>
+            </div>
+          ) : null}
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setEditTarget(null)} disabled={editing}>
+              Cancel
+            </Button>
+            <Button onClick={handleSubmitEdit} disabled={editing}>
+              {editing ? <Loader2 className="mr-1 h-4 w-4 animate-spin" /> : <Pencil className="mr-1 h-4 w-4" />}
+              Save changes
             </Button>
           </DialogFooter>
         </DialogContent>

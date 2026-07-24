@@ -14,7 +14,6 @@ import {
   setMyCommodityDealHold,
   editMyCommodityDealTerms,
   deleteMyCommodityDeal,
-  type DealHoldState,
   type EditableDealTerms,
 } from "@/app/actions/approvals"
 
