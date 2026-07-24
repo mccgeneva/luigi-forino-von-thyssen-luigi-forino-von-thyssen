@@ -54,8 +54,19 @@ export type CreateLinkedAccountResult =
   | { ok: false; error: string }
 
 export type LinkedAccountsListResult =
-  | { ok: true; accounts: LinkedAccountView[] }
+  | { ok: true; isMaster: boolean; accounts: LinkedAccountView[] }
   | { ok: false; error: string }
+
+/**
+ * Whether the current session is itself a Joint (J) account and, if so, the
+ * Master whose environment it shares. Drives the read-only "shared access"
+ * banner on the joint holder's own profile.
+ */
+export interface LinkedContext {
+  isJoint: boolean
+  masterName?: string
+  masterEmail?: string
+}
 
 // --- Helpers ---------------------------------------------------------------
 
@@ -104,15 +115,33 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 export async function listMyLinkedAccounts(): Promise<LinkedAccountsListResult> {
   try {
     const session = await resolveCurrentSession()
-    if (!session) return { ok: true, accounts: [] }
+    if (!session) return { ok: true, isMaster: false, accounts: [] }
     // Only a Master owns linked accounts; a joint/sub/child never has children.
+    // `isMaster` lets the UI distinguish "master with none yet" (show the card)
+    // from "not a master" (hide it) — both otherwise return an empty list.
     if (effectiveRelationship(session.relationship) !== "master") {
-      return { ok: true, accounts: [] }
+      return { ok: true, isMaster: false, accounts: [] }
     }
     const rows = await listAccountsByMaster(session.id, "joint")
-    return { ok: true, accounts: rows.map(toView) }
+    return { ok: true, isMaster: true, accounts: rows.map(toView) }
   } catch (err) {
     return { ok: false, error: friendlyError(err) }
+  }
+}
+
+/** Joint-account context for the current session (see `LinkedContext`). */
+export async function getMyLinkedContext(): Promise<LinkedContext> {
+  try {
+    const session = await resolveCurrentSession()
+    if (!session) return { isJoint: false }
+    if (effectiveRelationship(session.relationship) !== "joint") return { isJoint: false }
+    return {
+      isJoint: true,
+      masterName: session.profile.masterName,
+      masterEmail: session.profile.masterEmail,
+    }
+  } catch {
+    return { isJoint: false }
   }
 }
 
