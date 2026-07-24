@@ -56,7 +56,9 @@ export async function getMyBeneficiaries(): Promise<BeneficiaryListResult> {
   try {
     const session = await resolveCurrentSession()
     if (!session) return { ok: true, beneficiaries: [] }
-    const rows = await listBeneficiariesForUser(session.id)
+    // Beneficiaries belong to the shared environment (a Joint account pays from
+    // and to the Master's saved beneficiaries). No-op for non-joint accounts.
+    const rows = await listBeneficiariesForUser(session.environmentOwnerId)
     return { ok: true, beneficiaries: rows }
   } catch (err) {
     return { ok: false, error: friendlyError(err) }
@@ -74,7 +76,7 @@ export async function syncMyBeneficiaries(
   try {
     const session = await resolveCurrentSession()
     if (!session) return { ok: false, error: "No active session." }
-    await replaceBeneficiariesForUser(session.id, items)
+    await replaceBeneficiariesForUser(session.environmentOwnerId, items)
     return { ok: true }
   } catch (err) {
     return { ok: false, error: friendlyError(err) }
@@ -97,7 +99,7 @@ export async function upsertMyBeneficiary(
   try {
     const session = await resolveCurrentSession()
     if (!session) return { ok: false, error: "Your session has expired. Please sign in again." }
-    const row = await upsertBeneficiary(session.id, id, data, status)
+    const row = await upsertBeneficiary(session.environmentOwnerId, id, data, status)
     return { ok: true, beneficiary: row }
   } catch (err) {
     return { ok: false, error: friendlyError(err) }

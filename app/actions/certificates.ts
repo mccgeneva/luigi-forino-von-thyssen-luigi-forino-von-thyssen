@@ -18,6 +18,9 @@ import {
 import { adminActionAuthorized } from "@/lib/admin-auth"
 import { logActivity } from "@/app/actions/log-activity"
 import { resolveCurrentSession, resolveAccountProfileById } from "@/lib/session-user"
+// Certificates are part of the shared ENVIRONMENT: a Joint (J) account operates
+// on its Master's certificates. `environmentOwnerId` equals the account's own
+// id for every non-joint account, so this is a no-op for Master/Sub/Child.
 
 async function requireAdmin(passcode: string): Promise<void> {
   if (!(await adminActionAuthorized(passcode))) {
@@ -58,7 +61,7 @@ export async function getMyCertificateRequests(): Promise<CertificateListResult>
   try {
     const session = await resolveCurrentSession()
     if (!session) return { ok: true, requests: [] }
-    const rows = await listCertificateRequestsForUser(session.id)
+    const rows = await listCertificateRequestsForUser(session.environmentOwnerId)
     return { ok: true, requests: rows.map((r) => r.request) }
   } catch (err) {
     return { ok: false, error: friendlyError(err) }
@@ -77,7 +80,7 @@ export async function syncMyCertificateRequests(
   try {
     const session = await resolveCurrentSession()
     if (!session) return { ok: false, error: "No active session." }
-    await replaceCertificateRequestsForUser(session.id, items)
+    await replaceCertificateRequestsForUser(session.environmentOwnerId, items)
     return { ok: true }
   } catch (err) {
     return { ok: false, error: friendlyError(err) }
@@ -95,13 +98,16 @@ export async function deleteMyCertificateRequest(id: string): Promise<Certificat
     const session = await resolveCurrentSession()
     if (!session) return { ok: false, error: "No active session." }
 
-    // Load first (scoped read) so we can record what was removed in the audit log.
+    // Load first (scoped read) so we can record what was removed in the audit
+    // log. Ownership is checked against the ENVIRONMENT owner so a Joint account
+    // may delete its Master's certificates (and vice-versa), but no unrelated
+    // account can.
     const row = await getCertificateRequest(id)
-    if (!row || row.userId !== session.id) {
+    if (!row || row.userId !== session.environmentOwnerId) {
       return { ok: false, error: "Certificate not found." }
     }
 
-    const removed = await deleteCertificateRequestForUser(session.id, id)
+    const removed = await deleteCertificateRequestForUser(session.environmentOwnerId, id)
     if (!removed) return { ok: false, error: "Certificate not found." }
 
     await logActivity({

@@ -297,6 +297,25 @@ export async function listApprovalsForUser(userId: string, kind?: ApprovalKind):
   return rows.map(rowToRequest)
 }
 
+/**
+ * All requests owned by ANY of the given client ids, newest first. Used for a
+ * shared environment (Master + its Joint accounts) so a Joint account sees the
+ * whole environment's deals/payments. Falls back to an empty list for no ids.
+ */
+export async function listApprovalsForUsers(userIds: string[], kind?: ApprovalKind): Promise<ApprovalRequest[]> {
+  const ids = userIds.filter(Boolean)
+  if (ids.length === 0) return []
+  if (ids.length === 1) return listApprovalsForUser(ids[0], kind)
+  await ensureTable()
+  const { rows } = kind
+    ? await query(
+        `SELECT * FROM approval_requests WHERE user_id = ANY($1) AND kind = $2 ORDER BY created_at DESC`,
+        [ids, kind],
+      )
+    : await query(`SELECT * FROM approval_requests WHERE user_id = ANY($1) ORDER BY created_at DESC`, [ids])
+  return rows.map(rowToRequest)
+}
+
 /** Cross-client list for the admin dashboard, newest first. */
 export async function listAllApprovals(opts?: {
   status?: ApprovalStatus
