@@ -1,15 +1,24 @@
 "use client"
 
 // Full-screen image viewer used across the admin dossier (login selfie, passport
-// / ID, KYC document images). Self-contained fixed overlay — no Dialog dependency
-// — so it renders identically on mobile and desktop: tap the backdrop, the X, or
-// press Escape to close; the image scales to fit the screen. A secondary action
-// opens the original file in a new tab.
+// / ID, KYC document images). Rendered through a portal on document.body so it
+// escapes any transformed / backdrop-blurred ancestor (which would otherwise
+// clip a position:fixed overlay and show only a black screen on mobile). Tap the
+// backdrop, the X, or press Escape to close; the image scales to fit the screen.
+// A secondary action opens the original file in a new tab.
 
-import { useEffect } from "react"
-import { X, ExternalLink } from "lucide-react"
+import { useEffect, useState } from "react"
+import { createPortal } from "react-dom"
+import { X, ExternalLink, ImageOff, Loader2 } from "lucide-react"
 
 export function ImageLightbox({ src, alt, onClose }: { src: string; alt: string; onClose: () => void }) {
+  const [mounted, setMounted] = useState(false)
+  const [status, setStatus] = useState<"loading" | "loaded" | "error">("loading")
+
+  useEffect(() => {
+    setMounted(true)
+  }, [])
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose()
@@ -24,15 +33,17 @@ export function ImageLightbox({ src, alt, onClose }: { src: string; alt: string;
     }
   }, [onClose])
 
-  return (
+  if (!mounted) return null
+
+  return createPortal(
     <div
       role="dialog"
       aria-modal="true"
       aria-label={alt}
       onClick={onClose}
-      className="fixed inset-0 z-[100] flex items-center justify-center bg-background/95 p-4 backdrop-blur-sm"
+      className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/90 p-4"
     >
-      <div className="absolute right-4 top-4 flex gap-2">
+      <div className="absolute right-4 top-4 z-10 flex gap-2">
         <a
           href={src}
           target="_blank"
@@ -54,13 +65,38 @@ export function ImageLightbox({ src, alt, onClose }: { src: string; alt: string;
           <X className="h-5 w-5" />
         </button>
       </div>
+
+      {status === "loading" ? (
+        <Loader2 className="absolute h-8 w-8 animate-spin text-muted-foreground" aria-hidden="true" />
+      ) : null}
+
+      {status === "error" ? (
+        <div className="flex flex-col items-center gap-3 text-center text-muted-foreground" onClick={(e) => e.stopPropagation()}>
+          <ImageOff className="h-10 w-10" aria-hidden="true" />
+          <p className="text-sm">Could not load this image.</p>
+          <a
+            href={src}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-sm font-medium text-primary underline underline-offset-4"
+          >
+            Open the original in a new tab
+          </a>
+        </div>
+      ) : null}
+
       {/* eslint-disable-next-line @next/next/no-img-element */}
       <img
         src={src || "/placeholder.svg"}
         alt={alt}
         onClick={(e) => e.stopPropagation()}
-        className="max-h-[90vh] max-w-[95vw] rounded-lg object-contain shadow-2xl"
+        onLoad={() => setStatus("loaded")}
+        onError={() => setStatus("error")}
+        className={`max-h-[90vh] max-w-[95vw] rounded-lg object-contain shadow-2xl ${
+          status === "loaded" ? "block" : "hidden"
+        }`}
       />
-    </div>
+    </div>,
+    document.body,
   )
 }
