@@ -31,6 +31,7 @@ import {
   UPLOADED_KYC_DOC_ORDER,
   blobFileUrl,
 } from "@/lib/kyc-types"
+import { ImageLightbox } from "@/components/image-lightbox"
 
 function fmtSize(bytes: number): string {
   if (!bytes) return "—"
@@ -57,6 +58,8 @@ export function KycDocumentManager({ userId, account }: { userId: string; accoun
   const [uploading, setUploading] = useState(false)
   const [progress, setProgress] = useState("")
   const [deletingId, setDeletingId] = useState<string | null>(null)
+  // Image document currently shown full-screen, or null.
+  const [lightbox, setLightbox] = useState<{ src: string; alt: string } | null>(null)
   const fileRef = useRef<HTMLInputElement>(null)
 
   const load = useCallback(async () => {
@@ -209,20 +212,28 @@ export function KycDocumentManager({ userId, account }: { userId: string; accoun
                 key={doc.id}
                 className="flex items-center gap-3 rounded-lg border border-border bg-card p-2.5"
               >
-                <a
-                  href={url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="flex h-14 w-14 shrink-0 items-center justify-center overflow-hidden rounded-md border border-border bg-secondary"
-                  title="Open document"
-                >
-                  {doc.isImage ? (
-                    // eslint-disable-next-line @next/next/no-img-element
+                {doc.isImage ? (
+                  <button
+                    type="button"
+                    onClick={() => setLightbox({ src: url, alt: doc.label })}
+                    className="flex h-14 w-14 shrink-0 items-center justify-center overflow-hidden rounded-md border border-border bg-secondary transition-opacity hover:opacity-90 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+                    title="View full screen"
+                    aria-label={`View ${doc.label} full screen`}
+                  >
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
                     <img src={url || "/placeholder.svg"} alt={doc.label} className="h-full w-full object-cover" />
-                  ) : (
+                  </button>
+                ) : (
+                  <a
+                    href={url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex h-14 w-14 shrink-0 items-center justify-center overflow-hidden rounded-md border border-border bg-secondary"
+                    title="Open document"
+                  >
                     <FileText className="h-6 w-6 text-muted-foreground" />
-                  )}
-                </a>
+                  </a>
+                )}
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-1.5">
                     {doc.isImage ? (
@@ -266,6 +277,8 @@ export function KycDocumentManager({ userId, account }: { userId: string; accoun
           })}
         </ul>
       )}
+
+      {lightbox ? <ImageLightbox src={lightbox.src} alt={lightbox.alt} onClose={() => setLightbox(null)} /> : null}
     </div>
   )
 }

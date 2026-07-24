@@ -48,6 +48,7 @@ import { buildDossierDoc } from "@/lib/audit-dossier-pdf"
 import type { DossierAnalysis } from "@/lib/kyc-types"
 import { PdfPreviewModal } from "@/components/pdf-preview-modal"
 import { KycDocumentManager } from "@/components/admin/kyc-document-manager"
+import { ImageLightbox } from "@/components/image-lightbox"
 
 function fmtWhen(iso: string | null): string {
   if (!iso) return "—"
@@ -102,6 +103,8 @@ export function SecurityAudit() {
   const [buildingDossier, setBuildingDossier] = useState(false)
   const [dossierPhase, setDossierPhase] = useState<"idle" | "analyzing" | "building">("idle")
   const [reverifyState, setReverifyState] = useState<"idle" | "working" | "done">("idle")
+  // Image currently shown full-screen (login selfie or passport), or null.
+  const [lightbox, setLightbox] = useState<{ src: string; alt: string } | null>(null)
 
   const loadOverview = useCallback(async () => {
     setLoadingOverview(true)
@@ -465,30 +468,40 @@ export function SecurityAudit() {
                   <div className="flex flex-col gap-5 sm:flex-row">
                     <div className="flex shrink-0 gap-3">
                       <div className="flex flex-col items-center gap-2">
-                        <span className="flex h-28 w-28 items-center justify-center overflow-hidden rounded-xl border border-border bg-secondary">
-                          {report.selfie.url ? (
-                            // eslint-disable-next-line @next/next/no-img-element
+                        {report.selfie.url ? (
+                          <button
+                            type="button"
+                            onClick={() => setLightbox({ src: report.selfie.url as string, alt: "Login selfie" })}
+                            className="flex h-28 w-28 items-center justify-center overflow-hidden rounded-xl border border-border bg-secondary transition-opacity hover:opacity-90 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+                            title="View full screen"
+                            aria-label="View login selfie full screen"
+                          >
+                            {/* eslint-disable-next-line @next/next/no-img-element */}
                             <img src={report.selfie.url || "/placeholder.svg"} alt="Login selfie" className="h-full w-full object-cover" />
-                          ) : (
+                          </button>
+                        ) : (
+                          <span className="flex h-28 w-28 items-center justify-center overflow-hidden rounded-xl border border-border bg-secondary">
                             <Camera className="h-8 w-8 text-muted-foreground" />
-                          )}
-                        </span>
+                          </span>
+                        )}
                         <span className="text-center text-xs text-muted-foreground">
                           {report.selfie.url ? `Login selfie · ${fmtWhen(report.selfie.at)}` : "No selfie yet"}
                         </span>
                       </div>
                       <div className="flex flex-col items-center gap-2">
                         {report.passportImageUrl ? (
-                          <a
-                            href={report.passportImageUrl}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="flex h-28 w-28 items-center justify-center overflow-hidden rounded-xl border border-border bg-secondary"
-                            title="Open full-size passport image"
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setLightbox({ src: report.passportImageUrl as string, alt: "Passport / ID document" })
+                            }
+                            className="flex h-28 w-28 items-center justify-center overflow-hidden rounded-xl border border-border bg-secondary transition-opacity hover:opacity-90 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+                            title="View full screen"
+                            aria-label="View passport / ID document full screen"
                           >
                             {/* eslint-disable-next-line @next/next/no-img-element */}
                             <img src={report.passportImageUrl || "/placeholder.svg"} alt="Passport document" className="h-full w-full object-cover" />
-                          </a>
+                          </button>
                         ) : (
                           <span className="flex h-28 w-28 items-center justify-center overflow-hidden rounded-xl border border-border bg-secondary">
                             <FileText className="h-8 w-8 text-muted-foreground" />
@@ -762,6 +775,8 @@ export function SecurityAudit() {
           onClose={() => setDossierDoc(null)}
         />
       ) : null}
+
+      {lightbox ? <ImageLightbox src={lightbox.src} alt={lightbox.alt} onClose={() => setLightbox(null)} /> : null}
     </div>
   )
 }
