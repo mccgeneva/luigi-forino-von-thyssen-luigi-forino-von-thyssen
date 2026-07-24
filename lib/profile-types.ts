@@ -46,11 +46,17 @@ export type UserStatus = "active" | "suspended" | "inactive"
  *               the Master for consent (in addition to admin approval).
  *  - "child"  — a Child-account (C): a fully independent account linked to a
  *               Master for referral attribution / network visibility only.
+ *  - "joint"  — a Linked / Joint account (J): independent login and its own
+ *               Face ID, but operates fully inside the Master's environment —
+ *               shared balance, instruments, transactions, deals, documents and
+ *               KYC — with unrestricted rights (no Master-consent gate). Used
+ *               for a spouse / partner / co-director who needs full operational
+ *               access to the same account.
  *
  * Defined in this client-safe module so both the admin UI and the server may
  * import it without pulling in any server-only dependency.
  */
-export type AccountRelationship = "master" | "sub" | "child"
+export type AccountRelationship = "master" | "sub" | "child" | "joint"
 
 /** A full UserProfile with all icon components stripped — safe to send from a
  * Server Action to the client. */

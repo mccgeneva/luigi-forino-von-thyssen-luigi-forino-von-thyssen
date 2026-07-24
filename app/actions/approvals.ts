@@ -1,7 +1,12 @@
 "use server"
 
 import { adminActionAuthorized } from "@/lib/admin-auth"
-import { resolveCurrentSession, resolveAccountProfileById, resolveDataOwnerIdFor } from "@/lib/session-user"
+import {
+  resolveCurrentSession,
+  resolveAccountProfileById,
+  resolveDataOwnerIdFor,
+  resolveEnvironmentMemberIds,
+} from "@/lib/session-user"
 import { logActivity } from "@/app/actions/log-activity"
 import {
   upsertLedgerEntry,
@@ -17,6 +22,7 @@ import { insertNotification } from "@/lib/notifications-db"
 import {
   insertApproval,
   listApprovalsForUser,
+  listApprovalsForUsers,
   listAllApprovals,
   listApprovalsForMaster,
   countPendingByKind,
@@ -49,7 +55,7 @@ import {
   backfillRegisteredAccountDepositsForUser,
   reverseRegisteredAccountDepositForApproval,
 } from "@/app/actions/reconciliation"
-import { MASTER_CONSENT_KINDS } from "@/lib/account-hierarchy"
+import { MASTER_CONSENT_KINDS, requiresMasterConsent } from "@/lib/account-hierarchy"
 
 // --- Auth helpers -----------------------------------------------------------
 
@@ -87,9 +93,11 @@ export async function submitApproval(input: SubmitApprovalInput): Promise<Submit
 
   // A Sub-account's outgoing payments must clear a second gate: their Master's
   // consent (in addition to administrator approval). Detected here from the
-  // authoritative session, so no client can opt out of the Master gate.
+  // authoritative session, so no client can opt out of the Master gate. Joint
+  // (J) accounts are deliberately NOT gated — they act with the Master's full
+  // authority — which `requiresMasterConsent` encodes (sub only).
   const requiresMasterApproval =
-    session.relationship === "sub" && !!session.masterId && MASTER_CONSENT_KINDS.has(input.kind)
+    requiresMasterConsent(session.relationship) && !!session.masterId && MASTER_CONSENT_KINDS.has(input.kind)
 
   try {
     const request = await insertApproval({
@@ -144,7 +152,11 @@ export async function listMyApprovals(kind?: ApprovalKind): Promise<ApprovalRequ
   const session = await resolveCurrentSession()
   if (!session) return []
   try {
-    return await listApprovalsForUser(session.id, kind)
+    // A Joint account shares its Master's ENTIRE environment, so it sees the
+    // whole environment's requests. For every other account this resolves to
+    // just its own id, so the behaviour is unchanged.
+    const memberIds = await resolveEnvironmentMemberIds(session.id)
+    return await listApprovalsForUsers(memberIds, kind)
   } catch (err) {
     console.log("[v0] listMyApprovals failed:", (err as Error).message)
     return []

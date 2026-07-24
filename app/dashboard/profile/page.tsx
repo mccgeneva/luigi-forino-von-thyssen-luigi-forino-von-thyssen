@@ -5,6 +5,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/com
 import { Badge } from "@/components/ui/badge"
 import { ProfileAvatarEditor } from "@/components/dashboard/profile-avatar-editor"
 import { FaceIdManager } from "@/components/dashboard/face-id-manager"
+import { LinkedAccountsCard, SharedEnvironmentBanner } from "@/components/dashboard/linked-accounts-card"
 import { Separator } from "@/components/ui/separator"
 import { useCurrentUser } from "@/lib/use-current-user"
 import { KYC_DOCUMENT_LABELS, blobFileUrl } from "@/lib/kyc-types"
@@ -62,6 +63,9 @@ export default function ProfilePage() {
         </CardContent>
       </Card>
 
+      {/* Shown only to Joint (J) holders: they share their Master's environment. */}
+      <SharedEnvironmentBanner />
+
       <div className="grid gap-6 md:grid-cols-2">
         {/* Principal */}
         <Card>
@@ -108,6 +112,9 @@ export default function ProfilePage() {
           </div>
         </CardContent>
       </Card>
+
+      {/* Linked / Joint accounts — shown only to Master accounts. */}
+      <LinkedAccountsCard />
 
       {/* Security — Face ID */}
       <FaceIdManager />

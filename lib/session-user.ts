@@ -22,6 +22,7 @@ import { getUserById, type UserProfile } from "@/lib/users"
 import {
   getDynamicUserById,
   getDynamicUserBySessionToken,
+  listAccountsByMaster,
   type DynamicUserRecord,
   type UserStatus,
 } from "@/lib/admin-users-db"
@@ -51,6 +52,16 @@ export interface ResolvedSession {
    */
   dataOwnerId: string
   /**
+   * The id whose otherwise per-account domains (certificates, beneficiaries,
+   * cards, SKR, reserved deals — everything NOT covered by `dataOwnerId`) this
+   * session operates on. For a Joint (J) account this is the Master's id, so a
+   * joint account operates inside the Master's ENTIRE environment. For everyone
+   * else — including Sub-accounts, whose non-financial data stays isolated — it
+   * equals `id`. Keeping this separate from `dataOwnerId` means widening the
+   * shared environment for joint accounts never weakens Sub/Child isolation.
+   */
+  environmentOwnerId: string
+  /**
    * Set ONLY when an administrator is "signed in as" this account for
    * maintenance. Records the original admin so the UI can show a "Return to
    * admin" banner and the audit trail attributes actions correctly. Absent for
@@ -62,7 +73,12 @@ export interface ResolvedSession {
 function dynamicToResolved(rec: DynamicUserRecord): ResolvedSession {
   const relationship = effectiveRelationship(rec.profile.relationship)
   const masterId = rec.profile.masterId
-  const dataOwnerId = relationship === "sub" && masterId ? masterId : rec.id
+  // Sub AND Joint share the Master's financial pool; only Joint additionally
+  // shares the non-financial environment. Both fall back to own id if a
+  // linked account somehow has no masterId, so data can never leak sideways.
+  const linkedToMaster = (relationship === "sub" || relationship === "joint") && !!masterId
+  const dataOwnerId = linkedToMaster ? (masterId as string) : rec.id
+  const environmentOwnerId = relationship === "joint" && masterId ? masterId : rec.id
   return {
     id: rec.id,
     profile: hydrateProfile(rec.profile),
@@ -71,6 +87,7 @@ function dynamicToResolved(rec: DynamicUserRecord): ResolvedSession {
     relationship,
     masterId,
     dataOwnerId,
+    environmentOwnerId,
   }
 }
 
@@ -86,13 +103,65 @@ export async function resolveDataOwnerIdFor(userId: string | undefined | null): 
   if (!userId) return ""
   try {
     const rec = await getDynamicUserById(userId)
-    if (rec && effectiveRelationship(rec.profile.relationship) === "sub" && rec.profile.masterId) {
+    const rel = rec ? effectiveRelationship(rec.profile.relationship) : "master"
+    // Sub AND Joint accounts operate on the Master's shared financial pool.
+    if (rec && (rel === "sub" || rel === "joint") && rec.profile.masterId) {
       return rec.profile.masterId
     }
   } catch {
     // DB unavailable — operate on the account's own id rather than guessing.
   }
   return userId
+}
+
+/**
+ * Resolve the ENVIRONMENT owner id for any account id — the owner of the
+ * otherwise per-account domains (certificates, beneficiaries, cards, SKR,
+ * reserved deals). Only a Joint (J) account resolves to its Master here; every
+ * other account (including Sub) owns its own environment. Falls back to the
+ * passed id on any lookup failure.
+ */
+export async function resolveEnvironmentOwnerIdFor(userId: string | undefined | null): Promise<string> {
+  if (!userId) return ""
+  try {
+    const rec = await getDynamicUserById(userId)
+    if (rec && effectiveRelationship(rec.profile.relationship) === "joint" && rec.profile.masterId) {
+      return rec.profile.masterId
+    }
+  } catch {
+    // DB unavailable — operate on the account's own id rather than guessing.
+  }
+  return userId
+}
+
+/**
+ * Resolve ALL account ids that share an environment with `userId` — i.e. the
+ * Master plus every Joint (J) account linked under it. Used by "list my …"
+ * reads (approvals, commodity deals, reserved cargo, payments) so a Joint
+ * account sees the Master's full history and vice-versa, while writes/audit
+ * stay attributed to the individual `session.id`.
+ *
+ * For any non-joint, unlinked account this returns just `[userId]`, so it is a
+ * safe drop-in for the previous single-id reads. Always includes `userId` and
+ * de-duplicates; falls back to `[userId]` on any lookup failure.
+ */
+export async function resolveEnvironmentMemberIds(userId: string | undefined | null): Promise<string[]> {
+  if (!userId) return []
+  const ids = new Set<string>([userId])
+  try {
+    const rec = await getDynamicUserById(userId)
+    const rel = rec ? effectiveRelationship(rec.profile.relationship) : "master"
+    // The environment's Master id: the account itself if it's a master, else
+    // its linked masterId (only meaningful for a joint account).
+    const masterId = rel === "joint" && rec?.profile.masterId ? rec.profile.masterId : userId
+    ids.add(masterId)
+    // Add every Joint account linked under that master (siblings + self).
+    const joints = await listAccountsByMaster(masterId, "joint")
+    for (const j of joints) ids.add(j.id)
+  } catch {
+    // DB unavailable — operate on just the account's own id.
+  }
+  return [...ids]
 }
 
 /**

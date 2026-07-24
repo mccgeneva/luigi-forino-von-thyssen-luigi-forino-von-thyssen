@@ -18,7 +18,7 @@
 // ---------------------------------------------------------------------------
 
 import { adminActionAuthorized } from "@/lib/admin-auth"
-import { resolveCurrentSession } from "@/lib/session-user"
+import { resolveCurrentSession, resolveEnvironmentMemberIds } from "@/lib/session-user"
 import { logActivity } from "@/app/actions/log-activity"
 import { listDynamicUsers } from "@/lib/admin-users-db"
 import { insertMessage, recordAudit } from "@/lib/bankeka-db"
@@ -34,7 +34,7 @@ import {
   saveDeal,
   appendInterest,
   claimDeal,
-  listReservedDealsForUser,
+  listReservedDealsForUsers,
 } from "@/lib/spot-deals-db"
 import {
   computeTotalValue,
@@ -528,7 +528,10 @@ export async function listMyReservedSpotDeals(): Promise<SpotDeal[]> {
   try {
     const session = await resolveCurrentSession()
     if (!session) return []
-    return await listReservedDealsForUser(session.id)
+    // A Joint account shares the Master's reserved cargo (and vice-versa); for
+    // every other account this resolves to just its own id (unchanged).
+    const memberIds = await resolveEnvironmentMemberIds(session.id)
+    return await listReservedDealsForUsers(memberIds)
   } catch (err) {
     console.log("[v0] listMyReservedSpotDeals failed:", (err as Error).message)
     return []

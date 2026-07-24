@@ -100,6 +100,29 @@ export async function listDynamicUsers(): Promise<DynamicUserRecord[]> {
   return rows.map(rowToRecord)
 }
 
+/**
+ * All accounts linked under a given Master id, optionally filtered to a single
+ * relationship (e.g. "joint"). Matches on the profile's `masterId` in JSONB.
+ * Used to resolve the members of a shared environment (Master + its Joint
+ * accounts) so a Joint account can read the Master's full data set.
+ */
+export async function listAccountsByMaster(
+  masterId: string,
+  relationship?: string,
+): Promise<DynamicUserRecord[]> {
+  if (!masterId) return []
+  await ensureTable()
+  const params: unknown[] = [JSON.stringify({ masterId })]
+  let sql = `SELECT * FROM admin_users WHERE profile @> $1::jsonb`
+  if (relationship) {
+    params.push(JSON.stringify({ relationship }))
+    sql += ` AND profile @> $2::jsonb`
+  }
+  sql += ` ORDER BY created_at DESC`
+  const { rows } = await query(sql, params)
+  return rows.map(rowToRecord)
+}
+
 export async function getDynamicUserById(id: string): Promise<DynamicUserRecord | undefined> {
   if (!id) return undefined
   await ensureTable()

@@ -312,13 +312,28 @@ export async function claimDeal(id: string, interest: SpotDealInterest): Promise
  * them. Scoped by userId via JSONB containment; newest reservation first.
  */
 export async function listReservedDealsForUser(userId: string): Promise<SpotDeal[]> {
+  return listReservedDealsForUsers([userId])
+}
+
+/**
+ * Reserved cargo for ANY of the given client ids — used for a shared
+ * environment (Master + its Joint accounts) so a Joint account sees cargo the
+ * Master reserved and vice-versa. A deal belongs to an id if its interests
+ * contain an `accepted` action by that id. De-duplicated; newest first.
+ */
+export async function listReservedDealsForUsers(userIds: string[]): Promise<SpotDeal[]> {
+  const ids = userIds.filter(Boolean)
+  if (ids.length === 0) return []
   await ensureTables()
+  // `@>` containment can't express "any of N ids", so OR one clause per id.
+  const clauses = ids.map((_, i) => `payload->'interests' @> $${i + 1}::jsonb`).join(" OR ")
+  const params = ids.map((id) => JSON.stringify([{ userId: id, action: "accepted" }]))
   const { rows } = await query(
     `SELECT * FROM spot_deals
       WHERE status = 'engaged'
-        AND payload->'interests' @> $1::jsonb
+        AND (${clauses})
       ORDER BY created_at DESC`,
-    [JSON.stringify([{ userId, action: "accepted" }])],
+    params,
   )
   return rows.map(rowToDeal)
 }
