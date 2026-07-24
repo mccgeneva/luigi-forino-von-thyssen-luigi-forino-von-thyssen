@@ -47,6 +47,11 @@ import {
   Share2,
   Search,
   Eye,
+  Trash2,
+  PauseCircle,
+  PlayCircle,
+  Lock,
+  LockOpen,
 } from "lucide-react"
 import { ADMIN_PASSCODE } from "@/lib/admin-config"
 import { listSelectableClients, type SelectableClient } from "@/app/actions/admin-users"
@@ -57,6 +62,9 @@ import {
   adminMarkCommodityDelivered,
   adminRevokeCommodityDeal,
   adminShareCommodityDeal,
+  adminSetCommodityDealHold,
+  adminDeleteCommodityDeal,
+  type DealHoldState,
 } from "@/app/actions/approvals"
 import {
   getClientFinancialSnapshotAdmin,
@@ -209,6 +217,10 @@ export function PendingApprovals({ initialKind }: { initialKind?: ApprovalKind }
   const [shareSelected, setShareSelected] = useState<Set<string>>(new Set())
   const [shareSearch, setShareSearch] = useState("")
 
+  // Delete-deal dialog state (commodity). Permanently removes the deal and
+  // releases any reserved funds back to the owner's available balance.
+  const [deleteTarget, setDeleteTarget] = useState<{ id: string; label: string } | null>(null)
+
   // Client financial-snapshot dialog (due-diligence before approving).
   const [clientView, setClientView] = useState<{
     open: boolean
@@ -343,6 +355,39 @@ export function PendingApprovals({ initialKind }: { initialKind?: ApprovalKind }
     toast.success("Deal revoked. The reserved funds have been released back to the client's balance.")
     setRevokeTarget(null)
     setRevokeReason("")
+    mutate()
+  }
+
+  // Suspend / freeze / resume any client's commodity deal. `hold=null` resumes.
+  const setHold = async (id: string, hold: DealHoldState | null) => {
+    setActing(true)
+    const res = await adminSetCommodityDealHold(ADMIN_PASSCODE, id, hold)
+    setActing(false)
+    if (!res.ok) {
+      toast.error(res.error)
+      return
+    }
+    toast.success(
+      hold === "frozen"
+        ? "Deal frozen. It is locked from all changes until unfrozen."
+        : hold === "suspended"
+          ? "Deal suspended. Its workflow is paused until resumed."
+          : "Hold lifted. The deal is active again.",
+    )
+    mutate()
+  }
+
+  const confirmDelete = async () => {
+    if (!deleteTarget) return
+    setActing(true)
+    const res = await adminDeleteCommodityDeal(ADMIN_PASSCODE, deleteTarget.id)
+    setActing(false)
+    if (!res.ok) {
+      toast.error(res.error)
+      return
+    }
+    toast.success("Deal deleted. Any reserved funds have been released back to the client's balance.")
+    setDeleteTarget(null)
     mutate()
   }
 
@@ -581,6 +626,11 @@ export function PendingApprovals({ initialKind }: { initialKind?: ApprovalKind }
               const isSharedCopy = (req.payload as { sharedReadOnly?: boolean } | undefined)?.sharedReadOnly === true
               const canMarkDelivered =
                 req.kind === "commodity" && req.status === "approved" && !isDelivered && !isSharedCopy
+              // Active suspend/freeze hold on this deal, if any.
+              const held = (req.payload?.record as { hold?: { state?: DealHoldState } } | undefined)?.hold?.state
+              // The admin deal-tools row applies to any real (non-shared, non-delivered)
+              // commodity deal, regardless of approval status.
+              const canManageDeal = req.kind === "commodity" && !isSharedCopy && !isDelivered
               return (
                 <li
                   key={req.id}
@@ -610,6 +660,15 @@ export function PendingApprovals({ initialKind }: { initialKind?: ApprovalKind }
                           >
                             <PackageCheck className="mr-1 h-3 w-3" />
                             Delivered
+                          </Badge>
+                        )}
+                        {held && (
+                          <Badge
+                            variant="outline"
+                            className="border-amber-500/30 bg-amber-500/10 text-amber-600 text-[10px] capitalize"
+                          >
+                            {held === "frozen" ? <Lock className="mr-1 h-3 w-3" /> : <PauseCircle className="mr-1 h-3 w-3" />}
+                            {held}
                           </Badge>
                         )}
                         <span className="text-sm font-semibold text-foreground">{formatAmount(req)}</span>
@@ -706,12 +765,109 @@ export function PendingApprovals({ initialKind }: { initialKind?: ApprovalKind }
                       </Badge>
                     </div>
                   )}
+
+                  {/* Admin deal tools: suspend / freeze / resume / delete — any deal state. */}
+                  {canManageDeal && (
+                    <div className="flex shrink-0 flex-wrap items-center justify-end gap-1.5 border-t border-border pt-2 sm:border-t-0 sm:pt-0">
+                      {held === "suspended" ? (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="h-8 gap-1"
+                          disabled={acting}
+                          onClick={() => setHold(req.id, null)}
+                          title="Resume this suspended deal."
+                        >
+                          <PlayCircle className="h-3.5 w-3.5" /> Resume
+                        </Button>
+                      ) : held !== "frozen" ? (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="h-8 gap-1"
+                          disabled={acting}
+                          onClick={() => setHold(req.id, "suspended")}
+                          title="Suspend this deal — pauses its workflow until resumed."
+                        >
+                          <PauseCircle className="h-3.5 w-3.5" /> Suspend
+                        </Button>
+                      ) : null}
+                      {held === "frozen" ? (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="h-8 gap-1"
+                          disabled={acting}
+                          onClick={() => setHold(req.id, null)}
+                          title="Unfreeze this deal."
+                        >
+                          <LockOpen className="h-3.5 w-3.5" /> Unfreeze
+                        </Button>
+                      ) : held !== "suspended" ? (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="h-8 gap-1"
+                          disabled={acting}
+                          onClick={() => setHold(req.id, "frozen")}
+                          title="Freeze this deal — locks all changes and keeps reserved funds blocked."
+                        >
+                          <Lock className="h-3.5 w-3.5" /> Freeze
+                        </Button>
+                      ) : null}
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-8 gap-1 text-destructive"
+                        disabled={acting || held === "frozen"}
+                        onClick={() => setDeleteTarget({ id: req.id, label: req.title })}
+                        title={
+                          held === "frozen"
+                            ? "Unfreeze the deal before deleting."
+                            : "Permanently delete this deal and release any reserved funds."
+                        }
+                      >
+                        <Trash2 className="h-3.5 w-3.5" /> Delete
+                      </Button>
+                    </div>
+                  )}
                 </li>
               )
             })}
           </ul>
         )}
       </CardContent>
+
+      {/* Delete commodity deal dialog */}
+      <Dialog open={deleteTarget !== null} onOpenChange={(o) => !o && !acting && setDeleteTarget(null)}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Trash2 className="h-4 w-4 text-destructive" />
+              Delete deal
+            </DialogTitle>
+            <DialogDescription className="text-pretty">
+              {deleteTarget ? (
+                <>
+                  This permanently deletes{" "}
+                  <span className="font-medium text-foreground">{deleteTarget.label}</span> and releases any
+                  reserved funds back to the client&apos;s available balance. The client will be notified. This
+                  cannot be undone.
+                </>
+              ) : null}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setDeleteTarget(null)} disabled={acting}>
+              Cancel
+            </Button>
+            <Button variant="destructive" onClick={confirmDelete} disabled={acting}>
+              {acting ? <Loader2 className="mr-1 h-4 w-4 animate-spin" /> : <Trash2 className="mr-1 h-4 w-4" />}
+              Delete &amp; release funds
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Reject reason dialog */}
       <Dialog open={rejectTarget !== null} onOpenChange={(o) => !o && setRejectTarget(null)}>

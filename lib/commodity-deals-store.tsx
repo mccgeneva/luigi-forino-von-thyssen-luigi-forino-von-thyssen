@@ -11,6 +11,10 @@ import {
   updateMyApprovalRecord,
   requestDealAmendment,
   addDealNegotiationNote,
+  setMyCommodityDealHold,
+  editMyCommodityDealTerms,
+  deleteMyCommodityDeal,
+  type EditableDealTerms,
 } from "@/app/actions/approvals"
 
 export type DealStatus = "pending" | "approved" | "rejected" | "cancelled"
@@ -119,6 +123,19 @@ export interface DealNegotiationNote {
   createdAt: string // ISO timestamp
 }
 
+// A reversible pause (suspend) or lock (freeze) placed on a deal by either the
+// client or the administrator. Suspend halts the workflow (stage advances and
+// document uploads); freeze additionally locks edits, revocation and deletion,
+// keeping any reserved funds blocked until it is lifted.
+export type DealHoldState = "suspended" | "frozen"
+export interface DealHold {
+  state: DealHoldState
+  by: "client" | "admin"
+  byName?: string
+  note?: string
+  at: string // ISO timestamp
+}
+
 export type AmendmentStatus = "pending" | "approved" | "rejected"
 
 // A proposed (or historical) change to a deal's commercial terms. Lives on the
@@ -204,6 +221,9 @@ export interface CommodityDeal {
   pendingAmendment?: DealAmendment
   /** Past amendments (approved/rejected) for the audit trail. */
   amendmentHistory?: DealAmendment[]
+
+  /** Active suspend/freeze hold placed by the client or admin, if any. */
+  hold?: DealHold | null
 
   // --- Admin-shared (read-only) deals -------------------------------------
   /** True when this deal is a read-only copy an admin shared for visibility. */
@@ -329,6 +349,30 @@ interface CommodityDealsContextValue {
     message: string,
     counterpartyPosition?: string,
   ) => Promise<{ ok: boolean; error?: string }>
+  /**
+   * Client: suspend (pause) / freeze (lock) / resume one of their own deals.
+   * Pass `null` to lift an existing hold. Refreshes so the badge and disabled
+   * states update immediately.
+   */
+  setDealHold: (
+    dealId: string,
+    hold: DealHoldState | null,
+    note?: string,
+  ) => Promise<{ ok: boolean; error?: string }>
+  /**
+   * Client: directly edit the commercial terms of one of their own
+   * NON-approved deals (pending / rejected / cancelled). Approved deals hold
+   * reserved funds and must instead go through `requestAmendment`.
+   */
+  editDealTerms: (
+    dealId: string,
+    patch: EditableDealTerms,
+  ) => Promise<{ ok: boolean; error?: string }>
+  /**
+   * Client: permanently delete one of their own deals, releasing any reserved
+   * funds. Removes it from the local list and refreshes the ledger on success.
+   */
+  deleteDeal: (dealId: string) => Promise<{ ok: boolean; error?: string }>
   hydrated: boolean
 }
 
@@ -419,6 +463,8 @@ export function CommodityDealsProvider({ children }: { children: React.ReactNode
   }
 
   const addDocument: CommodityDealsContextValue["addDocument"] = (dealId, doc) => {
+    // Guard: a suspended/frozen deal cannot take document uploads.
+    if (deals.find((d) => d.id === dealId)?.hold) return null
     let updated: CommodityDeal | null = null
     const { module, docType, swiftRef, ...versionFields } = doc
     const newDoc: DealDocument = {
@@ -448,6 +494,8 @@ export function CommodityDealsProvider({ children }: { children: React.ReactNode
     docId,
     version,
   ) => {
+    // Guard: a suspended/frozen deal cannot take new document versions.
+    if (deals.find((d) => d.id === dealId)?.hold) return null
     let updated: CommodityDeal | null = null
     setDeals((prev) =>
       prev.map((d) => {
@@ -478,6 +526,8 @@ export function CommodityDealsProvider({ children }: { children: React.ReactNode
   const setStage: CommodityDealsContextValue["setStage"] = (dealId, stage) => {
     // Guard: clients cannot self-advance to execution.
     if (stage === "execution") return null
+    // Guard: a suspended/frozen deal's workflow is paused (server enforces too).
+    if (deals.find((d) => d.id === dealId)?.hold) return null
     let updated: CommodityDeal | null = null
     setDeals((prev) =>
       prev.map((d) => {
@@ -635,6 +685,39 @@ export function CommodityDealsProvider({ children }: { children: React.ReactNode
     return { ok: true }
   }
 
+  const setDealHold: CommodityDealsContextValue["setDealHold"] = async (dealId, hold, note) => {
+    const target = deals.find((d) => d.id === dealId)
+    if (!target?.approvalId) return { ok: false, error: "This deal cannot be updated yet. Please try again shortly." }
+    if (target.readOnly || target.shared) return { ok: false, error: "This deal is read-only." }
+    const res = await setMyCommodityDealHold(target.approvalId, hold, note)
+    if (!res.ok) return res
+    await refresh()
+    return { ok: true }
+  }
+
+  const editDealTerms: CommodityDealsContextValue["editDealTerms"] = async (dealId, patch) => {
+    const target = deals.find((d) => d.id === dealId)
+    if (!target?.approvalId) return { ok: false, error: "This deal cannot be edited yet. Please try again shortly." }
+    if (target.readOnly || target.shared) return { ok: false, error: "This deal is read-only." }
+    const res = await editMyCommodityDealTerms(target.approvalId, patch)
+    if (!res.ok) return res
+    await refresh()
+    return { ok: true }
+  }
+
+  const deleteDeal: CommodityDealsContextValue["deleteDeal"] = async (dealId) => {
+    const target = deals.find((d) => d.id === dealId)
+    if (!target?.approvalId) return { ok: false, error: "This deal cannot be deleted yet. Please try again shortly." }
+    if (target.readOnly || target.shared) return { ok: false, error: "This deal is read-only." }
+    const res = await deleteMyCommodityDeal(target.approvalId)
+    if (!res.ok) return res
+    // Drop it from the local list right away, then pull the ledger so any
+    // released reservation reappears in the available balance.
+    setDeals((prev) => prev.filter((d) => d.id !== dealId))
+    refreshLedger()
+    return { ok: true }
+  }
+
   return (
     <CommodityDealsContext.Provider
       value={{
@@ -650,6 +733,9 @@ export function CommodityDealsProvider({ children }: { children: React.ReactNode
         revokeDeal,
         requestAmendment,
         addNegotiationNote,
+        setDealHold,
+        editDealTerms,
+        deleteDeal,
         hydrated,
       }}
     >
