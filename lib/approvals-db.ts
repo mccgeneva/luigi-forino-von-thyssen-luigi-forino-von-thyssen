@@ -625,3 +625,29 @@ export async function markApprovalDelivered(id: string): Promise<ApprovalRequest
   )
   return rows.length ? rowToRequest(rows[0]) : null
 }
+
+/**
+ * Permanently remove an approval row. Used by the administrator to hard-delete a
+ * deal (any lifecycle state) after any reserved funds have been released by the
+ * caller. NOT ownership-scoped — administrator authority. Returns true if a row
+ * was actually deleted.
+ */
+export async function deleteApproval(id: string): Promise<boolean> {
+  await ensureTable()
+  const { rows } = await query(`DELETE FROM approval_requests WHERE id = $1 RETURNING id`, [id])
+  return rows.length > 0
+}
+
+/**
+ * Permanently remove one of a client's OWN approval rows. Ownership-scoped so a
+ * client can only ever delete their own record. The caller is responsible for
+ * releasing any reserved-funds hold first. Returns true if a row was deleted.
+ */
+export async function deleteApprovalForUser(id: string, userId: string): Promise<boolean> {
+  await ensureTable()
+  const { rows } = await query(
+    `DELETE FROM approval_requests WHERE id = $1 AND user_id = $2 RETURNING id`,
+    [id, userId],
+  )
+  return rows.length > 0
+}

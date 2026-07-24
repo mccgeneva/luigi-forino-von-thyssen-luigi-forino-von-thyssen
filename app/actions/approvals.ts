@@ -37,6 +37,8 @@ import {
   getApprovalById,
   updateApprovalPayload,
   updateApprovalTerms,
+  deleteApproval,
+  deleteApprovalForUser,
   type ApprovalRequest,
   type ApprovalStatus,
   type LedgerEffect,
@@ -201,6 +203,19 @@ export async function updateMyApprovalRecord(
     }
     const prevPayload = existing.payload ?? {}
     const prevRecord = (prevPayload.record as Record<string, unknown> | undefined) ?? {}
+    // A suspended (paused) or frozen (locked) commodity deal cannot take
+    // workflow changes — stage advances, document uploads/versions — until it is
+    // resumed/unfrozen via setMyCommodityDealHold. Enforced server-side so the
+    // pause is authoritative, not just a disabled button.
+    if (existing.kind === "commodity") {
+      const holdState = (prevRecord.hold as { state?: string } | undefined)?.state
+      if (holdState === "suspended") {
+        return { ok: false, error: "This deal is suspended. Resume it before making changes." }
+      }
+      if (holdState === "frozen") {
+        return { ok: false, error: "This deal is frozen. Unfreeze it before making changes." }
+      }
+    }
     const nextPayload = { ...prevPayload, record: { ...prevRecord, ...patch } }
     const updated = await updateApprovalPayload(approvalId, nextPayload)
     if (!updated) return { ok: false, error: "The change could not be saved. Please try again." }
@@ -272,6 +287,11 @@ export async function revokeMyCommodityDeal(
     }
     if (existing.payload?.delivered === true) {
       return { ok: false, error: "This deal has been delivered and can no longer be revoked." }
+    }
+    if (
+      ((existing.payload?.record as { hold?: { state?: string } } | undefined)?.hold?.state) === "frozen"
+    ) {
+      return { ok: false, error: "This deal is frozen. Unfreeze it before revoking to release the funds." }
     }
 
     const revoked = await revokeApprovedApproval(approvalId, session.id)
@@ -509,6 +529,13 @@ export async function requestDealAmendment(
     if ((record.pendingAmendment as { status?: string } | undefined)?.status === "pending") {
       return { ok: false, error: "An amendment is already pending approval for this deal." }
     }
+    const holdState = (record.hold as { state?: string } | undefined)?.state
+    if (holdState === "suspended") {
+      return { ok: false, error: "This deal is suspended. Resume it before proposing an amendment." }
+    }
+    if (holdState === "frozen") {
+      return { ok: false, error: "This deal is frozen. Unfreeze it before proposing an amendment." }
+    }
 
     // The total deal value is ALWAYS unit price × quantity. When the client
     // supplies the renegotiated per-unit price (the figure traders actually
@@ -681,6 +708,375 @@ export async function addDealNegotiationNote(
   } catch (err) {
     console.log("[v0] addDealNegotiationNote failed:", (err as Error).message)
     return { ok: false, error: "The note could not be saved. Please try again." }
+  }
+}
+
+// --- Deal management tools (delete / hold / edit) ---------------------------
+
+/** A reversible pause/lock placed on a commodity deal by the client or admin. */
+export type DealHoldState = "suspended" | "frozen"
+
+/** The subset of a commodity deal's terms editable via the direct edit tool. */
+export interface EditableDealTerms {
+  title?: string
+  commodity?: string
+  quantity?: string
+  unitPrice?: number
+  approxValue?: number
+  tradeStructure?: string
+  originCountry?: string
+  destinationCountry?: string
+  buyerName?: string
+  sellerName?: string
+  sendingBank?: string
+  sendingBankBic?: string
+  receivingBank?: string
+  receivingBankBic?: string
+  instrumentType?: string
+  notes?: string
+}
+
+/**
+ * Recompute the authoritative total deal value from a terms patch. The total is
+ * ALWAYS unit price × quantity when a unit price is supplied (the figure traders
+ * edit), so a stale client can never persist a raw per-unit price as the total.
+ * Falls back to the supplied `approxValue`, then the existing value.
+ */
+function resolveEditedValue(
+  patch: EditableDealTerms,
+  existingValue: number,
+): { value: number; unitPrice: number | null } {
+  const unitPrice = Number(patch.unitPrice)
+  const qty = parseQuantityString(patch.quantity ?? "")
+  if (Number.isFinite(unitPrice) && unitPrice > 0 && qty) {
+    return {
+      value: Math.round(unitPrice * qty.amount * 100) / 100,
+      unitPrice: Math.round(unitPrice * 100) / 100,
+    }
+  }
+  const approx = Number(patch.approxValue)
+  if (Number.isFinite(approx) && approx > 0) return { value: Math.round(approx * 100) / 100, unitPrice: null }
+  return { value: existingValue, unitPrice: null }
+}
+
+/** Build the sanitized record patch (only defined string/number fields). */
+function buildTermsRecordPatch(patch: EditableDealTerms, value: number): Record<string, unknown> {
+  const out: Record<string, unknown> = { approxValue: value }
+  const strFields: (keyof EditableDealTerms)[] = [
+    "title",
+    "commodity",
+    "quantity",
+    "tradeStructure",
+    "originCountry",
+    "destinationCountry",
+    "buyerName",
+    "sellerName",
+    "sendingBank",
+    "sendingBankBic",
+    "receivingBank",
+    "receivingBankBic",
+    "instrumentType",
+    "notes",
+  ]
+  for (const f of strFields) {
+    const v = patch[f]
+    if (typeof v === "string") out[f] = v.trim()
+  }
+  return out
+}
+
+/**
+ * Core applier for a direct terms edit. Recomputes the authoritative value,
+ * updates the stored record + the approval's amount/currency, and keeps the
+ * on-approval reservation effect in sync so a pending deal reserves the amended
+ * value when it is later approved. Only ever applied to non-approved,
+ * non-delivered, non-frozen deals (approved deals must go through amendment).
+ */
+async function applyDealTermsEdit(
+  existing: ApprovalRequest,
+  patch: EditableDealTerms,
+): Promise<{ ok: boolean; error?: string }> {
+  const payload = (existing.payload ?? {}) as { delivered?: boolean; record?: Record<string, unknown> }
+  if (payload.delivered === true) {
+    return { ok: false, error: "This deal has been delivered and can no longer be edited." }
+  }
+  const record = (payload.record ?? {}) as Record<string, unknown>
+  if ((record.hold as { state?: string } | undefined)?.state === "frozen") {
+    return { ok: false, error: "This deal is frozen. Unfreeze it before editing its terms." }
+  }
+  if (existing.status === "approved") {
+    return {
+      ok: false,
+      error: "Approved deals hold reserved funds — change them via an amendment for administrator sign-off.",
+    }
+  }
+  if (existing.status !== "pending" && existing.status !== "rejected" && existing.status !== "cancelled") {
+    return { ok: false, error: "This deal can no longer be edited." }
+  }
+
+  const existingValue = Number(existing.amount ?? (record.approxValue as number) ?? 0)
+  const { value } = resolveEditedValue(patch, existingValue)
+  if (!Number.isFinite(value) || value <= 0) {
+    return { ok: false, error: "Enter a valid deal value." }
+  }
+  const currency = existing.currency ?? (record.currency as string) ?? "USD"
+  const recordPatch = buildTermsRecordPatch(patch, value)
+  const nextRecord = { ...record, ...recordPatch }
+
+  // Keep the on-approval reservation hold in step with the amended value so the
+  // correct amount is blocked when a pending deal is approved.
+  const prevEffect = existing.ledgerEffect
+  const nextEffect: LedgerEffect | null =
+    prevEffect != null
+      ? {
+          ...prevEffect,
+          amount: value,
+          currency,
+          counterparty: (recordPatch.sellerName as string) || prevEffect.counterparty,
+        }
+      : value > 0
+        ? {
+            direction: "debit",
+            amount: value,
+            currency,
+            status: "hold",
+            counterparty: (nextRecord.sellerName as string) || "Commodity supplier",
+            reference: (nextRecord.uetr as string) || (nextRecord.id as string) || existing.id,
+            category: "Commodity Trade — Reserved Funds",
+          }
+        : null
+
+  const updated = await updateApprovalTerms(existing.id, {
+    amount: value,
+    currency,
+    ledgerEffect: nextEffect,
+    payload: { ...payload, record: nextRecord },
+  })
+  if (!updated) return { ok: false, error: "The change could not be saved. Please try again." }
+  return { ok: true }
+}
+
+/**
+ * Apply / lift a suspend or freeze hold on a commodity deal, stamped onto the
+ * stored record so it is authoritative and visible cross-client. `hold=null`
+ * clears the hold. `by` records who placed it for the audit trail.
+ */
+async function applyDealHold(
+  existing: ApprovalRequest,
+  hold: DealHoldState | null,
+  by: "client" | "admin",
+  byName: string,
+  note?: string,
+): Promise<{ ok: boolean; error?: string }> {
+  const payload = (existing.payload ?? {}) as { delivered?: boolean; record?: Record<string, unknown> }
+  if (payload.delivered === true) {
+    return { ok: false, error: "This deal has been delivered and is finalized — it cannot be held." }
+  }
+  const record = (payload.record ?? {}) as Record<string, unknown>
+  const nextRecord = {
+    ...record,
+    hold: hold
+      ? { state: hold, by, byName, note: note?.trim() || undefined, at: new Date().toISOString() }
+      : null,
+  }
+  const updated = await updateApprovalPayload(existing.id, { ...payload, record: nextRecord })
+  if (!updated) return { ok: false, error: "The change could not be saved. Please try again." }
+  return { ok: true }
+}
+
+/**
+ * Release any reserved-funds hold for a deal, back to the owner's available
+ * balance. Safe no-op when there is no hold (e.g. a pending / rejected deal).
+ */
+async function releaseDealHoldFunds(existing: ApprovalRequest): Promise<void> {
+  try {
+    const ownerId = await resolveDataOwnerIdFor(existing.userId)
+    await deleteLedgerEntry(ownerId, `APPR-${existing.id}`)
+  } catch (err) {
+    console.log("[v0] deal fund release failed:", (err as Error).message)
+  }
+}
+
+/** Client: suspend / freeze / resume one of their OWN commodity deals. */
+export async function setMyCommodityDealHold(
+  approvalId: string,
+  hold: DealHoldState | null,
+  note?: string,
+): Promise<{ ok: boolean; error?: string }> {
+  const session = await resolveCurrentSession()
+  if (!session) return { ok: false, error: "Your session has expired. Please sign in again." }
+  try {
+    const existing = await getApprovalById(approvalId)
+    if (!existing || existing.userId !== session.id) return { ok: false, error: "This deal could not be found." }
+    if (existing.kind !== "commodity") return { ok: false, error: "Only commodity deals support this action." }
+    if ((existing.payload as { sharedReadOnly?: boolean } | undefined)?.sharedReadOnly === true) {
+      return { ok: false, error: "This deal was shared with you for reference only." }
+    }
+    const profile = await resolveAccountProfileById(session.id)
+    const res = await applyDealHold(existing, hold, "client", profile.fullName, note)
+    if (res.ok) {
+      void logActivity({
+        action: hold
+          ? `Client ${hold === "frozen" ? "froze" : "suspended"} commodity deal ${approvalId}`
+          : `Client resumed commodity deal ${approvalId}`,
+        category: "Commodity Trading",
+        user: profile.fullName,
+        details: { referenceId: existing.id, summary: existing.title, decision: hold ?? "Resumed" },
+      }).catch(() => {})
+    }
+    return res
+  } catch (err) {
+    console.log("[v0] setMyCommodityDealHold failed:", (err as Error).message)
+    return { ok: false, error: "The change could not be saved. Please try again." }
+  }
+}
+
+/** Admin: suspend / freeze / resume ANY client's commodity deal (passcode-gated). */
+export async function adminSetCommodityDealHold(
+  passcode: string,
+  approvalId: string,
+  hold: DealHoldState | null,
+  note?: string,
+): Promise<{ ok: boolean; error?: string }> {
+  if (!(await adminOk(passcode))) return { ok: false, error: "Administrator authorization failed." }
+  try {
+    const existing = await getApprovalById(approvalId)
+    if (!existing) return { ok: false, error: "This deal could not be found." }
+    if (existing.kind !== "commodity") return { ok: false, error: "Only commodity deals support this action." }
+    return await applyDealHold(existing, hold, "admin", "Administrator", note)
+  } catch (err) {
+    console.log("[v0] adminSetCommodityDealHold failed:", (err as Error).message)
+    return { ok: false, error: "The change could not be saved. Please try again." }
+  }
+}
+
+/** Client: edit the terms of one of their OWN non-approved commodity deals. */
+export async function editMyCommodityDealTerms(
+  approvalId: string,
+  patch: EditableDealTerms,
+): Promise<{ ok: boolean; error?: string }> {
+  const session = await resolveCurrentSession()
+  if (!session) return { ok: false, error: "Your session has expired. Please sign in again." }
+  try {
+    const existing = await getApprovalById(approvalId)
+    if (!existing || existing.userId !== session.id) return { ok: false, error: "This deal could not be found." }
+    if (existing.kind !== "commodity") return { ok: false, error: "Only commodity deals can be edited here." }
+    if ((existing.payload as { sharedReadOnly?: boolean } | undefined)?.sharedReadOnly === true) {
+      return { ok: false, error: "This deal was shared with you for reference only and cannot be edited." }
+    }
+    const res = await applyDealTermsEdit(existing, patch)
+    if (res.ok) {
+      const profile = await resolveAccountProfileById(session.id)
+      void logActivity({
+        action: `Client edited commodity deal ${approvalId} terms`,
+        category: "Commodity Trading",
+        user: profile.fullName,
+        details: { referenceId: existing.id, summary: existing.title, decision: "Edited" },
+      }).catch(() => {})
+    }
+    return res
+  } catch (err) {
+    console.log("[v0] editMyCommodityDealTerms failed:", (err as Error).message)
+    return { ok: false, error: "The change could not be saved. Please try again." }
+  }
+}
+
+/** Admin: edit the terms of ANY client's non-approved commodity deal (passcode-gated). */
+export async function adminEditCommodityDealTerms(
+  passcode: string,
+  approvalId: string,
+  patch: EditableDealTerms,
+): Promise<{ ok: boolean; error?: string }> {
+  if (!(await adminOk(passcode))) return { ok: false, error: "Administrator authorization failed." }
+  try {
+    const existing = await getApprovalById(approvalId)
+    if (!existing) return { ok: false, error: "This deal could not be found." }
+    if (existing.kind !== "commodity") return { ok: false, error: "Only commodity deals can be edited here." }
+    return await applyDealTermsEdit(existing, patch)
+  } catch (err) {
+    console.log("[v0] adminEditCommodityDealTerms failed:", (err as Error).message)
+    return { ok: false, error: "The change could not be saved. Please try again." }
+  }
+}
+
+/**
+ * Client: permanently DELETE one of their OWN commodity deals, releasing any
+ * reserved funds back to the available balance first. A frozen deal must be
+ * unfrozen before it can be deleted.
+ */
+export async function deleteMyCommodityDeal(
+  approvalId: string,
+): Promise<{ ok: boolean; error?: string }> {
+  const session = await resolveCurrentSession()
+  if (!session) return { ok: false, error: "Your session has expired. Please sign in again." }
+  try {
+    const existing = await getApprovalById(approvalId)
+    if (!existing || existing.userId !== session.id) return { ok: false, error: "This deal could not be found." }
+    if (existing.kind !== "commodity") return { ok: false, error: "Only commodity deals can be deleted here." }
+    if ((existing.payload as { sharedReadOnly?: boolean } | undefined)?.sharedReadOnly === true) {
+      return { ok: false, error: "This deal was shared with you for reference only and cannot be deleted." }
+    }
+    if (((existing.payload?.record as { hold?: { state?: string } } | undefined)?.hold?.state) === "frozen") {
+      return { ok: false, error: "This deal is frozen. Unfreeze it before deleting." }
+    }
+    await releaseDealHoldFunds(existing)
+    const deleted = await deleteApprovalForUser(approvalId, session.id)
+    if (!deleted) return { ok: false, error: "This deal could not be deleted." }
+
+    try {
+      const profile = await resolveAccountProfileById(session.id)
+      await logActivity({
+        action: `Client deleted commodity deal "${existing.title}" and released any reserved funds`,
+        category: "Commodity Trading",
+        user: profile.fullName,
+        details: { referenceId: existing.id, summary: existing.summary || existing.title, decision: "Deleted" },
+      })
+    } catch (err) {
+      console.log("[v0] delete activity log failed:", (err as Error).message)
+    }
+    return { ok: true }
+  } catch (err) {
+    console.log("[v0] deleteMyCommodityDeal failed:", (err as Error).message)
+    return { ok: false, error: "The deal could not be deleted. Please try again." }
+  }
+}
+
+/**
+ * Admin: permanently DELETE ANY client's commodity deal (passcode-gated),
+ * releasing any reserved funds back to the owner's available balance first. A
+ * frozen deal must be unfrozen before deletion.
+ */
+export async function adminDeleteCommodityDeal(
+  passcode: string,
+  approvalId: string,
+): Promise<{ ok: boolean; error?: string }> {
+  if (!(await adminOk(passcode))) return { ok: false, error: "Administrator authorization failed." }
+  try {
+    const existing = await getApprovalById(approvalId)
+    if (!existing) return { ok: false, error: "This deal could not be found." }
+    if (existing.kind !== "commodity") return { ok: false, error: "Only commodity deals can be deleted here." }
+    if (((existing.payload?.record as { hold?: { state?: string } } | undefined)?.hold?.state) === "frozen") {
+      return { ok: false, error: "This deal is frozen. Unfreeze it before deleting." }
+    }
+    await releaseDealHoldFunds(existing)
+    const deleted = await deleteApproval(approvalId)
+    if (!deleted) return { ok: false, error: "This deal could not be deleted." }
+
+    try {
+      await insertNotification({
+        userId: existing.userId,
+        tone: "info",
+        title: "Commodity deal removed",
+        body: `Your commodity deal "${existing.title}" was removed by the administrator. Any reserved funds have been released back to your available balance.`,
+        href: KIND_HREF.commodity ?? "/dashboard/commodity",
+      })
+    } catch (err) {
+      console.log("[v0] admin delete notification failed:", (err as Error).message)
+    }
+    return { ok: true }
+  } catch (err) {
+    console.log("[v0] adminDeleteCommodityDeal failed:", (err as Error).message)
+    return { ok: false, error: "The deal could not be deleted. Please try again." }
   }
 }
 
