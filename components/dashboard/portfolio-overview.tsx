@@ -1,10 +1,18 @@
 "use client"
 
 import Link from "next/link"
+import { useState } from "react"
 import { ArrowUpRight, ArrowDownRight, TrendingUp, Wallet, Building2, FileText, ChevronRight, Lock } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
 import { cn } from "@/lib/utils"
-import { useLedger, convertCurrency } from "@/lib/ledger-store"
+import { useLedger, convertCurrency, type LedgerEntry } from "@/lib/ledger-store"
 import { useInstrumentRequests } from "@/lib/instrument-requests-store"
 import { useBeneficiaries } from "@/lib/beneficiaries-store"
 
@@ -39,10 +47,31 @@ function formatEur(amount: number): string {
   return formatMoney(amount, "EUR")
 }
 
+function formatDate(iso: string): string {
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return iso
+  return d.toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric" })
+}
+
 export function PortfolioOverview() {
   const { totalIn, balanceFor, reservedFor, entries, currencies } = useLedger()
   const { instruments } = useInstrumentRequests()
   const { beneficiaries } = useBeneficiaries()
+
+  // Which currency's reserved-funds breakdown is open (null = dialog closed).
+  const [reservedCurrency, setReservedCurrency] = useState<string | null>(null)
+
+  // The individual held debits that make up the reserved total for the open
+  // currency. Each one carries the counterparty / category / reference that
+  // explains WHY the funds are locked (e.g. a commodity settlement on hold).
+  const reservedEntries: LedgerEntry[] = reservedCurrency
+    ? entries
+        .filter(
+          (e) => e.currency === reservedCurrency && e.status === "hold" && e.direction === "debit",
+        )
+        .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
+    : []
+  const reservedTotal = reservedEntries.reduce((sum, e) => sum + e.amount, 0)
 
   // Total balance aggregates every currency the client holds, converted to EUR,
   // so balances from currency exchanges (USD, GBP, etc.) are included too.
@@ -137,29 +166,42 @@ export function PortfolioOverview() {
         <CardContent>
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
             {currencyBalances.map((cb) => (
-              <Link
+              <div
                 key={cb.currency}
-                href={`/dashboard/accounts/${cb.currency === "EUR" ? "ACC-001" : `ACC-${cb.currency}`}`}
-                aria-label={`View ${cb.name} account`}
-                className="group rounded-lg border border-border bg-secondary/40 p-4 transition-colors hover:border-primary/40 hover:bg-secondary/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                className="group rounded-lg border border-border bg-secondary/40 p-4 transition-colors hover:border-primary/40 hover:bg-secondary/70"
               >
-                <div className="flex items-center gap-2">
-                  <span className="flex h-6 min-w-6 items-center justify-center rounded-full bg-primary/15 px-1.5 text-xs font-semibold text-primary">
-                    {cb.currency}
-                  </span>
-                  <span className="text-xs text-muted-foreground">{cb.name}</span>
-                  <ChevronRight className="ml-auto h-3.5 w-3.5 text-muted-foreground/50 transition-colors group-hover:text-primary" />
-                </div>
-                <div className="mt-2 text-xl font-bold text-foreground break-all">
-                  {cb.formatted}
-                </div>
-                {cb.reserved > 0 && (
-                  <div className="mt-1 flex items-center gap-1 text-[11px] font-medium text-amber-600">
-                    <Lock className="h-3 w-3" />
-                    {cb.reservedFormatted} reserved
+                <Link
+                  href={`/dashboard/accounts/${cb.currency === "EUR" ? "ACC-001" : `ACC-${cb.currency}`}`}
+                  aria-label={`View ${cb.name} account`}
+                  className="block rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                >
+                  <div className="flex items-center gap-2">
+                    <span className="flex h-6 min-w-6 items-center justify-center rounded-full bg-primary/15 px-1.5 text-xs font-semibold text-primary">
+                      {cb.currency}
+                    </span>
+                    <span className="text-xs text-muted-foreground">{cb.name}</span>
+                    <ChevronRight className="ml-auto h-3.5 w-3.5 text-muted-foreground/50 transition-colors group-hover:text-primary" />
                   </div>
+                  <div className="mt-2 text-xl font-bold text-foreground break-all">
+                    {cb.formatted}
+                  </div>
+                </Link>
+                {cb.reserved > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setReservedCurrency(cb.currency)}
+                    aria-label={`See why ${cb.reservedFormatted} is reserved in your ${cb.name} account`}
+                    className="mt-1 flex w-full items-center gap-1 rounded-md text-[11px] font-medium text-amber-600 transition-colors hover:text-amber-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  >
+                    <Lock className="h-3 w-3" />
+                    <span>{cb.reservedFormatted} reserved</span>
+                    <span className="ml-auto inline-flex items-center gap-0.5 text-amber-600/80 underline underline-offset-2">
+                      Why?
+                      <ChevronRight className="h-3 w-3" />
+                    </span>
+                  </button>
                 )}
-              </Link>
+              </div>
             ))}
           </div>
           <Link
@@ -221,6 +263,80 @@ export function PortfolioOverview() {
         </Link>
       ))}
       </div>
+
+      {/* Reserved-funds breakdown: shows every held debit that locks part of the
+          balance, so the client can see exactly what each reservation is for. */}
+      <Dialog open={reservedCurrency !== null} onOpenChange={(open) => !open && setReservedCurrency(null)}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Lock className="h-4 w-4 text-amber-600" />
+              Reserved funds
+              {reservedCurrency ? ` · ${reservedCurrency}` : ""}
+            </DialogTitle>
+            <DialogDescription>
+              These transactions are on hold, so their total is set aside from your available
+              balance until each one settles or is released.
+            </DialogDescription>
+          </DialogHeader>
+
+          {reservedCurrency && (
+            <div className="space-y-3">
+              <div className="flex items-center justify-between rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2">
+                <span className="text-xs font-medium text-muted-foreground">Total reserved</span>
+                <span className="text-sm font-bold text-amber-600">
+                  {formatMoney(reservedTotal, reservedCurrency)}
+                </span>
+              </div>
+
+              {reservedEntries.length === 0 ? (
+                <p className="py-6 text-center text-sm text-muted-foreground">
+                  No reserved transactions.
+                </p>
+              ) : (
+                <ul className="max-h-80 space-y-2 overflow-y-auto">
+                  {reservedEntries.map((e) => (
+                    <li
+                      key={e.id}
+                      className="rounded-lg border border-border bg-secondary/40 p-3"
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <p className="truncate text-sm font-medium text-foreground">
+                            {e.counterparty || e.category || "Reserved transaction"}
+                          </p>
+                          <p className="text-xs text-muted-foreground">
+                            {formatDate(e.date)}
+                            {e.category ? ` · ${e.category}` : ""}
+                          </p>
+                        </div>
+                        <span className="shrink-0 text-sm font-semibold text-amber-600">
+                          {formatMoney(e.amount, e.currency)}
+                        </span>
+                      </div>
+                      {(e.comment || e.reference || e.bank) && (
+                        <p className="mt-1.5 text-xs text-muted-foreground text-pretty">
+                          {e.comment || `Held pending settlement`}
+                          {e.bank ? ` · ${e.bank}` : ""}
+                        </p>
+                      )}
+                      <p className="mt-1 text-[10px] font-mono text-muted-foreground/70">
+                        Ref {e.reference || e.id}
+                      </p>
+                    </li>
+                  ))}
+                </ul>
+              )}
+
+              <p className="text-[11px] text-muted-foreground text-pretty">
+                Reserved funds stay in your account but cannot be spent until the underlying
+                transaction completes. Once settled or cancelled, the hold is released back to your
+                available balance.
+              </p>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

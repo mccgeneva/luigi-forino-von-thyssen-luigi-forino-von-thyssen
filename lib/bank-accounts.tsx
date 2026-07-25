@@ -296,7 +296,7 @@ function bankAccountFromApproval(rec: ApprovalRecord): BankAccount | null {
  */
 /** Normalise an IBAN/account string for comparison: strip non-alphanumerics,
  *  uppercase. So "CH57 0024 03OJ …" matches a ledger entry tagged "CH5700240..". */
-function normalizeAccountRef(value: string | undefined | null): string {
+export function normalizeAccountRef(value: string | undefined | null): string {
   return (value ?? "").replace(/[^a-z0-9]/gi, "").toUpperCase()
 }
 
