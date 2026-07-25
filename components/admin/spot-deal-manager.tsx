@@ -29,7 +29,7 @@ import {
   Store,
   Waypoints,
 } from "lucide-react"
-import Link from "next/link"
+import { useRouter } from "next/navigation"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -907,12 +907,12 @@ const emptyDealForm = {
 /** Small numbered step header for the guided create flow. */
 function StepHeader({ n, title, hint }: { n: number; title: string; hint?: string }) {
   return (
-    <div className="flex items-center gap-2">
+    <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
       <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-primary text-[11px] font-semibold text-primary-foreground">
         {n}
       </span>
       <span className="text-sm font-medium">{title}</span>
-      {hint ? <span className="text-xs text-muted-foreground">· {hint}</span> : null}
+      {hint ? <span className="min-w-0 text-xs text-muted-foreground">· {hint}</span> : null}
     </div>
   )
 }
@@ -1655,10 +1655,19 @@ function DealsList({
 function VesselOperations({ vessel, onClose }: { vessel: Vessel | null; onClose: () => void }) {
   const [refreshKey, setRefreshKey] = useState(0)
   const bump = useCallback(() => setRefreshKey((k) => k + 1), [])
+  const router = useRouter()
+
+  // Close the dialog first, then navigate. Leaving the modal mounted (its
+  // overlay + body scroll-lock) over the destination is what made navigation
+  // appear "stuck", so we always tear it down before routing away.
+  const goToCommodityTrading = useCallback(() => {
+    onClose()
+    router.push("/dashboard/commodity")
+  }, [onClose, router])
 
   return (
     <Dialog open={vessel !== null} onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className="flex max-h-[92vh] flex-col gap-0 overflow-hidden p-0 sm:max-w-2xl">
+      <DialogContent className="flex max-h-[92vh] w-[calc(100%-2rem)] max-w-[calc(100%-2rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-2xl">
         {vessel && (
           <>
             <DialogHeader className="space-y-0 border-b border-border p-4 text-left">
@@ -1675,8 +1684,8 @@ function VesselOperations({ vessel, onClose }: { vessel: Vessel | null; onClose:
               </DialogDescription>
             </DialogHeader>
 
-            <ScrollArea className="flex-1">
-              <div className="flex flex-col gap-4 p-4">
+            <div className="flex-1 overflow-y-auto overflow-x-hidden">
+              <div className="flex min-w-0 flex-col gap-4 p-4">
                 {/* Vessel particulars + live AIS position */}
                 <div className="flex flex-col gap-2 rounded-lg border border-border bg-muted/40 p-3">
                   <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs text-muted-foreground">
@@ -1706,11 +1715,9 @@ function VesselOperations({ vessel, onClose }: { vessel: Vessel | null; onClose:
                       <Waypoints className="h-3.5 w-3.5" />
                       Published deals broadcast to clients &amp; listed in Commodity Trading.
                     </span>
-                    <Button asChild variant="outline" size="sm" className="shrink-0">
-                      <Link href="/dashboard/commodity">
-                        Open Commodity Trading
-                        <ExternalLink className="ml-1.5 h-3.5 w-3.5" />
-                      </Link>
+                    <Button variant="outline" size="sm" className="shrink-0" onClick={goToCommodityTrading}>
+                      Open Commodity Trading
+                      <ExternalLink className="ml-1.5 h-3.5 w-3.5" />
                     </Button>
                   </div>
                 </div>
@@ -1732,7 +1739,7 @@ function VesselOperations({ vessel, onClose }: { vessel: Vessel | null; onClose:
                   />
                 </div>
               </div>
-            </ScrollArea>
+            </div>
           </>
         )}
       </DialogContent>
