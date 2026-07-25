@@ -139,8 +139,14 @@ const ProjectFundingContext = createContext<ProjectFundingContextValue | null>(n
 export function ProjectFundingProvider({ children }: { children: React.ReactNode }) {
   // List sourced entirely from the server (Neon), so applications and admin
   // decisions are visible on any device/browser. No localStorage involved.
-  const { records: requests, setRecords: setRequests, hydrated, refresh } =
+  const { records: requests, setRecords: setRequests, hydrated, refresh: refreshRaw } =
     useServerRequestList<ProjectFundingRequest>("project_funding")
+
+  // Normalize the hydrator's return type to `void | Promise<void>` for the
+  // public context contract (callers only await completion, not the payload).
+  const refresh: ProjectFundingContextValue["refresh"] = async () => {
+    await refreshRaw()
+  }
 
   const addRequest: ProjectFundingContextValue["addRequest"] = (request) => {
     const full: ProjectFundingRequest = {
