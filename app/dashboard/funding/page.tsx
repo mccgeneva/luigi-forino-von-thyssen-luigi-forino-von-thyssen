@@ -31,6 +31,14 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Label } from "@/components/ui/label"
 import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Separator } from "@/components/ui/separator"
 import {
@@ -43,7 +51,12 @@ import {
 import { cn } from "@/lib/utils"
 import { toast } from "sonner"
 import { useActivityLog } from "@/components/activity-tracker"
-import { useProjectFunding, type UploadedFundingDoc } from "@/lib/project-funding-store"
+import {
+  useProjectFunding,
+  type UploadedFundingDoc,
+  type ProjectFundingRequest,
+} from "@/lib/project-funding-store"
+import { requestMyFundingClosure, cancelMyFundingClosureRequest } from "@/app/actions/funding"
 import {
   AES_TIERS,
   AES_MIN_FACILITY,
@@ -64,7 +77,12 @@ import {
   BANK_STATEMENT_WAIVER_FEE,
   BANK_STATEMENT_WAIVER_CURRENCY,
 } from "@/lib/funding-documents"
-import { monthlyCostOfCapital, accruedCostOfCapital, fundingCreditDate } from "@/lib/funding-capital"
+import {
+  monthlyCostOfCapital,
+  accruedCostOfCapital,
+  fundingCreditDate,
+  computeFundingSettlement,
+} from "@/lib/funding-capital"
 
 const SUPPORTED_CURRENCIES = ["USD", "EUR", "GBP", "CHF"] as const
 
@@ -163,7 +181,61 @@ export default function ProjectFundingPage() {
   }
 
   const log = useActivityLog()
-  const { requests, addRequest, hydrated } = useProjectFunding()
+  const { requests, addRequest, hydrated, refresh } = useProjectFunding()
+
+  // Early-closure request flow (client asks the Administrator to close a
+  // facility early; the payoff is quoted live and settled on approval).
+  const [closeTarget, setCloseTarget] = useState<ProjectFundingRequest | null>(null)
+  const [closeNote, setCloseNote] = useState("")
+  const [closeBusy, setCloseBusy] = useState(false)
+  const [cancelBusyId, setCancelBusyId] = useState<string | null>(null)
+
+  const handleRequestClosure = async () => {
+    if (!closeTarget?.approvalId) {
+      toast.error("Cannot request closure", {
+        description: "This facility is still syncing. Please refresh and try again.",
+      })
+      return
+    }
+    setCloseBusy(true)
+    const res = await requestMyFundingClosure(closeTarget.approvalId, closeNote.trim() || undefined)
+    setCloseBusy(false)
+    if (!res.ok) {
+      toast.error("Could not submit request", { description: res.error })
+      return
+    }
+    toast.success("Early-closure request submitted", {
+      description: `The Administrator will review your request. Quoted payoff today: ${formatMoney(res.quotedPayoff, res.currency)}.`,
+    })
+    log({
+      action: `Requested early closure of project finance facility "${closeTarget.projectName}"`,
+      category: "Project Funding / AES",
+      details: {
+        referenceId: closeTarget.id,
+        facility: formatMoney(closeTarget.facility, closeTarget.currency),
+        quotedPayoff: formatMoney(res.quotedPayoff, res.currency),
+        decision: "Closure requested",
+      },
+    })
+    setCloseTarget(null)
+    setCloseNote("")
+    void refresh()
+  }
+
+  const handleCancelClosure = async (r: ProjectFundingRequest) => {
+    if (!r.approvalId) return
+    setCancelBusyId(r.id)
+    const res = await cancelMyFundingClosureRequest(r.approvalId)
+    setCancelBusyId(null)
+    if (!res.ok) {
+      toast.error("Could not cancel request", { description: res.error })
+      return
+    }
+    toast.success("Closure request withdrawn", {
+      description: `Your early-closure request for "${r.projectName}" was cancelled. The facility remains active.`,
+    })
+    void refresh()
+  }
 
   const myApplications = useMemo(
     () =>
@@ -1333,6 +1405,107 @@ export default function ProjectFundingPage() {
                       </div>
                     )}
 
+                    {/* Early liquidation / closure */}
+                    {r.status === "approved" && r.closedAt && r.settlement ? (
+                      <div className="rounded-lg border border-border bg-muted/20 p-3">
+                        <p className="flex items-center gap-1.5 text-xs font-medium text-foreground">
+                          <Lock className="h-3.5 w-3.5 text-muted-foreground" />
+                          Facility closed &amp; settled
+                        </p>
+                        <div className="mt-2 grid gap-x-6 gap-y-1 text-sm sm:grid-cols-2">
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="text-muted-foreground">Principal repaid</span>
+                            <span className="font-medium text-foreground">{formatMoney(r.settlement.principal, r.settlement.currency)}</span>
+                          </div>
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="text-muted-foreground">Interest settled</span>
+                            <span className="font-medium text-foreground">{formatMoney(r.settlement.interest, r.settlement.currency)}</span>
+                          </div>
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="text-muted-foreground">Early-exit fee</span>
+                            <span className="font-medium text-foreground">{formatMoney(r.settlement.fee, r.settlement.currency)}</span>
+                          </div>
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="text-muted-foreground">Total settled</span>
+                            <span className="font-semibold text-foreground">{formatMoney(r.settlement.total, r.settlement.currency)}</span>
+                          </div>
+                        </div>
+                        <p className="mt-2 text-xs text-muted-foreground">
+                          Closed {new Date(r.closedAt).toLocaleString("en-GB")}
+                          {r.closureKind === "client_early" ? " · early closure" : " · recalled by administrator"}
+                        </p>
+                      </div>
+                    ) : r.status === "approved" && r.closureRequest ? (
+                      <div className="rounded-lg border border-yellow-500/20 bg-yellow-500/5 p-3">
+                        <p className="flex items-center gap-1.5 text-xs font-medium text-yellow-600 dark:text-yellow-500">
+                          <Clock className="h-3.5 w-3.5" />
+                          Early-closure request pending administrator approval
+                        </p>
+                        <div className="mt-2 flex items-center justify-between gap-2 text-sm">
+                          <span className="text-muted-foreground">Quoted payoff</span>
+                          <span className="font-medium text-foreground">
+                            {formatMoney(r.closureRequest.quotedPayoff, r.closureRequest.currency)}
+                          </span>
+                        </div>
+                        <p className="mt-1 text-xs text-muted-foreground">
+                          Requested {new Date(r.closureRequest.requestedAt).toLocaleString("en-GB")}. The final
+                          payoff is recalculated at settlement.
+                        </p>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="mt-3"
+                          disabled={cancelBusyId === r.id}
+                          onClick={() => void handleCancelClosure(r)}
+                        >
+                          {cancelBusyId === r.id ? "Cancelling…" : "Withdraw request"}
+                        </Button>
+                      </div>
+                    ) : r.status === "approved" ? (
+                      (() => {
+                        const payoff = computeFundingSettlement(r, new Date())
+                        return (
+                          <div className="rounded-lg border border-border bg-muted/20 p-3">
+                            <p className="text-xs font-medium text-foreground">Close facility early</p>
+                            <p className="mt-1 text-xs text-muted-foreground text-pretty">
+                              Repay the facility ahead of its {AES_STANDARD_TENOR_YEARS}-year tenor. An early-exit
+                              fee ({Math.round(AES_EARLY_REDEMPTION_RATE * 100)}% of the remaining-tenor cost of
+                              capital) applies. Closure is settled once the Administrator approves your request.
+                            </p>
+                            <div className="mt-2 grid gap-x-6 gap-y-1 text-sm sm:grid-cols-2">
+                              <div className="flex items-center justify-between gap-2">
+                                <span className="text-muted-foreground">Principal</span>
+                                <span className="font-medium text-foreground">{formatMoney(payoff.principal, payoff.currency)}</span>
+                              </div>
+                              <div className="flex items-center justify-between gap-2">
+                                <span className="text-muted-foreground">Interest to date</span>
+                                <span className="font-medium text-foreground">{formatMoney(payoff.interest, payoff.currency)}</span>
+                              </div>
+                              <div className="flex items-center justify-between gap-2">
+                                <span className="text-muted-foreground">Early-exit fee</span>
+                                <span className="font-medium text-foreground">{formatMoney(payoff.fee, payoff.currency)}</span>
+                              </div>
+                              <div className="flex items-center justify-between gap-2">
+                                <span className="text-muted-foreground">Estimated payoff today</span>
+                                <span className="font-semibold text-foreground">{formatMoney(payoff.total, payoff.currency)}</span>
+                              </div>
+                            </div>
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              className="mt-3"
+                              onClick={() => {
+                                setCloseNote("")
+                                setCloseTarget(r)
+                              }}
+                            >
+                              Request early closure
+                            </Button>
+                          </div>
+                        )
+                      })()
+                    ) : null}
+
                     {r.decisionNote && (
                       <div className="rounded-lg border border-border bg-muted/20 p-3">
                         <p className="text-xs text-muted-foreground">Administrator note</p>
@@ -1388,6 +1561,82 @@ export default function ProjectFundingPage() {
           )}
         </TabsContent>
       </Tabs>
+
+      {/* Early-closure confirmation with a live payoff breakdown */}
+      <Dialog open={!!closeTarget} onOpenChange={(open) => !open && setCloseTarget(null)}>
+        <DialogContent>
+          {closeTarget &&
+            (() => {
+              const payoff = computeFundingSettlement(closeTarget, new Date())
+              return (
+                <>
+                  <DialogHeader>
+                    <DialogTitle>Confirm early closure</DialogTitle>
+                    <DialogDescription>
+                      Request early closure of &ldquo;{closeTarget.projectName}&rdquo; ({closeTarget.id}).
+                      On Administrator approval, the payoff below is debited from your master account
+                      balance and interest stops accruing.
+                    </DialogDescription>
+                  </DialogHeader>
+                  <div className="space-y-3 py-2">
+                    <div className="rounded-lg border border-border bg-muted/20 p-3 text-sm">
+                      <div className="flex items-center justify-between">
+                        <span className="text-muted-foreground">Principal</span>
+                        <span className="text-foreground">
+                          {formatMoney(payoff.principal, payoff.currency)}
+                        </span>
+                      </div>
+                      <div className="mt-1 flex items-center justify-between">
+                        <span className="text-muted-foreground">Outstanding interest</span>
+                        <span className="text-foreground">
+                          {formatMoney(payoff.interest, payoff.currency)}
+                        </span>
+                      </div>
+                      <div className="mt-1 flex items-center justify-between">
+                        <span className="text-muted-foreground">
+                          Early-exit fee ({formatPercent(AES_EARLY_REDEMPTION_RATE)})
+                        </span>
+                        <span className="text-foreground">
+                          {formatMoney(payoff.fee, payoff.currency)}
+                        </span>
+                      </div>
+                      <div className="mt-2 flex items-center justify-between border-t border-border pt-2 font-semibold">
+                        <span className="text-foreground">Payoff today</span>
+                        <span className="text-foreground">
+                          {formatMoney(payoff.total, payoff.currency)}
+                        </span>
+                      </div>
+                    </div>
+                    <p className="text-xs text-muted-foreground text-pretty">
+                      This quote is indicative &mdash; the final payoff is recalculated at the moment the
+                      Administrator settles the facility.
+                    </p>
+                    <div className="space-y-1.5">
+                      <label htmlFor="closure-note" className="text-xs font-medium text-foreground">
+                        Reason (optional)
+                      </label>
+                      <Textarea
+                        id="closure-note"
+                        value={closeNote}
+                        onChange={(e) => setCloseNote(e.target.value)}
+                        placeholder="Add an optional note for the Administrator"
+                        rows={3}
+                      />
+                    </div>
+                  </div>
+                  <DialogFooter>
+                    <Button variant="outline" onClick={() => setCloseTarget(null)} disabled={closeBusy}>
+                      Cancel
+                    </Button>
+                    <Button onClick={handleRequestClosure} disabled={closeBusy}>
+                      {closeBusy ? "Submitting\u2026" : "Submit request"}
+                    </Button>
+                  </DialogFooter>
+                </>
+              )
+            })()}
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }
