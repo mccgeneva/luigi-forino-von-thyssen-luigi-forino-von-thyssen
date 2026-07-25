@@ -58,6 +58,56 @@ export interface ProjectFundingRequest {
   riskScore?: number
   /** Applicable upfront cash commitment fixed at approval. */
   cashCommitment?: number
+
+  // --- Administrator display (populated only when the admin loads the
+  //     cross-client facility queue, so a decision card can show WHO the
+  //     facility belongs to). Never set on the client's own portfolio view. ---
+  /** Account id that owns / received this facility. */
+  ownerUserId?: string
+  /** Owner's full name (admin display). */
+  ownerName?: string
+  /** Owner's registered email (admin display). */
+  ownerEmail?: string
+  /** Owner's company (admin display). */
+  ownerCompany?: string
+
+  // --- Early liquidation / closure lifecycle --------------------------------
+  /** A client's pending request to close the facility early (awaiting admin). */
+  closureRequest?: FundingClosureRequest
+  /** Set once the facility has been recalled/terminated and settled. */
+  closedAt?: string
+  /** Who/what closed the facility. */
+  closureKind?: "admin_recall" | "client_early"
+  /** Free-text note recorded at closure. */
+  closureNote?: string
+  /** Immutable settlement snapshot computed at the closure date. */
+  settlement?: FundingSettlementSnapshot
+}
+
+/** A client-initiated early-closure request awaiting administrator approval. */
+export interface FundingClosureRequest {
+  requestedAt: string
+  /** Optional reason supplied by the client. */
+  note?: string
+  /** Total payoff quoted to the client when they submitted the request. */
+  quotedPayoff: number
+  /** The instant the quote was computed (payoff grows until settlement). */
+  quotedAsOf: string
+  currency: string
+}
+
+/** The settlement breakdown debited from the owner's balance on closure. */
+export interface FundingSettlementSnapshot {
+  /** Facility principal clawed back to MCC. */
+  principal: number
+  /** Outstanding accrued cost-of-capital not yet charged, to the closure date. */
+  interest: number
+  /** Early-exit settlement fee (AES 70% of the remaining-tenor cost of capital). */
+  fee: number
+  /** principal + interest + fee. */
+  total: number
+  currency: string
+  closedAt: string
 }
 
 export interface ApproveFundingOptions {
