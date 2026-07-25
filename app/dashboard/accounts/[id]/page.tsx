@@ -15,19 +15,30 @@ import {
   Download,
   Mail,
   FileText,
+  Lock,
+  ChevronRight,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
 import { useActivityLog } from "@/components/activity-tracker"
 import { exportToCsv } from "@/lib/export-utils"
+import { useLedger, type LedgerEntry } from "@/lib/ledger-store"
 import {
   useBankAccounts,
   formatCurrency,
   getRatingColor,
   getStatusColor,
   getFlagEmoji,
+  normalizeAccountRef,
 } from "@/lib/bank-accounts"
 
 export default function AccountDetailPage() {
@@ -35,10 +46,36 @@ export default function AccountDetailPage() {
   const router = useRouter()
   const logActivity = useActivityLog()
   const bankAccounts = useBankAccounts()
+  const { entries } = useLedger()
   const [copiedField, setCopiedField] = useState<string | null>(null)
+  // Whether the reserved-funds breakdown dialog is open.
+  const [reservedOpen, setReservedOpen] = useState(false)
 
   const id = decodeURIComponent(params.id)
   const account = useMemo(() => bankAccounts.find((a) => a.id === id), [bankAccounts, id])
+
+  // The individual held debits that make up this account's Reserved figure, so
+  // the client can see exactly WHY funds are locked and WHAT each hold is for.
+  // The filter mirrors how the reserved total itself is computed in
+  // `useBankAccounts`: a registered (external) account matches held debits whose
+  // receiving IBAN is this account; a settlement account matches every held
+  // debit in its currency.
+  const reservedEntries: LedgerEntry[] = useMemo(() => {
+    if (!account) return []
+    const isRegistered = !account.id.startsWith("ACC-")
+    const target = normalizeAccountRef(account.iban)
+    return entries
+      .filter((e) => {
+        if (e.currency !== account.currency) return false
+        if (e.status !== "hold" || e.direction !== "debit") return false
+        if (!isRegistered) return true
+        const ref = e.receivedAccount ? e.receivedAccount : e.account
+        return normalizeAccountRef(ref) === target
+      })
+      .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
+  }, [account, entries])
+
+  const reservedTotal = reservedEntries.reduce((sum, e) => sum + e.amount, 0)
 
   const copyToClipboard = (text: string, field: string) => {
     navigator.clipboard.writeText(text)
@@ -232,12 +269,32 @@ export default function AccountDetailPage() {
                               {formatCurrency(available, account.currency)}
                             </p>
                           </div>
-                          <div className="min-w-0 text-center p-3 rounded-lg bg-secondary">
-                            <p className="text-xs text-muted-foreground mb-1">Reserved</p>
-                            <p className="text-sm sm:text-base lg:text-lg font-bold text-amber-400 leading-tight break-words tabular-nums">
-                              {formatCurrency(reserved, account.currency)}
-                            </p>
-                          </div>
+                          {reserved > 0 ? (
+                            <button
+                              type="button"
+                              onClick={() => setReservedOpen(true)}
+                              aria-label={`See why ${formatCurrency(reserved, account.currency)} is reserved`}
+                              className="group/reserved min-w-0 text-center p-3 rounded-lg bg-secondary transition-colors hover:bg-amber-500/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                            >
+                              <p className="flex items-center justify-center gap-1 text-xs text-muted-foreground mb-1">
+                                Reserved
+                                <ChevronRight className="h-3 w-3 text-amber-400/70 transition-transform group-hover/reserved:translate-x-0.5" />
+                              </p>
+                              <p className="text-sm sm:text-base lg:text-lg font-bold text-amber-400 leading-tight break-words tabular-nums">
+                                {formatCurrency(reserved, account.currency)}
+                              </p>
+                              <span className="mt-0.5 inline-block text-[10px] font-medium text-amber-400/80 underline underline-offset-2">
+                                Why?
+                              </span>
+                            </button>
+                          ) : (
+                            <div className="min-w-0 text-center p-3 rounded-lg bg-secondary">
+                              <p className="text-xs text-muted-foreground mb-1">Reserved</p>
+                              <p className="text-sm sm:text-base lg:text-lg font-bold text-amber-400 leading-tight break-words tabular-nums">
+                                {formatCurrency(reserved, account.currency)}
+                              </p>
+                            </div>
+                          )}
                         </div>
                         {isRegistered && (
                           <p className="mt-3 text-xs leading-relaxed text-muted-foreground">
@@ -438,6 +495,77 @@ export default function AccountDetailPage() {
           </div>
         </CardContent>
       </Card>
+
+      {/* Reserved-funds breakdown: every held debit that locks part of this
+          account's balance, so the client sees exactly what each hold is for. */}
+      <Dialog open={reservedOpen} onOpenChange={setReservedOpen}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Lock className="h-4 w-4 text-amber-400" />
+              Reserved funds · {account.currency}
+            </DialogTitle>
+            <DialogDescription>
+              These transactions are on hold, so their total is set aside from your available balance
+              at {account.accountName ?? account.bankName} until each one settles or is released.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-3">
+            <div className="flex items-center justify-between rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2">
+              <span className="text-xs font-medium text-muted-foreground">Total reserved</span>
+              <span className="text-sm font-bold text-amber-400">
+                {formatCurrency(reservedTotal, account.currency)}
+              </span>
+            </div>
+
+            {reservedEntries.length === 0 ? (
+              <p className="py-6 text-center text-sm text-muted-foreground">
+                No reserved transactions.
+              </p>
+            ) : (
+              <ul className="max-h-80 space-y-2 overflow-y-auto">
+                {reservedEntries.map((e) => (
+                  <li key={e.id} className="rounded-lg border border-border bg-secondary/40 p-3">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <p className="truncate text-sm font-medium text-foreground">
+                          {e.counterparty || e.category || "Reserved transaction"}
+                        </p>
+                        <p className="text-xs text-muted-foreground">
+                          {new Date(e.date).toLocaleDateString("en-GB", {
+                            year: "numeric",
+                            month: "short",
+                            day: "numeric",
+                          })}
+                          {e.category ? ` · ${e.category}` : ""}
+                        </p>
+                      </div>
+                      <span className="shrink-0 text-sm font-semibold text-amber-400">
+                        {formatCurrency(e.amount, e.currency)}
+                      </span>
+                    </div>
+                    {(e.comment || e.bank) && (
+                      <p className="mt-1.5 text-xs text-muted-foreground text-pretty">
+                        {e.comment || "Held pending settlement"}
+                        {e.bank ? ` · ${e.bank}` : ""}
+                      </p>
+                    )}
+                    <p className="mt-1 text-[10px] font-mono text-muted-foreground/70">
+                      Ref {e.reference || e.id}
+                    </p>
+                  </li>
+                ))}
+              </ul>
+            )}
+
+            <p className="text-[11px] text-muted-foreground text-pretty">
+              Reserved funds stay in your account but cannot be spent until the underlying transaction
+              completes. Once settled or cancelled, the hold is released back to your available balance.
+            </p>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }
