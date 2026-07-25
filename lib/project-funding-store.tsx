@@ -129,6 +129,8 @@ interface ProjectFundingContextValue {
   approveRequest: (id: string, opts?: ApproveFundingOptions) => ProjectFundingRequest | null
   /** Reject a pending application with an optional reason. */
   rejectRequest: (id: string, reason?: string) => ProjectFundingRequest | null
+  /** Re-hydrate the list from the server (after a closure request, settlement, etc.). */
+  refresh: () => void | Promise<void>
   hydrated: boolean
 }
 
@@ -207,7 +209,7 @@ export function ProjectFundingProvider({ children }: { children: React.ReactNode
 
   return (
     <ProjectFundingContext.Provider
-      value={{ requests, addRequest, approveRequest, rejectRequest, hydrated }}
+      value={{ requests, addRequest, approveRequest, rejectRequest, refresh, hydrated }}
     >
       {children}
     </ProjectFundingContext.Provider>

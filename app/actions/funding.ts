@@ -4,7 +4,6 @@ import { adminActionAuthorized } from "@/lib/admin-auth"
 import {
   resolveAccountProfileById,
   resolveCurrentSession,
-  resolveDataOwnerIdFor,
 } from "@/lib/session-user"
 import {
   getApprovalById,

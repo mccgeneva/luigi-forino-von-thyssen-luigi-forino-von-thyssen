@@ -40,6 +40,8 @@ import {
   ArrowRight,
   Tag,
   Fingerprint,
+  User,
+  Undo2,
 } from "lucide-react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -84,6 +86,7 @@ import {
   import { type ProjectFundingRequest } from "@/lib/project-funding-store"
   import { useFiduciaryRequests, type FiduciaryRequest } from "@/lib/fiduciary-requests-store"
   import { calculateCashCommitment, annualCostOfCapital, AES_EQUITY_COMPONENTS } from "@/lib/aes"
+import { computeFundingSettlement } from "@/lib/funding-capital"
 import { useDOFRequests, type DOFRequest } from "@/lib/dof-requests-store"
 import { useDTCRequests, type DTCRequest } from "@/lib/dtc-requests-store"
 import { useEuroclearRequests, type EuroclearRequest } from "@/lib/euroclear-requests-store"
@@ -119,9 +122,13 @@ import { PendingApprovals } from "@/components/admin/pending-approvals"
 import {
   adminCountPending,
   adminDecideApproval,
-  adminListApprovals,
   adminUpdateApprovalRecord,
 } from "@/app/actions/approvals"
+import {
+  adminListProjectFinance,
+  adminExecuteFundingClosure,
+  adminDeclineFundingClosure,
+} from "@/app/actions/funding"
 import { KIND_LABELS, type ApprovalKind } from "@/lib/approval-kinds"
 import { adminListPendingKyc } from "@/app/actions/beneficiaries"
 import { BalanceManager } from "@/components/admin/balance-manager"
@@ -186,25 +193,12 @@ export default function AdminPage() {
   const [fundingRequests, setFundingRequests] = useState<ProjectFundingRequest[]>([])
   const loadAdminFunding = useCallback(async () => {
     try {
-      const res = await adminListApprovals(ADMIN_PASSCODE, { kind: "project_funding" })
+      // Enriched with OWNER identity (name + email) and closure lifecycle fields
+      // so the queue can show WHO each facility belongs to and surface early
+      // closure requests / settled facilities.
+      const res = await adminListProjectFinance(ADMIN_PASSCODE)
       if (!res.ok) return
-      const mapped = res.requests
-        .map((req): ProjectFundingRequest | null => {
-          const base = req.payload?.record as ProjectFundingRequest | undefined
-          if (!base || typeof base !== "object") return null
-          const status: ProjectFundingRequest["status"] =
-            req.status === "approved" ? "approved" : req.status === "rejected" ? "rejected" : "pending"
-          return {
-            ...base,
-            approvalId: req.id,
-            status,
-            submittedAt: base.submittedAt ?? req.createdAt,
-            decidedAt: req.decidedAt ?? base.decidedAt,
-            decisionNote: req.decisionNote ?? base.decisionNote,
-          }
-        })
-        .filter((r): r is ProjectFundingRequest => r !== null)
-      setFundingRequests(mapped)
+      setFundingRequests(res.facilities.map((f) => f.record))
     } catch {
       // Non-fatal: the funding review queue just stays empty if it can't load.
     }
@@ -261,6 +255,16 @@ export default function AdminPage() {
   const [rejectFundingReason, setRejectFundingReason] = useState("")
   const [approveFundingTarget, setApproveFundingTarget] = useState<ProjectFundingRequest | null>(null)
   const [approveFundingScore, setApproveFundingScore] = useState("5")
+  // Recall / terminate / liquidate a facility (clawback), or approve a client's
+  // early-closure request. `kind` records which flow opened the dialog.
+  const [closeFundingTarget, setCloseFundingTarget] = useState<{
+    facility: ProjectFundingRequest
+    kind: "admin_recall" | "client_early"
+  } | null>(null)
+  const [closeFundingNote, setCloseFundingNote] = useState("")
+  const [closeFundingBusy, setCloseFundingBusy] = useState(false)
+  const [declineClosureTarget, setDeclineClosureTarget] = useState<ProjectFundingRequest | null>(null)
+  const [declineClosureReason, setDeclineClosureReason] = useState("")
   const [rejectFiduciaryTarget, setRejectFiduciaryTarget] = useState<FiduciaryRequest | null>(null)
   const [rejectFiduciaryReason, setRejectFiduciaryReason] = useState("")
   const [rejectDOFTarget, setRejectDOFTarget] = useState<DOFRequest | null>(null)
@@ -681,8 +685,29 @@ export default function AdminPage() {
     [fundingRequests],
   )
 
+  // Approved facilities the client is actively holding (funded, not yet settled).
+  const activeFundingFacilities = useMemo(
+    () =>
+      fundingRequests
+        .filter((r) => r.status === "approved" && !r.closedAt)
+        .sort(
+          (a, b) =>
+            new Date(b.decidedAt || b.submittedAt).getTime() -
+            new Date(a.decidedAt || a.submittedAt).getTime(),
+        ),
+    [fundingRequests],
+  )
+  // Facilities with a client-initiated early-closure request awaiting a decision.
+  const fundingClosureRequests = useMemo(
+    () => activeFundingFacilities.filter((r) => !!r.closureRequest),
+    [activeFundingFacilities],
+  )
+
   const formatFundingAmount = (r: ProjectFundingRequest) =>
     `${r.currency} ${r.facility.toLocaleString()}`
+
+  const formatMoney = (currency: string, n: number) =>
+    `${currency} ${Math.round(n).toLocaleString("en-US")}`
 
   const confirmApproveFunding = async () => {
     if (!approveFundingTarget) return
@@ -774,6 +799,56 @@ export default function AdminPage() {
     })
     setRejectFundingTarget(null)
     setRejectFundingReason("")
+  }
+
+  // Recall / terminate / liquidate a facility (clawback) OR approve a client's
+  // early-closure request. Debits the payoff (principal + interest + early-exit
+  // fee) from the owner's balance and marks the facility settled.
+  const confirmCloseFunding = async () => {
+    if (!closeFundingTarget) return
+    const { facility, kind } = closeFundingTarget
+    if (!facility.approvalId) {
+      toast.error("Cannot close facility", {
+        description: "This facility is still syncing. Please refresh and try again.",
+      })
+      return
+    }
+    setCloseFundingBusy(true)
+    const res = await adminExecuteFundingClosure(ADMIN_PASSCODE, facility.approvalId, {
+      kind,
+      note: closeFundingNote.trim() || undefined,
+    })
+    setCloseFundingBusy(false)
+    if (!res.ok) {
+      toast.error("Could not close facility", { description: res.error })
+      return
+    }
+    void loadAdminFunding()
+    toast.success(kind === "client_early" ? "Early closure approved" : "Facility recalled & liquidated", {
+      description: `"${facility.projectName}" settled — a payoff of ${formatMoney(res.settlement.currency, res.settlement.total)} was debited from ${facility.ownerName ?? "the owner"}'s balance.`,
+    })
+    setCloseFundingTarget(null)
+    setCloseFundingNote("")
+  }
+
+  // Decline a client's pending early-closure request (facility stays active).
+  const confirmDeclineClosure = async () => {
+    if (!declineClosureTarget?.approvalId) return
+    const res = await adminDeclineFundingClosure(
+      ADMIN_PASSCODE,
+      declineClosureTarget.approvalId,
+      declineClosureReason.trim() || undefined,
+    )
+    if (!res.ok) {
+      toast.error("Could not decline request", { description: res.error })
+      return
+    }
+    void loadAdminFunding()
+    toast.success("Closure request declined", {
+      description: `The early-closure request for "${declineClosureTarget.projectName}" was declined. The facility remains active.`,
+    })
+    setDeclineClosureTarget(null)
+    setDeclineClosureReason("")
   }
 
   const pendingFiduciary = useMemo(
@@ -2828,6 +2903,15 @@ export default function AdminPage() {
                         Submitted {formatTimestamp(r.submittedAt)}
                       </span>
                     </div>
+                    {r.ownerName && (
+                      <div className="flex flex-wrap items-center gap-2 rounded-md border border-border bg-card px-2.5 py-1.5 text-xs">
+                        <User className="h-3.5 w-3.5 text-muted-foreground" />
+                        <span className="text-muted-foreground">Applicant:</span>
+                        <span className="font-medium text-foreground">{r.ownerName}</span>
+                        {r.ownerEmail && <span className="text-muted-foreground">· {r.ownerEmail}</span>}
+                        {r.ownerCompany && <span className="text-muted-foreground">· {r.ownerCompany}</span>}
+                      </div>
+                    )}
                     <div className="grid gap-x-6 gap-y-2 text-sm sm:grid-cols-2">
                       <div className="flex items-center gap-2">
                         <Building2 className="h-4 w-4 text-muted-foreground" />
@@ -2972,11 +3056,18 @@ export default function AdminPage() {
                   </Badge>
                   <div>
                     <p className="text-sm font-medium text-foreground">{r.projectName}</p>
+                    {r.ownerName && (
+                      <p className="text-xs text-foreground/80">
+                        {r.ownerName}
+                        {r.ownerEmail ? ` · ${r.ownerEmail}` : ""}
+                      </p>
+                    )}
                     <p className="text-xs text-muted-foreground">
                       {r.id} · {formatTimestamp(r.decidedAt)}
                       {r.status === "approved" && typeof r.riskScore === "number"
                         ? ` · Risk ${r.riskScore}/10`
                         : ""}
+                      {r.closedAt ? " · Settled / closed" : ""}
                       {r.decisionNote ? ` · ${r.decisionNote}` : ""}
                     </p>
                   </div>
@@ -2984,6 +3075,161 @@ export default function AdminPage() {
                 <span className="text-sm font-medium text-foreground">{formatFundingAmount(r)}</span>
               </div>
             ))
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Client early-closure requests awaiting a decision */}
+      {fundingClosureRequests.length > 0 && (
+        <Card className="border-yellow-500/30 bg-card">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-lg font-semibold">
+              <Clock className="h-5 w-5 text-yellow-500" />
+              Early Closure Requests
+              <Badge variant="outline" className="border-yellow-500/20 bg-yellow-500/10 text-yellow-500">
+                {fundingClosureRequests.length}
+              </Badge>
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            {fundingClosureRequests.map((r) => {
+              const payoff = computeFundingSettlement(r, new Date())
+              return (
+                <div key={r.id} className="rounded-lg border border-yellow-500/20 bg-secondary/30 p-4">
+                  <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                    <div className="space-y-2">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="font-medium text-foreground">{r.projectName}</span>
+                        <span className="text-xs text-muted-foreground">{r.id}</span>
+                      </div>
+                      <p className="flex items-center gap-1 text-xs text-foreground">
+                        <User className="h-3 w-3 text-muted-foreground" />
+                        {r.ownerName ?? "Account holder"}
+                        {r.ownerEmail ? <span className="text-muted-foreground">· {r.ownerEmail}</span> : null}
+                      </p>
+                      {r.closureRequest?.note && (
+                        <p className="text-xs italic text-muted-foreground text-pretty">
+                          &ldquo;{r.closureRequest.note}&rdquo;
+                        </p>
+                      )}
+                      <p className="text-xs text-muted-foreground">
+                        Requested {formatTimestamp(r.closureRequest?.requestedAt)}
+                      </p>
+                    </div>
+                    <div className="flex flex-col items-stretch gap-3 lg:w-64 lg:shrink-0">
+                      <div className="rounded-lg border border-border bg-card p-3 text-xs">
+                        <div className="flex items-center justify-between">
+                          <span className="text-muted-foreground">Principal</span>
+                          <span className="text-foreground">{formatMoney(payoff.currency, payoff.principal)}</span>
+                        </div>
+                        <div className="mt-1 flex items-center justify-between">
+                          <span className="text-muted-foreground">Interest to date</span>
+                          <span className="text-foreground">{formatMoney(payoff.currency, payoff.interest)}</span>
+                        </div>
+                        <div className="mt-1 flex items-center justify-between">
+                          <span className="text-muted-foreground">Early-exit fee</span>
+                          <span className="text-foreground">{formatMoney(payoff.currency, payoff.fee)}</span>
+                        </div>
+                        <div className="mt-2 flex items-center justify-between border-t border-border pt-2">
+                          <span className="font-medium text-muted-foreground">Payoff</span>
+                          <span className="font-semibold text-foreground">{formatMoney(payoff.currency, payoff.total)}</span>
+                        </div>
+                      </div>
+                      <div className="flex gap-2">
+                        <Button
+                          className="flex-1"
+                          size="sm"
+                          onClick={() => {
+                            setCloseFundingNote("")
+                            setCloseFundingTarget({ facility: r, kind: "client_early" })
+                          }}
+                        >
+                          <Check className="mr-1 h-4 w-4" />
+                          Approve &amp; settle
+                        </Button>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="flex-1 border-destructive/30 text-destructive hover:bg-destructive/10 hover:text-destructive"
+                          onClick={() => {
+                            setDeclineClosureReason("")
+                            setDeclineClosureTarget(r)
+                          }}
+                        >
+                          <X className="mr-1 h-4 w-4" />
+                          Decline
+                        </Button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )
+            })}
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Active facilities — recall / terminate / liquidate */}
+      <Card className="bg-card border-border">
+        <CardHeader>
+          <CardTitle className="text-lg font-semibold">Active Facilities</CardTitle>
+          <p className="text-sm text-muted-foreground">
+            Funded facilities currently on client balances. Recall to claw back the capital, settle
+            outstanding cost of capital and the early-exit fee, and close the facility.
+          </p>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          {activeFundingFacilities.length === 0 ? (
+            <p className="py-6 text-center text-sm text-muted-foreground">
+              No active facilities. Approved facilities that have not been settled will appear here.
+            </p>
+          ) : (
+            activeFundingFacilities.map((r) => {
+              const payoff = computeFundingSettlement(r, new Date())
+              return (
+                <div
+                  key={r.id}
+                  className="flex flex-col gap-3 rounded-lg border border-border p-4 lg:flex-row lg:items-center lg:justify-between"
+                >
+                  <div className="space-y-1">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Badge variant="outline" className="border-green-500/20 bg-green-500/10 text-[10px] text-green-500">
+                        <Check className="mr-1 h-3 w-3" />
+                        Active
+                      </Badge>
+                      <span className="font-medium text-foreground">{r.projectName}</span>
+                      <span className="text-xs text-muted-foreground">{r.id}</span>
+                      {r.closureRequest && (
+                        <Badge variant="outline" className="border-yellow-500/20 bg-yellow-500/10 text-[10px] text-yellow-500">
+                          Closure requested
+                        </Badge>
+                      )}
+                    </div>
+                    <p className="flex items-center gap-1 text-xs text-foreground">
+                      <User className="h-3 w-3 text-muted-foreground" />
+                      {r.ownerName ?? "Account holder"}
+                      {r.ownerEmail ? <span className="text-muted-foreground">· {r.ownerEmail}</span> : null}
+                    </p>
+                    <p className="text-xs text-muted-foreground">
+                      Facility {formatFundingAmount(r)} · funded {formatTimestamp(r.decidedAt)} · payoff today{" "}
+                      <span className="font-medium text-foreground">{formatMoney(payoff.currency, payoff.total)}</span>
+                    </p>
+                  </div>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="border-destructive/30 text-destructive hover:bg-destructive/10 hover:text-destructive lg:shrink-0"
+                    onClick={() => {
+                      setCloseFundingNote("")
+                      setCloseFundingTarget({ facility: r, kind: "admin_recall" })
+                    }}
+                  >
+                    <Undo2 className="mr-1 h-4 w-4" />
+                    Recall / Liquidate
+                  </Button>
+                </div>
+              )
+            })
           )}
         </CardContent>
       </Card>
@@ -5161,6 +5407,140 @@ export default function AdminPage() {
                 </Button>
                 <Button variant="destructive" onClick={confirmRejectFunding}>
                   Reject Application
+                </Button>
+              </DialogFooter>
+            </>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Recall / terminate / liquidate — or approve a client's early closure */}
+      <Dialog
+        open={!!closeFundingTarget}
+        onOpenChange={(open) => {
+          if (!open && !closeFundingBusy) {
+            setCloseFundingTarget(null)
+            setCloseFundingNote("")
+          }
+        }}
+      >
+        <DialogContent className="sm:max-w-md">
+          {closeFundingTarget && (() => {
+            const { facility, kind } = closeFundingTarget
+            const payoff = computeFundingSettlement(facility, new Date())
+            return (
+              <>
+                <DialogHeader>
+                  <DialogTitle>
+                    {kind === "client_early" ? "Approve early closure" : "Recall & liquidate facility"}
+                  </DialogTitle>
+                  <DialogDescription>
+                    {kind === "client_early"
+                      ? "Approve the client's request to close this facility early and settle the payoff now."
+                      : "Recall this facility now. The payoff below is debited from the owner's balance and the facility is closed."}
+                  </DialogDescription>
+                </DialogHeader>
+                <div className="space-y-4">
+                  <div className="rounded-lg border border-border bg-secondary/30 p-3 text-sm">
+                    <p className="font-medium text-foreground">{facility.projectName}</p>
+                    <p className="flex items-center gap-1 text-xs text-muted-foreground">
+                      <User className="h-3 w-3" />
+                      {facility.ownerName ?? "Account holder"}
+                      {facility.ownerEmail ? ` · ${facility.ownerEmail}` : ""}
+                    </p>
+                  </div>
+                  <div className="rounded-lg border border-border bg-card p-3 text-sm">
+                    <div className="flex items-center justify-between">
+                      <span className="text-muted-foreground">Principal (clawback)</span>
+                      <span className="text-foreground">{formatMoney(payoff.currency, payoff.principal)}</span>
+                    </div>
+                    <div className="mt-1 flex items-center justify-between">
+                      <span className="text-muted-foreground">Outstanding interest</span>
+                      <span className="text-foreground">{formatMoney(payoff.currency, payoff.interest)}</span>
+                    </div>
+                    <div className="mt-1 flex items-center justify-between">
+                      <span className="text-muted-foreground">Early-exit fee</span>
+                      <span className="text-foreground">{formatMoney(payoff.currency, payoff.fee)}</span>
+                    </div>
+                    <div className="mt-2 flex items-center justify-between border-t border-border pt-2">
+                      <span className="font-semibold text-foreground">Total payoff debited</span>
+                      <span className="font-semibold text-foreground">{formatMoney(payoff.currency, payoff.total)}</span>
+                    </div>
+                  </div>
+                  <div className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/10 p-2.5 text-xs text-destructive">
+                    <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+                    <span>
+                      This debits the owner&apos;s balance immediately and may push it negative if funds are
+                      insufficient. The facility cannot be reopened.
+                    </span>
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="close-funding-note">Note (optional)</Label>
+                    <Textarea
+                      id="close-funding-note"
+                      value={closeFundingNote}
+                      onChange={(e) => setCloseFundingNote(e.target.value)}
+                      placeholder="e.g. Facility recalled following breach of covenant."
+                      rows={2}
+                    />
+                  </div>
+                </div>
+                <DialogFooter>
+                  <Button
+                    variant="outline"
+                    disabled={closeFundingBusy}
+                    onClick={() => {
+                      setCloseFundingTarget(null)
+                      setCloseFundingNote("")
+                    }}
+                  >
+                    Cancel
+                  </Button>
+                  <Button variant="destructive" onClick={confirmCloseFunding} disabled={closeFundingBusy}>
+                    {closeFundingBusy
+                      ? "Settling…"
+                      : kind === "client_early"
+                        ? "Approve & settle"
+                        : "Recall & liquidate"}
+                  </Button>
+                </DialogFooter>
+              </>
+            )
+          })()}
+        </DialogContent>
+      </Dialog>
+
+      {/* Decline a client's early-closure request */}
+      <Dialog
+        open={!!declineClosureTarget}
+        onOpenChange={(open) => !open && setDeclineClosureTarget(null)}
+      >
+        <DialogContent className="sm:max-w-md">
+          {declineClosureTarget && (
+            <>
+              <DialogHeader>
+                <DialogTitle>Decline closure request</DialogTitle>
+                <DialogDescription>
+                  Decline the early-closure request for &ldquo;{declineClosureTarget.projectName}&rdquo;. The
+                  facility stays active and no money moves.
+                </DialogDescription>
+              </DialogHeader>
+              <div className="space-y-2">
+                <Label htmlFor="decline-closure-reason">Reason (optional)</Label>
+                <Textarea
+                  id="decline-closure-reason"
+                  value={declineClosureReason}
+                  onChange={(e) => setDeclineClosureReason(e.target.value)}
+                  placeholder="e.g. Facility is within its minimum lock-in period."
+                  rows={3}
+                />
+              </div>
+              <DialogFooter>
+                <Button variant="outline" onClick={() => setDeclineClosureTarget(null)}>
+                  Cancel
+                </Button>
+                <Button variant="destructive" onClick={confirmDeclineClosure}>
+                  Decline request
                 </Button>
               </DialogFooter>
             </>
