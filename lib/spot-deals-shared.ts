@@ -208,6 +208,27 @@ export const SPOT_DEAL_STATUS_LABELS: Record<SpotDealStatus, string> = {
   engaged: "Engaged",
 }
 
+/**
+ * Which side of the market the desk is taking on a vessel's cargo:
+ *  - "sell" — the desk OFFERS the vessel's oil/gas for sale to clients (default,
+ *             and the historical behaviour of every existing deal).
+ *  - "buy"  — the desk BIDS to purchase the cargo from the market.
+ * Stored inside the SpotDeal jsonb payload, so no schema change is required and
+ * legacy deals with no `side` are treated as sell offers.
+ */
+export type SpotDealSide = "sell" | "buy"
+
+export const SPOT_DEAL_SIDE_LABELS: Record<SpotDealSide, string> = {
+  sell: "Sell offer",
+  buy: "Buy bid",
+}
+
+/** Verb used in client-facing copy for each side. */
+export const SPOT_DEAL_SIDE_VERB: Record<SpotDealSide, string> = {
+  sell: "Offer for sale",
+  buy: "Bid to buy",
+}
+
 /** A single recorded user interaction with a published deal (audit trail). */
 export interface SpotDealInterest {
   userId: string
@@ -228,6 +249,8 @@ export interface SpotDeal {
   vesselClass?: string
 
   // Commercial terms
+  /** Market side. Absent on legacy rows → treat as "sell". */
+  side?: SpotDealSide
   product: string
   productId?: string
   quantity: number

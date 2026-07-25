@@ -41,8 +41,10 @@ import {
   isDealLive,
   isValidImo,
   VESSEL_TYPE_LABELS,
+  SPOT_DEAL_SIDE_LABELS,
   type Vessel,
   type SpotDeal,
+  type SpotDealSide,
   type VesselCompliance,
   type VesselLivePosition,
 } from "@/lib/spot-deals-shared"
@@ -319,6 +321,8 @@ export interface DealResult {
 /** Input the admin form sends to create a spot deal. */
 export interface CreateSpotDealInput {
   vesselImo: string
+  /** Market side — "sell" (offer to clients) or "buy" (desk bid). Default "sell". */
+  side?: SpotDealSide
   product: string
   productId?: string
   quantity: number
@@ -348,12 +352,14 @@ export async function createSpotDealAdmin(passcode: string, input: CreateSpotDea
 
   const now = new Date().toISOString()
   const totalValue = computeTotalValue(input.quantity, input.spotPrice)
+  const side: SpotDealSide = input.side === "buy" ? "buy" : "sell"
   const deal: SpotDeal = {
     id: newDealId(),
     vesselImo: vessel.imo,
     vesselName: vessel.name,
     vesselType: vessel.type,
     vesselClass: vessel.vesselClass,
+    side,
     product: input.product.trim(),
     productId: input.productId,
     quantity: input.quantity,
@@ -385,8 +391,9 @@ export async function createSpotDealAdmin(passcode: string, input: CreateSpotDea
       action: `Administrator ${input.publish ? "published" : "drafted"} spot deal ${deal.id} (${formatMoney(totalValue, deal.currency)})`,
       category: "Commodity Trading",
       details: {
-        summary: `Administrator ${input.publish ? "published" : "saved as draft"} limited-time spot deal ${deal.id}: ${deal.quantity.toLocaleString("en-US")} ${deal.unit} ${deal.product} aboard ${deal.vesselName} (IMO ${deal.vesselImo}) at ${formatMoney(deal.spotPrice, deal.currency)}/${deal.unit}, total ${formatMoney(totalValue, deal.currency)}, ${deal.incoterm} ${deal.loadPort || "—"}. Offer expires ${new Date(deal.expiresAt).toLocaleString("en-GB")}.${input.publish ? ` Broadcast to ${delivered} active client${delivered === 1 ? "" : "s"} via Bankeka.` : ""}`,
+        summary: `Administrator ${input.publish ? "published" : "saved as draft"} limited-time ${SPOT_DEAL_SIDE_LABELS[side].toLowerCase()} ${deal.id}: ${deal.quantity.toLocaleString("en-US")} ${deal.unit} ${deal.product} aboard ${deal.vesselName} (IMO ${deal.vesselImo}) at ${formatMoney(deal.spotPrice, deal.currency)}/${deal.unit}, total ${formatMoney(totalValue, deal.currency)}, ${deal.incoterm} ${deal.loadPort || "—"}. Offer expires ${new Date(deal.expiresAt).toLocaleString("en-GB")}.${input.publish ? ` Broadcast to ${delivered} active client${delivered === 1 ? "" : "s"} via Bankeka.` : ""}`,
         referenceId: deal.id,
+        side: SPOT_DEAL_SIDE_LABELS[side],
         vessel: `${deal.vesselName} (IMO ${deal.vesselImo})`,
         product: deal.product,
         quantity: `${deal.quantity.toLocaleString("en-US")} ${deal.unit}`,

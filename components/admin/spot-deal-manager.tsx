@@ -24,7 +24,12 @@ import {
   RefreshCw,
   Sparkles,
   PackageSearch,
+  ArrowRightLeft,
+  ShoppingCart,
+  Store,
+  Waypoints,
 } from "lucide-react"
+import Link from "next/link"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -74,12 +79,15 @@ import {
   VESSEL_STATUSES,
   VESSEL_STATUS_LABELS,
   SPOT_DEAL_STATUS_LABELS,
+  SPOT_DEAL_SIDE_LABELS,
+  SPOT_DEAL_SIDE_VERB,
   computeTotalValue,
   dealCountdown,
   type Vessel,
   type VesselType,
   type VesselStatus,
   type SpotDeal,
+  type SpotDealSide,
 } from "@/lib/spot-deals-shared"
 import {
   listVesselsAdmin,
@@ -96,7 +104,7 @@ import {
   type CreateSpotDealInput,
 } from "@/app/actions/spot-deals"
 import { VESSEL_PROVIDERS, type VesselCompliance } from "@/lib/spot-deals-shared"
-import { AisFeedStatus } from "@/components/dashboard/vessel-live-position"
+import { AisFeedStatus, VesselLivePositionLine } from "@/components/dashboard/vessel-live-position"
 
 const CURRENCIES = ["USD", "EUR", "GBP", "CHF", "AED", "SGD"]
 const INCOTERMS = ["FOB", "CIF", "CFR", "FCA", "DES", "DAP"]
@@ -156,6 +164,7 @@ function VesselCatalogue({ onVesselsChanged }: { onVesselsChanged: (v: Vessel[])
   const [importImo, setImportImo] = useState("")
   const [importing, setImporting] = useState(false)
   const [deleteTarget, setDeleteTarget] = useState<Vessel | null>(null)
+  const [operateTarget, setOperateTarget] = useState<Vessel | null>(null)
   const [provider, setProvider] = useState<Awaited<ReturnType<typeof getVesselProviderStatus>> | null>(null)
   const [providersOpen, setProvidersOpen] = useState(false)
 
@@ -523,9 +532,14 @@ function VesselCatalogue({ onVesselsChanged }: { onVesselsChanged: (v: Vessel[])
                 {vessels.map((v) => (
                   <div
                     key={v.imo}
-                    className="flex flex-col gap-2 rounded-lg border border-border bg-card p-3 sm:flex-row sm:items-center sm:justify-between"
+                    className="flex flex-col gap-2 rounded-lg border border-border bg-card p-3 transition-colors hover:border-primary/40 sm:flex-row sm:items-center sm:justify-between"
                   >
-                    <div className="min-w-0">
+                    <button
+                      type="button"
+                      onClick={() => setOperateTarget(v)}
+                      title={`Open trading operations for ${v.name}`}
+                      className="min-w-0 rounded-md text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    >
                       <div className="flex items-center gap-2">
                         <span className="truncate font-medium">{v.name}</span>
                         <Badge variant="outline" className={cn("text-[10px]", TYPE_BADGE[v.type])}>
@@ -550,8 +564,17 @@ function VesselCatalogue({ onVesselsChanged }: { onVesselsChanged: (v: Vessel[])
                           {v.cargo || "No cargo"}
                         </span>
                       </p>
-                    </div>
+                    </button>
                     <div className="flex shrink-0 items-center gap-2">
+                      <Button
+                        size="sm"
+                        onClick={() => setOperateTarget(v)}
+                        className="gap-1.5"
+                        title={`Buy / sell ${v.name}'s cargo as a spot deal`}
+                      >
+                        <ArrowRightLeft className="h-3.5 w-3.5" />
+                        Operate
+                      </Button>
                       <Button
                         size="sm"
                         variant="outline"
@@ -850,6 +873,9 @@ function VesselCatalogue({ onVesselsChanged }: { onVesselsChanged: (v: Vessel[])
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Full vessel trading operations workspace */}
+      <VesselOperations vessel={operateTarget} onClose={() => setOperateTarget(null)} />
     </div>
   )
 }
@@ -857,6 +883,7 @@ function VesselCatalogue({ onVesselsChanged }: { onVesselsChanged: (v: Vessel[])
 // --- Create spot deal -------------------------------------------------------
 
 const emptyDealForm = {
+  side: "sell" as SpotDealSide,
   vesselImo: "",
   productId: "",
   product: "",
@@ -890,14 +917,28 @@ function StepHeader({ n, title, hint }: { n: number; title: string; hint?: strin
   )
 }
 
-function CreateDeal({ vessels, onCreated }: { vessels: Vessel[]; onCreated: () => void }) {
-  const [form, setForm] = useState({ ...emptyDealForm })
+function CreateDeal({
+  vessels,
+  onCreated,
+  lockedVesselImo,
+}: {
+  vessels: Vessel[]
+  onCreated: () => void
+  /** When set, the deal is locked to this vessel (used by the vessel ops workspace). */
+  lockedVesselImo?: string
+}) {
+  const locked = Boolean(lockedVesselImo)
+  const [form, setForm] = useState(() => ({ ...emptyDealForm, vesselImo: lockedVesselImo ?? "" }))
   const [submitting, setSubmitting] = useState(false)
 
   const set = <K extends keyof typeof form>(key: K, value: (typeof form)[K]) =>
     setForm((p) => ({ ...p, [key]: value }))
 
   const selectedVessel = useMemo(() => vessels.find((v) => v.imo === form.vesselImo), [vessels, form.vesselImo])
+  const lockedVessel = useMemo(
+    () => (lockedVesselImo ? vessels.find((v) => v.imo === lockedVesselImo) : undefined),
+    [vessels, lockedVesselImo],
+  )
 
   // Step 1 → Step 2 link: only tankers that can legally carry the chosen grade.
   const compatibleTypes = useMemo(
@@ -907,6 +948,16 @@ function CreateDeal({ vessels, onCreated }: { vessels: Vessel[]; onCreated: () =
   const compatibleVessels = useMemo(
     () => vessels.filter((v) => compatibleTypes.includes(v.type)),
     [vessels, compatibleTypes],
+  )
+
+  // When locked to a specific vessel, only offer products that vessel can legally
+  // carry, so Step 1 can never leave the deal pointing at an incompatible cargo.
+  const productsForList = useMemo(
+    () =>
+      lockedVessel
+        ? PETROLEUM_PRODUCTS.filter((p) => compatibleVesselTypesForProduct(p.id).includes(lockedVessel.type))
+        : PETROLEUM_PRODUCTS,
+    [lockedVessel],
   )
 
   // Live suggestion shown beneath the price field (recomputed as product / port
@@ -1069,6 +1120,7 @@ function CreateDeal({ vessels, onCreated }: { vessels: Vessel[]; onCreated: () =
 
     const payload: CreateSpotDealInput = {
       vesselImo: form.vesselImo,
+      side: form.side,
       product: form.product.trim(),
       productId: form.productId || undefined,
       quantity: qty,
@@ -1087,12 +1139,15 @@ function CreateDeal({ vessels, onCreated }: { vessels: Vessel[]; onCreated: () =
     try {
       const res = await createSpotDealAdmin(ADMIN_PASSCODE, payload)
       if (res.ok) {
-        toast.success(publish ? "Spot deal published" : "Draft saved", {
+        const sideLabel = SPOT_DEAL_SIDE_LABELS[form.side].toLowerCase()
+        toast.success(publish ? `Spot ${sideLabel} published` : "Draft saved", {
           description: publish
             ? `${res.deal?.id} broadcast to ${res.delivered} active client${res.delivered === 1 ? "" : "s"} via Bankeka.`
             : `${res.deal?.id} saved as a draft.`,
         })
-        setForm({ ...emptyDealForm })
+        // Preserve the side + locked vessel so the desk can raise back-to-back
+        // offers on the same ship without re-selecting everything.
+        setForm({ ...emptyDealForm, side: form.side, vesselImo: lockedVesselImo ?? "" })
         onCreated()
       } else {
         toast.error(res.error)
@@ -1105,37 +1160,76 @@ function CreateDeal({ vessels, onCreated }: { vessels: Vessel[]; onCreated: () =
   const regions = useMemo(() => portsByRegion(), [])
   const productChosen = Boolean(form.productId)
 
+  const sideVerb = SPOT_DEAL_SIDE_VERB[form.side].toLowerCase()
+
   return (
     <Card>
       <CardHeader className="pb-3">
         <CardTitle className="flex items-center gap-2 text-base">
           <Tag className="h-4 w-4 text-muted-foreground" />
-          Create Spot Deal
+          {locked ? `Trade ${lockedVessel?.name ?? "this vessel"}` : "Create Spot Deal"}
         </CardTitle>
         <CardDescription>
-          Pick the product, choose a compatible vessel, then review the auto-filled terms. Publishing broadcasts the
-          offer to all active clients and lists it in Commodity Trading.
+          {locked
+            ? `Raise a spot ${form.side === "buy" ? "bid to buy" : "offer to sell"} against this vessel's cargo, then review the auto-filled terms. Publishing broadcasts it to all active clients and lists it in Commodity Trading.`
+            : "Pick the side, product and a compatible vessel, then review the auto-filled terms. Publishing broadcasts the deal to all active clients and lists it in Commodity Trading."}
         </CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-5">
-        {/* Step 1 — Product */}
+        {/* Market side — sell offer or buy bid */}
         <div className="flex flex-col gap-2">
-          <StepHeader n={1} title="Product" hint="sets the unit and filters compatible vessels" />
+          <StepHeader n={1} title="Side" hint="are you selling this cargo or bidding to buy it?" />
+          <div className="grid grid-cols-2 gap-2">
+            {(["sell", "buy"] as SpotDealSide[]).map((s) => {
+              const active = form.side === s
+              const Icon = s === "sell" ? Store : ShoppingCart
+              return (
+                <button
+                  key={s}
+                  type="button"
+                  onClick={() => set("side", s)}
+                  aria-pressed={active}
+                  className={cn(
+                    "flex items-center justify-center gap-2 rounded-lg border p-3 text-sm font-medium transition-colors",
+                    active
+                      ? "border-primary bg-primary/10 text-foreground"
+                      : "border-border bg-card text-muted-foreground hover:border-primary/40",
+                  )}
+                >
+                  <Icon className="h-4 w-4" />
+                  {SPOT_DEAL_SIDE_LABELS[s]}
+                </button>
+              )
+            })}
+          </div>
+        </div>
+
+        {/* Step 2 — Product */}
+        <div className="flex flex-col gap-2">
+          <StepHeader
+            n={2}
+            title="Product"
+            hint={locked ? "grades this vessel can carry" : "sets the unit and filters compatible vessels"}
+          />
           <Select value={form.productId} onValueChange={handleProduct}>
             <SelectTrigger>
-              <SelectValue placeholder="Select the product to offer" />
+              <SelectValue placeholder={`Select the product to ${form.side === "buy" ? "buy" : "offer"}`} />
             </SelectTrigger>
             <SelectContent>
-              {COMMODITY_CATEGORIES.map((cat) => (
-                <SelectGroup key={cat}>
-                  <SelectLabel>{cat}</SelectLabel>
-                  {PETROLEUM_PRODUCTS.filter((p) => p.category === cat).map((p) => (
-                    <SelectItem key={p.id} value={p.id}>
-                      {p.name}
-                    </SelectItem>
-                  ))}
-                </SelectGroup>
-              ))}
+              {COMMODITY_CATEGORIES.map((cat) => {
+                const items = productsForList.filter((p) => p.category === cat)
+                if (items.length === 0) return null
+                return (
+                  <SelectGroup key={cat}>
+                    <SelectLabel>{cat}</SelectLabel>
+                    {items.map((p) => (
+                      <SelectItem key={p.id} value={p.id}>
+                        {p.name}
+                      </SelectItem>
+                    ))}
+                  </SelectGroup>
+                )
+              })}
             </SelectContent>
           </Select>
           {productChosen && (
@@ -1149,44 +1243,74 @@ function CreateDeal({ vessels, onCreated }: { vessels: Vessel[]; onCreated: () =
           )}
         </div>
 
-        {/* Step 2 — Vessel (filtered by product compatibility) */}
+        {/* Step 3 — Vessel (filtered by product compatibility, or locked) */}
         <div className="flex flex-col gap-2">
           <StepHeader
-            n={2}
+            n={3}
             title="Vessel"
-            hint={productChosen ? `${compatibleVessels.length} compatible in catalogue` : "select a product first"}
+            hint={
+              locked
+                ? "locked to this vessel"
+                : productChosen
+                  ? `${compatibleVessels.length} compatible in catalogue`
+                  : "select a product first"
+            }
           />
-          <Select value={form.vesselImo} onValueChange={handleVessel} disabled={!productChosen}>
-            <SelectTrigger>
-              <SelectValue placeholder={productChosen ? "Select a compatible vessel" : "Choose a product to enable"} />
-            </SelectTrigger>
-            <SelectContent>
-              {compatibleVessels.length === 0 ? (
-                <div className="px-2 py-4 text-center text-xs text-muted-foreground">
-                  No compatible vessels in the catalogue for this product.
-                </div>
-              ) : (
-                compatibleVessels.map((v) => (
-                  <SelectItem key={v.imo} value={v.imo}>
-                    {v.name} — IMO {v.imo} ({VESSEL_TYPE_LABELS[v.type]})
-                  </SelectItem>
-                ))
+          {locked ? (
+            <div className="rounded-lg border border-border bg-muted/40 p-3">
+              <div className="flex items-center gap-2">
+                <Ship className="h-4 w-4 shrink-0 text-muted-foreground" />
+                <span className="truncate font-medium">{lockedVessel?.name ?? "—"}</span>
+                {lockedVessel && (
+                  <Badge variant="outline" className={cn("text-[10px]", TYPE_BADGE[lockedVessel.type])}>
+                    {VESSEL_TYPE_LABELS[lockedVessel.type]}
+                  </Badge>
+                )}
+              </div>
+              {lockedVessel && (
+                <p className="mt-1 text-xs text-muted-foreground">
+                  IMO {lockedVessel.imo} · {lockedVessel.vesselClass || "—"} ·{" "}
+                  {lockedVessel.capacity.toLocaleString("en-US")} {lockedVessel.capacityUnit} ·{" "}
+                  {VESSEL_STATUS_LABELS[lockedVessel.status]} · {lockedVessel.location || "—"}
+                  {lockedVessel.cargo ? ` · carrying ${lockedVessel.cargo}` : ""}
+                </p>
               )}
-            </SelectContent>
-          </Select>
-          {selectedVessel && (
-            <p className="text-xs text-muted-foreground">
-              {selectedVessel.vesselClass || "—"} · {selectedVessel.capacity.toLocaleString("en-US")}{" "}
-              {selectedVessel.capacityUnit} · {VESSEL_STATUS_LABELS[selectedVessel.status]} ·{" "}
-              {selectedVessel.location || "—"}
-              {selectedVessel.cargo ? ` · carrying ${selectedVessel.cargo}` : ""}
-            </p>
+            </div>
+          ) : (
+            <>
+              <Select value={form.vesselImo} onValueChange={handleVessel} disabled={!productChosen}>
+                <SelectTrigger>
+                  <SelectValue placeholder={productChosen ? "Select a compatible vessel" : "Choose a product to enable"} />
+                </SelectTrigger>
+                <SelectContent>
+                  {compatibleVessels.length === 0 ? (
+                    <div className="px-2 py-4 text-center text-xs text-muted-foreground">
+                      No compatible vessels in the catalogue for this product.
+                    </div>
+                  ) : (
+                    compatibleVessels.map((v) => (
+                      <SelectItem key={v.imo} value={v.imo}>
+                        {v.name} — IMO {v.imo} ({VESSEL_TYPE_LABELS[v.type]})
+                      </SelectItem>
+                    ))
+                  )}
+                </SelectContent>
+              </Select>
+              {selectedVessel && (
+                <p className="text-xs text-muted-foreground">
+                  {selectedVessel.vesselClass || "—"} · {selectedVessel.capacity.toLocaleString("en-US")}{" "}
+                  {selectedVessel.capacityUnit} · {VESSEL_STATUS_LABELS[selectedVessel.status]} ·{" "}
+                  {selectedVessel.location || "—"}
+                  {selectedVessel.cargo ? ` · carrying ${selectedVessel.cargo}` : ""}
+                </p>
+              )}
+            </>
           )}
         </div>
 
-        {/* Step 3 — Commercial terms (auto-filled, overridable) */}
+        {/* Step 4 — Commercial terms (auto-filled, overridable) */}
         <div className="flex flex-col gap-3">
-          <StepHeader n={3} title="Terms" hint="auto-filled — review and adjust" />
+          <StepHeader n={4} title="Terms" hint="auto-filled — review and adjust" />
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <div>
               <Label htmlFor="d-qty" className="text-xs">
@@ -1346,7 +1470,9 @@ function CreateDeal({ vessels, onCreated }: { vessels: Vessel[]; onCreated: () =
 
         <div className="flex flex-col items-start justify-between gap-3 rounded-lg border border-border bg-muted/30 p-3 sm:flex-row sm:items-center">
           <div>
-            <p className="text-xs text-muted-foreground">Estimated total value</p>
+            <p className="text-xs text-muted-foreground">
+              Estimated {form.side === "buy" ? "bid" : "offer"} value
+            </p>
             <p className="text-lg font-semibold tabular-nums">{formatMoney(total, form.currency)}</p>
           </div>
           <div className="flex gap-2">
@@ -1355,7 +1481,7 @@ function CreateDeal({ vessels, onCreated }: { vessels: Vessel[]; onCreated: () =
             </Button>
             <Button onClick={() => submit(true)} disabled={submitting}>
               {submitting ? <Loader2 className="mr-1.5 h-4 w-4 animate-spin" /> : <Megaphone className="mr-1.5 h-4 w-4" />}
-              Confirm &amp; Publish
+              Publish {sideVerb}
             </Button>
           </div>
         </div>
@@ -1381,8 +1507,19 @@ function DealStatusBadge({ status }: { status: SpotDeal["status"] }) {
   )
 }
 
-function DealsList({ refreshKey, onChanged }: { refreshKey: number; onChanged: () => void }) {
-  const [deals, setDeals] = useState<SpotDeal[]>([])
+function DealsList({
+  refreshKey,
+  onChanged,
+  vesselImo,
+  emptyLabel = "No spot deals yet.",
+}: {
+  refreshKey: number
+  onChanged: () => void
+  /** When set, only deals against this vessel are shown. */
+  vesselImo?: string
+  emptyLabel?: string
+}) {
+  const [allDeals, setAllDeals] = useState<SpotDeal[]>([])
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState<string | null>(null)
 
@@ -1390,7 +1527,7 @@ function DealsList({ refreshKey, onChanged }: { refreshKey: number; onChanged: (
     setLoading(true)
     try {
       const res = await listSpotDealsAdmin(ADMIN_PASSCODE)
-      if (res.ok) setDeals(res.deals)
+      if (res.ok) setAllDeals(res.deals)
     } finally {
       setLoading(false)
     }
@@ -1399,6 +1536,11 @@ function DealsList({ refreshKey, onChanged }: { refreshKey: number; onChanged: (
   useEffect(() => {
     load()
   }, [load, refreshKey])
+
+  const deals = useMemo(
+    () => (vesselImo ? allDeals.filter((d) => d.vesselImo === vesselImo) : allDeals),
+    [allDeals, vesselImo],
+  )
 
   const act = async (fn: () => Promise<{ ok: boolean; error?: string; delivered?: number }>, id: string, ok: string) => {
     setBusy(id)
@@ -1425,7 +1567,7 @@ function DealsList({ refreshKey, onChanged }: { refreshKey: number; onChanged: (
     )
   }
   if (deals.length === 0) {
-    return <p className="py-10 text-center text-sm text-muted-foreground">No spot deals yet.</p>
+    return <p className="py-10 text-center text-sm text-muted-foreground">{emptyLabel}</p>
   }
 
   return (
@@ -1437,6 +1579,17 @@ function DealsList({ refreshKey, onChanged }: { refreshKey: number; onChanged: (
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div className="flex items-center gap-2">
                 <span className="font-medium">{d.product}</span>
+                <Badge
+                  variant="outline"
+                  className={cn(
+                    "text-[10px]",
+                    (d.side ?? "sell") === "buy"
+                      ? "border-blue-500/30 bg-blue-500/10 text-blue-600"
+                      : "border-emerald-500/30 bg-emerald-500/10 text-emerald-600",
+                  )}
+                >
+                  {SPOT_DEAL_SIDE_LABELS[d.side ?? "sell"]}
+                </Badge>
                 <DealStatusBadge status={d.status} />
                 <span className="font-mono text-[10px] text-muted-foreground">{d.id}</span>
               </div>
@@ -1488,6 +1641,102 @@ function DealsList({ refreshKey, onChanged }: { refreshKey: number; onChanged: (
         )
       })}
     </div>
+  )
+}
+
+// --- Vessel trading operations workspace ------------------------------------
+
+/**
+ * Full operative workspace for a single vessel: live position + particulars,
+ * a spot-desk locked to this ship (buy OR sell its cargo), the deals already
+ * running against it, and a jump-off to the client Commodity Trading section.
+ * Opened by clicking a vessel in the catalogue.
+ */
+function VesselOperations({ vessel, onClose }: { vessel: Vessel | null; onClose: () => void }) {
+  const [refreshKey, setRefreshKey] = useState(0)
+  const bump = useCallback(() => setRefreshKey((k) => k + 1), [])
+
+  return (
+    <Dialog open={vessel !== null} onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="flex max-h-[92vh] flex-col gap-0 overflow-hidden p-0 sm:max-w-2xl">
+        {vessel && (
+          <>
+            <DialogHeader className="space-y-0 border-b border-border p-4 text-left">
+              <DialogTitle className="flex flex-wrap items-center gap-2 text-base">
+                <Ship className="h-4 w-4 shrink-0 text-muted-foreground" />
+                <span className="truncate">{vessel.name}</span>
+                <Badge variant="outline" className={cn("text-[10px]", TYPE_BADGE[vessel.type])}>
+                  {VESSEL_TYPE_LABELS[vessel.type]}
+                </Badge>
+                <ComplianceBadge compliance={vessel.compliance} />
+              </DialogTitle>
+              <DialogDescription className="sr-only">
+                Trading operations for {vessel.name}, IMO {vessel.imo}.
+              </DialogDescription>
+            </DialogHeader>
+
+            <ScrollArea className="flex-1">
+              <div className="flex flex-col gap-4 p-4">
+                {/* Vessel particulars + live AIS position */}
+                <div className="flex flex-col gap-2 rounded-lg border border-border bg-muted/40 p-3">
+                  <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs text-muted-foreground">
+                    <span>IMO {vessel.imo}</span>
+                    <span>{vessel.vesselClass || "—"}</span>
+                    <span className="inline-flex items-center gap-1">
+                      <Gauge className="h-3 w-3" />
+                      {VESSEL_STATUS_LABELS[vessel.status]}
+                    </span>
+                    <span>
+                      {vessel.capacity.toLocaleString("en-US")} {vessel.capacityUnit}
+                    </span>
+                    <span className="inline-flex items-center gap-1">
+                      <Anchor className="h-3 w-3" />
+                      {vessel.location || "—"}
+                    </span>
+                    <span className="inline-flex items-center gap-1">
+                      <Tag className="h-3 w-3" />
+                      {vessel.cargo || "No cargo"}
+                    </span>
+                  </div>
+                  <div className="border-t border-border/60 pt-2">
+                    <VesselLivePositionLine imo={vessel.imo} />
+                  </div>
+                  <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border/60 pt-2">
+                    <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
+                      <Waypoints className="h-3.5 w-3.5" />
+                      Published deals broadcast to clients &amp; listed in Commodity Trading.
+                    </span>
+                    <Button asChild variant="outline" size="sm" className="shrink-0">
+                      <Link href="/dashboard/commodity">
+                        Open Commodity Trading
+                        <ExternalLink className="ml-1.5 h-3.5 w-3.5" />
+                      </Link>
+                    </Button>
+                  </div>
+                </div>
+
+                {/* Spot desk locked to this vessel (buy or sell) */}
+                <CreateDeal vessels={[vessel]} lockedVesselImo={vessel.imo} onCreated={bump} />
+
+                {/* Deals already running against this vessel */}
+                <div className="flex flex-col gap-2">
+                  <h3 className="flex items-center gap-2 text-sm font-medium">
+                    <Megaphone className="h-4 w-4 text-muted-foreground" />
+                    Deals on this vessel
+                  </h3>
+                  <DealsList
+                    refreshKey={refreshKey}
+                    onChanged={bump}
+                    vesselImo={vessel.imo}
+                    emptyLabel="No spot deals on this vessel yet — raise a buy bid or sell offer above."
+                  />
+                </div>
+              </div>
+            </ScrollArea>
+          </>
+        )}
+      </DialogContent>
+    </Dialog>
   )
 }
 
