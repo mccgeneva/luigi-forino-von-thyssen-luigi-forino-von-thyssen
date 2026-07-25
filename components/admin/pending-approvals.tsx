@@ -192,10 +192,12 @@ const statusVariant: Record<ApprovalStatus, "default" | "secondary" | "destructi
 }
 
 export function PendingApprovals({ initialKind }: { initialKind?: ApprovalKind }) {
-  // For commodity, default to showing every status so the administrator can act
-  // on already-approved deals (revoke / mark delivered), not just pending ones.
+  // For commodity and payments, default to showing every status so the
+  // administrator can act on already-approved items (revoke / mark delivered),
+  // not just pending ones. Otherwise an approved payment would drop out of view
+  // and its stage-3 "Mark funds delivered" action would be unreachable.
   const [statusFilter, setStatusFilter] = useState<ApprovalStatus | "all">(
-    initialKind === "commodity" ? "all" : "pending",
+    initialKind === "commodity" || initialKind === "payment" ? "all" : "pending",
   )
   const [kindFilter, setKindFilter] = useState<ApprovalKind | "all">(initialKind ?? "all")
 
