@@ -34,6 +34,19 @@ export interface PaymentRequest {
   // --- Recall lifecycle (set on the original payment when a recall is filed) -
   /** "pending" once a recall is requested, "recalled" once it is approved. */
   recallStatus?: "pending" | "recalled"
+  // --- Delivery lifecycle (stage 3) -----------------------------------------
+  /**
+   * Set to "delivered" once the Administrator confirms the funds reached the
+   * beneficiary account. An approved payment is "Approved & Initiated" (stage 2)
+   * until this is set, at which point it becomes "Completed — Funds Delivered"
+   * (stage 3). The funds already left the account at approval; this is a
+   * delivery confirmation only, not a further ledger movement.
+   */
+  deliveryStatus?: "delivered"
+  /** ISO timestamp the Administrator confirmed delivery. */
+  deliveredAt?: string
+  /** Responsible party who confirmed delivery (for the audit trail). */
+  deliveredBy?: string
 }
 
 /** Routing details assigned to an outgoing payment when it is approved. */

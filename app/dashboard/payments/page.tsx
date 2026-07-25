@@ -54,6 +54,13 @@ import { cn } from "@/lib/utils"
 import { useBeneficiaries } from "@/lib/beneficiaries-store"
 import { useLedger } from "@/lib/ledger-store"
 import { usePaymentRequests, type PaymentRequest } from "@/lib/payment-requests-store"
+import {
+  getPaymentStage,
+  PAYMENT_STAGE_LABEL,
+  PAYMENT_STAGE_SHORT,
+  PAYMENT_STAGE_BADGE_CLASS,
+  type PaymentStage,
+} from "@/lib/payment-status"
 import { requestPaymentRecall } from "@/app/actions/approvals"
 import { exportToCsv } from "@/lib/export-utils"
 import { generateTablePdf, tablePdfFilename } from "@/lib/table-pdf"
@@ -76,7 +83,10 @@ type Payment = {
   beneficiaryCountry: string
   iban: string
   reference: string
+  /** For outgoing rows this holds the three-stage key; incoming rows use "received". */
   status: string
+  /** Canonical three-stage lifecycle for outgoing payments (undefined for incoming credits). */
+  stage?: PaymentStage
   date: string
   time: string
   fee: string
@@ -102,23 +112,35 @@ const formatCurrency = (value: number, currency: string) =>
     maximumFractionDigits: 2,
   })}`
 
-const statusConfig = {
-  completed: {
-    icon: CheckCircle2,
-    color: "bg-green-500/10 text-green-500 border-green-500/20",
-  },
-  pending: {
-    icon: Clock,
-    color: "bg-yellow-500/10 text-yellow-500 border-yellow-500/20",
-  },
-  processing: {
-    icon: AlertCircle,
-    color: "bg-blue-500/10 text-blue-500 border-blue-500/20",
-  },
-  failed: {
-    icon: XCircle,
-    color: "bg-red-500/10 text-red-500 border-red-500/20",
-  },
+// Icon per three-stage lifecycle key. Colours come from the shared
+// PAYMENT_STAGE_BADGE_CLASS so every surface stays consistent.
+const STAGE_ICON: Record<PaymentStage, typeof Clock> = {
+  review: Clock,
+  initiated: AlertCircle,
+  delivered: CheckCircle2,
+  rejected: XCircle,
+  cancelled: XCircle,
+}
+
+/**
+ * Resolve the badge icon, colour, and human label for a payment row. Outgoing
+ * rows follow the canonical three-stage lifecycle; incoming credits are shown
+ * as a simple "Received" success badge.
+ */
+function getStatusView(payment: Payment): { icon: typeof Clock; color: string; label: string } {
+  if (payment.type === "incoming") {
+    return {
+      icon: ArrowDownLeft,
+      color: "bg-green-500/10 text-green-500 border-green-500/20",
+      label: "Received",
+    }
+  }
+  const stage = payment.stage ?? "review"
+  return {
+    icon: STAGE_ICON[stage],
+    color: PAYMENT_STAGE_BADGE_CLASS[stage],
+    label: PAYMENT_STAGE_SHORT[stage],
+  }
 }
 
 
@@ -164,8 +186,10 @@ export default function PaymentsPage() {
         beneficiaryCountry: r.beneficiaryCountry,
         iban: r.iban,
         reference: r.reference,
-        status:
-          r.status === "approved" ? "completed" : r.status === "rejected" ? "failed" : "pending",
+        // Canonical three-stage lifecycle: review → initiated → delivered
+        // (plus rejected). The stage key doubles as the filterable status.
+        stage: getPaymentStage(r),
+        status: getPaymentStage(r),
         date: r.submittedAt.split("T")[0],
         time: new Date(r.submittedAt).toLocaleTimeString("en-GB", {
           hour: "2-digit",
@@ -192,7 +216,7 @@ export default function PaymentsPage() {
           beneficiaryCountry: "—",
           iban: e.account || "—",
           reference: e.reference || "—",
-          status: "completed",
+          status: "received",
           date: e.date.split("T")[0],
           time: "",
           fee: "—",
@@ -225,7 +249,10 @@ export default function PaymentsPage() {
   // An outgoing, approved (completed) payment that has not already been recalled
   // or had a recall filed can be recalled by the client.
   const canRecall = (payment: Payment): boolean => {
-    if (payment.type !== "outgoing" || payment.status !== "completed") return false
+    // A payment can be recalled once it has been approved/initiated (funds have
+    // left the account) — whether or not it has yet been confirmed delivered.
+    if (payment.type !== "outgoing" || (payment.stage !== "initiated" && payment.stage !== "delivered"))
+      return false
     if (recalledLocal.has(payment.id)) return false
     const req = requestByLocalId.get(payment.id)
     return !!req?.approvalId && !req.recallStatus
@@ -601,9 +628,7 @@ export default function PaymentsPage() {
   const incomingTotal = payments
     .filter((p) => p.type === "incoming")
     .reduce((sum, p) => sum + parseAmount(p.amount), 0)
-  const pendingCount = payments.filter(
-    (p) => p.status === "pending" || p.status === "processing",
-  ).length
+  const pendingCount = payments.filter((p) => p.stage === "review").length
 
   const stats = [
     {
@@ -889,11 +914,12 @@ export default function PaymentsPage() {
                   <SelectValue placeholder="Status" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="all">All Status</SelectItem>
-                  <SelectItem value="completed">Completed</SelectItem>
-                  <SelectItem value="pending">Pending</SelectItem>
-                  <SelectItem value="processing">Processing</SelectItem>
-                  <SelectItem value="failed">Failed</SelectItem>
+              <SelectItem value="all">All Status</SelectItem>
+              <SelectItem value="review">In Review</SelectItem>
+              <SelectItem value="initiated">Approved &amp; Initiated</SelectItem>
+              <SelectItem value="delivered">Completed</SelectItem>
+              <SelectItem value="rejected">Rejected</SelectItem>
+              <SelectItem value="received">Received (Incoming)</SelectItem>
                 </SelectContent>
               </Select>
             </div>
@@ -921,7 +947,7 @@ export default function PaymentsPage() {
                 <div className="space-y-3">
                 {filteredPayments.map((payment) => {
                   const status =
-                    statusConfig[payment.status as keyof typeof statusConfig]
+                    getStatusView(payment)
                   const StatusIcon = status.icon
 
                   return (
@@ -986,7 +1012,7 @@ export default function PaymentsPage() {
                               className={cn("text-[10px]", status.color)}
                             >
                               <StatusIcon className="mr-1 h-3 w-3" />
-                              {payment.status}
+                              {status.label}
                             </Badge>
                             {recallStateLabel(payment) && (
                               <Badge
@@ -1051,7 +1077,7 @@ export default function PaymentsPage() {
                   .filter((p) => p.type === "incoming")
                   .map((payment) => {
                     const status =
-                      statusConfig[payment.status as keyof typeof statusConfig]
+                      getStatusView(payment)
                     const StatusIcon = status.icon
 
                     return (
@@ -1080,7 +1106,7 @@ export default function PaymentsPage() {
                             variant="outline"
                             className={cn("text-[10px]", status.color)}
                           >
-                            {payment.status}
+                            {status.label}
                           </Badge>
                         </div>
                       </div>
@@ -1094,7 +1120,7 @@ export default function PaymentsPage() {
                   .filter((p) => p.type === "outgoing")
                   .map((payment) => {
                     const status =
-                      statusConfig[payment.status as keyof typeof statusConfig]
+                      getStatusView(payment)
                     const StatusIcon = status.icon
 
                     return (
@@ -1123,7 +1149,7 @@ export default function PaymentsPage() {
                             variant="outline"
                             className={cn("text-[10px]", status.color)}
                           >
-                            {payment.status}
+                            {status.label}
                           </Badge>
                           {recallStateLabel(payment) ? (
                             <Badge
@@ -1197,7 +1223,12 @@ export default function PaymentsPage() {
                       : "",
                   ],
                   ["Fee", viewPaymentTarget.fee],
-                  ["Status", viewPaymentTarget.status],
+                  [
+                    "Status",
+                    viewPaymentTarget.type === "incoming"
+                      ? "Received"
+                      : PAYMENT_STAGE_LABEL[viewPaymentTarget.stage ?? "review"],
+                  ],
                   ["Date", viewPaymentTarget.time ? `${viewPaymentTarget.date} ${viewPaymentTarget.time}` : viewPaymentTarget.date],
                 ]
                   .filter(([, value]) => value)

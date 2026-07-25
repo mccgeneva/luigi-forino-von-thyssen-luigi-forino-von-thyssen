@@ -1692,13 +1692,17 @@ export async function adminDecideApproval(
           decision === "approved"
             ? awaitingMaster
               ? `${label} awaiting Master approval`
-              : `${label} approved`
+              : updated.kind === "payment"
+                ? "Payment approved & initiated"
+                : `${label} approved`
             : `${label} declined`,
         body:
           decision === "approved"
             ? awaitingMaster
               ? `Your ${label.toLowerCase()} request "${updated.title}" was approved by the administrator and now awaits your Master account's consent.`
-              : `Your ${label.toLowerCase()} request "${updated.title}" was approved.`
+              : updated.kind === "payment"
+                ? `Your payment "${updated.title}" has been approved and initiated — the funds have left your account and are on their way to the beneficiary. You'll be notified once delivery is confirmed.`
+                : `Your ${label.toLowerCase()} request "${updated.title}" was approved.`
             : `Your ${label.toLowerCase()} request "${updated.title}" was declined. Reason: ${note?.trim()}`,
         href: KIND_HREF[updated.kind] ?? null,
       })
@@ -1976,6 +1980,102 @@ export async function adminMarkCommodityDelivered(
   } catch (err) {
     console.log("[v0] adminMarkCommodityDelivered failed:", (err as Error).message)
     return { ok: false, error: "The deal could not be marked delivered. Please try again." }
+  }
+}
+
+/**
+ * Administrator confirms an approved outgoing PAYMENT (bank wire) has reached the
+ * beneficiary account — the third and final stage of the payment lifecycle
+ * ("Payment Completed — Funds Delivered"). The funds already left the sender's
+ * balance when the payment was approved and initiated (stage 2), so this is a
+ * DELIVERY CONFIRMATION only and performs NO further ledger movement.
+ *
+ * It stamps the delivery flag both at the payload top level (`delivered` /
+ * `deliveredAt`, via `markApprovalDelivered`) and inside `payload.record` so the
+ * client's payment store view-model — rebuilt from `payload.record` — reflects
+ * the delivered state on its next poll. The transition is notified to the client
+ * and written to the audit log with a timestamp and the responsible party.
+ */
+export async function adminMarkPaymentDelivered(
+  passcode: string,
+  id: string,
+): Promise<DecideResult> {
+  if (!(await adminOk(passcode))) return { ok: false, error: "Administrator authorization failed." }
+  try {
+    const existing = await getApprovalById(id)
+    if (!existing) return { ok: false, error: "Payment not found." }
+    if (existing.kind !== "payment") {
+      return { ok: false, error: "Only outgoing payments can be marked delivered." }
+    }
+    if (existing.status !== "approved") {
+      return { ok: false, error: "Only an approved & initiated payment can be marked delivered." }
+    }
+    if (existing.payload?.delivered === true) {
+      return { ok: true, request: existing }
+    }
+
+    // Stage the delivery flag at the payload top level (delivered / deliveredAt).
+    const updated = await markApprovalDelivered(id)
+    if (!updated) return { ok: false, error: "This payment can no longer be marked delivered." }
+
+    // Mirror the confirmation into `payload.record` so the client payment store
+    // (which rebuilds its view-model from payload.record) shows stage 3, and
+    // record the responsible party for the audit trail. No funds move here — the
+    // debit posted at approval — so there is no ledger effect.
+    const deliveredAt = (updated.payload?.deliveredAt as string) ?? new Date().toISOString()
+    try {
+      const payload = (updated.payload ?? {}) as Record<string, unknown>
+      const record = (payload.record ?? {}) as Record<string, unknown>
+      const persisted = await updateApprovalPayload(updated.id, {
+        ...payload,
+        deliveredBy: "Administrator",
+        record: {
+          ...record,
+          deliveryStatus: "delivered",
+          deliveredAt,
+          deliveredBy: "Administrator",
+        },
+      })
+      if (persisted) Object.assign(updated, persisted)
+    } catch (err) {
+      console.log("[v0] payment delivery record stamp failed:", (err as Error).message)
+    }
+
+    try {
+      await insertNotification({
+        userId: updated.userId,
+        tone: "success",
+        title: "Payment delivered to beneficiary",
+        body: `Your payment "${updated.title}" has been confirmed delivered — the funds have reached the beneficiary account. This payment is now complete.`,
+        href: KIND_HREF.payment ?? "/dashboard/payments",
+      })
+    } catch (err) {
+      console.log("[v0] payment delivered notification failed:", (err as Error).message)
+    }
+
+    try {
+      const target = await resolveAccountProfileById(updated.userId)
+      await logActivity({
+        action: `Administrator confirmed payment "${updated.title}" delivered to beneficiary for ${target.fullName}`,
+        category: "Administration / Approvals",
+        user: "Administrator",
+        details: {
+          referenceId: updated.id,
+          targetAccount: `${target.fullName} — ${target.email}`,
+          summary: updated.summary || updated.title,
+          amount: updated.amount != null ? formatMoney(updated.amount, updated.currency ?? "") : "(n/a)",
+          decision: "Completed — Funds Delivered",
+          deliveredAt,
+        },
+      })
+    } catch (err) {
+      console.log("[v0] payment delivered activity log failed:", (err as Error).message)
+    }
+
+    return { ok: true, request: updated }
+  } catch (err) {
+    console.log("[v0] adminMarkPaymentDelivered failed:", (err as Error).message)
+    return { ok: false, error: "The payment could not be marked delivered. Please try again." }
   }
 }
 
