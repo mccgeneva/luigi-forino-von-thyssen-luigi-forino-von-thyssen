@@ -4,8 +4,23 @@
 
 import { jsPDF } from "jspdf"
 import type { GeneratedPdf } from "@/lib/pdf-core"
-import { HANDBOOK_META, HANDBOOK_SECTIONS, type HandbookSection } from "./handbook-content"
+import {
+  HANDBOOK_META,
+  HANDBOOK_SECTIONS,
+  type HandbookExample,
+  type HandbookSection,
+} from "./handbook-content"
 import { drawBrandMark } from "@/lib/pdf-logos"
+
+// A preloaded screenshot, keyed by its /public path. Loaded by the caller
+// (the handbook page) before generation because jsPDF's addImage is synchronous
+// and needs pixel data + intrinsic dimensions up front.
+export interface LoadedImage {
+  dataUrl: string
+  width: number
+  height: number
+}
+export type HandbookImageMap = Record<string, LoadedImage>
 
 const BRAND = {
   gold: [245, 140, 0] as [number, number, number],
@@ -16,7 +31,7 @@ const BRAND = {
   white: [255, 255, 255] as [number, number, number],
 }
 
-export function generateHandbookPdf(): GeneratedPdf {
+export function generateHandbookPdf(images: HandbookImageMap = {}): GeneratedPdf {
   const doc = new jsPDF({ unit: "pt", format: "a4" })
   const pageWidth = doc.internal.pageSize.getWidth()
   const pageHeight = doc.internal.pageSize.getHeight()
@@ -112,6 +127,85 @@ export function generateHandbookPdf(): GeneratedPdf {
     doc.setLineWidth(1.5)
     doc.line(margin, y, margin + 28, y)
     y += 16
+  }
+
+  // Numbered step within a worked example (gold circle + wrapped text).
+  const addNumberedStep = (n: number, text: string) => {
+    doc.setFont("helvetica", "normal")
+    doc.setFontSize(10)
+    doc.setTextColor(...BRAND.ink)
+    const indent = 22
+    const lines = doc.splitTextToSize(text, contentWidth - indent - 8) as string[]
+    const lineHeight = 14
+    lines.forEach((ln, i) => {
+      ensureSpace(lineHeight)
+      if (i === 0) {
+        doc.setFillColor(...BRAND.gold)
+        doc.circle(margin + 6, y - 3.5, 7, "F")
+        doc.setTextColor(...BRAND.white)
+        doc.setFont("helvetica", "bold")
+        doc.setFontSize(8)
+        doc.text(String(n), margin + 6, y - 1, { align: "center" })
+        doc.setFont("helvetica", "normal")
+        doc.setFontSize(10)
+        doc.setTextColor(...BRAND.ink)
+      }
+      doc.text(ln, margin + indent, y)
+      y += lineHeight
+    })
+    y += 4
+  }
+
+  // A worked example: title strip, screenshot, caption, then numbered steps.
+  const addExample = (ex: HandbookExample) => {
+    const img = images[ex.image]
+    y += 8
+
+    // Title strip
+    ensureSpace(26)
+    doc.setFillColor(...BRAND.light)
+    doc.rect(margin, y - 12, contentWidth, 22, "F")
+    doc.setDrawColor(...BRAND.gold)
+    doc.setLineWidth(2)
+    doc.line(margin, y - 12, margin, y + 10)
+    doc.setFont("helvetica", "bold")
+    doc.setFontSize(10)
+    doc.setTextColor(...BRAND.ink)
+    doc.text(ex.title, margin + 10, y + 2)
+    y += 20
+
+    // Screenshot, scaled to content width, kept whole on one page.
+    if (img) {
+      const drawW = contentWidth
+      const drawH = (img.height / img.width) * drawW
+      if (y + drawH > bottomLimit) newContentPage()
+      doc.setDrawColor(...BRAND.line)
+      doc.setLineWidth(1)
+      doc.rect(margin, y, drawW, drawH)
+      try {
+        doc.addImage(img.dataUrl, "PNG", margin, y, drawW, drawH, undefined, "FAST")
+      } catch {
+        // If an image fails to embed, skip it gracefully rather than breaking the PDF.
+      }
+      y += drawH + 6
+    }
+
+    // Caption
+    doc.setFont("helvetica", "italic")
+    doc.setFontSize(8.5)
+    const capLines = doc.splitTextToSize(ex.caption, contentWidth) as string[]
+    capLines.forEach((ln) => {
+      ensureSpace(12)
+      doc.setTextColor(...BRAND.slate)
+      doc.text(ln, margin, y)
+      y += 12
+    })
+    doc.setFont("helvetica", "normal")
+    y += 6
+
+    // Numbered steps
+    ex.steps.forEach((step, i) => addNumberedStep(i + 1, step))
+    y += 6
   }
 
   const addSectionTitle = (section: HandbookSection) => {
@@ -230,6 +324,7 @@ export function generateHandbookPdf(): GeneratedPdf {
       addSubheading(sub.heading)
       sub.paragraphs?.forEach((p) => addParagraph(p))
       sub.bullets?.forEach((b) => addBullet(b))
+      sub.examples?.forEach((ex) => addExample(ex))
       y += 6
     })
   })

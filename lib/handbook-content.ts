@@ -2,10 +2,25 @@
 // Consumed by both the on-screen handbook page and the PDF generator so the
 // downloadable document always matches what the client reads in-app.
 
+// A worked example: a real screenshot of an action being taken and the
+// resulting screen, with a plain-language walk-through of the numbered steps.
+export interface HandbookExample {
+  // Short label shown on the example card, e.g. "Example — Sending a payment".
+  title: string
+  // Path to a real captured screenshot under /public (e.g. /handbook/send-money.png).
+  image: string
+  // Alt text / caption describing what the screenshot shows.
+  caption: string
+  // Ordered walk-through steps ("Action" then "Result" read naturally here).
+  steps: string[]
+}
+
 export interface HandbookSubsection {
   heading: string
   paragraphs?: string[]
   bullets?: string[]
+  // Optional worked examples rendered after the text, each with a screenshot.
+  examples?: HandbookExample[]
 }
 
 export interface HandbookSection {
@@ -16,11 +31,25 @@ export interface HandbookSection {
   subsections: HandbookSubsection[]
 }
 
+// Every distinct screenshot path referenced by a worked example, so the PDF
+// generator's caller can preload them all before rendering.
+export function collectHandbookImagePaths(): string[] {
+  const paths = new Set<string>()
+  for (const section of HANDBOOK_SECTIONS) {
+    for (const sub of section.subsections) {
+      for (const ex of sub.examples ?? []) {
+        if (ex.image) paths.add(ex.image)
+      }
+    }
+  }
+  return [...paths]
+}
+
 export const HANDBOOK_META = {
   title: "Client Handbook",
   subtitle: "MCC Banking & Trade Platform — Complete User Guide",
-  version: "Edition 2026.3",
-  lastUpdated: "Last updated: June 2026",
+  version: "Edition 2026.4",
+  lastUpdated: "Last updated: July 2026",
   brand: "MCC Capital",
   legalEntity: "MCC Holding SA",
   address: "Rue du Rhône 14, 1204 Geneva, Switzerland",
@@ -71,6 +100,20 @@ export const HANDBOOK_SECTIONS: HandbookSection[] = [
           "Recent transactions — your latest incoming and outgoing movements.",
           "Performance chart — cumulative balance plotted from your dated ledger entries.",
           "Quick actions — shortcuts to send payments, receive funds, and more.",
+        ],
+        examples: [
+          {
+            title: "Example — Reading your Overview",
+            image: "/handbook/overview.png",
+            caption:
+              "The Overview page for a live account, showing the membership banner, multi-currency Account Balances, and headline metrics.",
+            steps: [
+              "Action: Sign in and land on the Overview page (Banking → Overview in the sidebar).",
+              "Result: Your membership tier is shown at the top, followed by Account Balances — one card per currency (EUR, USD, GBP, CHF) with the live balance for each.",
+              "Below the balances, the Total across all currencies is shown in EUR equivalent, alongside Active Instruments, 30-day Volume, and Bank Partners.",
+              "Every figure is drawn from your real ledger — there are no placeholder or demonstration numbers anywhere on the platform.",
+            ],
+          },
         ],
       },
       {
@@ -165,6 +208,21 @@ export const HANDBOOK_SECTIONS: HandbookSection[] = [
           "3. Add a payment reference for the recipient and your own records.",
           "4. Review the summary, including any cross-currency conversion.",
           "5. Confirm — the payment is submitted for Administrator authorization where required, then executed.",
+        ],
+        examples: [
+          {
+            title: "Example — Sending a payment",
+            image: "/handbook/send-money.png",
+            caption:
+              "The Send Money screen with a new transfer being composed. The header cards show Available Balance, Total Sent, and Total Received.",
+            steps: [
+              "Action: Go to Send Money and keep the Instant tab selected to pay another verified MCC account holder in real time. (Use the Approval tab to pay any other recipient via Administrator review.)",
+              "Action: Enter the recipient's registered email in Recipient email. The platform checks it live — here it reports 'No account found for this email yet', so this recipient would need the Approval route.",
+              "Action: Type the Amount (250,000) and pick the debit Currency (EUR). Your available balance is shown directly beneath so you never overspend.",
+              "Action: Add an optional Reference (Invoice 2026-014) that appears on both statements, then confirm.",
+              "Result: An instant transfer settles immediately and appears in Transfer History; an approval transfer is queued for the Administrator and executes once authorized.",
+            ],
+          },
         ],
       },
       {
@@ -305,6 +363,20 @@ export const HANDBOOK_SECTIONS: HandbookSection[] = [
           "Guided deal stages from structuring through to execution.",
           "Administrator review and document verification at each step.",
         ],
+        examples: [
+          {
+            title: "Example — The Commodity Trading Desk",
+            image: "/handbook/commodity-desk.png",
+            caption:
+              "The Commodity Trading Desk landing view, showing the standard six-step transaction sequence and the workflow tabs.",
+            steps: [
+              "Action: Open the Commodity Trading Desk (Trading & Instruments → Commodity).",
+              "Result: The Standard transaction sequence is shown as six numbered stages — ICPO, FCO, Contract, POP, POF, and Execution — so you always know where a deal sits.",
+              "Use the tabs below (Quotations, Spot Deals, Deal Workflow, Proof of Product, Proof of Funds) to move between pricing, live offers, your deals, and document management.",
+              "The Quotations board shows indicative CIF/FOB cargo prices across major petroleum ports — reference levels for structuring; confirm firm pricing with the desk before execution.",
+            ],
+          },
+        ],
       },
       {
         heading: "Commodity Quotations & Benchmarks",
@@ -322,6 +394,20 @@ export const HANDBOOK_SECTIONS: HandbookSection[] = [
           "Associated vessel and a live countdown to expiry.",
           "Funds are reserved on commitment and released if a deal is cancelled.",
           "Insufficiently funded commitments are automatically declined — never overdrawn.",
+        ],
+        examples: [
+          {
+            title: "Example — Managing one of your deals",
+            image: "/handbook/deal-tools.png",
+            caption:
+              "A committed spot deal in the Deal Workflow tab: an approved, delivered Arab Light cargo showing the full stage tracker and the Deal tools row.",
+            steps: [
+              "Action: Open the Deal Workflow tab and scroll to My deals to see every deal you have committed to.",
+              "Result: Each deal card shows its status badges (Approved, Delivered), the ICPO → FCO → Contract → POP → POF → Execution stage tracker, and the full commercial terms — value, commodity, quantity, unit price, buyer, seller, and route.",
+              "The Deal tools row lets you manage a deal directly: Edit terms, Suspend (pause the workflow), Freeze (lock it and keep funds blocked), or Delete (which releases any reserved funds back to your balance).",
+              "Result: Once a deal is Delivered & finalized it is locked — as the banner here confirms, it can no longer be revoked, so only the permitted tools remain available.",
+            ],
+          },
         ],
       },
       {
@@ -383,6 +469,21 @@ export const HANDBOOK_SECTIONS: HandbookSection[] = [
           "Type a question — for example about a benchmark price, a spot deal, or your balances.",
           "Use the suggested prompts to get started quickly.",
           "Start a fresh conversation at any time with the New control.",
+        ],
+        examples: [
+          {
+            title: "Example — Asking NQAi",
+            image: "/handbook/nqai.png",
+            caption:
+              "The NQAi Co-Pilot workspace: saved conversations on the left, a personalized greeting, and one-tap suggested prompts.",
+            steps: [
+              "Action: Open NQAi Co-Pilot from the Terminal group in the sidebar (or the NQAi button in the header).",
+              "Result: NQAi greets you with a briefing built from your own secure context — here it confirms the desk is loaded and states the account's available balance.",
+              "Action: Pick a suggested prompt such as 'Brent vs WTI today' or 'Explain CIF vs FOB', or type your own question in the box at the bottom.",
+              "Action: Attach a PDF, image, or CSV to have NQAi analyze it — it can also prepare downloadable PDF documents for you.",
+              "Result: The conversation is saved privately to your account and appears in the left-hand list, so you can continue it later across sessions.",
+            ],
+          },
         ],
       },
       {
@@ -473,6 +574,20 @@ export const HANDBOOK_SECTIONS: HandbookSection[] = [
         paragraphs: [
           "You request a certificate from the Certificates page, selecting the type and any required parameters. The request is generated from your verified account data and submitted for MCC Capital approval. Once approved, you can download the certificate as a professionally formatted, branded PDF.",
           "Because certificates draw on your real balances and profile, they always reflect your current position — there are no placeholder figures.",
+        ],
+        examples: [
+          {
+            title: "Example — Requesting a certificate",
+            image: "/handbook/certificates.png",
+            caption:
+              "The Bank Certificates page listing the available certificate types, each with a Request Certificate button, above your issued-certificates history.",
+            steps: [
+              "Action: Open Certificates (Banking → Certificates) to see the available types — Good Standing, Endorsement, Proof of Funds, and Ownership.",
+              "Action: Click Request Certificate under the type you need. The request is built automatically from your verified account data.",
+              "Result: The request is submitted to the MCC Capital Compliance Office for approval; each issued document carries a unique reference, verification code, watermark, and official seal, with a full audit trail retained.",
+              "Result: Once approved, the certificate appears under Your Certificates and can be downloaded as a branded PDF.",
+            ],
+          },
         ],
       },
     ],

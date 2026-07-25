@@ -1,20 +1,63 @@
 "use client"
 
+import Image from "next/image"
 import { BookOpen, Download, FileText, ChevronRight } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { useActivityLog } from "@/components/activity-tracker"
-import { generateHandbookPdf } from "@/lib/handbook-pdf"
+import { generateHandbookPdf, type HandbookImageMap } from "@/lib/handbook-pdf"
 import { usePdfViewer } from "@/lib/pdf-viewer"
-import { HANDBOOK_META, HANDBOOK_SECTIONS } from "@/lib/handbook-content"
+import { HANDBOOK_META, HANDBOOK_SECTIONS, collectHandbookImagePaths } from "@/lib/handbook-content"
+import { useState } from "react"
+
+// Load a /public image into a PNG data URL + intrinsic size for jsPDF, which
+// needs pixel data synchronously at render time. Failures are tolerated so the
+// PDF still generates (just without that one screenshot).
+async function loadImage(path: string): Promise<{ dataUrl: string; width: number; height: number } | null> {
+  try {
+    const res = await fetch(path)
+    const blob = await res.blob()
+    const dataUrl = await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader()
+      reader.onload = () => resolve(reader.result as string)
+      reader.onerror = reject
+      reader.readAsDataURL(blob)
+    })
+    const dims = await new Promise<{ width: number; height: number }>((resolve, reject) => {
+      const img = new window.Image()
+      img.onload = () => resolve({ width: img.naturalWidth, height: img.naturalHeight })
+      img.onerror = reject
+      img.src = dataUrl
+    })
+    return { dataUrl, ...dims }
+  } catch {
+    return null
+  }
+}
 
 export default function HandbookPage() {
   const logActivity = useActivityLog()
   const { show } = usePdfViewer()
+  const [preparing, setPreparing] = useState(false)
 
-  const handleDownload = () => {
-    show(generateHandbookPdf())
+  const handleDownload = async () => {
+    if (preparing) return
+    setPreparing(true)
+    // Preload every worked-example screenshot before generating (jsPDF is sync).
+    const paths = collectHandbookImagePaths()
+    const entries = await Promise.all(
+      paths.map(async (p) => {
+        const loaded = await loadImage(p)
+        return loaded ? ([p, loaded] as const) : null
+      }),
+    )
+    const images: HandbookImageMap = {}
+    for (const entry of entries) {
+      if (entry) images[entry[0]] = entry[1]
+    }
+    show(generateHandbookPdf(images))
+    setPreparing(false)
     logActivity({
       action: "Downloaded the MCC Capital Client Handbook (PDF)",
       category: "Platform",
@@ -65,9 +108,9 @@ export default function HandbookPage() {
               </p>
             </div>
           </div>
-          <Button size="lg" className="shrink-0" onClick={handleDownload}>
+          <Button size="lg" className="shrink-0" onClick={handleDownload} disabled={preparing}>
             <Download className="mr-2 h-4 w-4" />
-            Download PDF
+            {preparing ? "Preparing…" : "Download PDF"}
           </Button>
         </CardContent>
       </Card>
@@ -133,6 +176,42 @@ export default function HandbookPage() {
                       ))}
                     </ul>
                   )}
+                  {sub.examples?.map((ex, ei) => (
+                    <div
+                      key={ei}
+                      className="mt-4 overflow-hidden rounded-xl border border-border bg-secondary/30"
+                    >
+                      <div className="flex items-center gap-2 border-b border-border bg-secondary/50 px-4 py-2.5">
+                        <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-md bg-primary/15 text-[10px] font-bold text-primary">
+                          EX
+                        </span>
+                        <span className="text-xs font-semibold text-foreground">{ex.title}</span>
+                      </div>
+                      <figure className="border-b border-border bg-background/50">
+                        <Image
+                          src={ex.image || "/placeholder.svg"}
+                          alt={ex.caption}
+                          width={1280}
+                          height={900}
+                          className="h-auto w-full"
+                          sizes="(max-width: 768px) 100vw, 768px"
+                        />
+                        <figcaption className="px-4 py-2 text-[11px] italic text-muted-foreground text-pretty">
+                          {ex.caption}
+                        </figcaption>
+                      </figure>
+                      <ol className="space-y-2 p-4">
+                        {ex.steps.map((step, si) => (
+                          <li key={si} className="flex items-start gap-2.5 text-sm text-muted-foreground">
+                            <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-primary/15 text-[11px] font-bold text-primary">
+                              {si + 1}
+                            </span>
+                            <span className="text-pretty leading-relaxed">{step}</span>
+                          </li>
+                        ))}
+                      </ol>
+                    </div>
+                  ))}
                 </div>
               ))}
             </CardContent>
@@ -146,9 +225,9 @@ export default function HandbookPage() {
           <p className="text-sm text-muted-foreground text-pretty">
             Keep a copy of this handbook for your records.
           </p>
-          <Button onClick={handleDownload}>
+          <Button onClick={handleDownload} disabled={preparing}>
             <Download className="mr-2 h-4 w-4" />
-            Download PDF
+            {preparing ? "Preparing…" : "Download PDF"}
           </Button>
         </CardContent>
       </Card>
