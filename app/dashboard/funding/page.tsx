@@ -1561,6 +1561,82 @@ export default function ProjectFundingPage() {
           )}
         </TabsContent>
       </Tabs>
+
+      {/* Early-closure confirmation with a live payoff breakdown */}
+      <Dialog open={!!closeTarget} onOpenChange={(open) => !open && setCloseTarget(null)}>
+        <DialogContent>
+          {closeTarget &&
+            (() => {
+              const payoff = computeFundingSettlement(closeTarget, new Date())
+              return (
+                <>
+                  <DialogHeader>
+                    <DialogTitle>Confirm early closure</DialogTitle>
+                    <DialogDescription>
+                      Request early closure of &ldquo;{closeTarget.projectName}&rdquo; ({closeTarget.id}).
+                      On Administrator approval, the payoff below is debited from your master account
+                      balance and interest stops accruing.
+                    </DialogDescription>
+                  </DialogHeader>
+                  <div className="space-y-3 py-2">
+                    <div className="rounded-lg border border-border bg-muted/20 p-3 text-sm">
+                      <div className="flex items-center justify-between">
+                        <span className="text-muted-foreground">Principal</span>
+                        <span className="text-foreground">
+                          {formatMoney(payoff.principal, payoff.currency)}
+                        </span>
+                      </div>
+                      <div className="mt-1 flex items-center justify-between">
+                        <span className="text-muted-foreground">Outstanding interest</span>
+                        <span className="text-foreground">
+                          {formatMoney(payoff.interest, payoff.currency)}
+                        </span>
+                      </div>
+                      <div className="mt-1 flex items-center justify-between">
+                        <span className="text-muted-foreground">
+                          Early-exit fee ({formatPercent(AES_EARLY_REDEMPTION_RATE)})
+                        </span>
+                        <span className="text-foreground">
+                          {formatMoney(payoff.fee, payoff.currency)}
+                        </span>
+                      </div>
+                      <div className="mt-2 flex items-center justify-between border-t border-border pt-2 font-semibold">
+                        <span className="text-foreground">Payoff today</span>
+                        <span className="text-foreground">
+                          {formatMoney(payoff.total, payoff.currency)}
+                        </span>
+                      </div>
+                    </div>
+                    <p className="text-xs text-muted-foreground text-pretty">
+                      This quote is indicative &mdash; the final payoff is recalculated at the moment the
+                      Administrator settles the facility.
+                    </p>
+                    <div className="space-y-1.5">
+                      <label htmlFor="closure-note" className="text-xs font-medium text-foreground">
+                        Reason (optional)
+                      </label>
+                      <Textarea
+                        id="closure-note"
+                        value={closeNote}
+                        onChange={(e) => setCloseNote(e.target.value)}
+                        placeholder="Add an optional note for the Administrator"
+                        rows={3}
+                      />
+                    </div>
+                  </div>
+                  <DialogFooter>
+                    <Button variant="outline" onClick={() => setCloseTarget(null)} disabled={closeBusy}>
+                      Cancel
+                    </Button>
+                    <Button onClick={handleRequestClosure} disabled={closeBusy}>
+                      {closeBusy ? "Submitting\u2026" : "Submit request"}
+                    </Button>
+                  </DialogFooter>
+                </>
+              )
+            })()}
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

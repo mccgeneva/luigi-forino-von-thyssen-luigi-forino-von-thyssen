@@ -130,7 +130,7 @@ interface ProjectFundingContextValue {
   /** Reject a pending application with an optional reason. */
   rejectRequest: (id: string, reason?: string) => ProjectFundingRequest | null
   /** Re-hydrate the list from the server (after a closure request, settlement, etc.). */
-  refresh: () => void | Promise<void>
+  refresh: () => void | Promise<unknown>
   hydrated: boolean
 }
 
