@@ -196,7 +196,7 @@ export function PortfolioOverview() {
                     <Lock className="h-3 w-3" />
                     <span>{cb.reservedFormatted} reserved</span>
                     <span className="ml-auto inline-flex items-center gap-0.5 text-amber-600/80 underline underline-offset-2">
-                      Why?
+                      View details
                       <ChevronRight className="h-3 w-3" />
                     </span>
                   </button>

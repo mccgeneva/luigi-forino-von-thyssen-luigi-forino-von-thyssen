@@ -284,7 +284,7 @@ export default function AccountDetailPage() {
                                 {formatCurrency(reserved, account.currency)}
                               </p>
                               <span className="mt-0.5 inline-block text-[10px] font-medium text-amber-400/80 underline underline-offset-2">
-                                Why?
+                                View details
                               </span>
                             </button>
                           ) : (
