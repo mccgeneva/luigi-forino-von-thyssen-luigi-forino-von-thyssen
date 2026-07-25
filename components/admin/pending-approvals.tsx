@@ -72,6 +72,11 @@ import {
   type ClientFinancialSnapshot,
 } from "@/app/actions/ledger"
 import { APPROVAL_KINDS, KIND_LABELS, type ApprovalKind } from "@/lib/approval-kinds"
+import {
+  PAYMENT_STAGE_SHORT,
+  PAYMENT_STAGE_BADGE_CLASS,
+  type PaymentStage,
+} from "@/lib/payment-status"
 import type { ApprovalRequest, ApprovalStatus } from "@/lib/approvals-db"
 import { DealDocsVesselDialog } from "@/components/admin/deal-docs-vessel-dialog"
 
@@ -341,6 +346,21 @@ export function PendingApprovals({ initialKind }: { initialKind?: ApprovalKind }
       return
     }
     toast.success("Deal flagged delivered. It is now locked from client revocation.")
+    mutate()
+  }
+
+  // Stage 3 for outgoing payments: confirm the wire reached the beneficiary. No
+  // funds move (the debit posted at approval) — this only advances the payment
+  // from "Approved & Initiated" to "Completed — Funds Delivered".
+  const markPaymentDelivered = async (id: string) => {
+    setActing(true)
+    const res = await adminMarkPaymentDelivered(ADMIN_PASSCODE, id)
+    setActing(false)
+    if (!res.ok) {
+      toast.error(res.error)
+      return
+    }
+    toast.success("Payment confirmed delivered. The client sees it as completed.")
     mutate()
   }
 
@@ -627,6 +647,20 @@ export function PendingApprovals({ initialKind }: { initialKind?: ApprovalKind }
               const isSharedCopy = (req.payload as { sharedReadOnly?: boolean } | undefined)?.sharedReadOnly === true
               const canMarkDelivered =
                 req.kind === "commodity" && req.status === "approved" && !isDelivered && !isSharedCopy
+              // Stage 3 for outgoing payments: an approved, not-yet-delivered wire.
+              const isPayment = req.kind === "payment"
+              const canMarkPaymentDelivered =
+                isPayment && req.status === "approved" && !isDelivered
+              // Three-stage lifecycle label for outgoing payments.
+              const paymentStage: PaymentStage | null = isPayment
+                ? req.status === "rejected"
+                  ? "rejected"
+                  : req.status === "approved"
+                    ? isDelivered
+                      ? "delivered"
+                      : "initiated"
+                    : "review"
+                : null
               // Active suspend/freeze hold on this deal, if any.
               const held = (req.payload?.record as { hold?: { state?: DealHoldState } } | undefined)?.hold?.state
               // The admin deal-tools row applies to any real (non-shared, non-delivered)
@@ -651,10 +685,19 @@ export function PendingApprovals({ initialKind }: { initialKind?: ApprovalKind }
                         <Badge variant="outline" className="text-[10px]">
                           {KIND_LABELS[req.kind]}
                         </Badge>
-                        <Badge variant={statusVariant[req.status]} className="text-[10px] capitalize">
-                          {req.status}
-                        </Badge>
-                        {isDelivered && (
+                        {paymentStage ? (
+                          <Badge
+                            variant="outline"
+                            className={`text-[10px] ${PAYMENT_STAGE_BADGE_CLASS[paymentStage]}`}
+                          >
+                            {PAYMENT_STAGE_SHORT[paymentStage]}
+                          </Badge>
+                        ) : (
+                          <Badge variant={statusVariant[req.status]} className="text-[10px] capitalize">
+                            {req.status}
+                          </Badge>
+                        )}
+                        {isDelivered && !isPayment && (
                           <Badge
                             variant="outline"
                             className="border-green-500/30 bg-green-500/10 text-green-600 text-[10px]"
@@ -764,6 +807,33 @@ export function PendingApprovals({ initialKind }: { initialKind?: ApprovalKind }
                       <Badge variant="outline" className="gap-1 text-muted-foreground">
                         <Eye className="h-3.5 w-3.5" /> Shared read-only copy
                       </Badge>
+                    </div>
+                  )}
+
+                  {/* Stage 3 for outgoing payments: confirm the wire reached the
+                      beneficiary, moving it from "Approved & Initiated" to
+                      "Completed — Funds Delivered". No funds move here. */}
+                  {isPayment && req.status === "approved" && (
+                    <div className="flex shrink-0 items-center justify-end">
+                      {canMarkPaymentDelivered ? (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="h-8 gap-1 text-emerald-600"
+                          disabled={acting}
+                          onClick={() => markPaymentDelivered(req.id)}
+                          title="Confirm the funds have reached the beneficiary account. Marks this payment complete for the client."
+                        >
+                          <PackageCheck className="h-3.5 w-3.5" /> Mark funds delivered
+                        </Button>
+                      ) : (
+                        <Badge
+                          variant="outline"
+                          className="gap-1 border-green-500/30 bg-green-500/10 text-green-600"
+                        >
+                          <PackageCheck className="h-3.5 w-3.5" /> Funds delivered
+                        </Badge>
+                      )}
                     </div>
                   )}
 

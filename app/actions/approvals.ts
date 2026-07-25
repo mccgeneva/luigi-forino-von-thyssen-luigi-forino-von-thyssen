@@ -1692,13 +1692,17 @@ export async function adminDecideApproval(
           decision === "approved"
             ? awaitingMaster
               ? `${label} awaiting Master approval`
-              : `${label} approved`
+              : updated.kind === "payment"
+                ? "Payment approved & initiated"
+                : `${label} approved`
             : `${label} declined`,
         body:
           decision === "approved"
             ? awaitingMaster
               ? `Your ${label.toLowerCase()} request "${updated.title}" was approved by the administrator and now awaits your Master account's consent.`
-              : `Your ${label.toLowerCase()} request "${updated.title}" was approved.`
+              : updated.kind === "payment"
+                ? `Your payment "${updated.title}" has been approved and initiated — the funds have left your account and are on their way to the beneficiary. You'll be notified once delivery is confirmed.`
+                : `Your ${label.toLowerCase()} request "${updated.title}" was approved.`
             : `Your ${label.toLowerCase()} request "${updated.title}" was declined. Reason: ${note?.trim()}`,
         href: KIND_HREF[updated.kind] ?? null,
       })
