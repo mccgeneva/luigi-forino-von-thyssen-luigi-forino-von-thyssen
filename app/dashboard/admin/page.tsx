@@ -42,6 +42,7 @@ import {
   Fingerprint,
   User,
   Undo2,
+  PackageCheck,
 } from "lucide-react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -123,7 +124,13 @@ import {
   adminCountPending,
   adminDecideApproval,
   adminUpdateApprovalRecord,
+  adminMarkPaymentDelivered,
 } from "@/app/actions/approvals"
+import {
+  getPaymentStage,
+  PAYMENT_STAGE_SHORT,
+  PAYMENT_STAGE_BADGE_CLASS,
+} from "@/lib/payment-status"
 import {
   adminListProjectFinance,
   adminExecuteFundingClosure,
@@ -170,7 +177,7 @@ export default function AdminPage() {
   // cards; any other value renders that single section with a back-to-menu bar.
   const [activeView, setActiveView] = useState<string>("menu")
 
-  const { requests, approveRequest, rejectRequest } = usePaymentRequests()
+  const { requests, approveRequest, rejectRequest, markDelivered } = usePaymentRequests()
   const {
     instruments,
     approveInstrument,
@@ -1958,6 +1965,35 @@ export default function AdminPage() {
     setRejectReason("")
   }
 
+  // Stage 3: confirm an approved outgoing payment reached the beneficiary,
+  // advancing it from "Approved & Initiated" to "Completed — Funds Delivered".
+  // The funds already left the account at approval, so no money moves here. We
+  // update the local view optimistically and persist to the server so the change
+  // survives the next refresh and is reflected on the client's side.
+  const handleMarkPaymentDelivered = async (request: PaymentRequest) => {
+    markDelivered(request.id)
+    toast.success("Payment marked delivered", {
+      description: `${formatCurrency(request.amount, request.currency)} to ${request.beneficiary} is now confirmed delivered and complete.`,
+    })
+    logActivity({
+      action: `Administrator confirmed payment ${request.id} delivered to ${request.beneficiary}`,
+      category: "Administration",
+      details: {
+        summary: `Administrator confirmed outgoing payment ${request.id} to ${request.beneficiary} (${request.beneficiaryCountry}) was delivered to the beneficiary account. Funds ${formatCurrency(request.amount, request.currency)} already debited at approval; this is a delivery confirmation only.`,
+        paymentId: request.id,
+        beneficiary: request.beneficiary,
+        amount: formatCurrency(request.amount, request.currency),
+        decision: "Completed — Funds Delivered",
+      },
+    })
+    if (request.approvalId) {
+      const res = await adminMarkPaymentDelivered(ADMIN_PASSCODE, request.approvalId)
+      if (!res.ok) {
+        toast.error("Could not persist delivery", { description: res.error })
+      }
+    }
+  }
+
   // ---------------------------------------------------------------------------
   // Pending Decisions command center
   // A single index of everything awaiting an administrator decision across all
@@ -2508,27 +2544,25 @@ export default function AdminPage() {
               No decisions yet. Approved and rejected requests will appear here.
             </p>
           ) : (
-            decided.map((r) => (
+            decided.map((r) => {
+              // Three-stage lifecycle: review → initiated → delivered (+ rejected).
+              const stage = getPaymentStage(r)
+              const canMarkDelivered = stage === "initiated"
+              return (
               <div
                 key={r.id}
-                className="flex flex-col gap-2 rounded-lg border border-border p-3 sm:flex-row sm:items-center sm:justify-between"
+                className="flex flex-col gap-3 rounded-lg border border-border p-3 sm:flex-row sm:items-center sm:justify-between"
               >
                 <div className="flex items-center gap-3">
-                  <Badge
-                    variant="outline"
-                    className={cn(
-                      "text-[10px]",
-                      r.status === "approved"
-                        ? "border-green-500/20 bg-green-500/10 text-green-500"
-                        : "border-red-500/20 bg-red-500/10 text-red-500",
-                    )}
-                  >
-                    {r.status === "approved" ? (
-                      <Check className="mr-1 h-3 w-3" />
-                    ) : (
+                  <Badge variant="outline" className={cn("text-[10px]", PAYMENT_STAGE_BADGE_CLASS[stage])}>
+                    {stage === "delivered" ? (
+                      <PackageCheck className="mr-1 h-3 w-3" />
+                    ) : stage === "rejected" ? (
                       <X className="mr-1 h-3 w-3" />
+                    ) : (
+                      <Check className="mr-1 h-3 w-3" />
                     )}
-                    {r.status === "approved" ? "Approved" : "Rejected"}
+                    {PAYMENT_STAGE_SHORT[stage]}
                   </Badge>
                   <div>
                     <p className="text-sm font-medium text-foreground">
@@ -2540,11 +2574,25 @@ export default function AdminPage() {
                     </p>
                   </div>
                 </div>
-                <span className="text-sm font-medium text-foreground">
-                  {formatCurrency(r.total, r.currency)}
-                </span>
+                <div className="flex items-center gap-3 sm:justify-end">
+                  {canMarkDelivered && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-8 gap-1 text-emerald-600"
+                      onClick={() => handleMarkPaymentDelivered(r)}
+                      title="Confirm the funds reached the beneficiary account. Marks this payment complete for the client."
+                    >
+                      <PackageCheck className="h-3.5 w-3.5" /> Mark funds delivered
+                    </Button>
+                  )}
+                  <span className="text-sm font-medium text-foreground">
+                    {formatCurrency(r.total, r.currency)}
+                  </span>
+                </div>
               </div>
-            ))
+              )
+            })
           )}
         </CardContent>
       </Card>

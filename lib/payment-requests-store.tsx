@@ -69,6 +69,12 @@ interface PaymentRequestsContextValue {
   approveRequest: (id: string, routing?: PaymentRouting) => PaymentRequest | null
   /** Mark a pending request rejected with an optional reason. No funds move. */
   rejectRequest: (id: string, reason?: string) => PaymentRequest | null
+  /**
+   * Mark an approved request as delivered (stage 3, "Completed — Funds
+   * Delivered"). Optimistic local update only; the caller must also persist via
+   * the server so the change survives the next refresh and reaches the client.
+   */
+  markDelivered: (id: string) => PaymentRequest | null
   hydrated: boolean
 }
 
@@ -167,9 +173,29 @@ export function PaymentRequestsProvider({ children }: { children: React.ReactNod
     return updated
   }
 
+  const markDelivered: PaymentRequestsContextValue["markDelivered"] = (id) => {
+    let updated: PaymentRequest | null = null
+    setRequests(
+      requests.map((r) => {
+        // Only an approved, not-yet-delivered payment can advance to stage 3.
+        if (r.id === id && r.status === "approved" && r.deliveryStatus !== "delivered") {
+          updated = {
+            ...r,
+            deliveryStatus: "delivered",
+            deliveredAt: new Date().toISOString(),
+            deliveredBy: "Administrator",
+          }
+          return updated
+        }
+        return r
+      }),
+    )
+    return updated
+  }
+
   return (
     <PaymentRequestsContext.Provider
-      value={{ requests, addRequest, approveRequest, rejectRequest, hydrated }}
+      value={{ requests, addRequest, approveRequest, rejectRequest, markDelivered, hydrated }}
     >
       {children}
     </PaymentRequestsContext.Provider>
