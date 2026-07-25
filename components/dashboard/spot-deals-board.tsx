@@ -75,7 +75,19 @@ function SpotDealCard({
               <Icon className="h-5 w-5" />
             </span>
             <div className="min-w-0">
-              <p className="text-pretty text-sm font-semibold leading-tight text-foreground">{deal.product}</p>
+              <div className="flex flex-wrap items-center gap-1.5">
+                <p className="text-pretty text-sm font-semibold leading-tight text-foreground">{deal.product}</p>
+                <span
+                  className={cn(
+                    "inline-flex items-center rounded-full border px-1.5 py-0.5 text-[10px] font-semibold",
+                    (deal.side ?? "sell") === "buy"
+                      ? "border-blue-500/30 bg-blue-500/10 text-blue-500"
+                      : "border-emerald-500/30 bg-emerald-500/10 text-emerald-500",
+                  )}
+                >
+                  {(deal.side ?? "sell") === "buy" ? "Desk buying" : "For sale"}
+                </span>
+              </div>
               <p className="mt-0.5 text-xs text-muted-foreground">{VESSEL_TYPE_LABELS[deal.vesselType]}</p>
             </div>
           </div>
@@ -127,7 +139,7 @@ function SpotDealCard({
           </div>
           <Button size="sm" disabled={cd.expired} onClick={() => onSelect(deal)} className="gap-1.5">
             <Handshake className="h-4 w-4" />
-            Accept / Negotiate
+            {(deal.side ?? "sell") === "buy" ? "Sell / Negotiate" : "Accept / Negotiate"}
           </Button>
         </div>
 
@@ -400,16 +412,26 @@ export function SpotDealsBoard({
           ) : null}
 
           <p className="text-xs text-muted-foreground text-pretty">
-            <span className="font-medium text-foreground">Accept &amp; reserve</span> claims this cargo and removes it
-            from the public board, then pre-fills a deal for Administrator approval.{" "}
+            {(selected?.side ?? "sell") === "buy" ? (
+              <>
+                <span className="font-medium text-foreground">Accept &amp; sell</span> commits this cargo to the desk&apos;s
+                bid and removes it from the public board, then pre-fills a deal for Administrator approval.
+              </>
+            ) : (
+              <>
+                <span className="font-medium text-foreground">Accept &amp; reserve</span> claims this cargo and removes it
+                from the public board, then pre-fills a deal for Administrator approval.
+              </>
+            )}{" "}
             <span className="font-medium text-foreground">Negotiate</span> opens the deal form to propose different
-            terms while leaving the offer open. Nothing executes or moves funds automatically.
+            terms while leaving the {(selected?.side ?? "sell") === "buy" ? "bid" : "offer"} open. Nothing executes or
+            moves funds automatically.
           </p>
 
           <DialogFooter className="flex-col gap-2 sm:flex-col">
             <Button onClick={handleAccept} disabled={accepting} className="w-full gap-1.5">
               {accepting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Handshake className="h-4 w-4" />}
-              Accept &amp; reserve cargo
+              {(selected?.side ?? "sell") === "buy" ? "Accept bid & commit cargo" : "Accept & reserve cargo"}
             </Button>
             <Button variant="outline" onClick={handleNegotiate} disabled={accepting} className="w-full gap-1.5">
               <MessageSquare className="h-4 w-4" />
