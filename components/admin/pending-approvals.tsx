@@ -60,6 +60,7 @@ import {
   adminDecideApproval,
   adminBulkDecide,
   adminMarkCommodityDelivered,
+  adminMarkPaymentDelivered,
   adminRevokeCommodityDeal,
   adminShareCommodityDeal,
   adminSetCommodityDealHold,
