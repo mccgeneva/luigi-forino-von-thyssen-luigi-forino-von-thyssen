@@ -56,6 +56,7 @@ import { useLedger } from "@/lib/ledger-store"
 import { usePaymentRequests, type PaymentRequest } from "@/lib/payment-requests-store"
 import {
   getPaymentStage,
+  paymentStageToGpiStatus,
   PAYMENT_STAGE_LABEL,
   PAYMENT_STAGE_SHORT,
   PAYMENT_STAGE_BADGE_CLASS,
@@ -1246,11 +1247,14 @@ export default function PaymentsPage() {
               <SwiftGpiTracker
                 payment={{
                   uetr: viewPaymentTarget.uetr,
-                  status: viewPaymentTarget.status as
-                    | "completed"
-                    | "processing"
-                    | "pending"
-                    | "failed",
+                  // Map the three-stage lifecycle onto the gpi tracker vocabulary
+                  // so a "delivered" payment shows fully credited (ACSC) rather
+                  // than stalling at "in transit". Incoming credits are always
+                  // presented as received by the tracker's incoming branch.
+                  status:
+                    viewPaymentTarget.type === "incoming"
+                      ? "completed"
+                      : paymentStageToGpiStatus(viewPaymentTarget.stage ?? "review"),
                   currency: viewPaymentTarget.currency,
                   beneficiaryBic: viewPaymentTarget.swiftCode,
                   beneficiaryName: viewPaymentTarget.beneficiary,

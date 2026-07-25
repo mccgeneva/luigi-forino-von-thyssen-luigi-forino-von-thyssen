@@ -115,3 +115,28 @@ export function getPaymentStage(input: PaymentStageInput | null | undefined): Pa
 export function paymentStageLabel(input: PaymentStageInput | null | undefined): string {
   return PAYMENT_STAGE_LABEL[getPaymentStage(input)]
 }
+
+/**
+ * Map a three-stage payment status onto the SWIFT gpi tracker's payment status
+ * vocabulary (`completed` / `processing` / `pending` / `failed`) so the gpi
+ * timeline advances in lockstep with the lifecycle:
+ *   review     → pending    (awaiting authorization)
+ *   initiated  → processing (in transit — ACSP)
+ *   delivered  → completed  (credited — ACSC, all steps done)
+ *   rejected   → failed     (RJCT)
+ */
+export function paymentStageToGpiStatus(
+  stage: PaymentStage,
+): "completed" | "processing" | "pending" | "failed" {
+  switch (stage) {
+    case "delivered":
+      return "completed"
+    case "initiated":
+      return "processing"
+    case "rejected":
+    case "cancelled":
+      return "failed"
+    default:
+      return "pending"
+  }
+}
