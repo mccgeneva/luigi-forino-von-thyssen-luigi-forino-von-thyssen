@@ -46,46 +46,248 @@ export function computeAcquisitionFee(action: AcquisitionAction, faceValue: numb
 }
 
 // --- Instrument type catalogue ---------------------------------------------
+//
+// Full market coverage: bank guarantees & letters of credit, notes, sovereign
+// & government bonds (incl. Euro Bonds and Bank of England / UK gilt-edged
+// instruments), corporate & financial bonds, and securities settled through the
+// International Central Securities Depositories (Euroclear / Clearstream).
+//
+// Types are grouped by `category` so the catalogue's type filter and the admin
+// publish selector stay navigable as the set grows. `settlesVia` records where
+// the security is typically cleared/held — it drives the default verification
+// source hint (ICSD securities carry a Common Code; exchange-listed bonds
+// resolve live on Bloomberg).
+
+/** High-level grouping for the instrument type taxonomy. */
+export type InstrumentCategory =
+  | "Guarantees & Letters of Credit"
+  | "Notes"
+  | "Sovereign & Government Bonds"
+  | "Bank of England / UK Gilt-Edged"
+  | "Corporate & Financial Bonds"
+  | "ICSD-Settled Securities"
+
+/** Ordered categories — controls display order in grouped selectors. */
+export const MARKET_INSTRUMENT_CATEGORIES: InstrumentCategory[] = [
+  "Guarantees & Letters of Credit",
+  "Notes",
+  "Sovereign & Government Bonds",
+  "Bank of England / UK Gilt-Edged",
+  "Corporate & Financial Bonds",
+  "ICSD-Settled Securities",
+]
+
+/** Where an instrument is typically cleared/settled and held. */
+export type SettlementVenue = "euroclear" | "clearstream" | "bloomberg" | "bilateral"
 
 export interface MarketInstrumentType {
   code: string
   full: string
   /** Short rationale shown in the catalogue. */
   purpose: string
+  category: InstrumentCategory
   assignable: boolean
   monetizable: boolean
+  /** Typical settlement/verification venue — used to suggest the source. */
+  settlesVia: SettlementVenue
 }
 
 export const MARKET_INSTRUMENT_TYPES: MarketInstrumentType[] = [
+  // --- Guarantees & Letters of Credit --------------------------------------
   {
     code: "SBLC",
     full: "Standby Letter of Credit",
     purpose: "Credit enhancement & payment guarantee",
+    category: "Guarantees & Letters of Credit",
     assignable: true,
     monetizable: true,
+    settlesVia: "euroclear",
   },
   {
     code: "BG",
     full: "Bank Guarantee",
     purpose: "Performance & financial guarantee",
+    category: "Guarantees & Letters of Credit",
     assignable: true,
     monetizable: true,
-  },
-  {
-    code: "MTN",
-    full: "Medium Term Note",
-    purpose: "Tradable debt security / collateral",
-    assignable: true,
-    monetizable: true,
+    settlesVia: "euroclear",
   },
   {
     code: "DLC",
     full: "Documentary Letter of Credit",
     purpose: "Trade settlement instrument",
+    category: "Guarantees & Letters of Credit",
     assignable: false,
     monetizable: true,
+    settlesVia: "bilateral",
+  },
+  // --- Notes ----------------------------------------------------------------
+  {
+    code: "MTN",
+    full: "Medium Term Note",
+    purpose: "Tradable debt security / collateral",
+    category: "Notes",
+    assignable: true,
+    monetizable: true,
+    settlesVia: "euroclear",
+  },
+  {
+    code: "EMTN",
+    full: "Euro Medium Term Note",
+    purpose: "Debt issued off a Euro MTN programme",
+    category: "Notes",
+    assignable: true,
+    monetizable: true,
+    settlesVia: "euroclear",
+  },
+  // --- Sovereign & Government Bonds (incl. Euro Bonds) ----------------------
+  {
+    code: "EUROBOND",
+    full: "Euro Bond",
+    purpose: "International bond settled via Euroclear/Clearstream",
+    category: "Sovereign & Government Bonds",
+    assignable: true,
+    monetizable: true,
+    settlesVia: "euroclear",
+  },
+  {
+    code: "SOVB",
+    full: "Sovereign Bond",
+    purpose: "Debt issued by a national government",
+    category: "Sovereign & Government Bonds",
+    assignable: true,
+    monetizable: true,
+    settlesVia: "bloomberg",
+  },
+  {
+    code: "GOVT",
+    full: "Government Bond",
+    purpose: "Government-issued fixed-income security",
+    category: "Sovereign & Government Bonds",
+    assignable: true,
+    monetizable: true,
+    settlesVia: "bloomberg",
+  },
+  {
+    code: "SUPRA",
+    full: "Supranational Bond",
+    purpose: "Debt of a supranational issuer (e.g. EIB, IBRD)",
+    category: "Sovereign & Government Bonds",
+    assignable: true,
+    monetizable: true,
+    settlesVia: "euroclear",
+  },
+  // --- Bank of England / UK Gilt-Edged --------------------------------------
+  {
+    code: "GILT",
+    full: "UK Government Gilt",
+    purpose: "UK gilt-edged sovereign security",
+    category: "Bank of England / UK Gilt-Edged",
+    assignable: true,
+    monetizable: true,
+    settlesVia: "bloomberg",
+  },
+  {
+    code: "TBILL",
+    full: "Treasury Bill",
+    purpose: "Short-term sovereign discount instrument",
+    category: "Bank of England / UK Gilt-Edged",
+    assignable: true,
+    monetizable: true,
+    settlesVia: "bloomberg",
+  },
+  {
+    code: "BOE",
+    full: "Bank of England Instrument",
+    purpose: "BoE-related bill / gilt-edged security",
+    category: "Bank of England / UK Gilt-Edged",
+    assignable: true,
+    monetizable: true,
+    settlesVia: "clearstream",
+  },
+  // --- Corporate & Financial Bonds ------------------------------------------
+  {
+    code: "CORP",
+    full: "Corporate Bond",
+    purpose: "Debt issued by a corporation",
+    category: "Corporate & Financial Bonds",
+    assignable: true,
+    monetizable: true,
+    settlesVia: "bloomberg",
+  },
+  {
+    code: "BANKB",
+    full: "Bank / Financial Bond",
+    purpose: "Senior or subordinated bank debt",
+    category: "Corporate & Financial Bonds",
+    assignable: true,
+    monetizable: true,
+    settlesVia: "bloomberg",
+  },
+  {
+    code: "FRN",
+    full: "Floating Rate Note",
+    purpose: "Variable-coupon debt security",
+    category: "Corporate & Financial Bonds",
+    assignable: true,
+    monetizable: true,
+    settlesVia: "euroclear",
+  },
+  {
+    code: "CONV",
+    full: "Convertible Bond",
+    purpose: "Debt convertible into issuer equity",
+    category: "Corporate & Financial Bonds",
+    assignable: true,
+    monetizable: true,
+    settlesVia: "bloomberg",
+  },
+  // --- ICSD-Settled Securities (Euroclear / Clearstream) --------------------
+  {
+    code: "GLBN",
+    full: "Global Note",
+    purpose: "Global note held in an ICSD common depository",
+    category: "ICSD-Settled Securities",
+    assignable: true,
+    monetizable: true,
+    settlesVia: "clearstream",
+  },
+  {
+    code: "ECLR",
+    full: "Euroclear-Settled Security",
+    purpose: "Security cleared & held through Euroclear",
+    category: "ICSD-Settled Securities",
+    assignable: true,
+    monetizable: true,
+    settlesVia: "euroclear",
+  },
+  {
+    code: "CSTM",
+    full: "Clearstream-Settled Security",
+    purpose: "Security cleared & held through Clearstream",
+    category: "ICSD-Settled Securities",
+    assignable: true,
+    monetizable: true,
+    settlesVia: "clearstream",
   },
 ]
+
+/** Look up a single instrument type by its code. */
+export function findInstrumentType(code: string): MarketInstrumentType | undefined {
+  return MARKET_INSTRUMENT_TYPES.find((t) => t.code === code)
+}
+
+/**
+ * Group the taxonomy by category in `MARKET_INSTRUMENT_CATEGORIES` order,
+ * omitting empty categories. Used to render grouped `<Select>` options in both
+ * the client catalogue filter and the admin publish form.
+ */
+export function instrumentTypesByCategory(): { category: InstrumentCategory; types: MarketInstrumentType[] }[] {
+  return MARKET_INSTRUMENT_CATEGORIES.map((category) => ({
+    category,
+    types: MARKET_INSTRUMENT_TYPES.filter((t) => t.category === category),
+  })).filter((g) => g.types.length > 0)
+}
 
 /** Human label for a tenor in months (instruments are "1 year and 1 day" style). */
 export function tenorLabel(months: number): string {

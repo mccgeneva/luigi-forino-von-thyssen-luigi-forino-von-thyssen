@@ -25,7 +25,9 @@ import { Input } from "@/components/ui/input"
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
+  SelectLabel,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
@@ -46,6 +48,7 @@ import { buildInstrumentIdentifiers } from "@/lib/instrument-identifiers"
 import {
   ACQUISITION_FEE_RATES,
   MARKET_INSTRUMENT_TYPES,
+  instrumentTypesByCategory,
   tenorLabel,
 } from "@/lib/instrument-marketplace"
 import {
@@ -501,15 +504,20 @@ export function InstrumentMarketplace() {
             />
           </div>
           <Select value={typeFilter} onValueChange={setTypeFilter}>
-            <SelectTrigger className="sm:w-40" aria-label="Filter by instrument type">
+            <SelectTrigger className="sm:w-52" aria-label="Filter by instrument type">
               <SelectValue placeholder="All types" />
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="all">All types</SelectItem>
-              {MARKET_INSTRUMENT_TYPES.map((t) => (
-                <SelectItem key={t.code} value={t.code}>
-                  {t.code} — {t.full}
-                </SelectItem>
+              {instrumentTypesByCategory().map((group) => (
+                <SelectGroup key={group.category}>
+                  <SelectLabel>{group.category}</SelectLabel>
+                  {group.types.map((t) => (
+                    <SelectItem key={t.code} value={t.code}>
+                      {t.code} — {t.full}
+                    </SelectItem>
+                  ))}
+                </SelectGroup>
               ))}
             </SelectContent>
           </Select>
