@@ -528,7 +528,7 @@ export default function InstrumentsPage() {
     })
 
     toast.success("Monetization request submitted", {
-      description: `Request ${created.id} for ${instrument.id} is now pending Administrator authorization.`,
+      description: `Request ${created.id} for ${instrument.id} is pending Administrator authorization. The ${formatCurrency(monetizeProceeds, monetizeForm.proceedsCurrency)} gross proceeds will be credited to your Master Account only once it is approved.`,
     })
     logActivity({
       action: `Requested monetization of ${instrument.type} ${instrument.id} (${formatCurrency(instrument.faceValue, instrument.currency)})`,
@@ -1795,6 +1795,13 @@ export default function InstrumentsPage() {
                       {formatCurrency(monetizeProceeds, monetizeForm.proceedsCurrency)}
                     </span>
                   </div>
+                  <p className="mt-2 flex items-start gap-1.5 text-[11px] leading-relaxed text-muted-foreground">
+                    <Clock className="mt-px h-3 w-3 shrink-0" />
+                    <span>
+                      These proceeds are credited to your Master Account only after an Administrator approves the
+                      request — not on submission. Until then it stays pending and your balance is unchanged.
+                    </span>
+                  </p>
                 </div>
 
                 {/* Progressive (tiered) debit interest on the gross proceeds. */}
