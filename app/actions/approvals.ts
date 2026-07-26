@@ -1042,6 +1042,52 @@ export async function deleteMyCommodityDeal(
 }
 
 /**
+ * Client: permanently DELETE one of their OWN bank instruments from their
+ * portfolio. Ownership and kind are enforced here; the calling UI additionally
+ * gates the option on the instrument not being pledged to a leverage line or
+ * referenced by a monetization request (i.e. "not in use by the account"). The
+ * acquisition fee is a settled, non-refundable debit and is intentionally NOT
+ * refunded on deletion.
+ */
+export async function deleteMyInstrument(
+  approvalId: string,
+): Promise<{ ok: boolean; error?: string }> {
+  const session = await resolveCurrentSession()
+  if (!session) return { ok: false, error: "Your session has expired. Please sign in again." }
+  try {
+    const existing = await getApprovalById(approvalId)
+    if (!existing || existing.userId !== session.id) {
+      return { ok: false, error: "This instrument could not be found." }
+    }
+    if (existing.kind !== "instrument") {
+      return { ok: false, error: "Only bank instruments can be deleted here." }
+    }
+    const deleted = await deleteApprovalForUser(approvalId, session.id)
+    if (!deleted) return { ok: false, error: "This instrument could not be deleted." }
+
+    try {
+      const profile = await resolveAccountProfileById(session.id)
+      await logActivity({
+        action: `Client removed bank instrument "${existing.title}" from their portfolio`,
+        category: "Bank Instruments",
+        user: profile.fullName,
+        details: {
+          referenceId: existing.id,
+          summary: existing.summary || existing.title,
+          decision: "Deleted",
+        },
+      })
+    } catch (err) {
+      console.log("[v0] instrument delete activity log failed:", (err as Error).message)
+    }
+    return { ok: true }
+  } catch (err) {
+    console.log("[v0] deleteMyInstrument failed:", (err as Error).message)
+    return { ok: false, error: "The instrument could not be deleted. Please try again." }
+  }
+}
+
+/**
  * Admin: permanently DELETE ANY client's commodity deal (passcode-gated),
  * releasing any reserved funds back to the owner's available balance first. A
  * frozen deal must be unfrozen before deletion.

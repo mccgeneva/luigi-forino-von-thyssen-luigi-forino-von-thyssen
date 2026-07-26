@@ -27,6 +27,7 @@ import {
   Percent,
   Globe,
   Radio,
+  Trash2,
 } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -158,10 +159,36 @@ export default function InstrumentsPage() {
   // Read-only portfolio: clients can no longer create, cancel, or delete
   // instruments. Bank instruments are issued and managed exclusively by the
   // administrator; the client view only displays them.
-  const { instruments, transferInstrument, addInstrument } = useInstrumentRequests()
+  const { instruments, transferInstrument, addInstrument, deleteInstrument } = useInstrumentRequests()
   const { totalIn } = useLedger()
-  const { addRequest: addMonetizationRequest } = useMonetizationRequests()
+  const { addRequest: addMonetizationRequest, requests: monetizationRequests } = useMonetizationRequests()
   const { requests: leverageRequests } = useLeverageRequests()
+
+  // Delete confirmation target (client-initiated removal of an unused holding).
+  const [deleteTarget, setDeleteTarget] = useState<Instrument | null>(null)
+
+  // Instrument ids that are "in use" by the account and therefore may NOT be
+  // deleted: pledged to a leverage line (anything but a rejected/closed line) or
+  // referenced by a monetization request (anything but a rejected one). Only a
+  // holding that is engaged nowhere can be removed by the client.
+  const inUseInstrumentIds = useMemo(() => {
+    const ids = new Set<string>()
+    for (const req of leverageRequests) {
+      if (!req.pledgedInstrumentId) continue
+      if (req.status !== "rejected" && req.status !== "closed") ids.add(req.pledgedInstrumentId)
+    }
+    for (const req of monetizationRequests) {
+      if (!req.instrumentId) continue
+      if (req.status !== "rejected") ids.add(req.instrumentId)
+    }
+    return ids
+  }, [leverageRequests, monetizationRequests])
+
+  // A client may delete a holding only when it is not engaged anywhere and has
+  // not already been transferred away (a transferred card is a historical echo
+  // of an instrument the account no longer controls).
+  const canDeleteInstrument = (inst: Instrument) =>
+    inst.status !== "transferred" && !inUseInstrumentIds.has(inst.id)
 
   // Map each pledged instrument id -> its active leverage line, so a BG that was
   // pledged to an approved leverage facility (e.g. 1:5) surfaces its leveraged
@@ -1056,6 +1083,18 @@ export default function InstrumentsPage() {
                               <Download className="mr-2 h-4 w-4" />
                               Download Certificate
                             </DropdownMenuItem>
+                            {canDeleteInstrument(instrument) && (
+                              <>
+                                <DropdownMenuSeparator />
+                                <DropdownMenuItem
+                                  onClick={() => setDeleteTarget(instrument)}
+                                  className="text-destructive focus:text-destructive"
+                                >
+                                  <Trash2 className="mr-2 h-4 w-4" />
+                                  Delete
+                                </DropdownMenuItem>
+                              </>
+                            )}
                           </DropdownMenuContent>
                         </DropdownMenu>
                       </div>
@@ -1842,6 +1881,57 @@ export default function InstrumentsPage() {
                 <Button onClick={confirmMonetization} disabled={!canSubmitMonetization}>
                   <ShieldCheck className="mr-2 h-4 w-4" />
                   Submit for Authorization
+                </Button>
+              </DialogFooter>
+            </>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Confirm removal of an unused holding from the portfolio. */}
+      <Dialog open={deleteTarget !== null} onOpenChange={(o) => !o && setDeleteTarget(null)}>
+        <DialogContent className="sm:max-w-md">
+          {deleteTarget && (
+            <>
+              <DialogHeader>
+                <DialogTitle className="flex items-center gap-2">
+                  <Trash2 className="h-5 w-5 text-destructive" />
+                  Delete instrument
+                </DialogTitle>
+                <DialogDescription>
+                  Remove{" "}
+                  <span className="font-medium text-foreground">
+                    {deleteTarget.typeFull} ({deleteTarget.id})
+                  </span>{" "}
+                  issued by {deleteTarget.issuer} from your portfolio. This holding is not pledged to any leverage line
+                  or monetization request, so it can be safely removed. This action cannot be undone.
+                </DialogDescription>
+              </DialogHeader>
+              <DialogFooter>
+                <Button variant="outline" onClick={() => setDeleteTarget(null)}>
+                  Cancel
+                </Button>
+                <Button
+                  variant="destructive"
+                  onClick={() => {
+                    const target = deleteTarget
+                    deleteInstrument(target.id)
+                    logActivity({
+                      action: `Removed bank instrument ${target.id} from portfolio`,
+                      category: "Bank Instruments",
+                      details: {
+                        summary: `Client removed ${target.typeFull} (${target.id}) issued by ${target.issuer} from their portfolio. The instrument was not pledged or monetized.`,
+                        referenceId: target.id,
+                      },
+                    })
+                    toast.success("Instrument removed", {
+                      description: `${target.type} ${target.id} has been removed from your portfolio.`,
+                    })
+                    setDeleteTarget(null)
+                  }}
+                >
+                  <Trash2 className="mr-2 h-4 w-4" />
+                  Delete instrument
                 </Button>
               </DialogFooter>
             </>
