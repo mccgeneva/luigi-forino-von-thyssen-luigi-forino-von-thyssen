@@ -62,7 +62,7 @@ import {
   LEVERAGE_ACCOUNTS,
   LEVERAGE_RATIOS,
   MAX_LEVERAGE,
-  DEBIT_INTEREST_RATE,
+  debitInterestRateFor,
   RISK_THRESHOLDS,
   maxLeverageFor,
   leverageRatiosFor,
@@ -355,7 +355,7 @@ function LeverageEconomics({ line, now }: { line: LeverageRequest; now: number }
       </div>
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
         <Metric label="Borrowed Funds" value={formatMoney(line.borrowedAmount, line.currency)} />
-        <Metric label="Interest Rate" value={`${(line.interestRate * 100).toFixed(1)}% / yr`} />
+        <Metric label="Interest Rate" value={`${(debitInterestRateFor(line.leverageRatio) * 100).toFixed(2)}% / yr`} />
         <Metric
           label="Accrued Interest"
           value={formatMoney2(accrued, line.currency)}
@@ -505,7 +505,9 @@ export default function LeveragePage() {
   const availableRatios = account ? leverageRatiosFor(account) : LEVERAGE_RATIOS
   const projectedBuyingPower = numericEquity * numericRatio
   const projectedBorrowed = numericEquity * (numericRatio - 1)
-  const projectedAnnualInterest = projectedBorrowed * DEBIT_INTEREST_RATE
+  // Rate scales linearly with the chosen ratio (0.36% per unit of leverage).
+  const projectedAnnualRate = debitInterestRateFor(numericRatio)
+  const projectedAnnualInterest = projectedBorrowed * projectedAnnualRate
 
   // When the funding category changes, clamp the chosen ratio to that
   // category's ceiling so an out-of-range value can never be submitted.
@@ -593,7 +595,7 @@ export default function LeveragePage() {
       leverageRatio: numericRatio,
       buyingPower: projectedBuyingPower,
       borrowedAmount: projectedBorrowed,
-      interestRate: DEBIT_INTEREST_RATE,
+      interestRate: projectedAnnualRate,
       instrumentType,
       pledgedInstrumentId: account === "instruments" ? selectedInstrument?.id : undefined,
       pledgedInstrumentLabel: account === "instruments" ? pledgedLabel : undefined,
@@ -604,14 +606,14 @@ export default function LeveragePage() {
       action: `Submitted a 1:${numericRatio} leverage request on the ${accountOption.label} for Administrator approval`,
       category: "Leverage & Risk",
       details: {
-        summary: `Client requested a 1:${numericRatio} leveraged trading line against the ${accountOption.label}, allocating ${formatMoney(numericEquity, currency)} of equity. On approval, ${formatMoney(projectedBorrowed, currency)} of borrowed funds would be credited (buying power ${formatMoney(projectedBuyingPower, currency)}), with debit interest of ${(DEBIT_INTEREST_RATE * 100).toFixed(1)}% per year on the borrowed amount, to trade ${instrumentType}. The line requires Administrator approval before activation.`,
+        summary: `Client requested a 1:${numericRatio} leveraged trading line against the ${accountOption.label}, allocating ${formatMoney(numericEquity, currency)} of equity. On approval, ${formatMoney(projectedBorrowed, currency)} of borrowed funds would be credited (buying power ${formatMoney(projectedBuyingPower, currency)}), with debit interest of ${(projectedAnnualRate * 100).toFixed(2)}% per year on the borrowed amount, to trade ${instrumentType}. The line requires Administrator approval before activation.`,
         referenceId: request.id,
         fundingAccount: accountOption.label,
         equityAllocated: formatMoney(numericEquity, currency),
         leverage: `1:${numericRatio}`,
         borrowedFunds: formatMoney(projectedBorrowed, currency),
         buyingPower: formatMoney(projectedBuyingPower, currency),
-        debitInterestRate: `${(DEBIT_INTEREST_RATE * 100).toFixed(1)}% per year`,
+        debitInterestRate: `${(projectedAnnualRate * 100).toFixed(2)}% per year (1:${numericRatio} × 0.36%/unit)`,
         instrumentType,
         status: "Pending Administrator Approval",
         submittedAt: new Date().toLocaleString("en-GB"),
@@ -677,7 +679,7 @@ export default function LeveragePage() {
         counterparty: "MCC Leverage Desk",
         reference: line.id,
         category: "Leverage Debit Interest",
-        comment: `Accrued debit interest (${(line.interestRate * 100).toFixed(1)}% per year) settled on client termination of leverage line ${line.id}.`,
+        comment: `Accrued debit interest (${(debitInterestRateFor(line.leverageRatio) * 100).toFixed(2)}% per year) settled on client termination of leverage line ${line.id}.`,
       })
     }
 
@@ -772,7 +774,7 @@ export default function LeveragePage() {
               format={formatMoney2}
             />
           }
-          hint={`${(DEBIT_INTEREST_RATE * 100).toFixed(1)}% / yr · settled on switch-off`}
+          hint="0.36% / yr per unit of leverage · charged monthly"
           icon={Percent}
           tint="bg-orange-500/10 text-orange-400"
         />
@@ -818,9 +820,10 @@ export default function LeveragePage() {
                   <p className="mt-1 text-sm text-muted-foreground">
                     Allocate your own equity and choose a ratio up to 1:{MAX_LEVERAGE}. On Administrator
                     approval, the borrowed portion — equity × (ratio − 1) — is credited to your balance, and
-                    debit interest of {(DEBIT_INTEREST_RATE * 100).toFixed(1)}% per year begins accruing on
-                    those borrowed funds. When you switch the line off, the Administrator settles the accrued
-                    interest and repays the borrowed principal from your balance.
+                    debit interest begins accruing on those borrowed funds at 0.36% per year for every unit of
+                    leverage (so 1.80% at 1:5, up to 10.80% at 1:30). One twelfth of the annual interest is
+                    charged to your Master Account each month; the borrowed principal is repaid when you switch
+                    the line off.
                   </p>
                 </div>
               </div>
@@ -1037,7 +1040,7 @@ export default function LeveragePage() {
                   </div>
                   <div className="mt-1 flex items-center justify-between text-sm">
                     <span className="text-muted-foreground">
-                      Debit Interest ({(DEBIT_INTEREST_RATE * 100).toFixed(1)}% / yr)
+                      Debit Interest ({(projectedAnnualRate * 100).toFixed(2)}% / yr · 1:{numericRatio})
                     </span>
                     <span className="font-medium text-orange-400">
                       {formatMoney2(projectedAnnualInterest, currency)} / yr
@@ -1277,7 +1280,7 @@ export default function LeveragePage() {
                         <Clock className="mt-0.5 h-4 w-4 shrink-0" />
                         <span>
                           Awaiting Administrator approval. On activation, {formatMoney(req.borrowedAmount, req.currency)}{" "}
-                          of borrowed funds is credited to your balance and {(req.interestRate * 100).toFixed(1)}%
+                          of borrowed funds is credited to your balance and {(debitInterestRateFor(req.leverageRatio) * 100).toFixed(2)}%
                           annual debit interest begins.
                         </span>
                       </div>
@@ -1429,13 +1432,15 @@ export default function LeveragePage() {
             </AccordionItem>
             <AccordionItem value="interest">
               <AccordionTrigger>
-                Debit interest of {(DEBIT_INTEREST_RATE * 100).toFixed(1)}% per year
+                Debit interest — 0.36% per year for every unit of leverage
               </AccordionTrigger>
               <AccordionContent className="text-sm text-muted-foreground">
                 When a line is activated, the borrowed portion — equity × (ratio − 1) — is credited to your
-                balance. Debit interest of {(DEBIT_INTEREST_RATE * 100).toFixed(1)}% per year accrues on those
-                borrowed funds every day the line remains open. The accrued interest is shown live on each active
-                line and is settled in full when you switch the line off.
+                balance. Debit interest scales linearly with the leverage multiple at 0.36% per year per unit:
+                1.80% at 1:5, 3.60% at 1:10, 5.40% at 1:15, 7.20% at 1:20, 9.00% at 1:25 and 10.80% at 1:30. One
+                twelfth of the annual interest is automatically charged to your Master Account each month (you
+                receive a notification with the amount and remaining balance), and any remainder is settled when
+                you switch the line off.
               </AccordionContent>
             </AccordionItem>
             <AccordionItem value="switchoff">
