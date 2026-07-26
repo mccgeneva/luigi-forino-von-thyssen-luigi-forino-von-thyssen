@@ -1204,22 +1204,50 @@ export default function InstrumentsPage() {
                             </Badge>
                           ) : (
                             <>
-                              {instrument.assignable && (
-                                <Badge
-                                  variant="outline"
-                                  className="text-[10px] bg-blue-500/10 text-blue-400 border-blue-500/20"
-                                >
-                                  Assignable
-                                </Badge>
-                              )}
-                              {instrument.monetizable && (
-                                <Badge
-                                  variant="outline"
-                                  className="text-[10px] bg-green-500/10 text-green-400 border-green-500/20"
-                                >
-                                  Monetizable
-                                </Badge>
-                              )}
+                              {instrument.assignable &&
+                                (instrument.status === "active" ? (
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation()
+                                      requestInstrumentAction(instrument, "Assign/Transfer")
+                                    }}
+                                    aria-label={`Transfer ${instrument.type} ${instrument.id}`}
+                                    className="inline-flex items-center gap-1 rounded-md border border-blue-500/20 bg-blue-500/10 px-2 py-1 text-[10px] font-medium text-blue-400 transition-colors hover:bg-blue-500/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
+                                  >
+                                    <ArrowRight className="h-3 w-3" />
+                                    Assign / Transfer
+                                  </button>
+                                ) : (
+                                  <Badge
+                                    variant="outline"
+                                    className="text-[10px] bg-blue-500/10 text-blue-400 border-blue-500/20"
+                                  >
+                                    Assignable
+                                  </Badge>
+                                ))}
+                              {instrument.monetizable &&
+                                (instrument.status === "active" ? (
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation()
+                                      requestInstrumentAction(instrument, "Monetize")
+                                    }}
+                                    aria-label={`Monetize ${instrument.type} ${instrument.id}`}
+                                    className="inline-flex items-center gap-1 rounded-md border border-green-500/20 bg-green-500/10 px-2 py-1 text-[10px] font-medium text-green-400 transition-colors hover:bg-green-500/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-green-500/40"
+                                  >
+                                    <TrendingUp className="h-3 w-3" />
+                                    Monetize
+                                  </button>
+                                ) : (
+                                  <Badge
+                                    variant="outline"
+                                    className="text-[10px] bg-green-500/10 text-green-400 border-green-500/20"
+                                  >
+                                    Monetizable
+                                  </Badge>
+                                ))}
                             </>
                           )}
                         </div>
