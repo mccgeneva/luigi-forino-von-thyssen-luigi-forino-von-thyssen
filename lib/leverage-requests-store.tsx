@@ -78,11 +78,25 @@ export function leverageRatiosFor(account: LeverageAccountKey): number[] {
   return LEVERAGE_RATIOS.filter((r) => r <= cap)
 }
 
-// Annual debit interest rate charged on the borrowed (leveraged) funds.
-// Leverage is DEBIT LENDING, billed at the same 3% p.a. as Special Treasury
-// Financing (charged monthly as 3% / 12). This is distinct from Project Finance,
-// which is an INVESTMENT product carrying a 1.8% p.a. ROI, not a debit rate.
-export const DEBIT_INTEREST_RATE = 0.03 // 3% per year
+// Annual debit interest charged on the borrowed (leveraged) funds. Leverage is
+// DEBIT LENDING and the rate scales LINEARLY with the leverage multiple at
+// 0.36% p.a. per unit of leverage (1.80% ÷ 5). Charged monthly as (annual ÷ 12):
+//
+//   1:5  -> 1.80%   1:10 -> 3.60%   1:15 -> 5.40%
+//   1:20 -> 7.20%   1:25 -> 9.00%   1:30 -> 10.80%
+//
+// This is distinct from Project Finance, which is an INVESTMENT product
+// carrying a 1.8% p.a. ROI, not a debit rate.
+export const DEBIT_INTEREST_RATE_PER_UNIT = 0.0036 // 0.36% p.a. per unit of leverage
+
+/**
+ * Annual debit interest rate for a given leverage ratio, under the linear
+ * scaling model (0.36% per unit). Rounded to 6 dp to avoid float noise.
+ */
+export function debitInterestRateFor(leverageRatio: number): number {
+  const ratio = Number.isFinite(leverageRatio) ? Math.max(0, leverageRatio) : 0
+  return Math.round(ratio * DEBIT_INTEREST_RATE_PER_UNIT * 1e6) / 1e6
+}
 
 // Risk thresholds expressed as a margin level percentage (equity / used margin).
 export const RISK_THRESHOLDS = {
@@ -181,29 +195,33 @@ export function accruedInterest(request: LeverageRequest, asOf: number = Date.no
   const end = request.closedAt ? new Date(request.closedAt).getTime() : asOf
   if (end <= start) return 0
 
-  const rate = request.interestRate
   const mods = (request.modifications ?? [])
     .slice()
     .sort((a, b) => new Date(a.appliedAt).getTime() - new Date(b.appliedAt).getTime())
 
   let total = 0
   let cursor = start
-  // The borrowed amount in force at activation is the first modification's
-  // "from" value (if any modifications exist), otherwise the current borrowed.
+  // The borrowed amount and ratio in force at activation are the first
+  // modification's "from" values (if any modifications exist), otherwise the
+  // line's current borrowed amount and ratio. Because the rate scales linearly
+  // with the ratio, each segment is charged at the rate of the ratio that was
+  // actually in force during that window.
   let borrowed = mods.length > 0 ? mods[0].fromBorrowed : request.borrowedAmount
+  let ratio = mods.length > 0 ? mods[0].fromRatio : request.leverageRatio
 
   for (const mod of mods) {
     const boundary = Math.min(new Date(mod.appliedAt).getTime(), end)
     if (boundary > cursor) {
-      total += borrowed * rate * ((boundary - cursor) / MS_PER_YEAR)
+      total += borrowed * debitInterestRateFor(ratio) * ((boundary - cursor) / MS_PER_YEAR)
       cursor = boundary
     }
     borrowed = mod.toBorrowed
+    ratio = mod.toRatio
     if (cursor >= end) break
   }
 
   if (end > cursor) {
-    total += borrowed * rate * ((end - cursor) / MS_PER_YEAR)
+    total += borrowed * debitInterestRateFor(ratio) * ((end - cursor) / MS_PER_YEAR)
   }
   return total
 }
@@ -274,6 +292,9 @@ export function LeverageRequestsProvider({ children }: { children: React.ReactNo
   const addRequest: LeverageRequestsContextValue["addRequest"] = (request) => {
     const full: LeverageRequest = {
       ...request,
+      // Authoritative rate: always derived from the ratio (linear model), so a
+      // stale value from the caller can never diverge from policy.
+      interestRate: debitInterestRateFor(request.leverageRatio),
       status: "pending",
       submittedAt: new Date().toISOString(),
     }
@@ -360,6 +381,9 @@ export function LeverageRequestsProvider({ children }: { children: React.ReactNo
           leverageRatio: toRatio,
           buyingPower: newBuyingPower,
           borrowedAmount: newBorrowed,
+          // Rate follows the new ratio under the linear model (historical
+          // segments keep their own rate via `accruedInterest`).
+          interestRate: debitInterestRateFor(toRatio),
           modifications: [...(r.modifications ?? []), modification],
         }
         return updated

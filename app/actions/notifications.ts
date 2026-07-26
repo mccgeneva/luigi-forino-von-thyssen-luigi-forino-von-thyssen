@@ -69,6 +69,63 @@ export async function notifyTreasuryInterestDebit(
   }
 }
 
+/** Money formatter for an arbitrary currency (leverage lines are multi-currency). */
+function fmtMoney(amount: number, currency: string): string {
+  try {
+    return new Intl.NumberFormat("en-US", { style: "currency", currency, maximumFractionDigits: 2 }).format(amount)
+  } catch {
+    return `${currency} ${amount.toFixed(2)}`
+  }
+}
+
+export interface LeverageInterestDebitNotice {
+  /** Stable per-charge key (the monthly ledger entry id) — dedupes the notice. */
+  chargeId: string
+  /** Amount debited this month. */
+  amount: number
+  /** Currency of the leverage line / charge. */
+  currency: string
+  /** Remaining Master Account balance (same currency) immediately after the debit. */
+  remainingBalance: number
+  /** ISO date of the next expected monthly deduction. */
+  nextDeductionAt: string
+  /** Leverage multiple (e.g. 10 for 1:10) for the notice copy. */
+  leverageRatio: number
+  /** Annual debit interest rate applied (e.g. 0.036 for 3.60%). */
+  annualRate: number
+}
+
+/**
+ * Emit exactly ONE notification for a monthly leverage debit-interest charge to
+ * the Master Account. Safe to call on every reconciler pass: the deterministic
+ * id derived from the charge means reloads never produce duplicate notices.
+ */
+export async function notifyLeverageInterestDebit(
+  notice: LeverageInterestDebitNotice,
+): Promise<{ ok: boolean; created: boolean }> {
+  const session = await resolveCurrentSession()
+  if (!session) return { ok: false, created: false }
+  try {
+    const body =
+      `${fmtMoney(notice.amount, notice.currency)} was deducted from your Master Account as your monthly ` +
+      `leverage debit interest on your 1:${notice.leverageRatio} line ` +
+      `(${(notice.annualRate * 100).toFixed(2)}% p.a. ÷ 12). ` +
+      `Remaining balance: ${fmtMoney(notice.remainingBalance, notice.currency)}. ` +
+      `Next deduction: ${fmtDate(notice.nextDeductionAt)}.`
+    const created = await insertNotificationOnce(`LVI-${notice.chargeId}`, {
+      userId: session.id,
+      tone: notice.remainingBalance < 0 ? "error" : "warning",
+      title: "Leverage interest charged",
+      body,
+      href: "/dashboard/leverage",
+    })
+    return { ok: true, created }
+  } catch (err) {
+    console.log("[v0] notifyLeverageInterestDebit failed:", (err as Error).message)
+    return { ok: false, created: false }
+  }
+}
+
 export interface NotificationsSnapshot {
   items: NotificationRecord[]
   unread: number
