@@ -301,9 +301,74 @@ export interface InstrumentEnrichment {
   sources: string[]
 }
 
+/**
+ * A lightweight reference to an instrument that already exists in the
+ * catalogue, returned when a newly-entered identifier collides with one on the
+ * platform. `field` records which identifier matched so the UI can be specific.
+ */
+export interface ExistingInstrumentRef {
+  id: string
+  isin: string
+  bankName: string
+  typeFull: string
+  createdAt: string
+  field: "isin" | "cusip" | "commonCode"
+}
+
 export type EnrichResult =
-  | { ok: true; enrichment: InstrumentEnrichment }
+  | { ok: true; enrichment: InstrumentEnrichment; duplicate: ExistingInstrumentRef | null }
   | { ok: false; error: string }
+
+/**
+ * Find an already-published instrument that shares any unique identifier with
+ * the supplied values (ISIN, CUSIP, or ICSD Common Code). Comparison is
+ * case-insensitive and returns the first collision, prioritising the ISIN.
+ * Returns null when the values are free — or if the table doesn't exist yet.
+ */
+async function findDuplicateInstrument(opts: {
+  isin: string
+  cusip?: string | null
+  commonCode?: string | null
+}): Promise<ExistingInstrumentRef | null> {
+  const isin = (opts.isin || "").trim().toUpperCase()
+  const cusip = (opts.cusip || "").trim().toUpperCase() || null
+  const commonCode = (opts.commonCode || "").trim() || null
+  if (!isin && !cusip && !commonCode) return null
+
+  try {
+    const { rows } = await query(
+      `SELECT id, isin, cusip, common_code, bank_name, type_full, created_at
+         FROM marketplace_instruments
+        WHERE upper(isin) = $1
+           OR ($2::text IS NOT NULL AND upper(cusip) = $2)
+           OR ($3::text IS NOT NULL AND common_code = $3)
+        ORDER BY (upper(isin) = $1) DESC, created_at ASC
+        LIMIT 1`,
+      [isin, cusip, commonCode],
+    )
+    const row = rows[0]
+    if (!row) return null
+    const field: ExistingInstrumentRef["field"] =
+      String(row.isin ?? "").toUpperCase() === isin
+        ? "isin"
+        : cusip && String(row.cusip ?? "").toUpperCase() === cusip
+          ? "cusip"
+          : "commonCode"
+    return {
+      id: row.id as string,
+      isin: row.isin as string,
+      bankName: (row.bank_name as string) ?? "",
+      typeFull: (row.type_full as string) ?? "",
+      createdAt: toIso(row.created_at) ?? "",
+      field,
+    }
+  } catch (err) {
+    // Table missing / transient read error → treat as no duplicate (publish
+    // still has its own guard), never block enrichment on a read failure.
+    console.log("[v0] findDuplicateInstrument failed:", (err as Error).message)
+    return null
+  }
+}
 
 export async function enrichInstrumentFromIsin(passcode: string, isin: string): Promise<EnrichResult> {
   try {
@@ -408,7 +473,11 @@ export async function enrichInstrumentFromIsin(passcode: string, isin: string): 
     }
   }
 
-  return { ok: true, enrichment: e }
+  // Flag if this ISIN is already on the platform so the admin is warned before
+  // publishing rather than being rejected only at the end.
+  const duplicate = await findDuplicateInstrument({ isin: clean })
+
+  return { ok: true, enrichment: e, duplicate }
 }
 
 // ---------------------------------------------------------------------------
@@ -505,6 +574,21 @@ export async function publishInstrument(
 
   try {
     await ensureTable()
+
+    // Authoritative duplicate guard: never allow the same ISIN, CUSIP, or ICSD
+    // Common Code to be published twice. This runs after the (cheaper) format
+    // checks and, for Bloomberg, after live verification — but the collision is
+    // decided here against what's actually in the catalogue.
+    const dup = await findDuplicateInstrument({ isin, cusip, commonCode: cc.value })
+    if (dup) {
+      const fieldLabel =
+        dup.field === "isin" ? `ISIN ${isin}` : dup.field === "cusip" ? `CUSIP ${cusip}` : `Common Code ${cc.value}`
+      return {
+        ok: false,
+        error: `This ${fieldLabel} is already on the platform — published as ${dup.typeFull || "an instrument"} from ${dup.bankName || "an issuer"} (${dup.id}). Duplicate instruments are not allowed.`,
+      }
+    }
+
     await query(
       `INSERT INTO marketplace_instruments (
          id, isin, cusip, common_code, bank_name, bank_bic, bank_country, type, type_full,
