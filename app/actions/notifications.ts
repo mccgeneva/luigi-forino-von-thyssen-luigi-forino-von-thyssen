@@ -126,6 +126,57 @@ export async function notifyLeverageInterestDebit(
   }
 }
 
+export interface MonetizationInterestDebitNotice {
+  /** Stable per-charge key (the monthly ledger entry id) — dedupes the notice. */
+  chargeId: string
+  /** Amount debited this month. */
+  amount: number
+  /** Currency of the facility / charge. */
+  currency: string
+  /** Remaining Master Account balance (same currency) immediately after the debit. */
+  remainingBalance: number
+  /** ISO date of the next expected monthly deduction. */
+  nextDeductionAt: string
+  /** Blended effective annual rate applied (e.g. 0.0234 for 2.34%). */
+  effectiveRate: number
+  /** Short instrument reference for the notice copy (e.g. "SBLC SBLC-725394"). */
+  facilityRef: string
+  /** Compact tranche breakdown, e.g. "0–5M @ 1.80%; 5–10M @ 2.00%". */
+  trancheSummary?: string
+}
+
+/**
+ * Emit exactly ONE notification for a monthly tiered monetization debit-interest
+ * charge to the Master Account. Safe to call on every reconciler pass: the
+ * deterministic id derived from the charge means reloads never duplicate it.
+ */
+export async function notifyMonetizationInterestDebit(
+  notice: MonetizationInterestDebitNotice,
+): Promise<{ ok: boolean; created: boolean }> {
+  const session = await resolveCurrentSession()
+  if (!session) return { ok: false, created: false }
+  try {
+    const tranche = notice.trancheSummary ? ` Tranches: ${notice.trancheSummary}.` : ""
+    const body =
+      `${fmtMoney(notice.amount, notice.currency)} was deducted from your Master Account as your monthly ` +
+      `credit-facility debit interest on ${notice.facilityRef} ` +
+      `(blended ${(notice.effectiveRate * 100).toFixed(2)}% p.a. ÷ 12).${tranche} ` +
+      `Remaining balance: ${fmtMoney(notice.remainingBalance, notice.currency)}. ` +
+      `Next deduction: ${fmtDate(notice.nextDeductionAt)}.`
+    const created = await insertNotificationOnce(`MNI-${notice.chargeId}`, {
+      userId: session.id,
+      tone: notice.remainingBalance < 0 ? "error" : "warning",
+      title: "Credit facility interest charged",
+      body,
+      href: "/dashboard/instruments",
+    })
+    return { ok: true, created }
+  } catch (err) {
+    console.log("[v0] notifyMonetizationInterestDebit failed:", (err as Error).message)
+    return { ok: false, created: false }
+  }
+}
+
 export interface NotificationsSnapshot {
   items: NotificationRecord[]
   unread: number

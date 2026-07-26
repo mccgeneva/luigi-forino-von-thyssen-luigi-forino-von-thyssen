@@ -83,6 +83,7 @@ import {
   useMonetizationRequests,
   type MonetizationRequest,
 } from "@/lib/monetization-requests-store"
+import { computeTieredInterest } from "@/lib/tiered-debit-interest"
   import { usePPPRequests, type PPPRequest } from "@/lib/ppp-requests-store"
   import { type ProjectFundingRequest } from "@/lib/project-funding-store"
   import { useFiduciaryRequests, type FiduciaryRequest } from "@/lib/fiduciary-requests-store"
@@ -4067,6 +4068,14 @@ export default function AdminPage() {
                         <span className="text-muted-foreground">Advance Rate:</span>
                         <span className="text-foreground">
                           {r.advanceRatePercent}% LTV on {formatCurrency(r.monetizedValue, r.currency)}
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <FileText className="h-4 w-4 text-muted-foreground" />
+                        <span className="text-muted-foreground">Debit Interest:</span>
+                        <span className="text-foreground">
+                          {(computeTieredInterest(r.grossProceeds).effectiveRate * 100).toFixed(2)}% p.a. blended ·{" "}
+                          {formatCurrency(computeTieredInterest(r.grossProceeds).monthlyInterest, r.proceedsCurrency)}/mo
                         </span>
                       </div>
                       <div className="flex items-center gap-2">
