@@ -29,7 +29,7 @@ import {
   Radio,
   Trash2,
 } from "lucide-react"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
@@ -1381,6 +1381,65 @@ export default function InstrumentsPage() {
           </Tabs>
         </CardContent>
       </Card>
+
+      {monetizationRequests.length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Monetization Requests</CardTitle>
+            <CardDescription>
+              Gross proceeds are credited to your Master Account only after an Administrator approves the
+              request. Pending requests do not affect your balance yet.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-3">
+              {[...monetizationRequests]
+                .sort((a, b) => new Date(b.submittedAt).getTime() - new Date(a.submittedAt).getTime())
+                .map((req) => {
+                  const tone =
+                    req.status === "approved"
+                      ? { icon: CheckCircle2, color: "text-green-500", bg: "bg-green-500/10", label: "Approved — credited" }
+                      : req.status === "rejected"
+                        ? { icon: XCircle, color: "text-red-500", bg: "bg-red-500/10", label: "Rejected" }
+                        : { icon: Clock, color: "text-yellow-500", bg: "bg-yellow-500/10", label: "Pending approval" }
+                  const ToneIcon = tone.icon
+                  return (
+                    <div
+                      key={req.id}
+                      className="flex flex-col gap-2 rounded-lg border border-border bg-card p-3 sm:flex-row sm:items-center sm:justify-between"
+                    >
+                      <div className="flex items-start gap-3">
+                        <span className={`mt-0.5 rounded-md p-1.5 ${tone.bg}`}>
+                          <ToneIcon className={`h-4 w-4 ${tone.color}`} />
+                        </span>
+                        <div className="space-y-0.5">
+                          <p className="text-sm font-medium text-foreground">
+                            {req.instrumentType} {req.instrumentId} · {req.structure}
+                          </p>
+                          <p className="text-xs text-muted-foreground">
+                            {req.advanceRatePercent}% advance on{" "}
+                            {formatCurrency(req.monetizedValue, req.currency)} · Ref {req.id}
+                          </p>
+                          {req.status === "rejected" && req.decisionNote && (
+                            <p className="text-xs text-red-400">Reason: {req.decisionNote}</p>
+                          )}
+                        </div>
+                      </div>
+                      <div className="flex items-center justify-between gap-3 sm:flex-col sm:items-end">
+                        <span className="text-sm font-semibold text-foreground">
+                          {formatCurrency(req.grossProceeds, req.proceedsCurrency)}
+                        </span>
+                        <Badge variant="outline" className={`text-[10px] ${tone.color}`}>
+                          {tone.label}
+                        </Badge>
+                      </div>
+                    </div>
+                  )
+                })}
+            </div>
+          </CardContent>
+        </Card>
+      )}
         </TabsContent>
 
         <TabsContent value="marketplace">
