@@ -23,13 +23,15 @@ import { Switch } from "@/components/ui/switch"
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
+  SelectLabel,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
 import { ADMIN_PASSCODE } from "@/lib/admin-config"
 import { isValidCusip, getInstrumentTypeRules } from "@/lib/instrument-identifiers"
-import { MARKET_INSTRUMENT_TYPES } from "@/lib/instrument-marketplace"
+import { MARKET_INSTRUMENT_TYPES, instrumentTypesByCategory, findInstrumentType } from "@/lib/instrument-marketplace"
 import type {
   MarketplaceInstrument,
   VerifiedSource,
@@ -420,11 +422,27 @@ export function MarketplaceInstrumentManager() {
               <Select value={form.typeCode} onValueChange={(v) => setField("typeCode", v)}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  {MARKET_INSTRUMENT_TYPES.map((t) => (
-                    <SelectItem key={t.code} value={t.code}>{t.code} — {t.full}</SelectItem>
+                  {instrumentTypesByCategory().map((group) => (
+                    <SelectGroup key={group.category}>
+                      <SelectLabel>{group.category}</SelectLabel>
+                      {group.types.map((t) => (
+                        <SelectItem key={t.code} value={t.code}>{t.code} — {t.full}</SelectItem>
+                      ))}
+                    </SelectGroup>
                   ))}
                 </SelectContent>
               </Select>
+              {(() => {
+                const meta = findInstrumentType(form.typeCode)
+                if (!meta) return null
+                const venue =
+                  meta.settlesVia === "bloomberg"
+                    ? "Typically exchange-listed — verify live on Bloomberg."
+                    : meta.settlesVia === "bilateral"
+                      ? "Bilateral instrument — verify via Euroclear/Clearstream Common Code."
+                      : `Typically settled via ${meta.settlesVia === "euroclear" ? "Euroclear" : "Clearstream"} — Common Code required.`
+                return <p className="text-[11px] text-muted-foreground">{meta.purpose}. {venue}</p>
+              })()}
             </div>
 
             {/* Bank */}

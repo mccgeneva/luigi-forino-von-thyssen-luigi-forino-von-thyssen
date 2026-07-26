@@ -239,7 +239,100 @@ const TYPE_RULES: Record<string, InstrumentTypeRules> = {
     deliveryMethod: "Book-entry (global note, dematerialised)",
     form: "Global registered note, freely transferable",
   },
+  DLC: {
+    governingLaw: "UCP 600 (ICC Uniform Customs & Practice)",
+    deliveryMethod: "SWIFT MT700 (documentary credit)",
+    form: "Documentary credit, irrevocable",
+  },
+  // --- Notes & bonds: book-entry ICSD securities ---------------------------
+  EMTN: {
+    governingLaw: "English Law · Euroclear & Clearstream eligible",
+    deliveryMethod: "Book-entry (global note, dematerialised)",
+    form: "Global registered note off an EMTN programme, freely transferable",
+  },
+  EUROBOND: {
+    governingLaw: "English Law · Euroclear & Clearstream settlement",
+    deliveryMethod: "Book-entry (ICSD common depository)",
+    form: "Bearer/registered global bond, freely transferable",
+  },
+  SOVB: {
+    governingLaw: "Governing law of the issuing sovereign",
+    deliveryMethod: "Book-entry (central securities depository)",
+    form: "Registered sovereign bond, freely transferable",
+  },
+  GOVT: {
+    governingLaw: "Governing law of the issuing state",
+    deliveryMethod: "Book-entry (central securities depository)",
+    form: "Registered government bond, freely transferable",
+  },
+  SUPRA: {
+    governingLaw: "English Law · Euroclear & Clearstream settlement",
+    deliveryMethod: "Book-entry (ICSD common depository)",
+    form: "Registered supranational bond, freely transferable",
+  },
+  GILT: {
+    governingLaw: "English Law · UK DMO / CREST settlement",
+    deliveryMethod: "Book-entry (CREST, dematerialised)",
+    form: "Registered gilt-edged security, freely transferable",
+  },
+  TBILL: {
+    governingLaw: "English Law · UK DMO tender",
+    deliveryMethod: "Book-entry (dematerialised)",
+    form: "Discount bearer bill, freely transferable",
+  },
+  BOE: {
+    governingLaw: "English Law · Bank of England",
+    deliveryMethod: "Book-entry (CREST / ICSD)",
+    form: "Gilt-edged / bill instrument, freely transferable",
+  },
+  CORP: {
+    governingLaw: "English Law · Euroclear & Clearstream eligible",
+    deliveryMethod: "Book-entry (ICSD common depository)",
+    form: "Registered corporate bond, freely transferable",
+  },
+  BANKB: {
+    governingLaw: "English Law · Euroclear & Clearstream eligible",
+    deliveryMethod: "Book-entry (ICSD common depository)",
+    form: "Senior/subordinated bank bond, freely transferable",
+  },
+  FRN: {
+    governingLaw: "English Law · Euroclear & Clearstream eligible",
+    deliveryMethod: "Book-entry (ICSD common depository)",
+    form: "Floating-rate global note, freely transferable",
+  },
+  CONV: {
+    governingLaw: "English Law · Euroclear & Clearstream eligible",
+    deliveryMethod: "Book-entry (ICSD common depository)",
+    form: "Convertible bond, freely transferable",
+  },
+  GLBN: {
+    governingLaw: "English Law · ICSD common depository",
+    deliveryMethod: "Book-entry (global note, dematerialised)",
+    form: "Global note, freely transferable",
+  },
+  ECLR: {
+    governingLaw: "English Law · Euroclear settlement",
+    deliveryMethod: "Book-entry (Euroclear)",
+    form: "Dematerialised security, freely transferable",
+  },
+  CSTM: {
+    governingLaw: "English Law · Clearstream settlement",
+    deliveryMethod: "Book-entry (Clearstream)",
+    form: "Dematerialised security, freely transferable",
+  },
 }
+
+/** Type codes that are book-entry international securities (XS-prefix ISIN). */
+const INTERNATIONAL_SECURITY_TYPES = new Set([
+  "MTN",
+  "EMTN",
+  "EUROBOND",
+  "SUPRA",
+  "FRN",
+  "GLBN",
+  "ECLR",
+  "CSTM",
+])
 
 export function getInstrumentTypeRules(typeCode: string): InstrumentTypeRules {
   return (
@@ -279,8 +372,10 @@ export function buildInstrumentIdentifiers(
   const bank = resolveIssuingBank(bankKey)
   const countryCode = bank?.countryCode ?? "XS"
   const rules = getInstrumentTypeRules(typeCode)
-  // MTNs are international securities → XS prefix; LC/BG carry the issuer's country.
-  const isinPrefix = typeCode === "MTN" ? "XS" : countryCode
+  // International book-entry securities (MTN/EMTN/Euro Bonds/global notes/ICSD
+  // securities) carry the XS ICSD prefix; LC/BG/domestic bonds carry the
+  // issuer's country prefix.
+  const isinPrefix = INTERNATIONAL_SECURITY_TYPES.has(typeCode) ? "XS" : countryCode
   return {
     isin: generateIsin(isinPrefix),
     commonCode: generateCommonCode(),
