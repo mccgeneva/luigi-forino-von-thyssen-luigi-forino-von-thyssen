@@ -3,10 +3,12 @@ import { adminActionAuthorized } from "@/lib/admin-auth"
 import {
   getAdminMarketplaceInstruments,
   publishInstrument,
+  updateInstrument,
   enrichInstrumentFromIsin,
   setInstrumentAvailability,
   removeInstrument,
   type PublishInstrumentInput,
+  type UpdateInstrumentInput,
 } from "@/app/actions/marketplace-instruments"
 
 // ---------------------------------------------------------------------------
@@ -56,6 +58,8 @@ export async function POST(req: NextRequest) {
     switch (action) {
       case "publish":
         return NextResponse.json(await publishInstrument(passcode, body.input as PublishInstrumentInput))
+      case "update":
+        return NextResponse.json(await updateInstrument(passcode, body.input as UpdateInstrumentInput))
       case "enrich":
         return NextResponse.json(await enrichInstrumentFromIsin(passcode, String(body.isin || "")))
       case "availability":
