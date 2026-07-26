@@ -4,7 +4,7 @@ import { createContext, useContext } from "react"
 import { buildInstrumentIdentifiers } from "@/lib/instrument-identifiers"
 import { mirrorSubmission, mapApprovalStatus, type ApprovalRecord } from "@/lib/approval-sync"
 import { useServerRequestList } from "@/lib/use-server-request-list"
-import { cancelMyApproval, transferMyInstrument } from "@/app/actions/approvals"
+import { cancelMyApproval, transferMyInstrument, deleteMyInstrument } from "@/app/actions/approvals"
 
 /**
  * Ensure an instrument carries the full identifier set. Records created before
@@ -246,10 +246,13 @@ export function InstrumentRequestsProvider({ children }: { children: React.React
   const deleteInstrument: InstrumentRequestsContextValue["deleteInstrument"] = (id) => {
     const target = instruments.find((i) => i.id === id)
     setInstruments(instruments.filter((i) => i.id !== id))
-    // Mirror a delete of a still-pending request to the server (cancel) so it
-    // does not reappear on the next hydrate. Decided records are server-owned.
-    if (target?.approvalId && target.status === "pending") {
-      void cancelMyApproval(target.approvalId).then(() => void refresh())
+    // Persist the deletion server-side so it does not reappear on the next
+    // hydrate. A still-pending request is cancelled (keeping the audit trail of
+    // the decision), while a decided/active holding is permanently removed via
+    // the owner-scoped delete. Both are keyed off the mirrored approval id.
+    if (target?.approvalId) {
+      const persist = target.status === "pending" ? cancelMyApproval : deleteMyInstrument
+      void persist(target.approvalId).then(() => void refresh())
     }
   }
 
