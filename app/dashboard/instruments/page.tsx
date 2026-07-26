@@ -82,6 +82,7 @@ import {
   useMonetizationRequests,
   type MonetizationStructure,
 } from "@/lib/monetization-requests-store"
+import { computeTieredInterest, formatTierBound } from "@/lib/tiered-debit-interest"
 import { generateInstrumentCertificate } from "@/lib/certificate-pdf"
 import { generateMt760, generateMt799 } from "@/lib/swift-mt"
 
@@ -483,6 +484,10 @@ export default function InstrumentsPage() {
     Number.isFinite(monetizeAdvanceRate) &&
     monetizeAdvanceRate > 0 &&
     monetizeAdvanceRate <= 100
+  // Progressive (tiered) debit-interest pricing on the gross proceeds — the
+  // outstanding debit the client will owe. Shown live so the client sees the
+  // blended effective rate and per-tranche breakdown before submitting.
+  const monetizePricing = computeTieredInterest(monetizeProceeds)
 
   const confirmMonetization = () => {
     if (!monetizeTarget) return
@@ -1791,6 +1796,57 @@ export default function InstrumentsPage() {
                     </span>
                   </div>
                 </div>
+
+                {/* Progressive (tiered) debit interest on the gross proceeds. */}
+                {monetizePricing.totalAnnualInterest > 0 && (
+                  <div className="space-y-2 rounded-lg border border-border bg-secondary/30 p-3 sm:col-span-2">
+                    <div className="flex items-center justify-between">
+                      <span className="text-sm font-medium text-foreground">
+                        Debit interest (adaptive composite)
+                      </span>
+                      <span className="text-sm font-semibold text-primary">
+                        {(monetizePricing.effectiveRate * 100).toFixed(2)}% p.a. blended
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between text-xs text-muted-foreground">
+                      <span>Charged monthly (1/12 of annual)</span>
+                      <span className="font-medium text-orange-400">
+                        {formatCurrency(monetizePricing.monthlyInterest, monetizeForm.proceedsCurrency)} / mo
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between text-xs text-muted-foreground">
+                      <span>Total annual interest</span>
+                      <span className="font-medium text-foreground">
+                        {formatCurrency(monetizePricing.totalAnnualInterest, monetizeForm.proceedsCurrency)} / yr
+                      </span>
+                    </div>
+                    {/* Per-tranche breakdown — marginal pricing, like tax brackets. */}
+                    <div className="space-y-1 border-t border-border pt-2">
+                      {monetizePricing.tranches.map((t, i) => (
+                        <div
+                          key={i}
+                          className="flex items-center justify-between text-[11px] text-muted-foreground"
+                        >
+                          <span>
+                            {formatTierBound(t.from)}
+                            {"–"}
+                            {t.upTo === null ? "∞" : formatTierBound(t.upTo)} @ {(t.annualRate * 100).toFixed(2)}%
+                            {" · "}
+                            {formatCurrency(t.portion, monetizeForm.proceedsCurrency)}
+                          </span>
+                          <span className="font-medium text-foreground">
+                            {formatCurrency(t.annualInterest, monetizeForm.proceedsCurrency)}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                    <p className="text-[11px] leading-relaxed text-muted-foreground">
+                      Interest is applied marginally — only the portion of the facility within each tier is
+                      charged at that tier&apos;s rate, so you never pay the top rate on the whole facility.
+                      Accrual begins the day funds are credited and is deducted monthly from your Master Account.
+                    </p>
+                  </div>
+                )}
               </div>
 
               {/* Coordination */}
