@@ -12,6 +12,7 @@ import {
   BadgeCheck,
   Eye,
   EyeOff,
+  AlertTriangle,
 } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -37,6 +38,7 @@ import type {
   VerifiedSource,
   PublishInstrumentInput,
   EnrichResult,
+  ExistingInstrumentRef,
   MarketplaceResult,
   PublishResult,
 } from "@/app/actions/marketplace-instruments"
@@ -85,6 +87,8 @@ interface VerifyState {
   checked: boolean
   listed?: boolean
   note?: string
+  /** Set when the entered ISIN already exists on the platform. */
+  duplicate?: ExistingInstrumentRef | null
 }
 
 const EMPTY_FORM = {
@@ -197,8 +201,10 @@ export function MarketplaceInstrumentManager() {
 
       // Auto-fill empty fields from the real retrieved reference data.
       let autoNote = ""
+      let dup: ExistingInstrumentRef | null = null
       if (enrich.ok) {
         const en = enrich.enrichment
+        dup = enrich.duplicate
         autoFill({
           bankName: en.bankName ?? "",
           bankBic: en.bankBic ?? "",
@@ -214,6 +220,7 @@ export function MarketplaceInstrumentManager() {
         setVerify({
           loading: false,
           checked: true,
+          duplicate: dup,
           note: `${res.error ?? "Bloomberg verification unavailable."}${autoNote}`,
         })
         return
@@ -224,6 +231,7 @@ export function MarketplaceInstrumentManager() {
           loading: false,
           checked: true,
           listed: true,
+          duplicate: dup,
           note: `Listed on Bloomberg · ${m.figi}${m.name ? ` · ${m.name}` : ""}${m.securityType ? ` · ${m.securityType}` : ""}${autoNote}`,
         })
       } else {
@@ -231,6 +239,7 @@ export function MarketplaceInstrumentManager() {
           loading: false,
           checked: true,
           listed: false,
+          duplicate: dup,
           note: `Valid ISIN, but not Bloomberg-listed. Publish as Euroclear/Clearstream with its Common Code.${autoNote}`,
         })
       }
@@ -242,6 +251,8 @@ export function MarketplaceInstrumentManager() {
   const canPublish = useMemo(() => {
     if (!isinLooksValid || !form.bankName.trim() || !form.faceValue.trim()) return false
     if (!cusipLooksValid) return false
+    // A detected duplicate ISIN blocks publishing outright.
+    if (verify.duplicate) return false
     if (form.verifiedSource === "bloomberg") return verify.checked && verify.listed === true
     // Euroclear / Clearstream require a 9-digit Common Code.
     return /^\d{9}$/.test(form.commonCode.trim())
@@ -364,6 +375,22 @@ export function MarketplaceInstrumentManager() {
                   {verify.listed ? <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0" /> : <XCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />}
                   {verify.note}
                 </p>
+              ) : null}
+              {verify.duplicate ? (
+                <div className="flex items-start gap-2 rounded-md border border-destructive/40 bg-destructive/10 p-2 text-[11px] text-destructive">
+                  <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                  <span>
+                    <strong className="font-semibold">Duplicate — already on the platform.</strong> This{" "}
+                    {verify.duplicate.field === "isin"
+                      ? "ISIN"
+                      : verify.duplicate.field === "cusip"
+                        ? "CUSIP"
+                        : "Common Code"}{" "}
+                    matches {verify.duplicate.typeFull || "an instrument"} from{" "}
+                    {verify.duplicate.bankName || "an existing issuer"} ({verify.duplicate.id}). Publishing is blocked to
+                    prevent duplicates.
+                  </span>
+                </div>
               ) : null}
             </div>
 
