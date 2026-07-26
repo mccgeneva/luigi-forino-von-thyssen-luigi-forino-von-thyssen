@@ -112,6 +112,38 @@ export interface PublishInstrumentInput {
   printoutUrl?: string | null
 }
 
+/**
+ * Fields an administrator may edit on an already-published instrument. The
+ * verified identity (ISIN) and its verification provenance (source / Bloomberg
+ * figi / registry attestations) are intentionally immutable — changing them
+ * would invalidate the verification, so a mis-verified instrument must instead
+ * be removed and re-published. Everything commercial / descriptive is editable.
+ */
+export interface UpdateInstrumentInput {
+  id: string
+  cusip?: string | null
+  commonCode?: string | null
+  bankName: string
+  bankBic?: string
+  bankCountry?: string
+  type: string
+  typeFull: string
+  faceValue: number
+  currency: string
+  tenorMonths: number
+  rating?: string
+  assignable?: boolean
+  monetizable?: boolean
+  issueDate?: string | null
+  maturityDate?: string | null
+  issuerDetails?: string | null
+  beneficiaryTerms?: string | null
+  deliveryMethod?: string | null
+  governingLaw?: string | null
+  notes?: string | null
+  printoutUrl?: string | null
+}
+
 export type MarketplaceResult =
   | { ok: true; instruments: MarketplaceInstrument[] }
   | { ok: false; error: string }
@@ -329,22 +361,28 @@ async function findDuplicateInstrument(opts: {
   isin: string
   cusip?: string | null
   commonCode?: string | null
+  /** Instrument id to ignore — used when editing so a row never collides with itself. */
+  excludeId?: string | null
 }): Promise<ExistingInstrumentRef | null> {
   const isin = (opts.isin || "").trim().toUpperCase()
   const cusip = (opts.cusip || "").trim().toUpperCase() || null
   const commonCode = (opts.commonCode || "").trim() || null
+  const excludeId = (opts.excludeId || "").trim() || null
   if (!isin && !cusip && !commonCode) return null
 
   try {
     const { rows } = await query(
       `SELECT id, isin, cusip, common_code, bank_name, type_full, created_at
          FROM marketplace_instruments
-        WHERE upper(isin) = $1
-           OR ($2::text IS NOT NULL AND upper(cusip) = $2)
-           OR ($3::text IS NOT NULL AND common_code = $3)
+        WHERE ($4::text IS NULL OR id <> $4)
+          AND (
+            upper(isin) = $1
+            OR ($2::text IS NOT NULL AND upper(cusip) = $2)
+            OR ($3::text IS NOT NULL AND common_code = $3)
+          )
         ORDER BY (upper(isin) = $1) DESC, created_at ASC
         LIMIT 1`,
-      [isin, cusip, commonCode],
+      [isin, cusip, commonCode, excludeId],
     )
     const row = rows[0]
     if (!row) return null
@@ -717,5 +755,116 @@ export async function removeInstrument(passcode: string, id: string): Promise<Ma
     return { ok: true, instruments: rows.map(rowToInstrument) }
   } catch (err) {
     return { ok: false, error: (err as Error).message }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Admin: edit an existing instrument's commercial / descriptive fields.
+//
+// The ISIN and verification provenance are immutable (see UpdateInstrumentInput).
+// Everything else — issuing bank, type, face value, terms, printout details —
+// can be corrected in place without re-verifying.
+// ---------------------------------------------------------------------------
+export async function updateInstrument(
+  passcode: string,
+  input: UpdateInstrumentInput,
+): Promise<PublishResult> {
+  try {
+    const admin = await requireAdmin(passcode)
+    await ensureTable()
+
+    const id = (input.id || "").trim()
+    if (!id) return { ok: false, error: "Missing instrument id." }
+
+    const { rows: existingRows } = await query(
+      `SELECT * FROM marketplace_instruments WHERE id = $1`,
+      [id],
+    )
+    const existing = existingRows[0]
+    if (!existing) return { ok: false, error: "That instrument no longer exists." }
+
+    if (!input.bankName?.trim()) return { ok: false, error: "The issuing bank is required." }
+    if (!Number.isFinite(input.faceValue) || input.faceValue <= 0)
+      return { ok: false, error: "Enter a valid face value." }
+
+    const cusip = (input.cusip ?? "").trim().toUpperCase() || null
+    if (cusip && !isValidCusip(cusip)) return { ok: false, error: "The CUSIP is not valid." }
+
+    const commonCode = (input.commonCode ?? "").trim() || null
+    const source = existing.verified_source as VerifiedSource
+    // Euroclear / Clearstream instruments must keep a real 9-digit Common Code.
+    if ((source === "euroclear" || source === "clearstream") && !(commonCode && /^\d{9}$/.test(commonCode))) {
+      return { ok: false, error: "Euroclear/Clearstream instruments require a 9-digit Common Code." }
+    }
+
+    // Prevent an edit from colliding with a DIFFERENT instrument's identifiers.
+    const dup = await findDuplicateInstrument({
+      isin: existing.isin as string,
+      cusip,
+      commonCode,
+      excludeId: id,
+    })
+    if (dup && dup.field !== "isin") {
+      const label = dup.field === "cusip" ? `CUSIP ${cusip}` : `Common Code ${commonCode}`
+      return {
+        ok: false,
+        error: `That ${label} already belongs to ${dup.typeFull || "another instrument"} from ${dup.bankName || "another issuer"} (${dup.id}).`,
+      }
+    }
+
+    await query(
+      `UPDATE marketplace_instruments SET
+         cusip = $2, common_code = $3, bank_name = $4, bank_bic = $5, bank_country = $6,
+         type = $7, type_full = $8, face_value = $9, currency = $10, tenor_months = $11,
+         rating = $12, assignable = $13, monetizable = $14,
+         issue_date = $15, maturity_date = $16, issuer_details = $17, beneficiary_terms = $18,
+         delivery_method = $19, governing_law = $20, notes = $21, printout_url = $22,
+         updated_at = now()
+       WHERE id = $1`,
+      [
+        id,
+        cusip,
+        commonCode,
+        input.bankName.trim(),
+        (input.bankBic ?? "").trim(),
+        (input.bankCountry ?? "").trim(),
+        input.type.trim(),
+        input.typeFull.trim(),
+        Math.round(input.faceValue),
+        (input.currency ?? "USD").trim().toUpperCase(),
+        Math.max(1, Math.round(input.tenorMonths || 12)),
+        (input.rating ?? "").trim(),
+        input.assignable ?? true,
+        input.monetizable ?? true,
+        input.issueDate || null,
+        input.maturityDate || null,
+        (input.issuerDetails ?? "").trim() || null,
+        (input.beneficiaryTerms ?? "").trim() || null,
+        (input.deliveryMethod ?? "").trim() || null,
+        (input.governingLaw ?? "").trim() || null,
+        (input.notes ?? "").trim() || null,
+        (input.printoutUrl ?? "").trim() || null,
+      ],
+    )
+
+    await logActivity({
+      action: `Administrator edited a marketplace instrument`,
+      category: "Bank Instruments",
+      user: `${admin.fullName} (${admin.company})`,
+      details: {
+        summary: `Administrator updated ${input.type} ${existing.isin} from ${input.bankName} (face value ${input.currency} ${Math.round(input.faceValue).toLocaleString("en-US")}).`,
+        referenceId: id,
+        isin: existing.isin as string,
+        issuingBank: input.bankName,
+      },
+    })
+
+    const { rows } = await query(`SELECT * FROM marketplace_instruments ORDER BY created_at DESC`)
+    const all = rows.map(rowToInstrument)
+    const updated = all.find((i) => i.id === id)!
+    return { ok: true, instrument: updated, instruments: all }
+  } catch (err) {
+    console.log("[v0] updateInstrument failed:", (err as Error).message)
+    return { ok: false, error: "The instrument could not be updated. Please try again." }
   }
 }

@@ -13,6 +13,7 @@ import {
   Eye,
   EyeOff,
   AlertTriangle,
+  Pencil,
 } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -30,6 +31,14 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+  DialogFooter,
+} from "@/components/ui/dialog"
 import { ADMIN_PASSCODE } from "@/lib/admin-config"
 import { isValidCusip, getInstrumentTypeRules } from "@/lib/instrument-identifiers"
 import { MARKET_INSTRUMENT_TYPES, instrumentTypesByCategory, findInstrumentType } from "@/lib/instrument-marketplace"
@@ -37,6 +46,7 @@ import type {
   MarketplaceInstrument,
   VerifiedSource,
   PublishInstrumentInput,
+  UpdateInstrumentInput,
   EnrichResult,
   ExistingInstrumentRef,
   MarketplaceResult,
@@ -126,6 +136,7 @@ export function MarketplaceInstrumentManager() {
   const [verify, setVerify] = useState<VerifyState>({ loading: false, checked: false })
   const [publishing, setPublishing] = useState(false)
   const [busyId, setBusyId] = useState<string | null>(null)
+  const [editing, setEditing] = useState<MarketplaceInstrument | null>(null)
 
   const setField = <K extends keyof typeof EMPTY_FORM>(key: K, value: (typeof EMPTY_FORM)[K]) => {
     setForm((f) => ({ ...f, [key]: value }))
@@ -651,7 +662,11 @@ export function MarketplaceInstrumentManager() {
                     {busyId === inst.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : inst.available ? <Eye className="h-3.5 w-3.5" /> : <EyeOff className="h-3.5 w-3.5" />}
                     {inst.available ? "Listed" : "Hidden"}
                   </Button>
-                  <Button type="button" variant="ghost" size="sm" onClick={() => remove(inst)} disabled={busyId === inst.id} className="h-8 gap-1 text-xs text-destructive hover:text-destructive">
+                  <Button type="button" variant="ghost" size="sm" onClick={() => setEditing(inst)} disabled={busyId === inst.id} className="h-8 gap-1 text-xs" title="Edit instrument">
+                    <Pencil className="h-3.5 w-3.5" />
+                    Edit
+                  </Button>
+                  <Button type="button" variant="ghost" size="sm" onClick={() => remove(inst)} disabled={busyId === inst.id} className="h-8 gap-1 text-xs text-destructive hover:text-destructive" title="Remove instrument">
                     <Trash2 className="h-3.5 w-3.5" />
                   </Button>
                 </div>
@@ -659,7 +674,271 @@ export function MarketplaceInstrumentManager() {
             ))}
           </div>
         )}
+
+        <EditInstrumentDialog
+          instrument={editing}
+          onClose={() => setEditing(null)}
+          onSaved={(all) => {
+            setInstruments(all)
+            setEditing(null)
+          }}
+        />
       </CardContent>
     </Card>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Edit dialog — modify an existing instrument's commercial / descriptive
+// fields. The ISIN and its verification provenance are immutable (shown but not
+// editable); to correct those the instrument must be removed and re-published.
+// ---------------------------------------------------------------------------
+function EditInstrumentDialog({
+  instrument,
+  onClose,
+  onSaved,
+}: {
+  instrument: MarketplaceInstrument | null
+  onClose: () => void
+  onSaved: (instruments: MarketplaceInstrument[]) => void
+}) {
+  const [form, setForm] = useState<Record<string, string | boolean>>({})
+  const [saving, setSaving] = useState(false)
+
+  // Reload the form whenever a different instrument is opened for editing.
+  useEffect(() => {
+    if (!instrument) return
+    setForm({
+      cusip: instrument.cusip ?? "",
+      commonCode: instrument.commonCode ?? "",
+      bankName: instrument.bankName ?? "",
+      bankBic: instrument.bankBic ?? "",
+      bankCountry: instrument.bankCountry ?? "",
+      typeCode: instrument.type ?? "SBLC",
+      faceValue: String(instrument.faceValue ?? ""),
+      currency: instrument.currency ?? "USD",
+      tenorMonths: String(instrument.tenorMonths ?? 12),
+      rating: instrument.rating ?? "",
+      assignable: instrument.assignable ?? true,
+      monetizable: instrument.monetizable ?? true,
+      issueDate: instrument.issueDate ?? "",
+      maturityDate: instrument.maturityDate ?? "",
+      issuerDetails: instrument.issuerDetails ?? "",
+      beneficiaryTerms: instrument.beneficiaryTerms ?? "",
+      deliveryMethod: instrument.deliveryMethod ?? "",
+      governingLaw: instrument.governingLaw ?? "",
+      notes: instrument.notes ?? "",
+      printoutUrl: instrument.printoutUrl ?? "",
+    })
+  }, [instrument])
+
+  const set = (key: string, value: string | boolean) => setForm((f) => ({ ...f, [key]: value }))
+  const str = (key: string) => String(form[key] ?? "")
+
+  const requiresCommonCode =
+    !!instrument && (instrument.verifiedSource === "euroclear" || instrument.verifiedSource === "clearstream")
+  const cusipValid = str("cusip").trim() === "" || isValidCusip(str("cusip").trim())
+  const commonCodeValid = !requiresCommonCode || /^\d{9}$/.test(str("commonCode").trim())
+  const canSave =
+    !!str("bankName").trim() &&
+    Number.parseFloat(str("faceValue").replace(/,/g, "")) > 0 &&
+    cusipValid &&
+    commonCodeValid
+
+  const save = async () => {
+    if (!instrument) return
+    const typeMeta = MARKET_INSTRUMENT_TYPES.find((t) => t.code === str("typeCode"))
+    setSaving(true)
+    try {
+      const input: UpdateInstrumentInput = {
+        id: instrument.id,
+        cusip: str("cusip") || null,
+        commonCode: str("commonCode") || null,
+        bankName: str("bankName"),
+        bankBic: str("bankBic"),
+        bankCountry: str("bankCountry"),
+        type: str("typeCode"),
+        typeFull: typeMeta?.full ?? str("typeCode"),
+        faceValue: Number.parseFloat(str("faceValue").replace(/,/g, "")),
+        currency: str("currency"),
+        tenorMonths: Number.parseInt(str("tenorMonths"), 10) || 12,
+        rating: str("rating"),
+        assignable: Boolean(form.assignable),
+        monetizable: Boolean(form.monetizable),
+        issueDate: str("issueDate") || null,
+        maturityDate: str("maturityDate") || null,
+        issuerDetails: str("issuerDetails") || null,
+        beneficiaryTerms: str("beneficiaryTerms") || null,
+        deliveryMethod: str("deliveryMethod") || null,
+        governingLaw: str("governingLaw") || null,
+        notes: str("notes") || null,
+        printoutUrl: str("printoutUrl") || null,
+      }
+      const res = await marketplaceApi<PublishResult>({ action: "update", input })
+      if (!res.ok) {
+        toast.error(res.error)
+        return
+      }
+      onSaved(res.instruments)
+      toast.success("Instrument updated", {
+        description: `${res.instrument.type} ${res.instrument.isin} has been saved.`,
+      })
+    } catch (err) {
+      console.log("[v0] update failed:", (err as Error)?.message)
+      toast.error("Could not update the instrument. Please try again.")
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <Dialog open={instrument !== null} onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="max-h-[85vh] gap-0 overflow-y-auto p-0 sm:max-w-2xl">
+        {instrument && (
+          <>
+            <DialogHeader className="border-b border-border p-4 text-left">
+              <DialogTitle className="flex flex-wrap items-center gap-2 text-base">
+                <Pencil className="h-4 w-4 text-primary" />
+                Edit instrument
+                <Badge className="rounded-sm px-1.5 py-0 font-mono text-[10px] font-bold">{instrument.type}</Badge>
+              </DialogTitle>
+              <DialogDescription className="font-mono text-[11px]">
+                {instrument.isin}
+                {instrument.commonCode ? ` · CC ${instrument.commonCode}` : ""} · verified via{" "}
+                {SOURCE_LABEL[instrument.verifiedSource]}
+              </DialogDescription>
+            </DialogHeader>
+
+            <div className="flex flex-col gap-4 p-4">
+              <p className="rounded-md border border-border/60 bg-muted/40 p-2 text-[11px] text-muted-foreground">
+                The ISIN and its verification source are locked — they define the instrument&apos;s verified identity.
+                To change them, remove this instrument and publish a re-verified one.
+              </p>
+
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div className="space-y-1.5 sm:col-span-2">
+                  <Label htmlFor="edit-bank">Issuing bank</Label>
+                  <Input id="edit-bank" value={str("bankName")} onChange={(e) => set("bankName", e.target.value)} />
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="edit-bic">SWIFT / BIC</Label>
+                  <Input id="edit-bic" value={str("bankBic")} onChange={(e) => set("bankBic", e.target.value)} />
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="edit-country">Country</Label>
+                  <Input id="edit-country" value={str("bankCountry")} onChange={(e) => set("bankCountry", e.target.value)} />
+                </div>
+                <div className="space-y-1.5">
+                  <Label>Instrument type</Label>
+                  <Select value={str("typeCode")} onValueChange={(v) => set("typeCode", v)}>
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      {instrumentTypesByCategory().map((group) => (
+                        <SelectGroup key={group.category}>
+                          <SelectLabel>{group.category}</SelectLabel>
+                          {group.types.map((t) => (
+                            <SelectItem key={t.code} value={t.code}>{t.code} — {t.full}</SelectItem>
+                          ))}
+                        </SelectGroup>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="edit-rating">Rating</Label>
+                  <Input id="edit-rating" value={str("rating")} onChange={(e) => set("rating", e.target.value)} placeholder="AAA" />
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="edit-face">Face value</Label>
+                  <Input id="edit-face" inputMode="decimal" value={str("faceValue")} onChange={(e) => set("faceValue", e.target.value)} />
+                </div>
+                <div className="space-y-1.5">
+                  <Label>Currency</Label>
+                  <Select value={str("currency")} onValueChange={(v) => set("currency", v)}>
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      {CURRENCIES.map((c) => (
+                        <SelectItem key={c} value={c}>{c}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="edit-tenor">Tenor (months)</Label>
+                  <Input id="edit-tenor" inputMode="numeric" value={str("tenorMonths")} onChange={(e) => set("tenorMonths", e.target.value)} />
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="edit-cusip">CUSIP (optional)</Label>
+                  <Input id="edit-cusip" value={str("cusip")} onChange={(e) => set("cusip", e.target.value)} className={cn(!cusipValid && "border-destructive")} />
+                  {!cusipValid ? <p className="text-[11px] text-destructive">Invalid CUSIP.</p> : null}
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="edit-cc">Common Code{requiresCommonCode ? "" : " (optional)"}</Label>
+                  <Input id="edit-cc" value={str("commonCode")} onChange={(e) => set("commonCode", e.target.value)} className={cn(!commonCodeValid && "border-destructive")} />
+                  {!commonCodeValid ? <p className="text-[11px] text-destructive">Euroclear/Clearstream require a 9-digit Common Code.</p> : null}
+                </div>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-4">
+                <label className="flex items-center gap-2 text-sm text-muted-foreground">
+                  <Switch checked={Boolean(form.assignable)} onCheckedChange={(c) => set("assignable", c)} /> Assignable
+                </label>
+                <label className="flex items-center gap-2 text-sm text-muted-foreground">
+                  <Switch checked={Boolean(form.monetizable)} onCheckedChange={(c) => set("monetizable", c)} /> Monetizable
+                </label>
+              </div>
+
+              <div className="rounded-md border border-border/60 bg-card p-3">
+                <p className="mb-3 text-xs font-semibold uppercase tracking-wider text-muted-foreground">Printout details (shown to customers)</p>
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <div className="space-y-1.5">
+                    <Label htmlFor="edit-issue">Issue date</Label>
+                    <Input id="edit-issue" type="date" value={str("issueDate")} onChange={(e) => set("issueDate", e.target.value)} />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label htmlFor="edit-maturity">Maturity date</Label>
+                    <Input id="edit-maturity" type="date" value={str("maturityDate")} onChange={(e) => set("maturityDate", e.target.value)} />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label htmlFor="edit-delivery">Delivery method</Label>
+                    <Input id="edit-delivery" value={str("deliveryMethod")} onChange={(e) => set("deliveryMethod", e.target.value)} />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label htmlFor="edit-law">Governing law / rules</Label>
+                    <Input id="edit-law" value={str("governingLaw")} onChange={(e) => set("governingLaw", e.target.value)} />
+                  </div>
+                  <div className="space-y-1.5 sm:col-span-2">
+                    <Label htmlFor="edit-issuer">Issuer details</Label>
+                    <Textarea id="edit-issuer" rows={2} value={str("issuerDetails")} onChange={(e) => set("issuerDetails", e.target.value)} />
+                  </div>
+                  <div className="space-y-1.5 sm:col-span-2">
+                    <Label htmlFor="edit-benef">Beneficiary / transfer terms</Label>
+                    <Textarea id="edit-benef" rows={2} value={str("beneficiaryTerms")} onChange={(e) => set("beneficiaryTerms", e.target.value)} />
+                  </div>
+                  <div className="space-y-1.5 sm:col-span-2">
+                    <Label htmlFor="edit-notes">Notes</Label>
+                    <Textarea id="edit-notes" rows={2} value={str("notes")} onChange={(e) => set("notes", e.target.value)} />
+                  </div>
+                  <div className="space-y-1.5 sm:col-span-2">
+                    <Label htmlFor="edit-pdf">Printout PDF URL (optional)</Label>
+                    <Input id="edit-pdf" value={str("printoutUrl")} onChange={(e) => set("printoutUrl", e.target.value)} />
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <DialogFooter className="gap-2 border-t border-border p-4">
+              <Button type="button" variant="outline" onClick={onClose} disabled={saving}>
+                Cancel
+              </Button>
+              <Button type="button" onClick={save} disabled={!canSave || saving} className="gap-1.5">
+                {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
+                Save changes
+              </Button>
+            </DialogFooter>
+          </>
+        )}
+      </DialogContent>
+    </Dialog>
   )
 }
