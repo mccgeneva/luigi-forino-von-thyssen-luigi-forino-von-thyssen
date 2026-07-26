@@ -20,6 +20,7 @@ import {
   ArrowRight,
   XCircle,
   Ban,
+  Lock,
   Landmark,
   Copy,
   ShieldCheck,
@@ -409,6 +410,17 @@ export default function InstrumentsPage() {
       setMonetizeTarget(instrument)
       return
     }
+    // Guard: an instrument with a live (pending or approved) monetization is
+    // pledged as collateral — proceeds have been advanced against it. It cannot
+    // be assigned or transferred away, otherwise the client would keep the cash
+    // AND hand off the underlying instrument (a double-spend). The pledge must
+    // be released (monetization rejected/unwound) before any transfer.
+    if (isMonetized(instrument)) {
+      toast.error("Instrument is pledged", {
+        description: `${instrument.id} has an active monetization and can't be transferred or assigned until that monetization is released.`,
+      })
+      return
+    }
     setActionDestination("")
     setRecipient(null)
     setRecipientStatus("idle")
@@ -603,6 +615,15 @@ export default function InstrumentsPage() {
   const confirmInstrumentAction = async () => {
     if (!actionTarget || !recipient) return
     const { instrument } = actionTarget
+    // Defense-in-depth: never let a pledged (monetized) instrument leave the
+    // portfolio, even if this dialog was opened before the monetization landed.
+    if (isMonetized(instrument)) {
+      toast.error("Instrument is pledged", {
+        description: `${instrument.id} has an active monetization and can't be transferred until it is released.`,
+      })
+      setActionTarget(null)
+      return
+    }
     if (!instrument.approvalId) {
       toast.error("This instrument can't be transferred", {
         description: "It is still syncing. Please refresh and try again.",
@@ -1097,14 +1118,21 @@ export default function InstrumentsPage() {
                               <ExternalLink className="mr-2 h-4 w-4" />
                               View Details
                             </DropdownMenuItem>
-                            {instrument.status === "active" && instrument.assignable && (
-                              <DropdownMenuItem
-                                onClick={() => requestInstrumentAction(instrument, "Assign/Transfer")}
-                              >
-                                <ArrowRight className="mr-2 h-4 w-4" />
-                                Transfer
-                              </DropdownMenuItem>
-                            )}
+                            {instrument.status === "active" &&
+                              instrument.assignable &&
+                              (isMonetized(instrument) ? (
+                                <DropdownMenuItem disabled>
+                                  <ArrowRight className="mr-2 h-4 w-4" />
+                                  Transfer (pledged)
+                                </DropdownMenuItem>
+                              ) : (
+                                <DropdownMenuItem
+                                  onClick={() => requestInstrumentAction(instrument, "Assign/Transfer")}
+                                >
+                                  <ArrowRight className="mr-2 h-4 w-4" />
+                                  Transfer
+                                </DropdownMenuItem>
+                              ))}
                             {instrument.status === "active" &&
                               instrument.monetizable &&
                               (isMonetized(instrument) ? (
@@ -1240,18 +1268,28 @@ export default function InstrumentsPage() {
                             <>
                               {instrument.assignable &&
                                 (instrument.status === "active" ? (
-                                  <button
-                                    type="button"
-                                    onClick={(e) => {
-                                      e.stopPropagation()
-                                      requestInstrumentAction(instrument, "Assign/Transfer")
-                                    }}
-                                    aria-label={`Transfer ${instrument.type} ${instrument.id}`}
-                                    className="inline-flex items-center gap-1 rounded-md border border-blue-500/20 bg-blue-500/10 px-2 py-1 text-[10px] font-medium text-blue-400 transition-colors hover:bg-blue-500/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
-                                  >
-                                    <ArrowRight className="h-3 w-3" />
-                                    Assign / Transfer
-                                  </button>
+                                  isMonetized(instrument) ? (
+                                    <Badge
+                                      variant="outline"
+                                      className="text-[10px] bg-muted text-muted-foreground border-border"
+                                    >
+                                      <Lock className="mr-1 h-3 w-3" />
+                                      Pledged
+                                    </Badge>
+                                  ) : (
+                                    <button
+                                      type="button"
+                                      onClick={(e) => {
+                                        e.stopPropagation()
+                                        requestInstrumentAction(instrument, "Assign/Transfer")
+                                      }}
+                                      aria-label={`Transfer ${instrument.type} ${instrument.id}`}
+                                      className="inline-flex items-center gap-1 rounded-md border border-blue-500/20 bg-blue-500/10 px-2 py-1 text-[10px] font-medium text-blue-400 transition-colors hover:bg-blue-500/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
+                                    >
+                                      <ArrowRight className="h-3 w-3" />
+                                      Assign / Transfer
+                                    </button>
+                                  )
                                 ) : (
                                   <Badge
                                     variant="outline"
