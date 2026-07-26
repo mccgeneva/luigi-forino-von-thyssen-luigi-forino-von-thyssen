@@ -191,6 +191,19 @@ export default function InstrumentsPage() {
   const canDeleteInstrument = (inst: Instrument) =>
     inst.status !== "transferred" && !inUseInstrumentIds.has(inst.id)
 
+  // Instrument ids that already have a LIVE monetization request (pending review
+  // or approved). Such an instrument cannot be monetized again — its value is
+  // already pledged/advanced against. A rejected request frees the instrument to
+  // be monetized afresh. This gates every Monetize entry point below.
+  const monetizedInstrumentIds = useMemo(() => {
+    const ids = new Set<string>()
+    for (const req of monetizationRequests) {
+      if (req.instrumentId && req.status !== "rejected") ids.add(req.instrumentId)
+    }
+    return ids
+  }, [monetizationRequests])
+  const isMonetized = (inst: Instrument) => monetizedInstrumentIds.has(inst.id)
+
   // Map each pledged instrument id -> its active leverage line, so a BG that was
   // pledged to an approved leverage facility (e.g. 1:5) surfaces its leveraged
   // value (face value × ratio) directly on the instrument. Only "approved"
@@ -367,6 +380,15 @@ export default function InstrumentsPage() {
     action: "Assign/Transfer" | "Monetize",
   ) => {
     if (action === "Monetize") {
+      // Guard: an instrument with a live (pending or approved) monetization is
+      // already pledged and cannot be monetized again until that request is
+      // rejected. Prevents double-advancing against the same collateral.
+      if (isMonetized(instrument)) {
+        toast.error("Already monetized", {
+          description: `${instrument.id} already has an active monetization request. It can't be monetized again unless that request is rejected.`,
+        })
+        return
+      }
       const defaultStructure = MONETIZATION_STRUCTURES[0]
       setMonetizeForm({
         structure: defaultStructure.value,
@@ -1083,14 +1105,21 @@ export default function InstrumentsPage() {
                                 Transfer
                               </DropdownMenuItem>
                             )}
-                            {instrument.status === "active" && instrument.monetizable && (
-                              <DropdownMenuItem
-                                onClick={() => requestInstrumentAction(instrument, "Monetize")}
-                              >
-                                <TrendingUp className="mr-2 h-4 w-4" />
-                                Monetize
-                              </DropdownMenuItem>
-                            )}
+                            {instrument.status === "active" &&
+                              instrument.monetizable &&
+                              (isMonetized(instrument) ? (
+                                <DropdownMenuItem disabled>
+                                  <TrendingUp className="mr-2 h-4 w-4" />
+                                  Monetized
+                                </DropdownMenuItem>
+                              ) : (
+                                <DropdownMenuItem
+                                  onClick={() => requestInstrumentAction(instrument, "Monetize")}
+                                >
+                                  <TrendingUp className="mr-2 h-4 w-4" />
+                                  Monetize
+                                </DropdownMenuItem>
+                              ))}
                             <DropdownMenuItem onClick={() => downloadCertificate(instrument)}>
                               <Download className="mr-2 h-4 w-4" />
                               Download Certificate
@@ -1233,18 +1262,28 @@ export default function InstrumentsPage() {
                                 ))}
                               {instrument.monetizable &&
                                 (instrument.status === "active" ? (
-                                  <button
-                                    type="button"
-                                    onClick={(e) => {
-                                      e.stopPropagation()
-                                      requestInstrumentAction(instrument, "Monetize")
-                                    }}
-                                    aria-label={`Monetize ${instrument.type} ${instrument.id}`}
-                                    className="inline-flex items-center gap-1 rounded-md border border-green-500/20 bg-green-500/10 px-2 py-1 text-[10px] font-medium text-green-400 transition-colors hover:bg-green-500/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-green-500/40"
-                                  >
-                                    <TrendingUp className="h-3 w-3" />
-                                    Monetize
-                                  </button>
+                                  isMonetized(instrument) ? (
+                                    <Badge
+                                      variant="outline"
+                                      className="text-[10px] bg-muted text-muted-foreground border-border"
+                                    >
+                                      <TrendingUp className="mr-1 h-3 w-3" />
+                                      Monetized
+                                    </Badge>
+                                  ) : (
+                                    <button
+                                      type="button"
+                                      onClick={(e) => {
+                                        e.stopPropagation()
+                                        requestInstrumentAction(instrument, "Monetize")
+                                      }}
+                                      aria-label={`Monetize ${instrument.type} ${instrument.id}`}
+                                      className="inline-flex items-center gap-1 rounded-md border border-green-500/20 bg-green-500/10 px-2 py-1 text-[10px] font-medium text-green-400 transition-colors hover:bg-green-500/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-green-500/40"
+                                    >
+                                      <TrendingUp className="h-3 w-3" />
+                                      Monetize
+                                    </button>
+                                  )
                                 ) : (
                                   <Badge
                                     variant="outline"

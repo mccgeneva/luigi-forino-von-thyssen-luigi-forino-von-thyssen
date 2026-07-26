@@ -1374,24 +1374,29 @@ export default function AdminPage() {
   const formatMonetizationProceeds = (r: MonetizationRequest) =>
     formatCurrency(r.grossProceeds, r.proceedsCurrency)
 
-  const handleApproveMonetization = (request: MonetizationRequest) => {
-    // Credit the monetization proceeds into the master ledger at approval time.
-    const credited = addReceipt({
-      id: request.id,
-      amount: request.grossProceeds,
-      currency: request.proceedsCurrency,
-      status: "completed",
-      date: new Date().toISOString(),
-      counterparty: request.monetizationPlatform || request.issuer,
-      bank: request.receivingBank
-        ? `${request.receivingBank}${request.receivingBankBic ? ` (${request.receivingBankBic})` : ""}`
-        : undefined,
-      reference: request.mt760Ref || request.id,
-      comment: `Monetization of ${request.instrumentTypeFull} (${request.instrumentType}) ${request.instrumentId} issued by ${request.issuer}. Structure: ${MONETIZATION_STRUCTURE_LABELS[request.structure]} at ${request.advanceRatePercent}% LTV on ${formatCurrency(request.monetizedValue, request.currency)}${request.leverageRatio ? ` leveraged value (${formatCurrency(request.faceValue, request.currency)} face × ${request.leverageRatio})` : " face value"}. UETR ${request.uetr}.${request.mt760Ref ? ` MT760 ${request.mt760Ref}.` : ""}`,
-      category: "Instrument Monetization",
-    })
-
-    const approved = approveMonetization(request.id, credited.id)
+  const handleApproveMonetization = async (request: MonetizationRequest) => {
+    // The proceeds must be credited to the CLIENT's balance (the shared data
+    // owner), not the admin's own ledger. Approve through the server so the DB
+    // approval flips to "approved" and `applyLedgerEffect` posts the gross-
+    // proceeds credit (APPR-<approvalId>) onto the client's ledger — the same
+    // ledger their Account Balances reads from. The previous version credited
+    // the admin's own books via addReceipt and only mutated local state, so the
+    // client's balance never moved and the request stayed pending in the DB
+    // (which also let the same instrument be monetized again).
+    if (!request.approvalId) {
+      toast.error("Cannot authorize monetization", {
+        description: "This request is still syncing. Please refresh and try again.",
+      })
+      return
+    }
+    const res = await adminDecideApproval(ADMIN_PASSCODE, request.approvalId, "approved")
+    if (!res.ok) {
+      toast.error("Could not authorize monetization", { description: res.error })
+      return
+    }
+    // Reflect approval locally for instant feedback; the authoritative server
+    // record (approved + credited) is pulled on the next refresh.
+    const approved = approveMonetization(request.id, `APPR-${request.approvalId}`)
     if (!approved) return
 
     toast.success("Monetization authorized", {
