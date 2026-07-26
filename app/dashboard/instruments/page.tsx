@@ -657,8 +657,14 @@ export default function InstrumentsPage() {
       instrument.id.toLowerCase().includes(searchQuery.toLowerCase()) ||
       instrument.issuer.toLowerCase().includes(searchQuery.toLowerCase())
     const matchesType = filterType === "all" || instrument.type === filterType
+    // Transferred instruments have left this portfolio — the client no longer
+    // controls them. Keep them out of the default ("all") view so it reflects
+    // only current holdings, but still surface them when explicitly filtered
+    // to "Transferred" as a historical record.
     const matchesStatus =
-      filterStatus === "all" || instrument.status === filterStatus
+      filterStatus === "all"
+        ? instrument.status !== "transferred"
+        : instrument.status === filterStatus
     return matchesSearch && matchesType && matchesStatus
   })
 
@@ -973,9 +979,10 @@ export default function InstrumentsPage() {
                   <SelectValue placeholder="Status" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="all">All Status</SelectItem>
+                  <SelectItem value="all">Current Holdings</SelectItem>
                   <SelectItem value="active">Active</SelectItem>
                   <SelectItem value="pending">Pending</SelectItem>
+                  <SelectItem value="transferred">Transferred Out</SelectItem>
                   <SelectItem value="rejected">Rejected</SelectItem>
                   <SelectItem value="expired">Expired</SelectItem>
                 </SelectContent>
@@ -1187,21 +1194,33 @@ export default function InstrumentsPage() {
                         </div>
 
                         <div className="flex gap-2 pt-2">
-                          {instrument.assignable && (
+                          {instrument.status === "transferred" ? (
                             <Badge
                               variant="outline"
-                              className="text-[10px] bg-blue-500/10 text-blue-400 border-blue-500/20"
+                              className="text-[10px] bg-muted text-muted-foreground border-border"
                             >
-                              Assignable
+                              <ArrowRight className="mr-1 h-3 w-3" />
+                              No longer held — transferred out
                             </Badge>
-                          )}
-                          {instrument.monetizable && (
-                            <Badge
-                              variant="outline"
-                              className="text-[10px] bg-green-500/10 text-green-400 border-green-500/20"
-                            >
-                              Monetizable
-                            </Badge>
+                          ) : (
+                            <>
+                              {instrument.assignable && (
+                                <Badge
+                                  variant="outline"
+                                  className="text-[10px] bg-blue-500/10 text-blue-400 border-blue-500/20"
+                                >
+                                  Assignable
+                                </Badge>
+                              )}
+                              {instrument.monetizable && (
+                                <Badge
+                                  variant="outline"
+                                  className="text-[10px] bg-green-500/10 text-green-400 border-green-500/20"
+                                >
+                                  Monetizable
+                                </Badge>
+                              )}
+                            </>
                           )}
                         </div>
                       </div>
