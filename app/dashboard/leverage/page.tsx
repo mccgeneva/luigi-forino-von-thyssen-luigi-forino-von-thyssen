@@ -70,6 +70,13 @@ import {
   type LeverageAccountKey,
 } from "@/lib/leverage-requests-store"
 import { useInstrumentRequests } from "@/lib/instrument-requests-store"
+import { useLedger } from "@/lib/ledger-store"
+import { postedLeverageInterest } from "@/lib/leverage-financing"
+
+// Round to 2 dp for money settlement (mirrors the admin switch-off handler).
+function round2(n: number) {
+  return Math.round(n * 100) / 100
+}
 
 const accountIcons: Record<LeverageAccountKey, typeof Building2> = {
   treasury: ShieldCheck,
@@ -378,8 +385,9 @@ export default function LeveragePage() {
   const [formError, setFormError] = useState<string | null>(null)
   const [switchOffTarget, setSwitchOffTarget] = useState<LeverageRequest | null>(null)
   const log = useActivityLog()
-  const { requests, addRequest, requestSwitchOff, hydrated } = useLeverageRequests()
+  const { requests, addRequest, unwindLine, hydrated } = useLeverageRequests()
   const { instruments } = useInstrumentRequests()
+  const { addDebit, balanceFor, entries: ledgerEntries } = useLedger()
 
   // Active bank instruments the client can pledge as collateral when funding a
   // leverage line from "Bank Instruments". Only approved/active instruments
@@ -617,30 +625,97 @@ export default function LeveragePage() {
     setActiveTab("lines")
   }
 
-  // Client-initiated switch-off: routes the active line into the Administrator
-  // queue. No money moves until the Administrator approves the settlement.
-  const confirmSwitchOff = () => {
+  // Settlement quote for the line being unwound: the borrowed principal to
+  // repay, the outstanding accrued interest (total accrued minus whatever the
+  // monthly reconciler has already charged), the total debit, and the balance
+  // impact — including whether it would push the account negative.
+  const unwindQuote = useMemo(() => {
     const line = switchOffTarget
-    if (!line) return
-    const interestToDate = accruedInterest(line, Date.now())
-    requestSwitchOff(line.id)
+    if (!line) return null
+    const totalInterest = accruedInterest(line, now)
+    const alreadyPosted = postedLeverageInterest(line.id, ledgerEntries)
+    const interest = Math.max(0, round2(totalInterest - alreadyPosted))
+    const principal = line.borrowedAmount
+    const totalDebit = round2(principal + interest)
+    const currentBalance = balanceFor(line.currency)
+    const resultingBalance = round2(currentBalance - totalDebit)
+    return { principal, interest, totalDebit, currentBalance, resultingBalance, goesNegative: resultingBalance < 0 }
+  }, [switchOffTarget, now, ledgerEntries, balanceFor])
+
+  // Client-initiated INSTANT unwind: repays the borrowed principal and settles
+  // any outstanding accrued interest from the balance right away, then closes
+  // the line — restoring the balance to its un-leveraged state without waiting
+  // for Administrator approval. The client is warned beforehand if this pushes
+  // the balance negative, but may still proceed.
+  const confirmUnwind = () => {
+    const line = switchOffTarget
+    const quote = unwindQuote
+    if (!line || !quote) return
+    const ts = new Date().toISOString()
+
+    const repayRef = `LEV-RP-${Date.now().toString().slice(-8)}`
+    const repayEntry = addDebit({
+      id: repayRef,
+      amount: quote.principal,
+      currency: line.currency,
+      status: "completed",
+      date: ts,
+      counterparty: "MCC Leverage Desk",
+      reference: line.id,
+      category: "Leverage Principal Repaid",
+      comment: `Repayment of borrowed funds on client termination of 1:${line.leverageRatio} leverage line ${line.id} (${line.accountLabel}).`,
+    })
+    let interestRef: string | undefined
+    if (quote.interest > 0) {
+      interestRef = `LEV-IN-${Date.now().toString().slice(-7)}`
+      addDebit({
+        id: interestRef,
+        amount: quote.interest,
+        currency: line.currency,
+        status: "completed",
+        date: ts,
+        counterparty: "MCC Leverage Desk",
+        reference: line.id,
+        category: "Leverage Debit Interest",
+        comment: `Accrued debit interest (${(line.interestRate * 100).toFixed(1)}% per year) settled on client termination of leverage line ${line.id}.`,
+      })
+    }
+
+    const closed = unwindLine(line.id, {
+      settledInterest: quote.interest,
+      repayEntryId: repayEntry.id,
+      interestEntryId: interestRef,
+    })
+    if (!closed) {
+      toast.error("Could not terminate the line", { description: "Please refresh and try again." })
+      return
+    }
+
     log({
-      action: `Requested switch-off of leverage line ${line.id} (${line.accountLabel}, 1:${line.leverageRatio})`,
+      action: `Terminated leverage line ${line.id} (${line.accountLabel}, 1:${line.leverageRatio})`,
       category: "Leverage & Risk",
       details: {
-        summary: `Client requested to switch off leverage line ${line.id} on the ${line.accountLabel}. On Administrator approval the borrowed ${formatMoney(line.borrowedAmount, line.currency)} will be repaid and the accrued debit interest of ${formatMoney2(interestToDate, line.currency)} settled from the balance. The request is pending Administrator approval.`,
+        summary: `Client terminated leverage line ${line.id} on the ${line.accountLabel}. The borrowed ${formatMoney(quote.principal, line.currency)} was repaid and ${formatMoney2(quote.interest, line.currency)} of accrued debit interest was settled from the balance, removing the 1:${line.leverageRatio} multiplier. Resulting balance: ${formatMoney2(quote.resultingBalance, line.currency)}${quote.goesNegative ? " (negative — overdrawn)." : "."}`,
         referenceId: line.id,
         fundingAccount: line.accountLabel,
         leverage: `1:${line.leverageRatio}`,
-        borrowedFunds: formatMoney(line.borrowedAmount, line.currency),
-        accruedInterestToDate: formatMoney2(interestToDate, line.currency),
-        status: "Switch-Off Pending Administrator Approval",
-        requestedAt: new Date().toLocaleString("en-GB"),
+        principalRepaid: formatMoney(quote.principal, line.currency),
+        interestSettled: formatMoney2(quote.interest, line.currency),
+        principalLedgerReference: repayRef,
+        interestLedgerReference: interestRef || "(none)",
+        resultingBalance: formatMoney2(quote.resultingBalance, line.currency),
+        status: "Terminated by client",
       },
     })
-    toast.success("Switch-off request submitted", {
-      description: `Line ${line.id} is pending Administrator approval to settle interest and unwind the position.`,
-    })
+    if (quote.goesNegative) {
+      toast.warning("Leverage terminated — balance is negative", {
+        description: `${line.id} closed. Your ${line.currency} balance is now ${formatMoney2(quote.resultingBalance, line.currency)}. Please fund the account to clear the overdraft.`,
+      })
+    } else {
+      toast.success("Leverage terminated", {
+        description: `${line.id} closed. ${formatMoney(quote.principal, line.currency)} principal repaid and ${formatMoney2(quote.interest, line.currency)} interest settled.`,
+      })
+    }
     setSwitchOffTarget(null)
   }
 
@@ -1246,7 +1321,7 @@ export default function LeveragePage() {
                             onClick={() => setSwitchOffTarget(req)}
                           >
                             <Power className="mr-2 h-4 w-4" />
-                            Switch Off Leverage
+                            Terminate &amp; Unwind
                           </Button>
                         </div>
                         <MarginMonitor line={req} />
@@ -1395,15 +1470,15 @@ export default function LeveragePage() {
         </TabsContent>
       </Tabs>
 
-      {/* Switch-off confirmation */}
+      {/* Instant self-service termination */}
       <Dialog open={!!switchOffTarget} onOpenChange={(open) => !open && setSwitchOffTarget(null)}>
         <DialogContent className="sm:max-w-md">
-          {switchOffTarget && (
+          {switchOffTarget && unwindQuote && (
             <>
               <DialogHeader>
-                <DialogTitle>Switch Off Leverage</DialogTitle>
+                <DialogTitle>Terminate &amp; Unwind Leverage</DialogTitle>
                 <DialogDescription>
-                  Submit a request to close line {switchOffTarget.id} for Administrator approval.
+                  Close line {switchOffTarget.id} now and restore your balance to its un-leveraged state.
                 </DialogDescription>
               </DialogHeader>
               <div className="space-y-3 py-2">
@@ -1411,37 +1486,74 @@ export default function LeveragePage() {
                   <div className="flex items-center justify-between">
                     <span className="text-muted-foreground">Borrowed funds to repay</span>
                     <span className="font-medium text-foreground">
-                      {formatMoney(switchOffTarget.borrowedAmount, switchOffTarget.currency)}
+                      {formatMoney(unwindQuote.principal, switchOffTarget.currency)}
                     </span>
                   </div>
                   <div className="mt-1 flex items-center justify-between">
                     <span className="text-muted-foreground">Accrued interest to settle</span>
                     <span className="font-medium text-orange-400">
-                      {formatMoney2(accruedInterest(switchOffTarget, now), switchOffTarget.currency)}
+                      {formatMoney2(unwindQuote.interest, switchOffTarget.currency)}
                     </span>
                   </div>
                   <div className="mt-2 flex items-center justify-between border-t border-border pt-2">
-                    <span className="font-medium text-foreground">Total deducted on close</span>
+                    <span className="font-medium text-foreground">Total deducted now</span>
                     <span className="font-bold text-foreground">
-                      {formatMoney2(
-                        switchOffTarget.borrowedAmount + accruedInterest(switchOffTarget, now),
-                        switchOffTarget.currency,
-                      )}
+                      {formatMoney2(unwindQuote.totalDebit, switchOffTarget.currency)}
                     </span>
                   </div>
                 </div>
-                <p className="text-xs text-muted-foreground">
-                  Final interest is recalculated at the moment the Administrator approves. The borrowed principal
-                  is repaid and the leverage multiplier removed from your balance.
-                </p>
+
+                {/* Balance impact */}
+                <div className="rounded-lg border border-border bg-secondary/30 p-3 text-sm">
+                  <div className="flex items-center justify-between">
+                    <span className="text-muted-foreground">Current balance</span>
+                    <span className="font-medium text-foreground">
+                      {formatMoney2(unwindQuote.currentBalance, switchOffTarget.currency)}
+                    </span>
+                  </div>
+                  <div className="mt-1 flex items-center justify-between">
+                    <span className="text-muted-foreground">Balance after unwind</span>
+                    <span
+                      className={cn(
+                        "font-semibold",
+                        unwindQuote.goesNegative ? "text-red-500" : "text-green-500",
+                      )}
+                    >
+                      {formatMoney2(unwindQuote.resultingBalance, switchOffTarget.currency)}
+                    </span>
+                  </div>
+                </div>
+
+                {unwindQuote.goesNegative ? (
+                  <div className="flex items-start gap-2 rounded-lg border border-red-500/30 bg-red-500/10 p-3 text-xs text-red-400">
+                    <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+                    <span>
+                      This unwind exceeds your available {switchOffTarget.currency} balance by{" "}
+                      <span className="font-semibold">
+                        {formatMoney2(Math.abs(unwindQuote.resultingBalance), switchOffTarget.currency)}
+                      </span>
+                      . Proceeding will leave your account overdrawn — you must fund it to clear the negative
+                      balance.
+                    </span>
+                  </div>
+                ) : (
+                  <p className="text-xs text-muted-foreground">
+                    The borrowed principal is repaid and any accrued debit interest is settled from your balance
+                    immediately, removing the leverage multiplier. This is instant and does not require
+                    Administrator approval.
+                  </p>
+                )}
               </div>
               <DialogFooter>
                 <Button variant="outline" onClick={() => setSwitchOffTarget(null)}>
                   Cancel
                 </Button>
-                <Button onClick={confirmSwitchOff}>
+                <Button
+                  variant={unwindQuote.goesNegative ? "destructive" : "default"}
+                  onClick={confirmUnwind}
+                >
                   <Power className="mr-2 h-4 w-4" />
-                  Request Switch-Off
+                  {unwindQuote.goesNegative ? "Unwind Anyway" : "Terminate & Unwind"}
                 </Button>
               </DialogFooter>
             </>

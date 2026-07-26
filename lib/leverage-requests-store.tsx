@@ -245,6 +245,10 @@ interface LeverageRequestsContextValue {
   requestSwitchOff: (id: string) => LeverageRequest | null
   approveSwitchOff: (id: string, payload: ApproveSwitchOffPayload) => LeverageRequest | null
   rejectSwitchOff: (id: string, reason?: string) => LeverageRequest | null
+  /** Client self-service: instantly terminate an active line (approved OR
+   *  switch-off pending) and close it. The caller settles the ledger
+   *  (principal repayment + accrued interest) and passes the entry ids. */
+  unwindLine: (id: string, payload: ApproveSwitchOffPayload) => LeverageRequest | null
   hydrated: boolean
 }
 
@@ -430,6 +434,34 @@ export function LeverageRequestsProvider({ children }: { children: React.ReactNo
     return updated
   }
 
+  // Client-initiated instant termination. Unlike requestSwitchOff (which parks
+  // the line in the admin queue), this closes the line immediately: the caller
+  // has already posted the principal repayment and interest settlement to the
+  // ledger. Accepts a line that is either live ("approved") or already sitting
+  // in the switch-off queue ("switchoff_pending").
+  const unwindLine: LeverageRequestsContextValue["unwindLine"] = (id, payload) => {
+    let updated: LeverageRequest | null = null
+    setRequests((prev) =>
+      prev.map((r) => {
+        if (r.id === id && (r.status === "approved" || r.status === "switchoff_pending")) {
+          updated = {
+            ...r,
+            status: "closed",
+            switchOffRequestedAt: r.switchOffRequestedAt ?? new Date().toISOString(),
+            closedAt: new Date().toISOString(),
+            settledInterest: payload.settledInterest,
+            repayEntryId: payload.repayEntryId,
+            interestEntryId: payload.interestEntryId,
+          }
+          return updated
+        }
+        return r
+      }),
+    )
+    persistRecord(updated)
+    return updated
+  }
+
   return (
     <LeverageRequestsContext.Provider
       value={{
@@ -441,6 +473,7 @@ export function LeverageRequestsProvider({ children }: { children: React.ReactNo
         requestSwitchOff,
         approveSwitchOff,
         rejectSwitchOff,
+        unwindLine,
         hydrated,
       }}
     >
