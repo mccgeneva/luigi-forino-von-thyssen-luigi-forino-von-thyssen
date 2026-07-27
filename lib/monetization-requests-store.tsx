@@ -5,7 +5,7 @@ import { generateUetr } from "@/lib/swift-gpi"
 import { mirrorSubmission } from "@/lib/approval-sync"
 import { useServerRequestList } from "@/lib/use-server-request-list"
 
-export type MonetizationStatus = "pending" | "approved" | "rejected"
+export type MonetizationStatus = "pending" | "approved" | "rejected" | "reversed"
 
 // How the monetization is structured against the underlying bank instrument.
 export type MonetizationStructure =
@@ -88,7 +88,7 @@ export function MonetizationRequestsProvider({ children }: { children: React.Rea
   // List sourced entirely from the server (Neon), so submissions and admin
   // decisions are visible on any device/browser. No localStorage involved.
   const { records: requests, setRecords: setRequests, hydrated, refresh } =
-    useServerRequestList<MonetizationRequest>("monetization")
+    useServerRequestList<MonetizationRequest>("monetization", { cancelledStatus: "reversed" })
 
   const addRequest: MonetizationRequestsContextValue["addRequest"] = (request) => {
     const full: MonetizationRequest = {

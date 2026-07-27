@@ -12,6 +12,7 @@ import {
   Globe,
   LogOut,
   AlertTriangle,
+  Ban,
   FileText,
   TrendingUp,
   Trash2,
@@ -126,6 +127,7 @@ import {
   adminDecideApproval,
   adminUpdateApprovalRecord,
   adminMarkPaymentDelivered,
+  adminReverseMonetization,
 } from "@/app/actions/approvals"
 import {
   getPaymentStage,
@@ -280,6 +282,12 @@ export default function AdminPage() {
   const [rejectMonetizationTarget, setRejectMonetizationTarget] =
     useState<MonetizationRequest | null>(null)
   const [rejectMonetizationReason, setRejectMonetizationReason] = useState("")
+  // Reverse (unwind) an already-authorized monetization: debits the advanced
+  // proceeds back and releases the pledged instrument.
+  const [reverseMonetizationTarget, setReverseMonetizationTarget] =
+    useState<MonetizationRequest | null>(null)
+  const [reverseMonetizationReason, setReverseMonetizationReason] = useState("")
+  const [reversingMonetization, setReversingMonetization] = useState(false)
   const [swiftViewTarget, setSwiftViewTarget] = useState<MonetizationRequest | null>(null)
   const [rejectDTCTarget, setRejectDTCTarget] = useState<DTCRequest | null>(null)
   const [rejectDTCReason, setRejectDTCReason] = useState("")
@@ -1442,6 +1450,50 @@ export default function AdminPage() {
     })
     setRejectMonetizationTarget(null)
     setRejectMonetizationReason("")
+  }
+
+  const confirmReverseMonetization = async () => {
+    if (!reverseMonetizationTarget) return
+    const request = reverseMonetizationTarget
+    if (!request.approvalId) {
+      toast.error("Cannot reverse monetization", {
+        description: "This request is still syncing. Please refresh and try again.",
+      })
+      return
+    }
+    setReversingMonetization(true)
+    // Server-side unwind: flips the DB approval to cancelled, debits the advanced
+    // proceeds back out of the client's ledger, stops future monthly interest and
+    // releases the instrument pledge. The authoritative "reversed" status is
+    // pulled on the next 30s poll / focus refresh.
+    const res = await adminReverseMonetization(
+      ADMIN_PASSCODE,
+      request.approvalId,
+      reverseMonetizationReason,
+    )
+    setReversingMonetization(false)
+    if (!res.ok) {
+      toast.error("Could not reverse monetization", { description: res.error })
+      return
+    }
+    toast.success("Monetization reversed", {
+      description: `${formatMonetizationProceeds(request)} was debited back from the master account and ${request.instrumentId} was released.`,
+    })
+    logActivity({
+      action: `Administrator reversed monetization ${request.id} of ${formatMonetizationProceeds(request)}`,
+      category: "Administration",
+      details: {
+        summary: `Administrator reversed authorized monetization ${request.id} of the ${request.instrumentTypeFull} (${request.instrumentType}) ${request.instrumentId}. Debited back ${formatMonetizationProceeds(request)} from the master account and released the pledged instrument. Future monthly debit interest stopped; interest already charged remains.${reverseMonetizationReason.trim() ? ` Reason: ${reverseMonetizationReason.trim()}` : ""}`,
+        referenceId: request.id,
+        uetr: request.uetr,
+        instrumentRef: request.instrumentId,
+        proceedsDebited: formatMonetizationProceeds(request),
+        decision: "Reversed",
+        reason: reverseMonetizationReason.trim() || "(none)",
+      },
+    })
+    setReverseMonetizationTarget(null)
+    setReverseMonetizationReason("")
   }
 
   const pendingDTC = useMemo(
@@ -4183,15 +4235,23 @@ export default function AdminPage() {
                       "text-[10px]",
                       r.status === "approved"
                         ? "border-green-500/20 bg-green-500/10 text-green-500"
-                        : "border-red-500/20 bg-red-500/10 text-red-500",
+                        : r.status === "reversed"
+                          ? "border-border bg-muted text-muted-foreground"
+                          : "border-red-500/20 bg-red-500/10 text-red-500",
                     )}
                   >
                     {r.status === "approved" ? (
                       <Check className="mr-1 h-3 w-3" />
+                    ) : r.status === "reversed" ? (
+                      <Ban className="mr-1 h-3 w-3" />
                     ) : (
                       <X className="mr-1 h-3 w-3" />
                     )}
-                    {r.status === "approved" ? "Authorized" : "Rejected"}
+                    {r.status === "approved"
+                      ? "Authorized"
+                      : r.status === "reversed"
+                        ? "Reversed"
+                        : "Rejected"}
                   </Badge>
                   <div>
                     <p className="text-sm font-medium text-foreground">{r.instrumentId}</p>
@@ -4201,9 +4261,25 @@ export default function AdminPage() {
                     </p>
                   </div>
                 </div>
-                <span className="text-sm font-medium text-foreground">
-                  {formatMonetizationProceeds(r)}
-                </span>
+                <div className="flex items-center gap-3 sm:justify-end">
+                  <span className="text-sm font-medium text-foreground">
+                    {formatMonetizationProceeds(r)}
+                  </span>
+                  {r.status === "approved" && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-7 gap-1 border-destructive/30 text-destructive hover:bg-destructive/10 hover:text-destructive"
+                      onClick={() => {
+                        setReverseMonetizationReason("")
+                        setReverseMonetizationTarget(r)
+                      }}
+                    >
+                      <Ban className="h-3 w-3" />
+                      Reverse
+                    </Button>
+                  )}
+                </div>
               </div>
             ))
           )}
@@ -6036,6 +6112,61 @@ export default function AdminPage() {
                 </Button>
                 <Button variant="destructive" onClick={confirmRejectMonetization}>
                   Reject Request
+                </Button>
+              </DialogFooter>
+            </>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Reverse (unwind) authorized Monetization dialog */}
+      <Dialog
+        open={!!reverseMonetizationTarget}
+        onOpenChange={(open) => !open && !reversingMonetization && setReverseMonetizationTarget(null)}
+      >
+        <DialogContent className="sm:max-w-md">
+          {reverseMonetizationTarget && (
+            <>
+              <DialogHeader>
+                <DialogTitle>Reverse Monetization</DialogTitle>
+                <DialogDescription>
+                  Unwind authorized monetization {reverseMonetizationTarget.id} on{" "}
+                  {reverseMonetizationTarget.instrumentId} for{" "}
+                  {formatMonetizationProceeds(reverseMonetizationTarget)}.
+                </DialogDescription>
+              </DialogHeader>
+              <div className="flex items-start gap-2 rounded-lg border border-destructive/20 bg-destructive/5 p-3">
+                <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-destructive" />
+                <p className="text-xs text-muted-foreground text-pretty">
+                  The advanced proceeds will be debited back from the client&apos;s Master Account (this may
+                  push the balance negative), future monthly debit interest stops, and the pledged instrument
+                  is released for transfer / re-monetization. Interest already charged is kept.
+                </p>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="reverse-monetization-reason">Reason (optional)</Label>
+                <Textarea
+                  id="reverse-monetization-reason"
+                  value={reverseMonetizationReason}
+                  onChange={(e) => setReverseMonetizationReason(e.target.value)}
+                  placeholder="e.g. Facility unwound at client request; instrument returned."
+                  rows={3}
+                />
+              </div>
+              <DialogFooter>
+                <Button
+                  variant="outline"
+                  disabled={reversingMonetization}
+                  onClick={() => setReverseMonetizationTarget(null)}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  variant="destructive"
+                  disabled={reversingMonetization}
+                  onClick={confirmReverseMonetization}
+                >
+                  {reversingMonetization ? "Reversing…" : "Reverse Monetization"}
                 </Button>
               </DialogFooter>
             </>
