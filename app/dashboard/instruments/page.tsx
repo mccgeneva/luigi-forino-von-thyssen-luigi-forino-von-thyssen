@@ -181,7 +181,8 @@ export default function InstrumentsPage() {
     }
     for (const req of monetizationRequests) {
       if (!req.instrumentId) continue
-      if (req.status !== "rejected") ids.add(req.instrumentId)
+      // A rejected OR reversed monetization no longer engages the instrument.
+      if (req.status !== "rejected" && req.status !== "reversed") ids.add(req.instrumentId)
     }
     return ids
   }, [leverageRequests, monetizationRequests])
@@ -199,7 +200,11 @@ export default function InstrumentsPage() {
   const monetizedInstrumentIds = useMemo(() => {
     const ids = new Set<string>()
     for (const req of monetizationRequests) {
-      if (req.instrumentId && req.status !== "rejected") ids.add(req.instrumentId)
+      // A rejected OR reversed monetization releases the instrument — it is no
+      // longer pledged, so it may be transferred / re-monetized again.
+      if (req.instrumentId && req.status !== "rejected" && req.status !== "reversed") {
+        ids.add(req.instrumentId)
+      }
     }
     return ids
   }, [monetizationRequests])
@@ -1478,7 +1483,9 @@ export default function InstrumentsPage() {
                       ? { icon: CheckCircle2, color: "text-green-500", bg: "bg-green-500/10", label: "Approved — credited" }
                       : req.status === "rejected"
                         ? { icon: XCircle, color: "text-red-500", bg: "bg-red-500/10", label: "Rejected" }
-                        : { icon: Clock, color: "text-yellow-500", bg: "bg-yellow-500/10", label: "Pending approval" }
+                        : req.status === "reversed"
+                          ? { icon: Ban, color: "text-muted-foreground", bg: "bg-muted", label: "Reversed — debited back" }
+                          : { icon: Clock, color: "text-yellow-500", bg: "bg-yellow-500/10", label: "Pending approval" }
                   const ToneIcon = tone.icon
                   return (
                     <div

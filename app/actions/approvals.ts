@@ -2203,6 +2203,95 @@ export async function adminRevokeCommodityDeal(
   }
 }
 
+/**
+ * Administrator REVERSES an authorized (approved) monetization. This fully
+ * unwinds the facility:
+ *   1. Flips the DB approval to `cancelled` (via adminRevokeApprovedApproval), so
+ *      the reconcile/backfill sweep — which only re-posts `approved` records —
+ *      will never re-credit the proceeds again.
+ *   2. Deletes the `APPR-<id>` proceeds credit from the balance owner's ledger,
+ *      debiting the advanced funds back out. Per policy this is allowed to push
+ *      the currency balance negative (the proceeds may already be spent).
+ *   3. Stops all FUTURE monthly debit interest — the monetization interest
+ *      reconciler only charges facilities whose status is `approved`, so a
+ *      `cancelled` one is skipped. Interest ALREADY charged for elapsed months is
+ *      intentionally left in place, mirroring the commodity-revoke policy.
+ *   4. Releases the instrument pledge — the client's `isMonetized` gate frees a
+ *      `reversed` request, so the underlying bank instrument becomes
+ *      transferable / re-monetizable again.
+ */
+export async function adminReverseMonetization(
+  passcode: string,
+  id: string,
+  note?: string,
+): Promise<DecideResult> {
+  if (!(await adminOk(passcode))) return { ok: false, error: "Administrator authorization failed." }
+  try {
+    const existing = await getApprovalById(id)
+    if (!existing) return { ok: false, error: "Monetization not found." }
+    if (existing.kind !== "monetization") {
+      return { ok: false, error: "Only monetizations can be reversed here." }
+    }
+    if (existing.status !== "approved") {
+      return { ok: false, error: "Only an authorized monetization can be reversed." }
+    }
+
+    const reversed = await adminRevokeApprovedApproval(id, note)
+    if (!reversed) return { ok: false, error: "This monetization can no longer be reversed." }
+
+    // Debit the advanced proceeds back out by removing the approval credit from
+    // the shared-data owner's ledger (Master for a sub-account).
+    const ownerId = await resolveDataOwnerIdFor(existing.userId)
+    try {
+      await deleteLedgerEntry(ownerId, `APPR-${id}`)
+    } catch (err) {
+      console.log("[v0] monetization proceeds reversal failed:", (err as Error).message)
+    }
+
+    const amountLabel =
+      existing.amount != null ? formatMoney(existing.amount, existing.currency ?? "") : "the advanced proceeds"
+
+    try {
+      await insertNotification({
+        userId: existing.userId,
+        tone: "warning",
+        title: "Monetization reversed",
+        body: `Your monetization "${existing.title}" was reversed by MCC Capital${note?.trim() ? ` — ${note.trim()}` : ""}. ${amountLabel} has been debited back from your Master Account and the underlying instrument has been released. Monthly debit interest has stopped; interest already charged remains.`,
+        href: KIND_HREF.monetization ?? "/dashboard/instruments",
+      })
+    } catch (err) {
+      console.log("[v0] monetization reversal notification failed:", (err as Error).message)
+    }
+
+    try {
+      const target = await resolveAccountProfileById(existing.userId)
+      await logActivity({
+        action: `Administrator reversed monetization "${existing.title}" for ${target.fullName} and debited back the advanced proceeds`,
+        category: "Administration / Approvals",
+        user: "Administrator",
+        details: {
+          referenceId: existing.id,
+          targetAccount: `${target.fullName} — ${target.email}`,
+          summary: existing.summary || existing.title,
+          amount:
+            existing.amount != null
+              ? `${existing.currency ?? ""} ${existing.amount.toLocaleString("en-US")}`
+              : "(n/a)",
+          decision: "Reversed",
+          reason: note?.trim() || "(none)",
+        },
+      })
+    } catch (err) {
+      console.log("[v0] monetization reversal activity log failed:", (err as Error).message)
+    }
+
+    return { ok: true, request: reversed }
+  } catch (err) {
+    console.log("[v0] adminReverseMonetization failed:", (err as Error).message)
+    return { ok: false, error: "The monetization could not be reversed. Please try again." }
+  }
+}
+
 // --- Admin: share a commodity deal (read-only) with other clients ----------
 
 export interface ShareDealResult {
