@@ -1,8 +1,9 @@
 "use client"
 
 import { createContext, useContext } from "react"
+import { toast } from "sonner"
 import { generateUetr } from "@/lib/swift-gpi"
-import { mirrorSubmission } from "@/lib/approval-sync"
+import { mirrorSubmissionDetailed } from "@/lib/approval-sync"
 import { useServerRequestList } from "@/lib/use-server-request-list"
 
 export type MonetizationStatus = "pending" | "approved" | "rejected" | "reversed"
@@ -106,7 +107,7 @@ export function MonetizationRequestsProvider({ children }: { children: React.Rea
     // ledger and pulled via getMyLedger(). We persist the COMPLETE record under
     // `payload.record` so the server can rebuild the view anywhere. The list
     // store never posts to the ledger itself, so there is no double counting.
-    void mirrorSubmission({
+    void mirrorSubmissionDetailed({
       kind: "monetization",
       title: `${full.instrumentTypeFull} · ${full.issuer}`,
       summary: `Monetize ${full.currency} ${full.monetizedValue.toLocaleString("en-US")} ${full.instrumentTypeFull}${full.leverageRatio ? ` (leveraged 1:${full.leverageRatio} on ${full.currency} ${full.faceValue.toLocaleString("en-US")} face)` : ""} at ${full.advanceRatePercent}% (proceeds ${full.proceedsCurrency} ${full.grossProceeds.toLocaleString("en-US")})`,
@@ -125,7 +126,18 @@ export function MonetizationRequestsProvider({ children }: { children: React.Rea
         reference: full.mt760Ref || full.uetr,
         category: "Instrument Monetization",
       },
-    }).then(() => {
+    }).then((res) => {
+      // The server can REFUSE the submission — most importantly the duplicate
+      // guard when the instrument is already monetized. Roll back the optimistic
+      // entry and surface the reason so the client isn't left with a phantom
+      // "pending" request the admin will never see.
+      if (!res.ok) {
+        setRequests((prev) => prev.filter((r) => r.id !== full.id))
+        toast.error("Monetization not submitted", {
+          description: res.error || "Your request could not be submitted. Please try again.",
+        })
+        return
+      }
       void refresh()
     })
     return full

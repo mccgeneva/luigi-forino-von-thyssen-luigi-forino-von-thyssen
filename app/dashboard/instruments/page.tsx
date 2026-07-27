@@ -537,6 +537,15 @@ export default function InstrumentsPage() {
       return
     }
     const instrument = monetizeTarget
+    // Submit-time re-check: the dialog may have been opened while another tab /
+    // device monetized this instrument. The server enforces this authoritatively
+    // too, but this gives immediate feedback instead of an optimistic rollback.
+    if (monetizedInstrumentIds.has(instrument.id)) {
+      toast.error("Instrument already monetized", {
+        description: `${instrument.id} already has a live monetization. Reverse it before monetizing again.`,
+      })
+      return
+    }
     const structureLabel =
       MONETIZATION_STRUCTURES.find((s) => s.value === monetizeForm.structure)?.label ??
       monetizeForm.structure

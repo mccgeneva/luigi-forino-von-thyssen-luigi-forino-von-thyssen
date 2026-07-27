@@ -93,6 +93,38 @@ export async function submitApproval(input: SubmitApprovalInput): Promise<Submit
     return { ok: false, error: "Unknown request type." }
   }
 
+  // Server-authoritative duplicate guard for monetizations. An instrument that
+  // already has a LIVE (pending OR approved) monetization is pledged and cannot
+  // be monetized again — otherwise the same bond can be advanced against twice
+  // (the "two Authorized monetizations on one bond" bug). The client UI also
+  // gates this, but a client-only check is bypassable by stale dialog state, a
+  // second tab, or another device, so the authoritative check lives here where
+  // every submission (mirrored via /api/approvals) must pass. A rejected or
+  // reversed/cancelled monetization frees the instrument to be monetized again.
+  if (input.kind === "monetization") {
+    const instrumentId = (input.payload?.record as { instrumentId?: string } | undefined)?.instrumentId
+    if (instrumentId) {
+      try {
+        const memberIds = await resolveEnvironmentMemberIds(session.id)
+        const existingMonetizations = await listApprovalsForUsers(memberIds, "monetization")
+        const clash = existingMonetizations.find((r) => {
+          const rid = (r.payload?.record as { instrumentId?: string } | undefined)?.instrumentId
+          return rid === instrumentId && (r.status === "pending" || r.status === "approved")
+        })
+        if (clash) {
+          return {
+            ok: false,
+            error: `${instrumentId} already has ${
+              clash.status === "approved" ? "an active" : "a pending"
+            } monetization request. Reverse or reject it before monetizing this instrument again.`,
+          }
+        }
+      } catch (err) {
+        console.log("[v0] monetization duplicate guard check failed:", (err as Error).message)
+      }
+    }
+  }
+
   // A Sub-account's outgoing payments must clear a second gate: their Master's
   // consent (in addition to administrator approval). Detected here from the
   // authoritative session, so no client can opt out of the Master gate. Joint
