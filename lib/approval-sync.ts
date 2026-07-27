@@ -33,6 +33,25 @@ export interface MirrorInput {
  * (e.g. no DB configured). Never throws.
  */
 export async function mirrorSubmission(input: MirrorInput): Promise<string | null> {
+  const res = await mirrorSubmissionDetailed(input)
+  return res.ok && res.id ? res.id : null
+}
+
+/** The outcome of a mirror, carrying any server-side rejection reason so the
+ *  caller can surface it (e.g. a duplicate-monetization guard rejection). */
+export interface MirrorResult {
+  ok: boolean
+  id?: string
+  error?: string
+}
+
+/**
+ * Like {@link mirrorSubmission} but returns the full result, including a
+ * server-side rejection reason. Use this when the submission can be REFUSED by
+ * the server (e.g. the monetization duplicate guard) and the client needs to
+ * show the reason and roll back its optimistic entry.
+ */
+export async function mirrorSubmissionDetailed(input: MirrorInput): Promise<MirrorResult> {
   try {
     // POST to a Route Handler instead of invoking the Server Action directly.
     // Server Actions are serialized with client navigations by Next.js, so a
@@ -43,11 +62,12 @@ export async function mirrorSubmission(input: MirrorInput): Promise<string | nul
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(input),
     })
-    if (!res.ok) return null
-    const data = (await res.json()) as { ok: boolean; request?: { id: string } }
-    return data.ok && data.request ? data.request.id : null
+    if (!res.ok) return { ok: false, error: "Your request could not be submitted. Please try again." }
+    const data = (await res.json()) as { ok: boolean; request?: { id: string }; error?: string }
+    if (data.ok && data.request) return { ok: true, id: data.request.id }
+    return { ok: false, error: data.error || "Your request could not be submitted. Please try again." }
   } catch {
-    return null
+    return { ok: false, error: "Your request could not be submitted. Please try again." }
   }
 }
 
