@@ -965,7 +965,11 @@ export default function ProjectFundingPage() {
                             {uploaded ? (
                               <p className="mt-1 flex items-center gap-1.5 text-xs text-green-500">
                                 <Paperclip className="h-3 w-3 shrink-0" />
-                                <span className="truncate">{uploaded.fileName}</span>
+                                {/* min-w-0 is required for truncate to work on a
+                                    flex child; without it the long filename forces
+                                    page-wide horizontal overflow that clips and
+                                    locks the whole form. */}
+                                <span className="min-w-0 truncate">{uploaded.fileName}</span>
                               </p>
                             ) : (
                               <p className="mt-0.5 text-xs leading-relaxed text-muted-foreground">
@@ -1043,7 +1047,7 @@ export default function ProjectFundingPage() {
                           {uploads["bank-statement"] ? (
                             <p className="mt-1 flex items-center gap-1.5 text-xs text-green-500">
                               <Paperclip className="h-3 w-3 shrink-0" />
-                              <span className="truncate">{uploads["bank-statement"].fileName}</span>
+                              <span className="min-w-0 truncate">{uploads["bank-statement"].fileName}</span>
                             </p>
                           ) : (
                             <p className="mt-0.5 text-xs leading-relaxed text-muted-foreground">
