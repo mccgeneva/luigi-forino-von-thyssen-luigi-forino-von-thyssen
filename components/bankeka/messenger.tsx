@@ -512,8 +512,11 @@ export function Messenger({
               </Badge>
             </div>
 
-            {/* Messages */}
-            <ScrollArea className="flex-1 bg-background/40">
+            {/* Messages — native overflow scroll (not Radix ScrollArea) so touch
+                momentum scrolling works reliably on mobile, even over tall
+                broadcast messages. touch-pan-y + overscroll-contain keep the
+                gesture inside the thread. */}
+            <div className="flex-1 touch-pan-y overflow-y-auto overscroll-contain bg-background/40">
               <div className="flex flex-col gap-2 p-4">
                 {messages.length === 0 ? (
                   <p className="py-10 text-center text-xs text-muted-foreground">
@@ -531,7 +534,7 @@ export function Messenger({
                 )}
                 <div ref={scrollEndRef} />
               </div>
-            </ScrollArea>
+            </div>
 
             {/* Composer */}
             <div className="flex items-end gap-2 border-t border-border p-3">

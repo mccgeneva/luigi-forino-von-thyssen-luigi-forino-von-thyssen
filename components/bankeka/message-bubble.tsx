@@ -95,7 +95,9 @@ export function MessageBubble({
         onPointerMove={clearTimer}
         onPointerCancel={clearTimer}
         className={cn(
-          "max-w-[80%] select-none rounded-2xl px-3.5 py-2 text-sm leading-relaxed shadow-sm",
+          // touch-pan-y: let vertical swipes scroll the thread instead of being
+          // swallowed by the long-press handler on tall broadcast bubbles.
+          "max-w-[80%] touch-pan-y select-none rounded-2xl px-3.5 py-2 text-sm leading-relaxed shadow-sm",
           outgoing
             ? "rounded-br-sm bg-primary text-primary-foreground"
             : isBroadcast
