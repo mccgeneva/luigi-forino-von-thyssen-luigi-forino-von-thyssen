@@ -59,6 +59,15 @@ import {
 } from "@/app/actions/reconciliation"
 import { MASTER_CONSENT_KINDS, requiresMasterConsent } from "@/lib/account-hierarchy"
 
+// The platform's base / master-account settlement currency. Every master
+// balance check in the app (admin, payments, accounts) is denominated in EUR
+// (`MASTER_ACCOUNT_CURRENCY = "EUR"`), so a ledger posting whose currency is
+// missing MUST fall back to EUR — not USD. Defaulting to USD routed currency-
+// less credits (e.g. leverage borrowed funds) into a phantom USD bucket that
+// the EUR-based master account never reflects, which is why a leverage line
+// appeared to credit USD instead of the master EUR balance.
+const BASE_CURRENCY = "EUR"
+
 // --- Auth helpers -----------------------------------------------------------
 
 // Server-side admin gate: the caller must be an authorized admin ACCOUNT and
@@ -1240,7 +1249,7 @@ function ledgerEntryForApproval(req: ApprovalRequest): LedgerEntry | null {
       id: `APPR-${req.id}`,
       direction: fx.direction,
       amount,
-      currency: fx.currency || req.currency || "USD",
+      currency: fx.currency || req.currency || BASE_CURRENCY,
       status: settledByDelivery ? "completed" : baseStatus,
       date: new Date().toISOString(),
       counterparty: fx.counterparty ?? req.title,
@@ -1264,7 +1273,7 @@ function ledgerEntryForApproval(req: ApprovalRequest): LedgerEntry | null {
       id: `APPR-${req.id}`,
       direction: "credit",
       amount,
-      currency: req.currency || "USD",
+      currency: req.currency || BASE_CURRENCY,
       status: "completed",
       date: new Date().toISOString(),
       counterparty: req.title,
@@ -1305,7 +1314,7 @@ function ledgerEntryForApproval(req: ApprovalRequest): LedgerEntry | null {
       id: `APPR-${req.id}`,
       direction: "credit",
       amount: initialBorrowed,
-      currency: record.currency || req.currency || "USD",
+      currency: record.currency || req.currency || BASE_CURRENCY,
       status: "completed",
       date: new Date().toISOString(),
       counterparty: record.accountLabel || req.title,
@@ -1324,7 +1333,7 @@ function ledgerEntryForApproval(req: ApprovalRequest): LedgerEntry | null {
       id: `APPR-${req.id}`,
       direction: "debit",
       amount,
-      currency: req.currency || "USD",
+      currency: req.currency || BASE_CURRENCY,
       // Delivered → settled (paid out, leaves the balance); otherwise → hold
       // (reserved/blocked). This keeps the backfill consistent with delivery.
       status: isDelivered ? "completed" : "hold",
