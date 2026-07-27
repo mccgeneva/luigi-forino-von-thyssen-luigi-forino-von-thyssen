@@ -1,25 +1,29 @@
 "use client"
 
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
+import { cn } from "@/lib/utils"
 
 const MIN_SCALE = 1
 const MAX_SCALE = 4
 
 /**
- * Horizontal-locked pinch-to-zoom surface.
+ * Pinch-to-zoom surface for the main scrollable content.
  *
- * Wraps the main scrollable content and provides a smooth, two-finger
- * pinch gesture that enlarges / shrinks the content WITHOUT any horizontal
- * shift or jitter:
+ * Scaling is anchored to the TOP-LEFT corner and, while zoomed, a sizer
+ * element is expanded to the scaled dimensions so BOTH scrollbars reveal the
+ * full enlarged content:
  *
- *  - Content is scaled from the TOP-CENTER, so the horizontal center stays
- *    perfectly fixed (no left/right drift while pinching).
- *  - Horizontal panning is disabled entirely (`overflow-x: hidden` +
- *    `touch-action: pan-y`), so the only movement possible is vertical scroll.
- *  - A sizer element grows to `naturalHeight * scale` so the browser's native
- *    vertical scrollbar covers the full zoomed content.
- *  - `touch-action: pan-y` lets one-finger vertical scrolling stay native and
- *    buttery; only multi-touch is intercepted for the zoom.
+ *  - `transform-origin: top left` keeps the left edge pinned, so the content
+ *    grows down-and-right predictably (no content is pushed off the left edge).
+ *  - When zoomed the sizer is sized to `naturalWidth * scale` ×
+ *    `naturalHeight * scale`, and the viewport switches to `overflow-x: auto`
+ *    with `touch-action: pan-x pan-y`, so every edge — including right-side
+ *    action buttons — stays reachable by panning. Previously the content was
+ *    scaled from the center with `overflow-x: hidden`, which clipped both
+ *    edges once zoomed and made edge controls impossible to tap.
+ *  - At 1x the content is unscaled and horizontal panning stays locked
+ *    (`overflow-x: hidden` + `touch-action: pan-y`) so normal vertical
+ *    scrolling is native and buttery with no accidental horizontal drift.
  *
  * The scale is smoothed by writing the transform directly in the move handler
  * (no React re-render per frame) and only committing to state on gesture end,
@@ -47,12 +51,24 @@ export function PinchZoom({ children }: { children: ReactNode }) {
     return Math.hypot(dx, dy)
   }
 
-  // Resize the sizer so the vertical scrollbar reflects the zoomed height.
-  const syncSizerHeight = useCallback((s: number) => {
+  // Resize the sizer so both scrollbars reflect the zoomed content. The content
+  // is pinned to the viewport's visible width while zoomed so that scaling it
+  // never feeds back into layout (which would otherwise compound each frame).
+  const syncSizer = useCallback((s: number) => {
+    const viewport = viewportRef.current
     const content = contentRef.current
     const sizer = sizerRef.current
-    if (!content || !sizer) return
+    if (!viewport || !content || !sizer) return
+    if (s <= 1) {
+      content.style.width = ""
+      sizer.style.width = ""
+      sizer.style.height = ""
+      return
+    }
+    const naturalWidth = viewport.clientWidth
+    content.style.width = `${naturalWidth}px`
     const naturalHeight = content.scrollHeight
+    sizer.style.width = `${naturalWidth * s}px`
     sizer.style.height = `${naturalHeight * s}px`
   }, [])
 
@@ -64,10 +80,10 @@ export function PinchZoom({ children }: { children: ReactNode }) {
       if (content) {
         content.style.transform = clamped === 1 ? "" : `scale(${clamped})`
       }
-      syncSizerHeight(clamped)
+      syncSizer(clamped)
       if (commit) setScale(clamped)
     },
-    [syncSizerHeight],
+    [syncSizer],
   )
 
   useEffect(() => {
@@ -124,30 +140,35 @@ export function PinchZoom({ children }: { children: ReactNode }) {
     }
   }, [applyScale])
 
-  // Keep the sizer height correct when content changes or on resize while zoomed.
+  // Keep the sizer dimensions correct when content changes or on resize while zoomed.
   useEffect(() => {
     if (scale === 1) {
-      if (sizerRef.current) sizerRef.current.style.height = ""
+      syncSizer(1)
       return
     }
-    syncSizerHeight(scale)
-    const onResize = () => syncSizerHeight(gesture.current.scale)
+    syncSizer(scale)
+    const onResize = () => syncSizer(gesture.current.scale)
     window.addEventListener("resize", onResize)
     return () => window.removeEventListener("resize", onResize)
-  }, [scale, syncSizerHeight])
+  }, [scale, syncSizer])
+
+  const zoomed = scale > 1
 
   return (
     <div
       ref={viewportRef}
       data-zoom-viewport=""
-      className="h-full w-full overflow-y-auto overflow-x-hidden overscroll-contain"
-      style={{ touchAction: "pan-y" }}
+      className={cn(
+        "h-full w-full overflow-y-auto overscroll-contain",
+        zoomed ? "overflow-x-auto" : "overflow-x-hidden",
+      )}
+      style={{ touchAction: zoomed ? "pan-x pan-y" : "pan-y" }}
     >
       <div ref={sizerRef} className="w-full">
         <div
           ref={contentRef}
-          className="w-full origin-top will-change-transform"
-          style={{ transformOrigin: "top center" }}
+          className="w-full will-change-transform"
+          style={{ transformOrigin: "top left" }}
         >
           {children}
         </div>
