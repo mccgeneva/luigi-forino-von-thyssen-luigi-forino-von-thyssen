@@ -339,11 +339,50 @@ export interface CreateSpotDealInput {
   publish: boolean
 }
 
+/**
+ * A vessel (by IMO) is "committed" to the marketplace when it already has a deal
+ * that is either ENGAGED (reserved / assigned to a customer) or PUBLISHED and not
+ * yet expired (live on the board, pending a buyer). You cannot sell the same
+ * cargo twice, so such a vessel must not be listed again. Drafts, withdrawn and
+ * expired deals do NOT commit the vessel and are free to be (re)listed.
+ */
+function isCommittingDeal(deal: SpotDeal, now: number): boolean {
+  if (deal.status === "engaged") return true
+  if (deal.status === "published" && new Date(deal.expiresAt).getTime() > now) return true
+  return false
+}
+
+/** Find any live/committed deal already holding this IMO (optionally excluding one deal id). */
+async function findCommittingDealForImo(imo: string, excludeId?: string): Promise<SpotDeal | null> {
+  const now = Date.now()
+  const all = await listAllDeals()
+  return all.find((d) => d.vesselImo === imo && d.id !== excludeId && isCommittingDeal(d, now)) ?? null
+}
+
+/** Human-readable reason a vessel is already committed, for the deny message. */
+function committedReason(deal: SpotDeal): string {
+  return deal.status === "engaged"
+    ? `reserved/assigned to a customer (deal ${deal.id})`
+    : `published and pending a buyer (deal ${deal.id}, expires ${new Date(deal.expiresAt).toLocaleString("en-GB")})`
+}
+
 export async function createSpotDealAdmin(passcode: string, input: CreateSpotDealInput): Promise<DealResult> {
   if (!(await adminOk(passcode))) return { ok: false, error: "Administrator authorization failed." }
 
   const vessel = await dbGetVessel((input.vesselImo ?? "").trim())
   if (!vessel) return { ok: false, error: "Select a vessel from the catalogue." }
+
+  // Duplicate guard: refuse to list a vessel that is already committed to a live
+  // marketplace deal (published & pending, or engaged/assigned). Prevents the
+  // same cargo being sold twice. The vessel frees up once that deal is
+  // withdrawn, expires, or is otherwise closed.
+  const conflict = await findCommittingDealForImo(vessel.imo)
+  if (conflict) {
+    return {
+      ok: false,
+      error: `${vessel.name} (IMO ${vessel.imo}) is already ${committedReason(conflict)}. Withdraw or let that deal expire before listing this vessel again.`,
+    }
+  }
   if (!input.product?.trim()) return { ok: false, error: "Product is required." }
   if (!Number.isFinite(input.quantity) || input.quantity <= 0) return { ok: false, error: "Enter a valid quantity." }
   if (!Number.isFinite(input.spotPrice) || input.spotPrice <= 0) return { ok: false, error: "Enter a valid spot price." }
@@ -418,6 +457,16 @@ export async function publishSpotDealAdmin(passcode: string, id: string): Promis
     const deal = await getDeal(id)
     if (!deal) return { ok: false, error: "Spot deal not found." }
     if (new Date(deal.expiresAt).getTime() <= Date.now()) return { ok: false, error: "Cannot publish an expired offer." }
+    // Duplicate guard: don't publish a draft onto the marketplace if this vessel
+    // is already committed to another live/assigned deal (e.g. two drafts were
+    // prepared for the same ship, or another was published in the meantime).
+    const conflict = await findCommittingDealForImo(deal.vesselImo, deal.id)
+    if (conflict) {
+      return {
+        ok: false,
+        error: `${deal.vesselName} (IMO ${deal.vesselImo}) is already ${committedReason(conflict)}. Withdraw or let that deal expire before publishing this one.`,
+      }
+    }
     const delivered = await broadcastDeal(deal)
     const updated: SpotDeal = {
       ...deal,
