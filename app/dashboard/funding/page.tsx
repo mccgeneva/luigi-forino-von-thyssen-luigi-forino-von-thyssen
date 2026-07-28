@@ -494,11 +494,22 @@ export default function ProjectFundingPage() {
       </div>
 
       <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
-        <TabsList>
-          <TabsTrigger value="framework">AES Framework</TabsTrigger>
-          <TabsTrigger value="documentation">Documentation</TabsTrigger>
-          <TabsTrigger value="apply">Apply for Funding</TabsTrigger>
-          <TabsTrigger value="applications">
+        {/* Responsive grid instead of the default w-fit inline-flex: with four
+            long labels the inline row is ~513px and overflows a phone viewport,
+            and because the zoom viewport clips horizontal overflow the extra
+            tabs become unreachable. A 2-col (mobile) / 4-col (sm+) grid keeps
+            every tab on-screen. */}
+        <TabsList className="grid h-auto w-full grid-cols-2 gap-1 sm:grid-cols-4">
+          <TabsTrigger value="framework" className="w-full">
+            AES Framework
+          </TabsTrigger>
+          <TabsTrigger value="documentation" className="w-full">
+            Documentation
+          </TabsTrigger>
+          <TabsTrigger value="apply" className="w-full">
+            Apply for Funding
+          </TabsTrigger>
+          <TabsTrigger value="applications" className="w-full">
             My Applications
             {myApplications.length > 0 && (
               <Badge
