@@ -2,6 +2,7 @@ import Link from "next/link"
 import type { Metadata } from "next"
 import { ShieldAlert } from "lucide-react"
 import { LoginForm } from "@/components/login-form"
+import { DownloadAppButton } from "@/components/download-app-button"
 
 export const metadata: Metadata = {
   title: "Sign In | MCC Trading Platform",
@@ -55,6 +56,7 @@ export default async function LoginPage({
 
         <div className="rounded-xl border border-border bg-card p-6 shadow-sm sm:p-8">
           <LoginForm />
+          <DownloadAppButton />
         </div>
 
         <div className="mt-6 rounded-lg border border-border bg-muted/40 p-4 text-center">
