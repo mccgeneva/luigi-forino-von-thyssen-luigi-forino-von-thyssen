@@ -30,7 +30,8 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { useActivityLog } from "@/components/activity-tracker"
-import { exportToCsv } from "@/lib/export-utils"
+import { usePdfViewer } from "@/lib/pdf-viewer"
+import { generateAccountDetailsPdf } from "@/lib/account-details-pdf"
 import { useLedger, type LedgerEntry } from "@/lib/ledger-store"
 import {
   useBankAccounts,
@@ -45,6 +46,7 @@ export default function AccountDetailPage() {
   const params = useParams<{ id: string }>()
   const router = useRouter()
   const logActivity = useActivityLog()
+  const { show: showPdf } = usePdfViewer()
   const bankAccounts = useBankAccounts()
   const { entries } = useLedger()
   const [copiedField, setCopiedField] = useState<string | null>(null)
@@ -156,12 +158,48 @@ export default function AccountDetailPage() {
   }
 
   const handleExportAccount = () => {
-    exportToCsv(`account-${account.accountNumber ?? "details"}`, [account])
+    // Resolve the account-scoped figures exactly as the on-screen tiles do:
+    // a registered external account shows its tracked (received-here) balances,
+    // a settlement account shows its own balances.
+    const isRegistered = !account.id.startsWith("ACC-")
+    const total = isRegistered ? (account.trackedBalance ?? 0) : account.balance
+    const available = isRegistered ? (account.trackedAvailable ?? 0) : account.availableBalance
+    const reserved = isRegistered ? (account.trackedReserved ?? 0) : account.reservedBalance
+
+    const generated = generateAccountDetailsPdf({
+      bankName: account.bankName,
+      country: account.country,
+      rating: account.rating,
+      status: account.status,
+      accountName: account.accountName,
+      accountType: account.accountType,
+      accountNumber: account.accountNumber,
+      currency: account.currency,
+      iban: account.iban,
+      swift: account.swift,
+      sortCode: account.sortCode,
+      routingNumber: account.routingNumber,
+      bsb: account.bsb,
+      branchCode: account.branchCode,
+      total,
+      available,
+      reserved,
+      totalLabel: isRegistered ? "Received Here" : "Total Balance",
+      openDate: account.openDate,
+      lastActivity: account.lastActivity,
+      dailyLimit: account.dailyLimit,
+      monthlyVolume: account.monthlyVolume,
+      relationship: account.relationship,
+      branchAddress: account.branchAddress,
+      isRegistered,
+    })
+    showPdf(generated)
+
     logActivity({
       action: `Exported account details for ${account.bankName ?? account.accountName ?? "account"}`,
       category: "Bank Accounts",
       details: {
-        summary: `Client exported the full account details for "${account.accountName ?? account.bankName}" to a CSV file.`,
+        summary: `Client exported a professional PDF account summary for "${account.accountName ?? account.bankName}".`,
         account: account.accountName ?? account.bankName ?? "—",
         currency: account.currency,
       },
