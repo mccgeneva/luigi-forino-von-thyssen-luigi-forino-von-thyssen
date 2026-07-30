@@ -21,7 +21,7 @@ import { authenticateApiRequest, resolveApiTargetUser } from "@/lib/api-request-
 import { updateDynamicUserProfile } from "@/lib/admin-users-db"
 import { persistActivityEvent } from "@/lib/activity-persist"
 import { getNqaiSnapshotForUserId } from "@/lib/nqai-user-context"
-import type { SerializableUserProfile, SerializableProfileItem } from "@/lib/profile-types"
+import type { SerializableUserProfile } from "@/lib/profile-types"
 
 export const dynamic = "force-dynamic"
 
@@ -73,21 +73,33 @@ export async function GET(req: Request) {
   }
 }
 
-// Contact fields live as label/value items inside `profile.principal`. Upsert a
-// value onto the first item whose label matches one of `matchers`; if none
-// exists, append a new item with `defaultLabel`. Returns a NEW array (no
-// mutation of the stored profile until we persist).
-function upsertContactItem(
-  items: SerializableProfileItem[],
+// Contact fields live as label/value items which — depending on the account —
+// can sit in `profile.principal` OR `profile.companyInfo` (e.g. the address).
+// Update the value wherever the field ALREADY exists across both sections so we
+// never create a duplicate/misplaced entry; only if it exists in neither do we
+// append a new item to `principal` under `defaultLabel`. Mutates the passed
+// arrays in place (callers pass shallow copies before persisting).
+function upsertContactAcross(
+  profile: SerializableUserProfile,
   matchers: RegExp[],
   defaultLabel: string,
   value: string,
-): SerializableProfileItem[] {
-  const next = items.map((i) => ({ ...i }))
-  const idx = next.findIndex((i) => matchers.some((re) => re.test(i.label)))
-  if (idx >= 0) next[idx].value = value
-  else next.push({ label: defaultLabel, value })
-  return next
+): void {
+  const sections: Array<"principal" | "companyInfo"> = ["principal", "companyInfo"]
+  let found = false
+  for (const section of sections) {
+    const items = profile[section]
+    if (!Array.isArray(items)) continue
+    for (const item of items) {
+      if (matchers.some((re) => re.test(item.label))) {
+        item.value = value
+        found = true
+      }
+    }
+  }
+  if (!found) {
+    profile.principal = [...(profile.principal ?? []), { label: defaultLabel, value }]
+  }
 }
 
 export async function PATCH(req: Request) {
@@ -120,7 +132,13 @@ export async function PATCH(req: Request) {
   }
 
   try {
-    const profile: SerializableUserProfile = { ...user.profile }
+    // Deep-copy the item arrays so we mutate a copy, never the stored profile,
+    // before persisting.
+    const profile: SerializableUserProfile = {
+      ...user.profile,
+      principal: (user.profile.principal ?? []).map((i) => ({ ...i })),
+      companyInfo: (user.profile.companyInfo ?? []).map((i) => ({ ...i })),
+    }
     const changed: Record<string, string> = {}
 
     if (fullName !== undefined && fullName) {
@@ -132,12 +150,12 @@ export async function PATCH(req: Request) {
       changed.company = company
     }
     if (phone !== undefined) {
-      profile.principal = upsertContactItem(profile.principal ?? [], [/mobile/i, /phone/i, /\btel\b/i], "Mobile", phone)
+      upsertContactAcross(profile, [/mobile/i, /phone/i, /\btel\b/i], "Mobile", phone)
       changed.phone = phone
     }
     if (address !== undefined) {
-      profile.principal = upsertContactItem(
-        profile.principal ?? [],
+      upsertContactAcross(
+        profile,
         [/registered address/i, /residential address/i, /^address$/i, /mailing address/i],
         "Registered Address",
         address,

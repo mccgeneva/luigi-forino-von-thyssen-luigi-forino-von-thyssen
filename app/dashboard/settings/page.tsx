@@ -1,7 +1,7 @@
 "use client"
 
 import { useState } from "react"
-import { Bell, Shield, Globe, Moon, Mail, Smartphone, Cpu } from "lucide-react"
+import { Bell, Shield, Globe, Moon, Mail, Smartphone } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Label } from "@/components/ui/label"
 import { Switch } from "@/components/ui/switch"
@@ -15,7 +15,6 @@ import {
 } from "@/components/ui/select"
 import { useActivityLog } from "@/components/activity-tracker"
 import { ChangePassword } from "@/components/settings/change-password"
-import { ApiAccess } from "@/components/settings/api-access"
 
 export default function SettingsPage() {
   const [emailAlerts, setEmailAlerts] = useState(true)
@@ -100,19 +99,6 @@ export default function SettingsPage() {
           </div>
           <Separator />
           <ChangePassword />
-        </CardContent>
-      </Card>
-
-      {/* API access */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2 text-base">
-            <Cpu className="h-4 w-4" /> API access
-          </CardTitle>
-          <CardDescription>Connect external apps like NQAi.cloud to your account</CardDescription>
-        </CardHeader>
-        <CardContent>
-          <ApiAccess />
         </CardContent>
       </Card>
 
