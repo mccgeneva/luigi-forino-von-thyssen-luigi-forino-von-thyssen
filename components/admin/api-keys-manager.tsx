@@ -28,6 +28,10 @@ import type { ApiKeyRecord, ApiKeyScope } from "@/lib/api-keys-db"
 const SCOPE_LABELS: Record<ApiKeyScope, { label: string; description: string }> = {
   read: { label: "Read customer data", description: "Retrieve a customer's profile, balances and transactions." },
   charge: { label: "Charge balance", description: "Debit subscription costs from a customer's balance." },
+  sso: {
+    label: "SSO sign-in link",
+    description: "Sign an already-authenticated NQAi user into their existing account — no second password.",
+  },
 }
 
 export function ApiKeysManager({ passcode }: { passcode: string }) {
@@ -214,6 +218,23 @@ export function ApiKeysManager({ passcode }: { passcode: string }) {
               insufficient balance is rejected with <code className="font-mono text-xs">402</code> and nothing is
               posted. Reusing an <code className="font-mono text-xs">idempotencyKey</code> returns the original charge
               instead of billing again.
+            </p>
+          </div>
+          <div className="space-y-1">
+            <p className="font-medium text-foreground">Single sign-on hand-off (scope: sso)</p>
+            <pre className="overflow-x-auto rounded-lg border border-border bg-muted/50 p-3 font-mono text-xs text-foreground">
+              {`POST /api/v1/sso
+{
+  "email": "customer@example.com"
+}
+→ { "url": "https://mcc-btp.app/sso?token=…", "expiresAt": "…" }`}
+            </pre>
+            <p className="text-muted-foreground text-pretty">
+              For a user NQAi has already logged in. Returns a one-time link; redirect the browser to it and the user
+              lands in their <span className="font-medium text-foreground">existing</span> mcc-btp.app account — the
+              login is inherited, so no second email or password is ever created. The account must already exist
+              (unknown emails return <code className="font-mono text-xs">404</code>); the link is single-use and
+              expires within minutes.
             </p>
           </div>
         </CardContent>

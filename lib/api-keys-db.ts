@@ -22,8 +22,12 @@ import "server-only"
 import { randomBytes, createHash, timingSafeEqual } from "node:crypto"
 import { query } from "@/lib/db"
 
-export type ApiKeyScope = "read" | "charge"
-export const ALL_SCOPES: ApiKeyScope[] = ["read", "charge"]
+// "read"   — retrieve a customer's data.
+// "charge" — debit a customer's balance (subscriptions).
+// "sso"    — mint a one-time sign-in link so an NQAi user lands in their OWN
+//            existing mcc-btp account (identity inherited, no second password).
+export type ApiKeyScope = "read" | "charge" | "sso"
+export const ALL_SCOPES: ApiKeyScope[] = ["read", "charge", "sso"]
 
 /** Public shape returned to the admin UI — NEVER includes the secret hash. */
 export interface ApiKeyRecord {
@@ -78,7 +82,7 @@ function rowToRecord(row: Record<string, unknown>): ApiKeyRow {
     name: row.name as string,
     keyPrefix: row.key_prefix as string,
     keyHash: row.key_hash as string,
-    scopes: scopes.filter((s): s is ApiKeyScope => s === "read" || s === "charge"),
+    scopes: scopes.filter((s): s is ApiKeyScope => s === "read" || s === "charge" || s === "sso"),
     status: (row.status as "active" | "revoked") ?? "active",
     createdBy: (row.created_by as string) ?? "",
     createdAt: (row.created_at as Date)?.toISOString?.() ?? String(row.created_at),
