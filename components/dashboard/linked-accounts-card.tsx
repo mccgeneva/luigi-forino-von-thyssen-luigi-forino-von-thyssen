@@ -22,6 +22,7 @@ import {
   createLinkedAccount,
   getMyLinkedContext,
   type LinkedAccountView,
+  type LinkedContext,
 } from "@/app/actions/linked-accounts"
 
 /**
@@ -113,16 +114,28 @@ export function LinkedAccountsCard() {
   }
 
   async function handleCreate() {
+    if (submitting) return
     setSubmitting(true)
-    const res = await createLinkedAccount({ fullName, email, password, role: role || undefined })
-    setSubmitting(false)
-    if (res.ok) {
-      toast({ title: "Linked account created", description: `${res.account.fullName} can now sign in with their own credentials.` })
-      setAccounts((prev) => [res.account, ...prev])
-      resetForm()
-      setOpen(false)
-    } else {
-      toast({ title: "Could not create linked account", description: res.error, variant: "destructive" })
+    try {
+      const res = await createLinkedAccount({ fullName, email, password, role: role || undefined })
+      if (res.ok) {
+        toast({ title: "Linked account created", description: `${res.account.fullName} can now sign in with their own credentials.` })
+        setAccounts((prev) => [res.account, ...prev])
+        resetForm()
+        setOpen(false)
+      } else {
+        toast({ title: "Could not create linked account", description: res.error, variant: "destructive" })
+      }
+    } catch (err) {
+      // A thrown action (network drop, server error) must never leave the
+      // button stuck spinning — surface it and let the user retry.
+      toast({
+        title: "Could not create linked account",
+        description: (err as Error)?.message || "Something went wrong. Please try again.",
+        variant: "destructive",
+      })
+    } finally {
+      setSubmitting(false)
     }
   }
 
