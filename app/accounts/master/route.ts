@@ -15,21 +15,6 @@ import { authenticateApiRequest, resolveApiTargetUser } from "@/lib/api-request-
 import { getDynamicUserById } from "@/lib/admin-users-db"
 import { resolveDataOwnerIdFor } from "@/lib/session-user"
 import { getNqaiSnapshotForUserId } from "@/lib/nqai-user-context"
-import { effectivePlatformTier } from "@/lib/membership"
-import { readMembershipRecordById } from "@/lib/membership-db"
-
-/**
- * Normalise the master account's EFFECTIVE platform tier into the compact
- * subscription object NQAi.cloud renders as a badge. An *active* Avant-Garde
- * grant wins over the stored badge (covers static accounts whose badge can't be
- * edited); anything that isn't a recognised paid tier is reported as "visitor".
- */
-function subscriptionFor(accountBadge: string, membership: Awaited<ReturnType<typeof readMembershipRecordById>>) {
-  const tier = effectivePlatformTier(accountBadge, membership)
-  const id = tier.id === "avantgarde" ? "avantgarde" : tier.id === "pro" ? "pro" : "visitor"
-  const label = id === "avantgarde" ? "AVANT-GARDE" : id === "pro" ? "PRO" : "Visitor"
-  return { id, label, active: id !== "visitor" } as const
-}
 
 export const dynamic = "force-dynamic"
 
@@ -46,7 +31,6 @@ export async function GET(req: Request) {
     const masterId = (await resolveDataOwnerIdFor(target.user.id)) || target.user.id
     const master = await getDynamicUserById(masterId).catch(() => undefined)
     const snapshot = await getNqaiSnapshotForUserId(masterId)
-    const membership = await readMembershipRecordById(masterId)
     if (!snapshot || !master) {
       return NextResponse.json(
         { ok: false, error: { code: "snapshot_unavailable", message: "Master account data could not be loaded." } },
@@ -63,8 +47,6 @@ export async function GET(req: Request) {
         company: snapshot.company,
         role: snapshot.role,
         accountBadge: snapshot.accountBadge,
-        // Normalised effective tier for NQAi's badge: pro | avantgarde | visitor.
-        subscription: subscriptionFor(snapshot.accountBadge, membership),
         relationship: snapshot.relationship,
         status: master.status,
         // The requesting account (may be a Sub/Joint sharing this Master's pool).
