@@ -114,7 +114,7 @@ export async function generateUsername(seed: string): Promise<string> {
 }
 
 /** Generate a readable temporary password, e.g. "MCC-7F3A-2K9D". */
-export function generateTempPassword(): string {
+function generateTempPassword(): string {
   const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789" // no ambiguous chars
   const block = (len: number) =>
     Array.from({ length: len }, () => alphabet[Math.floor(Math.random() * alphabet.length)]).join("")

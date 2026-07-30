@@ -23,10 +23,6 @@
 
 import { normalizeAccountBadge } from "@/lib/account-tier"
 import { logActivity } from "@/app/actions/log-activity"
-// Reuse the SAME automatic credential generators the admin panel uses, so a
-// linked account is provisioned exactly like any other account — no manual
-// email/password entry.
-import { generateUsername, generateTempPassword } from "@/app/actions/admin-users"
 import {
   getDynamicUserByEmail,
   insertDynamicUser,
@@ -46,16 +42,15 @@ export interface LinkedAccountView {
   createdAt: string
 }
 
-// The Master supplies ONLY the person's name (and an optional role). The login
-// email and a temporary password are generated automatically server-side — the
-// Master never types or manages a second credential set.
 export type CreateLinkedAccountInput = {
   fullName: string
+  email: string
+  password: string
   role?: string
 }
 
 export type CreateLinkedAccountResult =
-  | { ok: true; account: LinkedAccountView; credentials: { email: string; temporaryPassword: string } }
+  | { ok: true; account: LinkedAccountView }
   | { ok: false; error: string }
 
 export type LinkedAccountsListResult =
@@ -174,12 +169,17 @@ export async function createLinkedAccount(input: CreateLinkedAccountInput): Prom
     const fullName = input.fullName?.trim()
     if (!fullName) return { ok: false, error: "Enter the linked account holder's full name." }
 
-    // Fully automatic provisioning: a unique login email derived from the name
-    // and a readable temporary password. `generateUsername` already guarantees
-    // uniqueness across all accounts, so there is nothing for the Master to type
-    // or reconcile — no second email/password to manage.
-    const email = await generateUsername(fullName)
-    const password = generateTempPassword()
+    const email = input.email?.trim().toLowerCase()
+    if (!email || !EMAIL_RE.test(email)) return { ok: false, error: "Enter a valid email address for the linked account." }
+
+    const password = input.password?.trim()
+    if (!password || password.length < 8) {
+      return { ok: false, error: "Choose a password of at least 8 characters." }
+    }
+
+    if (await getDynamicUserByEmail(email)) {
+      return { ok: false, error: `The email ${email} is already in use.` }
+    }
 
     const id = newId()
     const role = (input.role || "Joint Account Holder").trim()
