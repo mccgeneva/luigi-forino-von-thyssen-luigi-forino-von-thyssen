@@ -179,6 +179,46 @@ export function ApiKeysManager({ passcode }: { passcode: string }) {
         </CardContent>
       </Card>
 
+      {/* Integration reference — the exact endpoints NQAi.cloud calls */}
+      <Card className="bg-card border-border">
+        <CardHeader>
+          <CardTitle className="text-base">Integration reference</CardTitle>
+          <CardDescription>
+            Every request sends the key as an <code className="font-mono text-xs">Authorization: Bearer</code> header.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4 text-sm">
+          <div className="space-y-1">
+            <p className="font-medium text-foreground">Read a customer (scope: read)</p>
+            <pre className="overflow-x-auto rounded-lg border border-border bg-muted/50 p-3 font-mono text-xs text-foreground">
+              {"GET /api/v1/customer?email=customer@example.com"}
+            </pre>
+            <p className="text-muted-foreground text-pretty">
+              Returns the customer&apos;s profile, KYC status, per-currency balances and recent transactions.
+            </p>
+          </div>
+          <div className="space-y-1">
+            <p className="font-medium text-foreground">Charge a subscription (scope: charge)</p>
+            <pre className="overflow-x-auto rounded-lg border border-border bg-muted/50 p-3 font-mono text-xs text-foreground">
+              {`POST /api/v1/charge
+{
+  "email": "customer@example.com",
+  "amount": 49,
+  "currency": "EUR",
+  "description": "NQAi Pro subscription",
+  "idempotencyKey": "unique-per-charge"
+}`}
+            </pre>
+            <p className="text-muted-foreground text-pretty">
+              Debits the balance immediately and returns <code className="font-mono text-xs">balanceAfter</code>. An
+              insufficient balance is rejected with <code className="font-mono text-xs">402</code> and nothing is
+              posted. Reusing an <code className="font-mono text-xs">idempotencyKey</code> returns the original charge
+              instead of billing again.
+            </p>
+          </div>
+        </CardContent>
+      </Card>
+
       {/* Existing keys */}
       <Card className="bg-card border-border">
         <CardHeader className="flex flex-row items-center justify-between">

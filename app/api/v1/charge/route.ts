@@ -11,10 +11,10 @@
 //   email       string  (required)  — the customer to charge
 //   amount      number  (required)  — positive amount to debit
 //   currency    string  (optional)  — ISO code, defaults to EUR
-//   description string  (optional)  — appears on the customer's statement
-//   reference   string  (optional)  — idempotency key; a repeated reference
-//                                      returns the original charge instead of
-//                                      double-charging
+//   description    string (optional) — appears on the customer's statement
+//   idempotencyKey string (optional) — idempotency key (alias: `reference`);
+//                                       a repeated key returns the original
+//                                       charge instead of double-charging
 //
 // Behavior:
 //   - Insufficient balance  -> 402 and nothing is posted.
@@ -57,7 +57,14 @@ export async function POST(req: Request) {
   const amount = Number(body.amount)
   const currency = (typeof body.currency === "string" && body.currency.trim().toUpperCase()) || "EUR"
   const description = typeof body.description === "string" ? body.description.trim() : "NQAi subscription"
-  const reference = typeof body.reference === "string" && body.reference.trim() ? body.reference.trim() : null
+  // Idempotency key: accept either `idempotencyKey` (common convention) or
+  // `reference`. Whichever is supplied makes a retried charge return the
+  // original entry instead of double-charging.
+  const idempotencyRaw =
+    (typeof body.idempotencyKey === "string" && body.idempotencyKey.trim()) ||
+    (typeof body.reference === "string" && body.reference.trim()) ||
+    ""
+  const reference = idempotencyRaw ? idempotencyRaw : null
 
   if (!email) return jsonError(400, "missing_email", "A customer email is required.")
   if (!Number.isFinite(amount) || amount <= 0) return jsonError(400, "invalid_amount", "Provide a positive amount.")
