@@ -4,6 +4,7 @@ import { BadgeCheck, FileText, ExternalLink, Cpu } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { ProfileAvatarEditor } from "@/components/dashboard/profile-avatar-editor"
+import { CopyValueButton } from "@/components/dashboard/copy-value-button"
 import { FaceIdManager } from "@/components/dashboard/face-id-manager"
 import { ApiAccess } from "@/components/settings/api-access"
 import { Separator } from "@/components/ui/separator"
@@ -19,10 +20,11 @@ function InfoList({ items }: { items: { label: string; value: string; icon: Reac
             <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-secondary">
               <item.icon className="h-4 w-4 text-muted-foreground" />
             </div>
-            <div className="min-w-0">
+            <div className="min-w-0 flex-1">
               <p className="text-xs text-muted-foreground">{item.label}</p>
               <p className="text-sm font-medium text-foreground break-words">{item.value}</p>
             </div>
+            <CopyValueButton label={item.label} value={item.value} className="-mr-1 -mt-1" />
           </div>
           {i < items.length - 1 && <Separator className="mt-4" />}
         </div>
@@ -57,7 +59,10 @@ export default function ProfilePage() {
               </Badge>
             </div>
             <p className="text-sm text-muted-foreground">{user.role} · {user.company}</p>
-            <p className="text-xs text-muted-foreground">{user.accountEmail}</p>
+            <div className="flex items-center gap-1">
+              <p className="text-xs text-muted-foreground break-all">{user.accountEmail}</p>
+              <CopyValueButton label="Email" value={user.accountEmail} className="h-6 w-6" />
+            </div>
           </div>
           <Badge className="bg-primary text-primary-foreground self-start sm:self-center">{user.accountBadge}</Badge>
         </CardContent>
@@ -100,10 +105,11 @@ export default function ProfilePage() {
                 <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-secondary">
                   <item.icon className="h-4 w-4 text-muted-foreground" />
                 </div>
-                <div className="min-w-0">
+                <div className="min-w-0 flex-1">
                   <p className="text-xs text-muted-foreground">{item.label}</p>
                   <p className="text-sm font-medium text-foreground break-words">{item.value}</p>
                 </div>
+                <CopyValueButton label={item.label} value={item.value} className="-mr-1 -mt-1" />
               </div>
             ))}
           </div>
@@ -144,17 +150,26 @@ export default function ProfilePage() {
                   className="w-full sm:w-64 rounded-lg border border-border object-contain"
                 />
               )}
-              <div className="space-y-2 text-sm">
-                <div className="flex items-center gap-2">
+              <div className="space-y-1 text-sm">
+                <div className="flex items-center gap-2 pb-1">
                   <Badge variant="outline" className="gap-1">
                     <BadgeCheck className="h-3 w-3" /> Document verified
                   </Badge>
                 </div>
-                <p className="text-muted-foreground">Type: <span className="text-foreground font-medium">{user.passportMeta.type}</span></p>
-                <p className="text-muted-foreground">Passport No.: <span className="text-foreground font-medium">{user.passportMeta.passportNo}</span></p>
-                <p className="text-muted-foreground">Surname: <span className="text-foreground font-medium">{user.passportMeta.surname}</span></p>
-                <p className="text-muted-foreground">Given Names: <span className="text-foreground font-medium">{user.passportMeta.givenNames}</span></p>
-                <p className="text-muted-foreground">Valid until: <span className="text-foreground font-medium">{user.passportMeta.validUntil}</span></p>
+                {[
+                  { label: "Type", value: user.passportMeta.type },
+                  { label: "Passport No.", value: user.passportMeta.passportNo },
+                  { label: "Surname", value: user.passportMeta.surname },
+                  { label: "Given Names", value: user.passportMeta.givenNames },
+                  { label: "Valid until", value: user.passportMeta.validUntil },
+                ].map((field) => (
+                  <div key={field.label} className="flex items-center gap-2">
+                    <p className="min-w-0 flex-1 text-muted-foreground">
+                      {field.label}: <span className="text-foreground font-medium break-words">{field.value}</span>
+                    </p>
+                    <CopyValueButton label={field.label} value={String(field.value)} className="h-7 w-7 -mr-1" />
+                  </div>
+                ))}
               </div>
             </div>
           </CardContent>
