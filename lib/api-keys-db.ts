@@ -23,11 +23,16 @@ import { randomBytes, createHash, timingSafeEqual } from "node:crypto"
 import { query } from "@/lib/db"
 
 // "read"   — retrieve a customer's data.
+// "write"  — update a customer's contact details (phone, address, name).
 // "charge" — debit a customer's balance (subscriptions).
 // "sso"    — mint a one-time sign-in link so an NQAi user lands in their OWN
 //            existing mcc-btp account (identity inherited, no second password).
-export type ApiKeyScope = "read" | "charge" | "sso"
-export const ALL_SCOPES: ApiKeyScope[] = ["read", "charge", "sso"]
+export type ApiKeyScope = "read" | "write" | "charge" | "sso"
+export const ALL_SCOPES: ApiKeyScope[] = ["read", "write", "charge", "sso"]
+
+function isScope(s: unknown): s is ApiKeyScope {
+  return s === "read" || s === "write" || s === "charge" || s === "sso"
+}
 
 /** Public shape returned to the admin UI — NEVER includes the secret hash. */
 export interface ApiKeyRecord {
@@ -37,6 +42,12 @@ export interface ApiKeyRecord {
   scopes: ApiKeyScope[]
   status: "active" | "revoked"
   createdBy: string
+  /**
+   * The account this key acts on. NULL = admin/global key (target chosen per
+   * request via email). Set = user-bound key that can only ever read/write/
+   * charge its own owner account.
+   */
+  ownerUserId: string | null
   createdAt: string
   lastUsedAt: string | null
   revokedAt: string | null
@@ -68,6 +79,10 @@ async function ensureTable(): Promise<void> {
        request_count bigint NOT NULL DEFAULT 0
      )`,
   )
+  // Backfill-safe: adds per-user ownership to any pre-existing table. Existing
+  // (admin/global) keys keep owner_user_id NULL and behave exactly as before.
+  await query(`ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS owner_user_id text`)
+  await query(`CREATE INDEX IF NOT EXISTS api_keys_owner_idx ON api_keys (owner_user_id)`)
   ensured = true
 }
 
@@ -82,9 +97,10 @@ function rowToRecord(row: Record<string, unknown>): ApiKeyRow {
     name: row.name as string,
     keyPrefix: row.key_prefix as string,
     keyHash: row.key_hash as string,
-    scopes: scopes.filter((s): s is ApiKeyScope => s === "read" || s === "charge" || s === "sso"),
+    scopes: scopes.filter(isScope),
     status: (row.status as "active" | "revoked") ?? "active",
     createdBy: (row.created_by as string) ?? "",
+    ownerUserId: (row.owner_user_id as string) ?? null,
     createdAt: (row.created_at as Date)?.toISOString?.() ?? String(row.created_at),
     lastUsedAt: row.last_used_at ? ((row.last_used_at as Date)?.toISOString?.() ?? String(row.last_used_at)) : null,
     revokedAt: row.revoked_at ? ((row.revoked_at as Date)?.toISOString?.() ?? String(row.revoked_at)) : null,
@@ -102,6 +118,8 @@ export interface CreateApiKeyInput {
   name: string
   scopes: ApiKeyScope[]
   createdBy?: string
+  /** When set, the key is bound to this account and can only act on it. */
+  ownerUserId?: string | null
 }
 
 export interface CreatedApiKey {
@@ -129,10 +147,18 @@ export async function createApiKey(input: CreateApiKeyInput): Promise<CreatedApi
   const id = `ak_${randomBytes(6).toString("hex")}`
 
   const { rows } = await query(
-    `INSERT INTO api_keys (id, name, key_prefix, key_hash, scopes, status, created_by)
-     VALUES ($1,$2,$3,$4,$5::jsonb,'active',$6)
+    `INSERT INTO api_keys (id, name, key_prefix, key_hash, scopes, status, created_by, owner_user_id)
+     VALUES ($1,$2,$3,$4,$5::jsonb,'active',$6,$7)
      RETURNING *`,
-    [id, input.name.trim() || "Untitled key", keyPrefix, keyHash, JSON.stringify(scopes), input.createdBy ?? ""],
+    [
+      id,
+      input.name.trim() || "Untitled key",
+      keyPrefix,
+      keyHash,
+      JSON.stringify(scopes),
+      input.createdBy ?? "",
+      input.ownerUserId ?? null,
+    ],
   )
   return { record: toPublic(rowToRecord(rows[0])), plaintext }
 }
@@ -158,6 +184,40 @@ export async function revokeApiKey(id: string): Promise<ApiKeyRecord | undefined
 export async function deleteApiKey(id: string): Promise<boolean> {
   await ensureTable()
   const { rowCount } = await query(`DELETE FROM api_keys WHERE id = $1`, [id])
+  return (rowCount ?? 0) > 0
+}
+
+// ---------------------------------------------------------------------------
+// Per-user helpers. These are strictly scoped by owner_user_id so a signed-in
+// customer can only ever see or manage the keys bound to their OWN account —
+// they can never touch admin/global keys or another customer's keys.
+// ---------------------------------------------------------------------------
+
+/** A specific user's own keys, newest first. */
+export async function listApiKeysForOwner(ownerUserId: string): Promise<ApiKeyRecord[]> {
+  await ensureTable()
+  const { rows } = await query(
+    `SELECT * FROM api_keys WHERE owner_user_id = $1 ORDER BY created_at DESC`,
+    [ownerUserId],
+  )
+  return rows.map((r) => toPublic(rowToRecord(r)))
+}
+
+/** Revoke a key ONLY if it belongs to the given owner. Returns null otherwise. */
+export async function revokeApiKeyForOwner(id: string, ownerUserId: string): Promise<ApiKeyRecord | null> {
+  await ensureTable()
+  const { rows } = await query(
+    `UPDATE api_keys SET status = 'revoked', revoked_at = now()
+     WHERE id = $1 AND owner_user_id = $2 RETURNING *`,
+    [id, ownerUserId],
+  )
+  return rows[0] ? toPublic(rowToRecord(rows[0])) : null
+}
+
+/** Delete a key ONLY if it belongs to the given owner. */
+export async function deleteApiKeyForOwner(id: string, ownerUserId: string): Promise<boolean> {
+  await ensureTable()
+  const { rowCount } = await query(`DELETE FROM api_keys WHERE id = $1 AND owner_user_id = $2`, [id, ownerUserId])
   return (rowCount ?? 0) > 0
 }
 

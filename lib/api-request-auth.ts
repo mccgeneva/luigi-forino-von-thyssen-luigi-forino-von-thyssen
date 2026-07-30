@@ -10,9 +10,14 @@
 import "server-only"
 import { NextResponse } from "next/server"
 import { authenticateApiKey, hasScope, type ApiKeyRecord, type ApiKeyScope } from "@/lib/api-keys-db"
+import { getDynamicUserByEmail, getDynamicUserById, type DynamicUserRecord } from "@/lib/admin-users-db"
 
 export type ApiAuthResult =
   | { ok: true; key: ApiKeyRecord }
+  | { ok: false; response: NextResponse }
+
+export type ApiTargetResult =
+  | { ok: true; user: DynamicUserRecord }
   | { ok: false; response: NextResponse }
 
 function errorResponse(status: number, code: string, message: string): NextResponse {
@@ -59,4 +64,45 @@ export async function authenticateApiRequest(req: Request, requiredScope: ApiKey
   }
 
   return { ok: true, key }
+}
+
+/**
+ * Resolve WHICH customer account a request acts on, honoring the key type:
+ *
+ *   - User-bound key (key.ownerUserId set): the target is ALWAYS its owner.
+ *     `email` is optional; if supplied it must match the owner, otherwise the
+ *     request is rejected (403) — a personal key can never touch another
+ *     account. This is how an NQAi user inherits their own mcc-btp identity.
+ *
+ *   - Global/admin key (key.ownerUserId null): `email` is required and the
+ *     target is looked up by it (404 when unknown), exactly as before.
+ */
+export async function resolveApiTargetUser(
+  key: ApiKeyRecord,
+  email: string | null | undefined,
+): Promise<ApiTargetResult> {
+  const trimmedEmail = email?.trim() || ""
+
+  if (key.ownerUserId) {
+    const owner = await getDynamicUserById(key.ownerUserId).catch(() => undefined)
+    if (!owner) {
+      return { ok: false, response: errorResponse(404, "owner_not_found", "The account bound to this key no longer exists.") }
+    }
+    if (trimmedEmail && trimmedEmail.toLowerCase() !== owner.email.toLowerCase()) {
+      return {
+        ok: false,
+        response: errorResponse(403, "email_mismatch", "This key can only act on its own account; the email does not match."),
+      }
+    }
+    return { ok: true, user: owner }
+  }
+
+  if (!trimmedEmail) {
+    return { ok: false, response: errorResponse(400, "missing_email", "Provide the customer email.") }
+  }
+  const user = await getDynamicUserByEmail(trimmedEmail).catch(() => undefined)
+  if (!user) {
+    return { ok: false, response: errorResponse(404, "customer_not_found", `No customer found for ${trimmedEmail}.`) }
+  }
+  return { ok: true, user }
 }

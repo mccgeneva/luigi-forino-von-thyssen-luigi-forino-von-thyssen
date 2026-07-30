@@ -27,6 +27,7 @@ import type { ApiKeyRecord, ApiKeyScope } from "@/lib/api-keys-db"
 
 const SCOPE_LABELS: Record<ApiKeyScope, { label: string; description: string }> = {
   read: { label: "Read customer data", description: "Retrieve a customer's profile, balances and transactions." },
+  write: { label: "Update contact details", description: "Update a customer's phone, address and display name." },
   charge: { label: "Charge balance", description: "Debit subscription costs from a customer's balance." },
   sso: {
     label: "SSO sign-in link",

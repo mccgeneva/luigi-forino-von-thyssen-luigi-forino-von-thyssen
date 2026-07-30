@@ -8,24 +8,33 @@
 // Auth: Authorization: Bearer <api key> with the "charge" scope.
 //
 // Body (JSON):
-//   email       string  (required)  — the customer to charge
-//   amount      number  (required)  — positive amount to debit
-//   currency    string  (optional)  — ISO code, defaults to EUR
+//   email       string  (optional)  — the customer to charge. Optional for a
+//                                      user-bound key (targets its own account).
+//   plan        string  (optional)  — "pro" (EUR 250/yr) or "avantgarde"
+//                                      (EUR 1,500/yr). Sets amount/currency.
+//   amount      number  (optional)  — on-demand amount when no plan is given.
+//   currency    string  (optional)  — ISO code, defaults to EUR.
 //   description    string (optional) — appears on the customer's statement
 //   idempotencyKey string (optional) — idempotency key (alias: `reference`);
 //                                       a repeated key returns the original
 //                                       charge instead of double-charging
 //
-// Behavior:
+// Provide EITHER `plan` OR `amount`. Behavior:
 //   - Insufficient balance  -> 402 and nothing is posted.
 //   - Duplicate reference   -> 200 with the original charge (idempotent).
 // ---------------------------------------------------------------------------
 
 import { NextResponse } from "next/server"
 import { randomUUID } from "node:crypto"
-import { authenticateApiRequest } from "@/lib/api-request-auth"
-import { getDynamicUserByEmail } from "@/lib/admin-users-db"
+import { authenticateApiRequest, resolveApiTargetUser } from "@/lib/api-request-auth"
 import { resolveDataOwnerIdFor, resolveAccountProfileById } from "@/lib/session-user"
+
+// Named subscription plans NQAi can charge by id, enforced server-side so the
+// tier prices live in one authoritative place.
+const PLANS: Record<string, { amount: number; currency: string; description: string }> = {
+  pro: { amount: 250, currency: "EUR", description: "NQAi PRO subscription (annual)" },
+  avantgarde: { amount: 1500, currency: "EUR", description: "NQAi Avant-garde subscription (annual)" },
+}
 import {
   readLedgerEntries,
   availableByCurrency,
@@ -53,10 +62,25 @@ export async function POST(req: Request) {
     return jsonError(400, "invalid_json", "Request body must be valid JSON.")
   }
 
-  const email = typeof body.email === "string" ? body.email.trim() : ""
-  const amount = Number(body.amount)
-  const currency = (typeof body.currency === "string" && body.currency.trim().toUpperCase()) || "EUR"
-  const description = typeof body.description === "string" ? body.description.trim() : "NQAi subscription"
+  // Resolve amount/currency/description from a named plan when given, else fall
+  // back to the on-demand amount/currency. A plan id that isn't recognized is
+  // rejected rather than silently treated as on-demand.
+  let amount: number
+  let currency: string
+  let description: string
+  const planId = typeof body.plan === "string" ? body.plan.trim().toLowerCase() : ""
+  if (planId) {
+    const plan = PLANS[planId]
+    if (!plan) return jsonError(400, "invalid_plan", `Unknown plan '${planId}'. Use 'pro' or 'avantgarde'.`)
+    amount = plan.amount
+    currency = plan.currency
+    description = typeof body.description === "string" && body.description.trim() ? body.description.trim() : plan.description
+  } else {
+    amount = Number(body.amount)
+    currency = (typeof body.currency === "string" && body.currency.trim().toUpperCase()) || "EUR"
+    description = typeof body.description === "string" ? body.description.trim() : "NQAi subscription"
+  }
+
   // Idempotency key: accept either `idempotencyKey` (common convention) or
   // `reference`. Whichever is supplied makes a retried charge return the
   // original entry instead of double-charging.
@@ -66,12 +90,13 @@ export async function POST(req: Request) {
     ""
   const reference = idempotencyRaw ? idempotencyRaw : null
 
-  if (!email) return jsonError(400, "missing_email", "A customer email is required.")
-  if (!Number.isFinite(amount) || amount <= 0) return jsonError(400, "invalid_amount", "Provide a positive amount.")
+  if (!Number.isFinite(amount) || amount <= 0) return jsonError(400, "invalid_amount", "Provide a positive amount or a valid plan.")
 
   try {
-    const user = await getDynamicUserByEmail(email)
-    if (!user) return jsonError(404, "customer_not_found", `No customer found for ${email}.`)
+    const targetUser = await resolveApiTargetUser(auth.key, typeof body.email === "string" ? body.email : null)
+    if (!targetUser.ok) return targetUser.response
+    const user = targetUser.user
+    const email = user.email
 
     // Post to the data-owner ledger so a Sub/Joint account is billed against the
     // shared Master balance the customer actually holds.
