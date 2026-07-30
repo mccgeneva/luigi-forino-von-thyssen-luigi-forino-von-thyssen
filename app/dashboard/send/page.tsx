@@ -1,5 +1,6 @@
 "use client"
 
+import Link from "next/link"
 import { useEffect, useMemo, useState } from "react"
 import {
   Send,
@@ -42,6 +43,7 @@ import { useActivityLog } from "@/components/activity-tracker"
 import { useLedger } from "@/lib/ledger-store"
 import { usePaymentRequests } from "@/lib/payment-requests-store"
 import { useCurrentUser } from "@/lib/use-current-user"
+import { useTierCapabilities } from "@/lib/use-tier-capabilities"
 import type { TransferDirectoryEntry } from "@/lib/users"
 import { exportToCsv } from "@/lib/export-utils"
 import { generateTablePdf, tablePdfFilename } from "@/lib/table-pdf"
@@ -127,6 +129,7 @@ export default function SendMoneyPage() {
   // the client `mcc_user` cookie. This prevents a payment from ever being
   // attributed to, or sent from, the wrong account.
   const self = useCurrentUser()
+  const { canSendMoney } = useTierCapabilities()
   const activeUserId = self.id
   // NOTE: We deliberately do NOT fetch or render a list of platform accounts
   // here. Exposing other clients' names and emails to any sender is a privacy
@@ -674,17 +677,27 @@ export default function SendMoneyPage() {
               </p>
             )}
 
+            {!canSendMoney && (
+              <p className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-2.5 text-xs text-muted-foreground">
+                Your Visitor account is read-only, so outgoing transfers are disabled. You can still receive
+                incoming top-ups.{" "}
+                <Link href="/dashboard/plans" className="font-medium text-foreground underline underline-offset-2">
+                  Upgrade to send money.
+                </Link>
+              </p>
+            )}
+
             {method === "instant" ? (
               <Button
                 className="w-full"
                 onClick={handleInstantSend}
-                disabled={!resolvedRecipient || recipientIsSelf || sending}
+                disabled={!canSendMoney || !resolvedRecipient || recipientIsSelf || sending}
               >
                 <Zap className="mr-2 h-4 w-4" />
                 {sending ? "Sending…" : "Send Instantly"}
               </Button>
             ) : (
-              <Button className="w-full" onClick={handleApprovalSend}>
+              <Button className="w-full" onClick={handleApprovalSend} disabled={!canSendMoney}>
                 <Send className="mr-2 h-4 w-4" />
                 Submit for Approval
               </Button>

@@ -7,6 +7,8 @@ import { resolveAccountProfileById, resolveCurrentSession, resolveDataOwnerIdFor
 import { getDynamicUserByEmail } from "@/lib/admin-users-db"
 import { listApprovalsForUser } from "@/lib/approvals-db"
 import { logActivity } from "@/app/actions/log-activity"
+import { getMyMembership } from "@/app/actions/membership"
+import { capabilitiesForAccount, VISITOR_RESTRICTION_MESSAGE } from "@/lib/tier-capabilities"
 import type { LedgerEntry } from "@/lib/ledger-store"
 
 // --- Session / admin helpers ------------------------------------------------
@@ -226,6 +228,15 @@ export async function sendInstantTransfer(input: {
 }): Promise<InstantTransferResult> {
   const session = await resolveCurrentSession()
   if (!session) return { ok: false, error: "Your session has expired. Please sign in again." }
+
+  // Tier gate: a Visitor (pre-subscription, read-only) account cannot move money
+  // OUT. An active PRO/Avant-Garde grant lifts this even if the badge still reads
+  // "Visitor", so an upgraded user is never blocked. Incoming credits are never
+  // restricted (they run through the admin/gateway credit paths, not this one).
+  const membership = await getMyMembership()
+  if (!capabilitiesForAccount(session.profile.accountBadge, membership).canSendMoney) {
+    return { ok: false, error: VISITOR_RESTRICTION_MESSAGE }
+  }
 
   if (!isDatabaseConfigured) return { ok: false, error: DB_NOT_CONFIGURED_MSG }
 

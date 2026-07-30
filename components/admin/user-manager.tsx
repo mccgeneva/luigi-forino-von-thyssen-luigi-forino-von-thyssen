@@ -26,6 +26,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Badge } from "@/components/ui/badge"
+import { normalizeAccountBadge } from "@/lib/account-tier"
 import {
   Dialog,
   DialogContent,
@@ -200,7 +201,7 @@ export function UserManager() {
   const [docsTarget, setDocsTarget] = useState<AdminUserView | null>(null)
   const [faceResetting, setFaceResetting] = useState(false)
 
-  // "Sign in as" (impersonation) �� tracks the account currently being entered.
+  // "Sign in as" (impersonation) ��� tracks the account currently being entered.
   const [impersonatingId, setImpersonatingId] = useState<string | null>(null)
 
   const load = () => {
@@ -440,9 +441,9 @@ export function UserManager() {
     setEditCompany(u.company)
     setEditRole(u.role)
     setEditEmail(u.email)
-    // Coerce any legacy/blank badge to one of the two valid tiers so the editor
-    // always shows a real account type.
-    setEditBadge(u.accountBadge?.toLowerCase().includes("avant") ? "Avant-garde Account" : "PRO Account")
+    // Coerce any legacy/blank badge to one of the valid tiers so the editor
+    // always shows a real account type — while preserving Visitor and Avant-Garde.
+    setEditBadge(normalizeAccountBadge(u.accountBadge))
     setEditRelationship(u.relationship)
     setEditMasterId(u.masterId ?? "")
   }
@@ -945,6 +946,7 @@ export function UserManager() {
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
+                    <SelectItem value="Visitor Account">Visitor Account (read-only trial)</SelectItem>
                     <SelectItem value="PRO Account">PRO Account</SelectItem>
                     <SelectItem value="Avant-garde Account">Avant-garde Account</SelectItem>
                   </SelectContent>
@@ -1108,6 +1110,7 @@ export function UserManager() {
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
+                    <SelectItem value="Visitor Account">Visitor Account (read-only trial)</SelectItem>
                     <SelectItem value="PRO Account">PRO Account</SelectItem>
                     <SelectItem value="Avant-garde Account">Avant-garde Account</SelectItem>
                   </SelectContent>
