@@ -158,48 +158,30 @@ export default function AccountDetailPage() {
   }
 
   const handleExportAccount = () => {
-    // Resolve the account-scoped figures exactly as the on-screen tiles do:
-    // a registered external account shows its tracked (received-here) balances,
-    // a settlement account shows its own balances.
-    const isRegistered = !account.id.startsWith("ACC-")
-    const total = isRegistered ? (account.trackedBalance ?? 0) : account.balance
-    const available = isRegistered ? (account.trackedAvailable ?? 0) : account.availableBalance
-    const reserved = isRegistered ? (account.trackedReserved ?? 0) : account.reservedBalance
-
+    // Payment-instructions sheet: discloses ONLY the beneficiary and the banking
+    // coordinates needed to remit funds into this account — no balances, limits,
+    // volume, activity or other internal information.
     const generated = generateAccountDetailsPdf({
+      accountName: account.accountName,
       bankName: account.bankName,
       country: account.country,
-      rating: account.rating,
-      status: account.status,
-      accountName: account.accountName,
-      accountType: account.accountType,
-      accountNumber: account.accountNumber,
       currency: account.currency,
+      accountNumber: account.accountNumber,
       iban: account.iban,
       swift: account.swift,
       sortCode: account.sortCode,
       routingNumber: account.routingNumber,
       bsb: account.bsb,
       branchCode: account.branchCode,
-      total,
-      available,
-      reserved,
-      totalLabel: isRegistered ? "Received Here" : "Total Balance",
-      openDate: account.openDate,
-      lastActivity: account.lastActivity,
-      dailyLimit: account.dailyLimit,
-      monthlyVolume: account.monthlyVolume,
-      relationship: account.relationship,
       branchAddress: account.branchAddress,
-      isRegistered,
     })
     showPdf(generated)
 
     logActivity({
-      action: `Exported account details for ${account.bankName ?? account.accountName ?? "account"}`,
+      action: `Exported payment instructions for ${account.bankName ?? account.accountName ?? "account"}`,
       category: "Bank Accounts",
       details: {
-        summary: `Client exported a professional PDF account summary for "${account.accountName ?? account.bankName}".`,
+        summary: `Client exported payment instructions (beneficiary and banking coordinates only) for "${account.accountName ?? account.bankName}".`,
         account: account.accountName ?? account.bankName ?? "—",
         currency: account.currency,
       },
