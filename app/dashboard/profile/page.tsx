@@ -1,11 +1,12 @@
 "use client"
 
-import { BadgeCheck, FileText, ExternalLink } from "lucide-react"
+import { BadgeCheck, FileText, ExternalLink, Cpu } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { ProfileAvatarEditor } from "@/components/dashboard/profile-avatar-editor"
 import { FaceIdManager } from "@/components/dashboard/face-id-manager"
 import { LinkedAccountsCard, SharedEnvironmentBanner } from "@/components/dashboard/linked-accounts-card"
+import { ApiAccess } from "@/components/settings/api-access"
 import { Separator } from "@/components/ui/separator"
 import { useCurrentUser } from "@/lib/use-current-user"
 import { KYC_DOCUMENT_LABELS, blobFileUrl } from "@/lib/kyc-types"
@@ -115,6 +116,21 @@ export default function ProfilePage() {
 
       {/* Linked / Joint accounts — shown only to Master accounts. */}
       <LinkedAccountsCard />
+
+      {/* API access — link this same account to NQAi.cloud via a personal API key. */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-base">
+            <Cpu className="h-4 w-4" /> API access
+          </CardTitle>
+          <CardDescription>
+            Generate a personal API key so NQAi.cloud can securely access this account using your shared login
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <ApiAccess />
+        </CardContent>
+      </Card>
 
       {/* Security — Face ID */}
       <FaceIdManager />
