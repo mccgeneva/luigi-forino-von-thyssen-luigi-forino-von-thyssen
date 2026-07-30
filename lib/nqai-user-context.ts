@@ -1,6 +1,7 @@
 import "server-only"
 
-import { resolveCurrentSession } from "@/lib/session-user"
+import { resolveCurrentSession, resolveDataOwnerIdFor } from "@/lib/session-user"
+import { getDynamicUserById } from "@/lib/admin-users-db"
 import { readLedgerEntries, availableByCurrency } from "@/lib/ledger-db"
 import { listCertificateRequestsForUser } from "@/lib/certificates-db"
 import { listSkrRecordsForUser, listSkrRequestsForUser } from "@/lib/skr-db"
@@ -50,13 +51,49 @@ function fmtAmount(n: number): string {
   return n.toLocaleString("en-US", { maximumFractionDigits: 2 })
 }
 
+/** The minimal profile shape the snapshot reads — satisfied by both the
+ *  session's `UserProfile` and the stored `SerializableUserProfile`. */
+type SnapshotProfile = {
+  firstName?: string
+  fullName?: string
+  shortName?: string
+  company?: string
+  role?: string
+  accountBadge?: string
+  kycDocuments?: unknown[]
+  passportMeta?: unknown
+}
+
 /** Best-effort: returns null when there is no authenticated session. */
 export async function getNqaiUserSnapshot(): Promise<NqaiUserSnapshot | null> {
   const session = await resolveCurrentSession()
   if (!session) return null
 
   const { id: ownId, dataOwnerId, profile, relationship } = session
+  return buildSnapshotForAccount(ownId, dataOwnerId, profile, relationship)
+}
 
+/**
+ * The same snapshot, resolved for an ARBITRARY account id rather than the
+ * current session. Powers the external customer API (app/api/v1/customer) so a
+ * trusted integration (NQAi.cloud) can read a specific customer's position.
+ * Returns null when the account does not exist.
+ */
+export async function getNqaiSnapshotForUserId(userId: string): Promise<NqaiUserSnapshot | null> {
+  if (!userId) return null
+  const rec = await getDynamicUserById(userId).catch(() => undefined)
+  if (!rec) return null
+  const dataOwnerId = await resolveDataOwnerIdFor(userId)
+  const relationship = rec.profile.relationship || "master"
+  return buildSnapshotForAccount(userId, dataOwnerId, rec.profile as SnapshotProfile, relationship)
+}
+
+async function buildSnapshotForAccount(
+  ownId: string,
+  dataOwnerId: string,
+  profile: SnapshotProfile,
+  relationship: string,
+): Promise<NqaiUserSnapshot> {
   // Fetch every category in parallel; a failure in any one degrades that
   // section to empty rather than breaking the whole snapshot.
   const [ledger, certs, skrRecords, skrRequests, beneficiaries, notifications, unread] = await Promise.all([
