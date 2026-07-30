@@ -42,6 +42,7 @@ export function ApiAccess() {
   const [creating, setCreating] = useState(false)
   const [newSecret, setNewSecret] = useState<{ name: string; plaintext: string } | null>(null)
   const [copied, setCopied] = useState(false)
+  const [copiedId, setCopiedId] = useState<string | null>(null)
   const [busyId, setBusyId] = useState<string | null>(null)
 
   const toggleScope = (scope: ApiKeyScope) =>
@@ -100,6 +101,17 @@ export function ApiAccess() {
       await navigator.clipboard.writeText(newSecret.plaintext)
       setCopied(true)
       setTimeout(() => setCopied(false), 2000)
+    } catch {
+      toast.error("Could not copy — select and copy manually.")
+    }
+  }
+
+  const copyPrefix = async (id: string, prefix: string) => {
+    try {
+      await navigator.clipboard.writeText(prefix)
+      setCopiedId(id)
+      toast.success("Key identifier copied.")
+      setTimeout(() => setCopiedId((cur) => (cur === id ? null : cur)), 2000)
     } catch {
       toast.error("Could not copy — select and copy manually.")
     }
@@ -223,7 +235,17 @@ export function ApiAccess() {
                         </Badge>
                       ))}
                     </div>
-                    <p className="font-mono text-xs text-muted-foreground">{k.keyPrefix}••••</p>
+                    <div className="flex items-center gap-1.5">
+                      <p className="font-mono text-xs text-muted-foreground">{k.keyPrefix}••••</p>
+                      <button
+                        type="button"
+                        onClick={() => copyPrefix(k.id, k.keyPrefix)}
+                        className="inline-flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        aria-label={`Copy identifier for key ${k.name}`}
+                      >
+                        {copiedId === k.id ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+                      </button>
+                    </div>
                     <p className="text-xs text-muted-foreground">
                       Created {formatDate(k.createdAt)} · Last used {formatDate(k.lastUsedAt)} · {k.requestCount} calls
                     </p>
