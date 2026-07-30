@@ -1,4 +1,4 @@
-import { Crown, Star, BadgeCheck, type LucideIcon } from "lucide-react"
+import { Crown, Star, BadgeCheck, Eye, type LucideIcon } from "lucide-react"
 
 /**
  * The platform membership tier a client is on. Derived from the user's
@@ -6,7 +6,7 @@ import { Crown, Star, BadgeCheck, type LucideIcon } from "lucide-react"
  * in the user manager), so it stays correct for both static and admin-created
  * accounts without duplicating state.
  */
-export type PlatformTierId = "pro" | "avantgarde" | "other"
+export type PlatformTierId = "visitor" | "pro" | "avantgarde" | "other"
 
 export interface PlatformTier {
   id: PlatformTierId
@@ -37,6 +37,16 @@ export function resolvePlatformTier(accountBadge: string | undefined | null): Pl
       tagline: "Institutional & high-net-worth membership",
       icon: Crown,
       premium: true,
+    }
+  }
+
+  if (normalized.includes("visitor")) {
+    return {
+      id: "visitor",
+      label: "Visitor",
+      tagline: "Read-only trial — upgrade to PRO or Avant-Garde anytime",
+      icon: Eye,
+      premium: false,
     }
   }
 

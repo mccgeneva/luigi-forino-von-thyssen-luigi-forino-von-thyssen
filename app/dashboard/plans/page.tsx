@@ -1,7 +1,7 @@
 "use client"
 
 import { useState } from "react"
-import { Check, Crown, Star, Building2, Lock, Loader2, Clock, ShieldCheck } from "lucide-react"
+import { Check, Crown, Star, Building2, Lock, Loader2, Clock, ShieldCheck, Eye } from "lucide-react"
 import { Card, CardContent, CardHeader } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -83,7 +83,8 @@ export default function PlansPage() {
   const tier = effectivePlatformTier(user.accountBadge, membership)
   // The tier id this plan card represents must match the effective tier id to
   // be flagged as the client's current plan.
-  const currentTierId = tier.id // "pro" | "avantgarde" | "other"
+  const currentTierId = tier.id // "visitor" | "pro" | "avantgarde" | "other"
+  const isVisitor = currentTierId === "visitor"
 
   const selectPro = (planName: string, price?: string, deposit?: string) => {
     log({
@@ -194,6 +195,21 @@ export default function PlansPage() {
           AAA+ rated banking partners and Swiss-grade security.
         </p>
       </div>
+
+      {/* Visitor (pre-subscription) notice */}
+      {isVisitor && (
+        <div className="mx-auto flex max-w-4xl items-start gap-3 rounded-lg border border-amber-500/30 bg-amber-500/10 p-4">
+          <Eye className="mt-0.5 h-5 w-5 shrink-0 text-amber-500" aria-hidden />
+          <div className="min-w-0">
+            <p className="text-sm font-semibold text-foreground">You&apos;re on a Visitor account</p>
+            <p className="text-xs text-muted-foreground text-pretty">
+              Your Visitor account is read-only: explore the platform and NQAi, and receive incoming top-ups,
+              but payments, trading and treasury operations stay locked until you subscribe. Your KYC is already
+              on file, so choose a plan below to upgrade instantly — no re-verification needed.
+            </p>
+          </div>
+        </div>
+      )}
 
       {/* Live upgrade status */}
       {hydrated && membership && membership.tier === "avantgarde" && membership.status !== "active" && (

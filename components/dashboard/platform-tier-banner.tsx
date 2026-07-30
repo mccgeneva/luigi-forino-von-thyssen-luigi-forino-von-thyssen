@@ -1,7 +1,7 @@
 "use client"
 
 import Link from "next/link"
-import { ArrowUpRight, ShieldCheck, Clock } from "lucide-react"
+import { ArrowUpRight, ShieldCheck, Clock, Eye } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import { useCurrentUser } from "@/lib/use-current-user"
@@ -21,6 +21,7 @@ export function PlatformTierBanner() {
   const { membership } = useMembership()
   const tier = effectivePlatformTier(user.accountBadge, membership)
   const TierIcon = tier.icon
+  const isVisitor = tier.id === "visitor"
 
   const upgradeInFlight =
     membership?.tier === "avantgarde" &&
@@ -61,6 +62,11 @@ export function PlatformTierBanner() {
                   <Clock className="h-3 w-3" />
                   {upgradeLabel}
                 </span>
+              ) : isVisitor ? (
+                <span className="inline-flex items-center gap-1 rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wider text-amber-500">
+                  <Eye className="h-3 w-3" />
+                  Read-only trial
+                </span>
               ) : (
                 <span className="inline-flex items-center gap-1 rounded-full border border-success/40 bg-success/10 px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wider text-success">
                   <ShieldCheck className="h-3 w-3" />
@@ -81,9 +87,11 @@ export function PlatformTierBanner() {
             <Link href="/dashboard/plans">
               {upgradeInFlight
                 ? "View upgrade status"
-                : tier.id === "pro"
-                  ? "Upgrade to Avant-Garde"
-                  : "Manage membership"}
+                : isVisitor
+                  ? "Upgrade to PRO or Avant-Garde"
+                  : tier.id === "pro"
+                    ? "Upgrade to Avant-Garde"
+                    : "Manage membership"}
               <ArrowUpRight className="ml-1 h-4 w-4" />
             </Link>
           </Button>
