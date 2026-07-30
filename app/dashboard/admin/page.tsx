@@ -44,6 +44,7 @@ import {
   User,
   Undo2,
   PackageCheck,
+  KeyRound,
 } from "lucide-react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -112,6 +113,7 @@ import { postedLeverageInterest } from "@/lib/leverage-financing"
 import { round2 } from "@/lib/interest-accrual"
 import { ADMIN_PASSCODE, ADMIN_SESSION_KEY } from "@/lib/admin-config"
 import { verifyAdminGate, confirmAdminSession } from "@/app/actions/admin-session"
+import { ApiKeysManager } from "@/components/admin/api-keys-manager"
 import { resetServerAccountDataForUser } from "@/app/actions/reset-account"
 import { listUsers, type AdminUserView } from "@/app/actions/admin-users"
 import { AdminGatewaySection } from "@/components/dashboard/admin-gateway-section"
@@ -2155,6 +2157,7 @@ export default function AdminPage() {
     {
       title: "System",
       items: [
+        { id: "apikeys", label: "API Keys (NQAi)", description: "Issue keys so external apps like NQAi.cloud can read a customer and charge subscriptions.", icon: KeyRound, count: 0 },
         { id: "traceability", label: "Document Traceability", description: "Trace any generated document back to the account, IP and biometric on file.", icon: Fingerprint, count: 0 },
         { id: "audit", label: "Security Audit", description: "Trace any client's logins, devices, location, identity, selfie and full activity history.", icon: ShieldCheck, count: 0 },
         { id: "danger", label: "Danger Zone", description: "Reset account data to a brand-new state.", icon: AlertTriangle, count: 0 },
@@ -5155,6 +5158,8 @@ export default function AdminPage() {
       )}
 
       {/* Document Traceability: trace any generated document to its origin */}
+      {activeView === "apikeys" && <ApiKeysManager passcode={ADMIN_PASSCODE} />}
+
       {activeView === "traceability" && (
       <div className="space-y-6">
         <DocumentTraceability />
