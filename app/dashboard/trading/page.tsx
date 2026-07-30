@@ -21,6 +21,9 @@ import {
   Plus,
   BadgeCheck,
   ArrowUpRight,
+  Loader2,
+  Clock,
+  ShieldCheck,
 } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -42,6 +45,9 @@ import { cn } from "@/lib/utils"
 import { toast } from "sonner"
 import { useActivityLog } from "@/components/activity-tracker"
 import { useCurrentUser } from "@/lib/use-current-user"
+import { useMembership } from "@/lib/use-membership"
+import { requestMembershipUpgrade } from "@/app/actions/membership"
+import { effectivePlatformTier, MEMBERSHIP_STATUS_LABEL } from "@/lib/membership"
 import { useLedger } from "@/lib/ledger-store"
 import { useMarketQuotes } from "@/lib/use-market"
 import { TradingViewWidget } from "@/components/market/tradingview-widget"
@@ -200,7 +206,43 @@ function formatPrice(value: number, decimals: number) {
 export default function TradingPage() {
   const log = useActivityLog()
   const user = useCurrentUser()
+  const { membership, hydrated: membershipHydrated, refresh: refreshMembership } = useMembership()
+  const [upgradeSubmitting, setUpgradeSubmitting] = useState(false)
   const { totalIn } = useLedger()
+
+  // The client's real effective tier drives which ROI-tier card is "current"
+  // and whether an Avant-Garde upgrade request is already in flight — so the
+  // UI always reflects the actual membership state, never a hardcoded flag.
+  const effectiveTier = effectivePlatformTier(user.accountBadge, membership)
+  const isAvantActive = effectiveTier.id === "avantgarde"
+  const avantPending = membership?.tier === "avantgarde" && membership.status === "pending"
+  const avantApproved = membership?.tier === "avantgarde" && membership.status === "approved"
+  const avantRejected = membership?.tier === "avantgarde" && membership.status === "rejected"
+
+  const requestAvantGarde = async () => {
+    setUpgradeSubmitting(true)
+    const res = await requestMembershipUpgrade("avantgarde")
+    setUpgradeSubmitting(false)
+    if (!res.ok) {
+      toast.error(res.error)
+      return
+    }
+    await refreshMembership()
+    log({
+      action: "Requested upgrade to Avant-Garde tier",
+      category: "NAFTAhub Trading",
+      details: {
+        summary:
+          "Client submitted an Avant-Garde upgrade request. It is pending administrator approval; once approved, Treasury validates the €1,000,000 security deposit to activate the membership.",
+        tier: "Avant-Garde",
+        requestedAt: new Date().toLocaleString("en-GB"),
+      },
+    })
+    toast.success("Upgrade request submitted", {
+      description:
+        "Your Avant-Garde request is pending administrator approval. Once approved, Treasury validates the €1,000,000 security deposit to activate your membership.",
+    })
+  }
   // Real funds available to the client, aggregated from the ledger (EUR equiv.).
   const availableCapital = totalIn("EUR")
   // Live market prices power the trade-ticket execution price and the AI-signal
@@ -783,13 +825,51 @@ export default function TradingPage() {
 
         {/* ROI Tiers */}
         <TabsContent value="tiers" className="mt-6">
+          {/* Live upgrade status — gives the client a clear sign of a pending,
+              approved or declined Avant-Garde request instead of a silent click. */}
+          {membershipHydrated && membership?.tier === "avantgarde" && membership.status !== "active" && (
+            <div
+              className={cn(
+                "mb-6 flex items-start gap-3 rounded-lg border p-4",
+                avantApproved
+                  ? "border-primary/30 bg-primary/5"
+                  : avantRejected
+                    ? "border-destructive/30 bg-destructive/5"
+                    : "border-amber-500/30 bg-amber-500/10",
+              )}
+            >
+              {avantApproved ? (
+                <ShieldCheck className="mt-0.5 h-5 w-5 shrink-0 text-primary" />
+              ) : avantRejected ? (
+                <Lock className="mt-0.5 h-5 w-5 shrink-0 text-destructive" />
+              ) : (
+                <Clock className="mt-0.5 h-5 w-5 shrink-0 text-amber-500" />
+              )}
+              <div className="min-w-0">
+                <p className="text-sm font-semibold text-foreground">
+                  Avant-Garde upgrade — {MEMBERSHIP_STATUS_LABEL[membership.status]}
+                </p>
+                <p className="text-xs text-muted-foreground text-pretty">
+                  {avantApproved
+                    ? "Your request has been approved. Treasury is validating your €1,000,000 security deposit; your tier activates as soon as it is secured."
+                    : avantRejected
+                      ? `Your request was declined.${membership.note ? ` ${membership.note}` : ""} You may submit a new request below.`
+                      : "Your request is pending administrator approval. After approval, Treasury validates the €1,000,000 security deposit to activate your membership."}
+                </p>
+              </div>
+            </div>
+          )}
           <div className="grid gap-6 md:grid-cols-3">
-            {TIERS.map((tier) => (
+            {TIERS.map((tier) => {
+              const isCurrent =
+                (tier.id === "pro" && effectiveTier.id === "pro") ||
+                (tier.id === "avantgarde" && isAvantActive)
+              return (
               <Card
                 key={tier.id}
-                className={cn("relative border-border bg-card", tier.active && "border-primary shadow-lg shadow-primary/10")}
+                className={cn("relative border-border bg-card", isCurrent && "border-primary shadow-lg shadow-primary/10")}
               >
-                {tier.active && (
+                {isCurrent && (
                   <Badge className="absolute -top-3 left-1/2 -translate-x-1/2 bg-primary text-primary-foreground">
                     Your Tier
                   </Badge>
@@ -813,28 +893,46 @@ export default function TradingPage() {
                       </li>
                     ))}
                   </ul>
-                  <Button
-                    className="w-full"
-                    variant={tier.active ? "outline" : "default"}
-                    disabled={tier.active}
-                    onClick={() =>
-                      log({
-                        action: `Requested upgrade to ${tier.name} tier`,
-                        category: "NAFTAhub Trading",
-                        details: {
-                          summary: `Client requested to upgrade their NAFTAhub tier to ${tier.name} (daily ROI ${tier.roi}).`,
-                          tier: tier.name,
-                          roi: tier.roi,
-                          requestedAt: new Date().toLocaleString("en-GB"),
-                        },
-                      })
-                    }
-                  >
-                    {tier.active ? "Current Tier" : `Upgrade to ${tier.name}`}
-                  </Button>
+                  {tier.id === "pro" ? (
+                    <Button className="w-full" variant="outline" disabled>
+                      {isCurrent ? (
+                        <>
+                          <Check className="mr-1.5 h-4 w-4" /> Current Tier
+                        </>
+                      ) : (
+                        "Included in your plan"
+                      )}
+                    </Button>
+                  ) : isAvantActive ? (
+                    <Button className="w-full" variant="outline" disabled>
+                      <Check className="mr-1.5 h-4 w-4" /> Current Tier
+                    </Button>
+                  ) : !membershipHydrated ? (
+                    <Button className="w-full" disabled>
+                      <Loader2 className="mr-1.5 h-4 w-4 animate-spin" /> Checking status…
+                    </Button>
+                  ) : avantPending ? (
+                    <Button className="w-full" disabled>
+                      <Clock className="mr-1.5 h-4 w-4" /> Pending approval
+                    </Button>
+                  ) : avantApproved ? (
+                    <Button className="w-full" disabled>
+                      <ShieldCheck className="mr-1.5 h-4 w-4" /> Awaiting €1M deposit validation
+                    </Button>
+                  ) : (
+                    <Button className="w-full" onClick={requestAvantGarde} disabled={upgradeSubmitting}>
+                      {upgradeSubmitting ? (
+                        <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
+                      ) : (
+                        <Crown className="mr-1.5 h-4 w-4" />
+                      )}
+                      {avantRejected ? "Request Avant-Garde again" : "Upgrade to Avant-Garde"}
+                    </Button>
+                  )}
                 </CardContent>
               </Card>
-            ))}
+              )
+            })}
           </div>
           <p className="mt-4 text-center text-xs text-muted-foreground text-pretty">
             ROI tiers are backed by Swiss fiduciary law and treasury deposits with partner
