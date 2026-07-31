@@ -28,6 +28,14 @@ import {
   type DeviceRow,
   type ActorStats,
 } from "@/lib/security-audit-db"
+import {
+  listDebugEvents,
+  getDebugStats,
+  type DebugErrorEvent,
+  type DebugErrorStats,
+  type DebugSeverity,
+  type DebugSource,
+} from "@/lib/debug-log-db"
 
 // These proxy URLs are consumed by the admin Security Audit panel, which is
 // authenticated by the shared admin passcode rather than a user session. We
@@ -223,5 +231,126 @@ export async function buildUserAudit(userId: string, opts?: { category?: string 
     documents,
     profileDocuments: documentsProfile.documents,
     profileKycPdfUrl: documentsProfile.pdfUrl,
+  }
+}
+
+// ===========================================================================
+// Global log stream + Errors & Debug (cross-user)
+// ===========================================================================
+
+export type EventSeverity = "critical" | "error" | "warning" | "info"
+
+/**
+ * Derive a severity from an intentional audit event's wording. The audit trail
+ * has no severity column (every row is an action a user took), so we classify
+ * from the action/category text. Order matters: most-severe pattern wins.
+ */
+export function classifyEventSeverity(action: string, category = ""): EventSeverity {
+  const s = `${action} ${category}`.toLowerCase()
+  if (/(unauthor|blocked|suspend|fraud|breach|tamper|forbidden|lockout|locked out)/.test(s)) return "critical"
+  if (/(fail|error|declined|reject|denied|invalid|could not|couldn't|unable)/.test(s)) return "error"
+  if (/(pending|retry|expir|timeout|timed out|mismatch|warning|unverified|cancell?ed)/.test(s)) return "warning"
+  return "info"
+}
+
+export interface GlobalStreamEvent extends AuditEvent {
+  /** Severity derived from the action/category wording. */
+  severity: EventSeverity
+  /** Authoritative account label resolved from the user directory (never the
+   *  polluted event `account` free-text). */
+  accountLabel: string
+}
+
+export interface GlobalStreamResult {
+  events: GlobalStreamEvent[]
+  counts: { total: number; critical: number; error: number; warning: number; info: number }
+  categories: string[]
+  empty: boolean
+}
+
+/**
+ * Cross-user activity stream for the admin "Global log" view. Resolves each
+ * event's account label authoritatively from the user directory and tags a
+ * derived severity so the admin can spot anomalies (failures, blocks) at a
+ * glance across ALL clients at once.
+ */
+export async function buildGlobalStream(opts?: {
+  category?: string
+  severity?: EventSeverity
+  limit?: number
+}): Promise<GlobalStreamResult> {
+  const [events, users] = await Promise.all([
+    listAuditEvents({ category: opts?.category, limit: opts?.limit ?? 300 }),
+    listDynamicUsers().catch(() => []),
+  ])
+
+  const labelById = new Map<string, string>()
+  for (const u of users) labelById.set(u.id, u.profile.fullName || u.profile.company || u.email)
+
+  const categorySet = new Set<string>()
+  const counts = { total: 0, critical: 0, error: 0, warning: 0, info: 0 }
+
+  let enriched: GlobalStreamEvent[] = events.map((e) => {
+    const severity = classifyEventSeverity(e.action, e.category)
+    if (e.category) categorySet.add(e.category)
+    return {
+      ...e,
+      severity,
+      accountLabel: (e.userId && labelById.get(e.userId)) || e.account || e.userId || "System",
+    }
+  })
+
+  if (opts?.severity) enriched = enriched.filter((e) => e.severity === opts.severity)
+
+  for (const e of enriched) {
+    counts.total += 1
+    counts[e.severity] += 1
+  }
+
+  return {
+    events: enriched,
+    counts,
+    categories: Array.from(categorySet).sort(),
+    empty: events.length === 0,
+  }
+}
+
+export interface ErrorLogEvent extends DebugErrorEvent {
+  /** Authoritative account label when the error is attributed to a user. */
+  accountLabel: string | null
+}
+
+export interface ErrorLogResult {
+  events: ErrorLogEvent[]
+  stats: DebugErrorStats
+  empty: boolean
+}
+
+/**
+ * Read the automatically-captured error/anomaly log (client + server), newest
+ * first, and attach an authoritative account label when the error is tied to a
+ * user. This is what powers the "Errors & Debug" view.
+ */
+export async function buildErrorLog(opts?: {
+  severity?: DebugSeverity
+  source?: DebugSource
+  limit?: number
+}): Promise<ErrorLogResult> {
+  const [events, stats, users] = await Promise.all([
+    listDebugEvents(opts),
+    getDebugStats(),
+    listDynamicUsers().catch(() => []),
+  ])
+
+  const labelById = new Map<string, string>()
+  for (const u of users) labelById.set(u.id, u.profile.fullName || u.profile.company || u.email)
+
+  return {
+    events: events.map((e) => ({
+      ...e,
+      accountLabel: (e.userId && labelById.get(e.userId)) || e.account || null,
+    })),
+    stats,
+    empty: events.length === 0,
   }
 }

@@ -1,6 +1,7 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { adminActionAuthorized } from "@/lib/admin-auth"
 import { buildAuditOverview } from "@/lib/security-audit-service"
+import { captureServerError } from "@/lib/debug-log-db"
 
 // Admin Security Audit — account picker overview.
 //
@@ -20,6 +21,11 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ ok: true, data })
   } catch (err) {
     console.log("[v0] /api/admin/audit/overview failed:", err instanceof Error ? err.message : err)
+    void captureServerError(err, {
+      kind: "api.admin.audit.overview",
+      severity: "error",
+      path: "/api/admin/audit/overview",
+    })
     return NextResponse.json({ ok: false, error: "Could not load the audit overview." }, { status: 500 })
   }
 }

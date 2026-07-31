@@ -377,7 +377,7 @@ export default function AdminPage() {
   // Count of Payment Gateway account requests awaiting an administrator decision
   // (across EVERY client). Gateway requests live in their own DB table, separate
   // from the approvals backbone, so without this the command center and the
-  // Payment Gateway tile would never surface them — the admin would see
+  // Payment Gateway tile would never surface them �� the admin would see
   // "nothing to approve" even while clients have pending requests. Refetched on
   // unlock so the figure is current.
   const [pendingGatewayCount, setPendingGatewayCount] = useState(0)
@@ -2159,7 +2159,7 @@ export default function AdminPage() {
       items: [
         { id: "apikeys", label: "API Keys (NQAi)", description: "Issue keys so external apps like NQAi.cloud can read a customer and charge subscriptions.", icon: KeyRound, count: 0 },
         { id: "traceability", label: "Document Traceability", description: "Trace any generated document back to the account, IP and biometric on file.", icon: Fingerprint, count: 0 },
-        { id: "audit", label: "Security Audit", description: "Trace any client's logins, devices, location, identity, selfie and full activity history.", icon: ShieldCheck, count: 0 },
+        { id: "audit", label: "Security, Logs & Debug", description: "Trace any client's logins, devices, location, identity and activity; watch the global event stream; and review auto-captured errors and anomalies.", icon: ShieldCheck, count: 0 },
         { id: "danger", label: "Danger Zone", description: "Reset account data to a brand-new state.", icon: AlertTriangle, count: 0 },
       ],
     },

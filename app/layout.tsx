@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from 'next'
 import { Inter, Instrument_Serif } from 'next/font/google'
 import { Analytics } from '@vercel/analytics/next'
 import { Toaster } from '@/components/ui/sonner'
+import { DebugCaptureListener } from '@/components/debug-capture-listener'
 import './globals.css'
 
 const inter = Inter({ 
@@ -55,6 +56,7 @@ export default function RootLayout({
     <html lang="en" className="dark bg-background">
       <body className={`${inter.variable} ${instrumentSerif.variable} font-sans antialiased`}>
         {children}
+        <DebugCaptureListener />
         <Toaster richColors position="top-right" />
         {process.env.NODE_ENV === 'production' && <Analytics />}
       </body>
