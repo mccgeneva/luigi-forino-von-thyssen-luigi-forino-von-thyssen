@@ -32,6 +32,7 @@ import {
   LogOut,
   MessageSquareText,
   Network,
+  Wallet,
   type LucideIcon,
 } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
@@ -76,6 +77,7 @@ const navGroups: NavGroup[] = [
     label: "Project Funding",
     items: [
       { title: "AES Project Funding", href: "/dashboard/funding", icon: Building2, badge: "AES" },
+      { title: "Debits & Financing", href: "/dashboard/debits", icon: Wallet, badge: "Calendar" },
     ],
   },
   {
