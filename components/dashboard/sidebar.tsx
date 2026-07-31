@@ -91,6 +91,7 @@ const navGroups: NavGroup[] = [
     icon: Building2,
     items: [
       { title: "AES Project Funding", href: "/dashboard/funding", icon: Building2, badge: "AES" },
+      { title: "Debits & Financing", href: "/dashboard/debits", icon: Wallet, badge: "Calendar" },
     ],
   },
   {
