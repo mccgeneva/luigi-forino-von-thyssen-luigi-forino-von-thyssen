@@ -40,9 +40,13 @@ import {
   Activity,
   FileText,
   ShieldAlert,
+  Users,
+  ListFilter,
+  Bug,
 } from "lucide-react"
 import type { jsPDF } from "jspdf"
 import { ADMIN_PASSCODE } from "@/lib/admin-config"
+import { cn } from "@/lib/utils"
 import type { AuditOverview, UserAuditReport } from "@/lib/security-audit-service"
 import { buildDossierDoc } from "@/lib/audit-dossier-pdf"
 import type { DossierAnalysis } from "@/lib/kyc-types"
@@ -90,6 +94,9 @@ function Stat({ label, value }: { label: string; value: string | number }) {
 }
 
 export function SecurityAudit() {
+  // Which view is active: per-client dossiers (original), the cross-user global
+  // log stream, or the automatically-captured errors & debug log.
+  const [mode, setMode] = useState<"clients" | "global" | "errors">("clients")
   const [overview, setOverview] = useState<AuditOverview | null>(null)
   const [loadingOverview, setLoadingOverview] = useState(false)
   const [overviewError, setOverviewError] = useState("")
@@ -332,14 +339,45 @@ export function SecurityAudit() {
         <CardHeader>
           <CardTitle className="flex items-center gap-2 text-lg font-semibold">
             <ShieldCheck className="h-5 w-5 text-primary" />
-            Security Audit
+            Security, Logs &amp; Debug
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
+          {/* View switcher */}
+          <div className="flex flex-wrap gap-1 rounded-lg border border-border bg-secondary/40 p-1">
+            {[
+              { id: "clients" as const, label: "Clients", icon: Users },
+              { id: "global" as const, label: "Global log", icon: ListFilter },
+              { id: "errors" as const, label: "Errors & Debug", icon: Bug },
+            ].map((m) => {
+              const Icon = m.icon
+              const active = mode === m.id
+              return (
+                <button
+                  key={m.id}
+                  type="button"
+                  onClick={() => setMode(m.id)}
+                  aria-pressed={active}
+                  className={cn(
+                    "flex flex-1 items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition-colors",
+                    active
+                      ? "bg-primary text-primary-foreground shadow-sm"
+                      : "text-muted-foreground hover:bg-secondary hover:text-foreground",
+                  )}
+                >
+                  <Icon className="h-4 w-4" />
+                  {m.label}
+                </button>
+              )
+            })}
+          </div>
           <p className="text-sm leading-relaxed text-muted-foreground text-pretty">
-            Pick any client to reconstruct exactly what they did: their identity on file, the login selfie captured at
-            sign-in, the devices and geolocated IP addresses they connected from, and a full activity timeline. This is
-            read from a tamper-proof server log the account holder cannot see or edit.
+            {mode === "clients" &&
+              "Pick any client to reconstruct exactly what they did: their identity on file, the login selfie captured at sign-in, the devices and geolocated IP addresses they connected from, and a full activity timeline. This is read from a tamper-proof server log the account holder cannot see or edit."}
+            {mode === "global" &&
+              "A single live stream of every client's activity across the whole platform, tagged by severity so failures, blocks and anomalies stand out. Click any event for its full log and to export it."}
+            {mode === "errors" &&
+              "Automatically-captured application errors and anomalies — client crashes, unhandled promise rejections and server-side failures — collected as they happen. Click any entry for the full stack trace and to export it."}
           </p>
           <div className="flex items-start gap-2 rounded-lg border border-border bg-secondary/40 p-3 text-xs text-muted-foreground">
             <Info className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
@@ -351,8 +389,11 @@ export function SecurityAudit() {
         </CardContent>
       </Card>
 
+      {mode === "global" && <GlobalLogStream />}
+      {mode === "errors" && <ErrorDebugLog />}
+
       {/* ---- Account picker ---- */}
-      {!selectedId && (
+      {mode === "clients" && !selectedId && (
         <Card>
           <CardHeader>
             <div className="flex items-center justify-between gap-3">
@@ -424,7 +465,7 @@ export function SecurityAudit() {
       )}
 
       {/* ---- Per-user report ---- */}
-      {selectedId && (
+      {mode === "clients" && selectedId && (
         <div className="space-y-6">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <Button variant="ghost" size="sm" onClick={closeUser}>
