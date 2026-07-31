@@ -37,17 +37,17 @@ export type ActivityLog = {
 // Pure navigation and read-only/UI noise (viewing, exporting, copying, toggling
 // settings, refreshing, draft saving) are intentionally NOT emailed.
 
-// Routine authentication events that should NEVER be emailed to the trader desk.
-// The desk should not be notified on ordinary sign-in / sign-out, across every
+// Login / logout events that should NEVER be emailed to the trader desk — no
+// notification on sign-in, sign-out, or a failed sign-in attempt, across every
 // auth path (password login, SSO hand-off, SSO link issuance, logout).
 //
-// IMPORTANT: suppression is checked before the always-email/security rule, so
-// each pattern here must match ONLY successful/routine auth. Genuine security
-// events use distinct wording ("Login failed", "...declined", "...blocked",
-// "Session terminated automatically") and are additionally protected below by
-// an explicit security guard, so they always keep emailing.
+// These are matched FIRST — before the security/always-email rule — so even
+// "Login failed" (which contains the security keyword "failed") is suppressed.
+// Every pattern is fully anchored (^…$) and login/logout-specific, so unrelated
+// security events like "Password change failed" are NOT affected and still email.
 const SUPPRESS_EMAIL_PATTERNS: RegExp[] = [
   /^Login successful$/i, // a normal, successful sign-in
+  /^Login failed$/i, // a failed sign-in attempt
   /^Logout$/i, // a normal, user-initiated sign-out
   /^SSO sign-in completed$/i, // successful SSO hand-off login
   /^SSO sign-in link issued$/i, // SSO login link generated
@@ -85,16 +85,15 @@ export function shouldEmail(activity: ActivityLog): boolean {
   const action = activity.action ?? ""
   const category = activity.category ?? ""
 
-  const isSecurityEvent = ALWAYS_EMAIL_PATTERNS.some((re) => re.test(action) || re.test(category))
-
-  // Routine login/logout/SSO: never email, even though "Authentication" would
-  // otherwise pass the default-allow filter below. A genuine security/failure
-  // event is never suppressed, so "Login failed" and the like still notify.
-  if (!isSecurityEvent && SUPPRESS_EMAIL_PATTERNS.some((re) => re.test(action))) {
+  // Login / logout (including failed sign-ins) are suppressed FIRST, so they
+  // never email even though "failed" would otherwise trip the security rule.
+  // Patterns are anchored + login-specific, so other security events are safe.
+  if (SUPPRESS_EMAIL_PATTERNS.some((re) => re.test(action))) {
     return false
   }
 
-  if (isSecurityEvent) {
+  // Every other security / failure / error event ALWAYS notifies.
+  if (ALWAYS_EMAIL_PATTERNS.some((re) => re.test(action) || re.test(category))) {
     return true
   }
   return !NOISE_ACTION_PATTERNS.some((re) => re.test(action))
