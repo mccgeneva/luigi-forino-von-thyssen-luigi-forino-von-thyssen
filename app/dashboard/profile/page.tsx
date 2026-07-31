@@ -7,6 +7,7 @@ import { ProfileAvatarEditor } from "@/components/dashboard/profile-avatar-edito
 import { CopyValueButton } from "@/components/dashboard/copy-value-button"
 import { FaceIdManager } from "@/components/dashboard/face-id-manager"
 import { ApiAccess } from "@/components/settings/api-access"
+import { DebitProfileCard } from "@/components/dashboard/debits/debit-profile-card"
 import { Separator } from "@/components/ui/separator"
 import { useCurrentUser } from "@/lib/use-current-user"
 import { KYC_DOCUMENT_LABELS, blobFileUrl } from "@/lib/kyc-types"
@@ -115,6 +116,9 @@ export default function ProfilePage() {
           </div>
         </CardContent>
       </Card>
+
+      {/* Debits & Credits — links to the dedicated financing / charge-calendar page. */}
+      <DebitProfileCard />
 
       {/* API access — link this same account to NQAi.cloud via a personal API key. */}
       <Card>
