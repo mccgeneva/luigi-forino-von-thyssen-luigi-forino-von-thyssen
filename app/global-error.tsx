@@ -1,6 +1,7 @@
 "use client"
 
 import { useEffect } from "react"
+import { reportClientError } from "@/lib/client-error-capture"
 
 /**
  * Last-resort error boundary. Catches errors thrown in the root layout itself
@@ -17,6 +18,15 @@ export default function GlobalError({
 }) {
   useEffect(() => {
     console.log("[v0] global-error boundary caught:", error?.message, error?.digest)
+    // Report to the admin Errors & Debug log — marked critical since a root
+    // layout crash takes down the whole document.
+    reportClientError({
+      severity: "critical",
+      kind: "react.global-error",
+      message: error?.message || "Application crashed (root layout)",
+      stack: error?.stack ?? null,
+      meta: { digest: error?.digest ?? null },
+    })
   }, [error])
 
   return (

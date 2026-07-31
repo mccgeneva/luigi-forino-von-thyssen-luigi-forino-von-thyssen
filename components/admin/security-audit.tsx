@@ -49,6 +49,7 @@ import type { DossierAnalysis } from "@/lib/kyc-types"
 import { PdfPreviewModal } from "@/components/pdf-preview-modal"
 import { KycDocumentManager } from "@/components/admin/kyc-document-manager"
 import { ImageLightbox } from "@/components/image-lightbox"
+import { GlobalLogStream, ErrorDebugLog } from "@/components/admin/logs-and-debug"
 
 function fmtWhen(iso: string | null): string {
   if (!iso) return "—"

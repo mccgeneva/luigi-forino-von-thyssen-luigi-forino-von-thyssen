@@ -1,6 +1,7 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { adminActionAuthorized } from "@/lib/admin-auth"
 import { buildUserAudit } from "@/lib/security-audit-service"
+import { captureServerError } from "@/lib/debug-log-db"
 
 // Admin Security Audit — full per-account report (identity, login selfie,
 // devices, geolocated IPs, activity timeline).
@@ -27,6 +28,12 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ ok: true, data })
   } catch (err) {
     console.log("[v0] /api/admin/audit/user failed:", err instanceof Error ? err.message : err)
+    void captureServerError(err, {
+      kind: "api.admin.audit.user",
+      severity: "error",
+      userId,
+      path: "/api/admin/audit/user",
+    })
     return NextResponse.json(
       { ok: false, error: "Could not load the audit report for this account." },
       { status: 500 },

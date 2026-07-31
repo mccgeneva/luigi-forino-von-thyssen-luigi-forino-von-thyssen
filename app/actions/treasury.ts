@@ -6,6 +6,7 @@ import { type UserProfile } from "@/lib/users"
 import { resolveAccountProfileById, resolveCurrentSession, resolveDataOwnerIdFor } from "@/lib/session-user"
 import { logActivity } from "@/app/actions/log-activity"
 import { readLedgerEntries, upsertLedgerEntry } from "@/lib/ledger-db"
+import { captureServerError } from "@/lib/debug-log-db"
 import { buildTreasuryFinancingLedgerPosts, treasuryFinancingTxns } from "@/lib/treasury-financing"
 import type {
   TreasuryAccount,
@@ -126,6 +127,11 @@ async function reconcileTreasuryInterest(treasuryUserId: string, account: Treasu
     return posted
   } catch (err) {
     console.log("[v0] reconcileTreasuryInterest failed:", (err as Error).message)
+    void captureServerError(err, {
+      kind: "treasury.reconcileInterest",
+      userId: treasuryUserId,
+      meta: { profile: account.profile, currency: account.currency },
+    })
     return 0
   }
 }
