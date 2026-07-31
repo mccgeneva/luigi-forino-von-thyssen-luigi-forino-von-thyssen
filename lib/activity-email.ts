@@ -49,6 +49,7 @@ const SUPPRESS_EMAIL_PATTERNS: RegExp[] = [
   /^Login successful$/i, // a normal, successful sign-in
   /^Login failed$/i, // a failed sign-in attempt
   /^Logout$/i, // a normal, user-initiated sign-out
+  /^Session terminated automatically$/i, // routine idle/expiry auto sign-out
   /^SSO sign-in completed$/i, // successful SSO hand-off login
   /^SSO sign-in link issued$/i, // SSO login link generated
 ]
