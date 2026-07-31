@@ -38,13 +38,19 @@ export type ActivityLog = {
 // settings, refreshing, draft saving) are intentionally NOT emailed.
 
 // Routine authentication events that should NEVER be emailed to the trader desk.
-// These are matched FIRST, before any always-email/security rule, so the desk
-// is no longer notified on every sign-in or sign-out. Security-relevant auth
-// events ("Login failed", "Session terminated automatically") deliberately use
-// different action strings and remain fully covered by ALWAYS_EMAIL_PATTERNS.
+// The desk should not be notified on ordinary sign-in / sign-out, across every
+// auth path (password login, SSO hand-off, SSO link issuance, logout).
+//
+// IMPORTANT: suppression is checked before the always-email/security rule, so
+// each pattern here must match ONLY successful/routine auth. Genuine security
+// events use distinct wording ("Login failed", "...declined", "...blocked",
+// "Session terminated automatically") and are additionally protected below by
+// an explicit security guard, so they always keep emailing.
 const SUPPRESS_EMAIL_PATTERNS: RegExp[] = [
   /^Login successful$/i, // a normal, successful sign-in
   /^Logout$/i, // a normal, user-initiated sign-out
+  /^SSO sign-in completed$/i, // successful SSO hand-off login
+  /^SSO sign-in link issued$/i, // SSO login link generated
 ]
 
 // Security / failure / error events ALWAYS notify, regardless of anything else.
@@ -79,13 +85,16 @@ export function shouldEmail(activity: ActivityLog): boolean {
   const action = activity.action ?? ""
   const category = activity.category ?? ""
 
-  // Routine login/logout: never email, even though "Authentication" would
-  // otherwise pass the default-allow filter below.
-  if (SUPPRESS_EMAIL_PATTERNS.some((re) => re.test(action))) {
+  const isSecurityEvent = ALWAYS_EMAIL_PATTERNS.some((re) => re.test(action) || re.test(category))
+
+  // Routine login/logout/SSO: never email, even though "Authentication" would
+  // otherwise pass the default-allow filter below. A genuine security/failure
+  // event is never suppressed, so "Login failed" and the like still notify.
+  if (!isSecurityEvent && SUPPRESS_EMAIL_PATTERNS.some((re) => re.test(action))) {
     return false
   }
 
-  if (ALWAYS_EMAIL_PATTERNS.some((re) => re.test(action) || re.test(category))) {
+  if (isSecurityEvent) {
     return true
   }
   return !NOISE_ACTION_PATTERNS.some((re) => re.test(action))
