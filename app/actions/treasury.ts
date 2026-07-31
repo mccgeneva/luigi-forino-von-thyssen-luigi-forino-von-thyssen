@@ -3,8 +3,10 @@
 import { query } from "@/lib/db"
 import { adminActionAuthorized } from "@/lib/admin-auth"
 import { type UserProfile } from "@/lib/users"
-import { resolveAccountProfileById, resolveCurrentSession } from "@/lib/session-user"
+import { resolveAccountProfileById, resolveCurrentSession, resolveDataOwnerIdFor } from "@/lib/session-user"
 import { logActivity } from "@/app/actions/log-activity"
+import { readLedgerEntries, upsertLedgerEntry } from "@/lib/ledger-db"
+import { buildTreasuryFinancingLedgerPosts, treasuryFinancingTxns } from "@/lib/treasury-financing"
 import type {
   TreasuryAccount,
   TreasuryProfileKey,
@@ -85,6 +87,49 @@ async function readAccount(userId: string): Promise<TreasuryAccount> {
   return rowToAccount(rows[0])
 }
 
+// --- Debit-interest reconciliation (server authoritative) -------------------
+
+/**
+ * Post any monthly treasury-financing debit interest (3% p.a., charged monthly
+ * pro-rata from the financing date) that has come due but is not yet on the
+ * ledger — SERVER-SIDE, so a client's monthly charge lands reliably whether or
+ * not they ever open their dashboard.
+ *
+ * Historically the ONLY thing that posted these charges was the client-side
+ * `TreasuryFinancingReconciler`, which runs on dashboard mount. If a client did
+ * not sign in for a month, that month was silently never charged into their
+ * master account. Running the same deterministic accrual here — on every
+ * treasury read, including the admin's — closes that gap.
+ *
+ * Idempotent: each charge has a deterministic `TRY-INT-<txnId>-<yearMonth>` id
+ * and we skip any id already present, so posting on every read never
+ * double-charges. Never throws: a reconciliation failure must not break the
+ * treasury read it piggybacks on. Returns the number of charges newly posted.
+ */
+async function reconcileTreasuryInterest(treasuryUserId: string, account: TreasuryAccount): Promise<number> {
+  try {
+    // Cheap guard: nothing to accrue unless there is financed principal.
+    if (treasuryFinancingTxns(account).length === 0) return 0
+
+    // The shared balance lives on the data owner's (Master) ledger — a
+    // sub-account's charges must post to its Master, exactly like every other
+    // ledger effect in the platform.
+    const ledgerOwnerId = await resolveDataOwnerIdFor(treasuryUserId)
+    const existing = new Set((await readLedgerEntries(ledgerOwnerId)).map((e) => e.id))
+
+    const posts = buildTreasuryFinancingLedgerPosts(account, existing)
+    let posted = 0
+    for (const post of posts) {
+      await upsertLedgerEntry(ledgerOwnerId, { ...post.entry, direction: post.direction })
+      posted += 1
+    }
+    return posted
+  } catch (err) {
+    console.log("[v0] reconcileTreasuryInterest failed:", (err as Error).message)
+    return 0
+  }
+}
+
 // --- Customer-facing read (own record only) ---------------------------------
 
 /** Return the signed-in user's treasury record, scoped to their session. */
@@ -92,7 +137,11 @@ export async function getMyTreasury(): Promise<TreasuryAccount> {
   const user = await getSessionUser()
   if (!user) return emptyAccount()
   try {
-    return await readAccount(user.id)
+    const account = await readAccount(user.id)
+    // Post any monthly debit interest that has come due (idempotent, server-side)
+    // so the charge lands even if the client-side reconciler never runs.
+    await reconcileTreasuryInterest(user.id, account)
+    return account
   } catch (err) {
     console.log("[v0] getMyTreasury query failed:", (err as Error).message)
     return emptyAccount()
@@ -112,7 +161,12 @@ export async function getTreasuryForUserAdmin(
 ): Promise<AdminTreasuryResult> {
   try {
     await requireAdmin(passcode)
-    return { ok: true, account: await readAccount(userId) }
+    const account = await readAccount(userId)
+    // Bring the client's ledger current: post any monthly debit interest due on
+    // their treasury financing, so the admin sees every month charged even if
+    // the client has not opened their dashboard since the last month-end.
+    await reconcileTreasuryInterest(userId, account)
+    return { ok: true, account }
   } catch (err) {
     return { ok: false, error: (err as Error).message }
   }
