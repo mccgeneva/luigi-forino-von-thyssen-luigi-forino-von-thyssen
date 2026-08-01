@@ -229,10 +229,10 @@ export async function sendInstantTransfer(input: {
   const session = await resolveCurrentSession()
   if (!session) return { ok: false, error: "Your session has expired. Please sign in again." }
 
-  // Tier gate: a Visitor (pre-subscription, read-only) account cannot move money
-  // OUT. An active PRO/Avant-Garde grant lifts this even if the badge still reads
-  // "Visitor", so an upgraded user is never blocked. Incoming credits are never
-  // restricted (they run through the admin/gateway credit paths, not this one).
+  // Tier gate: guards outgoing transfers. Visitor accounts may now send money
+  // (canSendMoney is true), so this only blocks any future tier that has money-out
+  // disabled. An active PRO/Avant-Garde grant always resolves to full access.
+  // Incoming credits are never restricted here or on the recipient's tier.
   const membership = await getMyMembership()
   if (!capabilitiesForAccount(session.profile.accountBadge, membership).canSendMoney) {
     return { ok: false, error: VISITOR_RESTRICTION_MESSAGE }

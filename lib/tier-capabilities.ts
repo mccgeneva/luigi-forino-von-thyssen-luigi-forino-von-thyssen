@@ -1,11 +1,11 @@
 // ---------------------------------------------------------------------------
 // Tier capabilities — what a given platform tier is allowed to do.
 //
-// The Visitor tier is a pre-subscription test account: it can READ everything
-// and RECEIVE incoming top-ups, but it has no operational power — no outgoing
-// transfers, no trading, no instrument issuance, and no treasury payout. PRO
-// and Avant-Garde (and any unknown/legacy badge, which normalises to PRO) keep
-// full operational rights.
+// The Visitor tier is a pre-subscription test account. It can READ everything,
+// SEND outgoing payments and RECEIVE incoming payments/top-ups — but it still
+// has no market or treasury power: no trading, no instrument issuance, and no
+// treasury payout/withdrawal. PRO and Avant-Garde (and any unknown/legacy
+// badge, which normalises to PRO) keep full operational rights.
 //
 // This is a plain, synchronous, client-safe module (no server-only imports) so
 // the SAME source of truth can gate both server actions and UI. The server
@@ -16,7 +16,7 @@ import { resolvePlatformTier, type PlatformTierId } from "@/lib/platform-tier"
 import { effectivePlatformTier, type MembershipRecord } from "@/lib/membership"
 
 export interface TierCapabilities {
-  /** Whether the account is restricted to read-only + incoming credits only. */
+  /** Whether the account is restricted to read-only (no money movement at all). */
   readOnly: boolean
   /** Send outgoing money (P2P, SWIFT, wires, standing orders). */
   canSendMoney: boolean
@@ -40,8 +40,10 @@ const FULL_ACCESS: TierCapabilities = {
 }
 
 const VISITOR_ACCESS: TierCapabilities = {
-  readOnly: true,
-  canSendMoney: false,
+  // Visitor is no longer read-only: it can move money in and out. It still
+  // cannot trade, issue instruments, or request a treasury payout.
+  readOnly: false,
+  canSendMoney: true,
   canTrade: false,
   canCreateInstruments: false,
   canRequestPayout: false,
@@ -69,6 +71,6 @@ export function capabilitiesForAccount(
   return capabilitiesForTierId(tier.id)
 }
 
-/** Standard user-facing message when a Visitor attempts a blocked action. */
+/** Standard user-facing message when a Visitor attempts a still-restricted action. */
 export const VISITOR_RESTRICTION_MESSAGE =
-  "Your Visitor account is read-only. Upgrade to PRO or Avant-Garde to unlock payments, trading and treasury operations. You can still receive incoming top-ups."
+  "Your Visitor account can send and receive payments, but trading, instrument issuance and treasury payouts are disabled. Upgrade to PRO or Avant-Garde to unlock them."
