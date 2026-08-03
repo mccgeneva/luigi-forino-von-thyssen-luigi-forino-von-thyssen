@@ -98,6 +98,12 @@ export interface TreasuryTransaction {
   amount: number
   currency: string
   note?: string
+  /**
+   * For a treasury financing drawdown: the ISO timestamp at which the client
+   * reversed/terminated it and settled the payoff from the master balance.
+   * Once set, debit-interest accrual on this drawdown stops at this moment.
+   */
+  settledAt?: string
 }
 
 export interface TreasuryAccount {

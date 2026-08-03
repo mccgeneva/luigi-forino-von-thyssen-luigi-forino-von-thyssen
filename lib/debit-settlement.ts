@@ -6,7 +6,6 @@ import {
   buildFundingLedgerPosts,
   buildFundingSettlementPosts,
   computeFundingSettlement,
-  fundingCreditDate,
 } from "@/lib/funding-capital"
 import type { ProjectFundingRequest } from "@/lib/project-funding-store"
 

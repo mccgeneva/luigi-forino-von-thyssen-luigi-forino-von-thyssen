@@ -63,6 +63,18 @@ export interface DebitFacility {
   status: string
   /** True when the facility is closed/settled (no longer accruing forward). */
   closed: boolean
+  /**
+   * DB approval id backing this facility (funding / monetization / leverage).
+   * Undefined for treasury financing, which is keyed by its drawdown txn id
+   * (`id`) on the treasury account rather than an approval record.
+   */
+  approvalId?: string
+  /**
+   * True when the client may reverse/terminate this facility from the Debits &
+   * Financing page — i.e. it is live, not already closed, and self-service
+   * settlement is supported for its product.
+   */
+  settleable: boolean
 }
 
 /** A single monthly debit charge — posted historically or projected ahead. */
@@ -155,6 +167,8 @@ export function buildDebitSchedule(input: BuildDebitScheduleInput): DebitSchedul
       monthlyAmount: monthlyCostOfCapital(r.facility),
       status: r.status,
       closed: !!r.closedAt,
+      approvalId: r.approvalId,
+      settleable: !r.closedAt && !!r.approvalId,
     })
   }
   if (funding.length > 0) {
@@ -178,8 +192,10 @@ export function buildDebitSchedule(input: BuildDebitScheduleInput): DebitSchedul
       annualRate: priced.effectiveRate,
       rateLabel: `blended ${fmtPct(priced.effectiveRate)}`,
       monthlyAmount: priced.monthlyInterest,
-      status: req.status,
-      closed: false,
+      status: req.closedAt ? "closed" : req.status,
+      closed: !!req.closedAt,
+      approvalId: req.approvalId,
+      settleable: !req.closedAt && !!req.approvalId,
     })
   }
   if (monetization.length > 0) {
@@ -206,6 +222,8 @@ export function buildDebitSchedule(input: BuildDebitScheduleInput): DebitSchedul
       monthlyAmount: round2((line.borrowedAmount * rate) / 12),
       status: line.status,
       closed: false,
+      approvalId: line.approvalId,
+      settleable: !!line.approvalId,
     })
   }
   if (leverage.length > 0) {
@@ -227,8 +245,9 @@ export function buildDebitSchedule(input: BuildDebitScheduleInput): DebitSchedul
       annualRate: TREASURY_FINANCING_ANNUAL_RATE,
       rateLabel: fmtPct(TREASURY_FINANCING_ANNUAL_RATE),
       monthlyAmount: monthlyTreasuryInterest(txn.amount),
-      status: "active",
-      closed: false,
+      status: txn.settledAt ? "closed" : "active",
+      closed: !!txn.settledAt,
+      settleable: !txn.settledAt,
     })
   }
   if (treasuryDraws.length > 0) {
