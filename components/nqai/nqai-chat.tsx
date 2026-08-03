@@ -231,6 +231,7 @@ const TOOL_DONE_LABELS: Record<string, string> = {
 const TOOL_FAIL_LABELS: Record<string, string> = {
   "tool-sendEmail": "Email failed",
   "tool-sendSms": "SMS failed",
+  "tool-createDocument": "Document draft interrupted — try again",
 }
 
 /** Tool keys that belong to the knowledge/research layer (book icon). */
@@ -253,8 +254,16 @@ interface ToolActivity {
   kind: "vessel" | "knowledge" | "messaging" | "document" | "storage"
 }
 
-/** Collect tool invocations from a message's parts for the activity strip. */
-function toolActivity(message: UIMessage): ToolActivity[] {
+/**
+ * Collect tool invocations from a message's parts for the activity strip.
+ *
+ * `settled` = the turn that produced this message is no longer streaming. Once
+ * settled, any tool part that never reached a terminal state (e.g. the model
+ * ran out of output budget while streaming a long document's arguments) is
+ * treated as FAILED rather than "in progress" — otherwise its chip would spin
+ * forever (the "Drafting document" hang).
+ */
+function toolActivity(message: UIMessage, settled: boolean): ToolActivity[] {
   if (!message.parts) return []
   const out: ToolActivity[] = []
   message.parts.forEach((p, i) => {
@@ -262,12 +271,16 @@ function toolActivity(message: UIMessage): ToolActivity[] {
     if (!type.startsWith("tool-")) return
     if (!(type in TOOL_LABELS)) return
     const state = (p as { state?: string }).state ?? ""
-    const done = state === "output-available" || state === "output-error"
+    const terminal = state === "output-available" || state === "output-error"
+    // Terminal, or abandoned by a finished turn — either way it is no longer
+    // actively running, so the chip must stop spinning.
+    const done = terminal || settled
     // A tool can finish "successfully" (output-available) yet still report a
     // logical failure via `{ ok: false }` in its output (e.g. email not
-    // configured). Treat both as a failed chip so the user sees it plainly.
+    // configured). A tool left non-terminal on a settled turn was interrupted.
+    // Treat all of these as a failed chip so the user sees it plainly.
     const output = (p as { output?: { ok?: boolean } }).output
-    const failed = done && (state === "output-error" || output?.ok === false)
+    const failed = terminal ? state === "output-error" || output?.ok === false : settled
     const label = failed
       ? TOOL_FAIL_LABELS[type] ?? `${TOOL_LABELS[type]} — failed`
       : done
@@ -1306,10 +1319,14 @@ export function NqaiChat({ variant = "page" }: { variant?: "page" | "panel" }) {
         </div>
 
         {/* Chat turns */}
-        {messages.map((message) => {
+        {messages.map((message, mi) => {
           const text = messageText(message)
           const isUser = message.role === "user"
-          const activity = isUser ? [] : toolActivity(message)
+          // The turn is "settled" unless this is the last message AND the chat
+          // is still working — so a tool left mid-flight on a finished turn
+          // stops spinning and shows an interrupted/retry chip instead.
+          const isLive = busy && mi === messages.length - 1
+          const activity = isUser ? [] : toolActivity(message, !isLive)
           const files = isUser ? messageFiles(message) : []
           const docs = isUser ? [] : documentArtifacts(message)
           return (
@@ -1416,7 +1433,7 @@ export function NqaiChat({ variant = "page" }: { variant?: "page" | "panel" }) {
                       {text}
                     </Streamdown>
                   )
-                ) : files.length === 0 && docs.length === 0 ? (
+                ) : isLive && files.length === 0 && docs.length === 0 ? (
                   <span className="inline-flex items-center gap-1 text-muted-foreground">
                     <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-primary [animation-delay:-0.3s]" />
                     <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-primary [animation-delay:-0.15s]" />
