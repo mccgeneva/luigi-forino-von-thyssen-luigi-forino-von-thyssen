@@ -496,6 +496,14 @@ export async function POST(req: Request) {
     // Allow several tool round-trips (e.g. discover deals → verify a vessel →
     // answer) within a single turn before the model must produce its reply.
     stopWhen: stepCountIs(6),
+    // Generous output ceiling. Without this the Anthropic provider applies a
+    // modest per-model default, and a long document authored via the
+    // `createDocument` tool overruns it MID tool-call — the tool's JSON
+    // arguments (title + full Markdown body) are truncated, so the SDK never
+    // runs `execute`, the tool part is stuck at input-streaming, and the chat's
+    // "Drafting document" spinner hangs forever. A high cap lets multi-page
+    // reports finish streaming their arguments so the PDF can actually render.
+    maxOutputTokens: 32000,
     temperature: 0.6,
     // Stop server-side work the moment the client disconnects or cancels, so a
     // navigated-away/aborted request never keeps an expensive model call running
