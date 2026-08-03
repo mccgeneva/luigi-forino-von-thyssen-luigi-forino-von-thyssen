@@ -32,10 +32,11 @@ export function monetizationInterestChargeId(requestId: string, yearMonth: strin
 
 /**
  * A monetization is accruing monthly interest once it has been APPROVED (funds
- * credited). Accrual starts on `decidedAt` (the approval / credit date).
+ * credited) and NOT yet reversed/terminated. Accrual starts on `decidedAt` (the
+ * approval / credit date) and stops on `closedAt` (client termination).
  */
 function isAccruingMonetization(r: MonetizationRequest): boolean {
-  return r.status === "approved" && !!r.decidedAt && r.grossProceeds > 0
+  return r.status === "approved" && !!r.decidedAt && r.grossProceeds > 0 && !r.closedAt
 }
 
 /**
