@@ -42,6 +42,21 @@ export function isTreasuryFinancingTxn(txn: TreasuryTransaction): boolean {
   )
 }
 
+/**
+ * The effective accrual cut-off for a drawdown. Interest accrues from the
+ * drawdown date up to `now`, UNLESS the client has reversed/terminated the
+ * financing — in which case a `settledAt` marker caps accrual at the payoff
+ * moment so no further monthly interest is charged after termination.
+ */
+function accrualCutoff(txn: TreasuryTransaction, now: Date): Date {
+  const settled = (txn as { settledAt?: string }).settledAt
+  if (settled) {
+    const s = new Date(settled)
+    if (!Number.isNaN(s.getTime()) && s.getTime() < now.getTime()) return s
+  }
+  return now
+}
+
 /** All treasury financing drawdowns on an account (each a financed principal). */
 export function treasuryFinancingTxns(account: TreasuryAccount | null | undefined): TreasuryTransaction[] {
   if (!account || !Array.isArray(account.transactions)) return []
@@ -72,7 +87,7 @@ export function accruedTreasuryInterest(
   for (const txn of treasuryFinancingTxns(account)) {
     const start = new Date(txn.date)
     if (Number.isNaN(start.getTime())) continue
-    total += accruedInterestToDate(txn.amount, TREASURY_FINANCING_ANNUAL_RATE, start, asOf)
+    total += accruedInterestToDate(txn.amount, TREASURY_FINANCING_ANNUAL_RATE, start, accrualCutoff(txn, asOf))
   }
   return Math.round((total + Number.EPSILON) * 100) / 100
 }
@@ -99,7 +114,7 @@ export function buildTreasuryFinancingLedgerPosts(
     const start = new Date(txn.date)
     if (Number.isNaN(start.getTime())) continue
 
-    for (const charge of monthlyInterestCharges(txn.amount, TREASURY_FINANCING_ANNUAL_RATE, start, now)) {
+    for (const charge of monthlyInterestCharges(txn.amount, TREASURY_FINANCING_ANNUAL_RATE, start, accrualCutoff(txn, now))) {
       const chargeId = treasuryInterestChargeId(txn.id, charge.yearMonth)
       if (existingIds.has(chargeId)) continue
       const proNote = charge.prorated

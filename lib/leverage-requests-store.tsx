@@ -267,6 +267,8 @@ interface LeverageRequestsContextValue {
    *  switch-off pending) and close it. The caller settles the ledger
    *  (principal repayment + accrued interest) and passes the entry ids. */
   unwindLine: (id: string, payload: ApproveSwitchOffPayload) => LeverageRequest | null
+  /** Re-hydrate the list from the server (e.g. after a client termination). */
+  refresh: () => void | Promise<unknown>
   hydrated: boolean
 }
 
@@ -498,6 +500,7 @@ export function LeverageRequestsProvider({ children }: { children: React.ReactNo
         approveSwitchOff,
         rejectSwitchOff,
         unwindLine,
+        refresh,
         hydrated,
       }}
     >

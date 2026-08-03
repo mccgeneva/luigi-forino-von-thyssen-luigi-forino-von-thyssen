@@ -1,6 +1,6 @@
 "use client"
 
-import { useMemo } from "react"
+import { useCallback, useMemo } from "react"
 import { CalendarClock, TrendingDown, Receipt, Wallet } from "lucide-react"
 import { Card, CardContent } from "@/components/ui/card"
 import { Skeleton } from "@/components/ui/skeleton"
@@ -17,13 +17,24 @@ import { DebitChargeList } from "@/components/dashboard/debits/debit-charge-list
 import { DebitScenarios } from "@/components/dashboard/debits/debit-scenarios"
 
 export default function DebitsPage() {
-  const { requests: funding, hydrated: fHydrated } = useProjectFunding()
-  const { requests: monetization, hydrated: mHydrated } = useMonetizationRequests()
-  const { requests: leverage, hydrated: lHydrated } = useLeverageRequests()
-  const { account: treasury, hydrated: tHydrated } = useTreasury()
-  const { entries, hydrated: ledgerHydrated } = useLedger()
+  const { requests: funding, hydrated: fHydrated, refresh: refreshFunding } = useProjectFunding()
+  const { requests: monetization, hydrated: mHydrated, refresh: refreshMonetization } = useMonetizationRequests()
+  const { requests: leverage, hydrated: lHydrated, refresh: refreshLeverage } = useLeverageRequests()
+  const { account: treasury, hydrated: tHydrated, refresh: refreshTreasury } = useTreasury()
+  const { entries, hydrated: ledgerHydrated, refresh: refreshLedger } = useLedger()
 
   const hydrated = fHydrated && mHydrated && lHydrated && tHydrated && ledgerHydrated
+
+  // After a client termination / reconciliation, re-hydrate every source so the
+  // ledger balance, posted charges, facility state and calendar all update at
+  // once (the stores also poll on a 30s interval as a backstop).
+  const onSettled = useCallback(() => {
+    void refreshLedger()
+    void refreshFunding()
+    void refreshMonetization()
+    void refreshLeverage()
+    void refreshTreasury()
+  }, [refreshLedger, refreshFunding, refreshMonetization, refreshLeverage, refreshTreasury])
 
   const schedule = useMemo(() => {
     const postedIds = new Set(entries.map((e) => e.id))
@@ -124,7 +135,7 @@ export default function DebitsPage() {
             </p>
           )}
 
-          <DebitFacilities facilities={schedule.facilities} />
+          <DebitFacilities facilities={schedule.facilities} onSettled={onSettled} />
           <DebitCalendar charges={schedule.charges} />
           <DebitChargeList charges={schedule.charges} />
           <DebitScenarios activeKinds={activeKinds} />

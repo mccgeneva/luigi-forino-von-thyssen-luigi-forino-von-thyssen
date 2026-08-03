@@ -60,6 +60,17 @@ export interface MonetizationRequest {
   decidedAt?: string // ISO timestamp of approval/rejection
   decisionNote?: string // administrator note (e.g. rejection reason)
   creditedEntryId?: string // ledger entry id created on approval
+
+  // --- Client self-service termination (Debits & Financing) -----------------
+  /** Set once the client has reversed/terminated the credit facility and it has
+   *  been settled from the master balance. Stops all further interest accrual. */
+  closedAt?: string
+  /** Total debit interest charged over the life of the facility at termination. */
+  settledInterest?: number
+  /** Ledger entry id for the principal repayment debit posted at termination. */
+  repayEntryId?: string
+  /** Ledger entry id for the outstanding-interest settlement debit. */
+  interestEntryId?: string
 }
 
 interface MonetizationRequestsContextValue {
@@ -75,6 +86,8 @@ interface MonetizationRequestsContextValue {
   approveRequest: (id: string, creditedEntryId?: string) => MonetizationRequest | null
   /** Mark a pending request rejected with an optional reason. No funds move. */
   rejectRequest: (id: string, reason?: string) => MonetizationRequest | null
+  /** Re-hydrate the list from the server (e.g. after a client termination). */
+  refresh: () => void | Promise<unknown>
   hydrated: boolean
 }
 
@@ -189,7 +202,7 @@ export function MonetizationRequestsProvider({ children }: { children: React.Rea
 
   return (
     <MonetizationRequestsContext.Provider
-      value={{ requests, addRequest, approveRequest, rejectRequest, hydrated }}
+      value={{ requests, addRequest, approveRequest, rejectRequest, refresh, hydrated }}
     >
       {children}
     </MonetizationRequestsContext.Provider>
