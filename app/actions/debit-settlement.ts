@@ -316,6 +316,7 @@ export async function reconcileDebitFacility(
     void logActivity({
       action: `Reconciled ${kind} facility (posted ${posts.length} due charge${posts.length === 1 ? "" : "s"})`,
       category: "Debits & Financing",
+      userId: resolved.accountId,
       details: { facilityId, posted, rows: posts.length, decision: "Reconciled" },
     }).catch(() => {})
 
@@ -406,6 +407,7 @@ export async function terminateDebitFacility(
     void logActivity({
       action: `Terminated ${kind} facility "${plan.quote.title}" (payoff ${plan.quote.currency} ${plan.quote.payoff.toLocaleString("en-US")})`,
       category: "Debits & Financing",
+      userId: resolved.accountId,
       details: {
         facilityId,
         principal: `${plan.quote.currency} ${plan.quote.principal.toLocaleString("en-US")}`,

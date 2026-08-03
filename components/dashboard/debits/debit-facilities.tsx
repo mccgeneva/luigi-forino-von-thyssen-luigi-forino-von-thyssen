@@ -5,10 +5,17 @@ import { Badge } from "@/components/ui/badge"
 import { cn } from "@/lib/utils"
 import { formatMoney } from "@/lib/fund-reservation"
 import { KIND_META } from "@/components/dashboard/debits/debit-meta"
+import { DebitFacilityActions } from "@/components/dashboard/debits/debit-facility-actions"
 import type { DebitFacility } from "@/lib/debit-schedule"
 
 /** The loans, leverage lines and debits this account carries. */
-export function DebitFacilities({ facilities }: { facilities: DebitFacility[] }) {
+export function DebitFacilities({
+  facilities,
+  onSettled,
+}: {
+  facilities: DebitFacility[]
+  onSettled: () => void
+}) {
   if (facilities.length === 0) return null
 
   return (
@@ -72,6 +79,8 @@ export function DebitFacilities({ facilities }: { facilities: DebitFacility[] })
                     </dd>
                   </div>
                 </dl>
+
+                <DebitFacilityActions facility={f} onSettled={onSettled} />
               </li>
             )
           })}
