@@ -24,6 +24,12 @@ import {
   Loader2,
   Clock,
   ShieldCheck,
+  CalendarClock,
+  CalendarDays,
+  Hourglass,
+  Wallet,
+  Percent,
+  Flag,
 } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -50,6 +56,7 @@ import { useMembership } from "@/lib/use-membership"
 import { requestMembershipUpgrade } from "@/app/actions/membership"
 import { effectivePlatformTier, MEMBERSHIP_STATUS_LABEL } from "@/lib/membership"
 import { useLedger } from "@/lib/ledger-store"
+import { analyzeTradingFundPosition, TRADING_FUND_TERM_MONTHS } from "@/lib/trading-fund"
 import { useMarketQuotes } from "@/lib/use-market"
 import { TradingViewWidget } from "@/components/market/tradingview-widget"
 import { tradingViewSymbol } from "@/lib/market-symbols"
@@ -285,15 +292,43 @@ export default function TradingPage() {
           (acc, e) => (new Date(e.date).getTime() > new Date(acc).getTime() ? e.date : acc),
           list[0].date,
         )
-        return { ref, reserved, deployed, roiEarned, returned, tokens, status, currency: list[0].currency, date: latest }
+        // Activation = the date the capital was actually deployed (the completed
+        // subscription debit). Drives the term/ROI/expiry timeline. A pending
+        // (reserved) position has no activation yet.
+        const deployEntry = list.find(
+          (e) => e.status === "completed" && e.direction === "debit" && e.category === "NAFTAhub Trading — Fund Subscription",
+        )
+        const activation = deployEntry ? deployEntry.date : null
+        return { ref, reserved, deployed, roiEarned, returned, tokens, status, activation, currency: list[0].currency, date: latest }
       })
       .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
   }, [entries])
+
+  // Attach the full lifecycle view (term, ROI schedule, expiry countdown) to
+  // every position that has been activated. `now` is captured once per render so
+  // all countdowns are consistent; it refreshes on each ledger poll / re-render.
+  const positionViews = useMemo(() => {
+    const now = new Date()
+    return fundPositions.map((p) => {
+      if (!p.activation || p.status === "reserved") return { ...p, view: null }
+      const view = analyzeTradingFundPosition({
+        capitalStarted: p.deployed || p.reserved,
+        activation: new Date(p.activation),
+        roiMatured: p.roiEarned,
+        now,
+      })
+      return { ...p, view }
+    })
+  }, [fundPositions])
 
   const activeFundCapital = fundPositions
     .filter((p) => p.status === "active")
     .reduce((s, p) => s + p.deployed, 0)
   const totalRoiEarned = fundPositions.reduce((s, p) => s + p.roiEarned, 0)
+  // ROI still scheduled to be paid across positions that are still running.
+  const totalRoiToBePaid = positionViews
+    .filter((p) => p.view && !p.view.expired && p.status === "active")
+    .reduce((s, p) => s + (p.view?.roiRemaining ?? 0), 0)
   // Live market prices power the trade-ticket execution price and the AI-signal
   // context. The on-screen price BOARD itself is rendered by TradingView's own
   // widget (see "Live Markets" below) so the displayed numbers always match the
@@ -356,6 +391,9 @@ export default function TradingPage() {
 
   const formatEur = (n: number) =>
     `€${n.toLocaleString("en-US", { maximumFractionDigits: 0 })}`
+
+  const fmtDate = (d: Date | string) =>
+    new Date(d).toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" })
 
   const tabsNavRef = useRef<HTMLDivElement>(null)
 
@@ -1071,77 +1109,173 @@ export default function TradingPage() {
                   My Treuhand Positions
                 </CardTitle>
               </CardHeader>
-              <CardContent className="space-y-4">
-                <div className="grid gap-3 sm:grid-cols-3">
+              <CardContent className="space-y-5">
+                {/* Portfolio summary */}
+                <div className="grid gap-3 grid-cols-2 lg:grid-cols-4">
                   <div className="rounded-lg border border-border bg-secondary/30 p-4">
                     <p className="text-xs text-muted-foreground">Capital deployed (active)</p>
-                    <p className="mt-1 text-xl font-bold text-foreground">{formatEur(activeFundCapital)}</p>
+                    <p className="mt-1 text-lg font-bold text-foreground">{formatEur(activeFundCapital)}</p>
                     <p className="mt-0.5 text-[11px] text-muted-foreground">Debited from your master account</p>
                   </div>
                   <div className="rounded-lg border border-border bg-secondary/30 p-4">
-                    <p className="text-xs text-muted-foreground">ROI earned to date</p>
-                    <p className="mt-1 text-xl font-bold text-green-500">{formatEur(totalRoiEarned)}</p>
-                    <p className="mt-0.5 text-[11px] text-muted-foreground">Credited to your master account</p>
+                    <p className="text-xs text-muted-foreground">ROI matured to date</p>
+                    <p className="mt-1 text-lg font-bold text-green-500">{formatEur(totalRoiEarned)}</p>
+                    <p className="mt-0.5 text-[11px] text-muted-foreground">Already credited to you</p>
+                  </div>
+                  <div className="rounded-lg border border-border bg-secondary/30 p-4">
+                    <p className="text-xs text-muted-foreground">ROI still to be paid</p>
+                    <p className="mt-1 text-lg font-bold text-primary">{formatEur(totalRoiToBePaid)}</p>
+                    <p className="mt-0.5 text-[11px] text-muted-foreground">Scheduled before expiry</p>
                   </div>
                   <div className="rounded-lg border border-border bg-secondary/30 p-4">
                     <p className="text-xs text-muted-foreground">Active positions</p>
-                    <p className="mt-1 text-xl font-bold text-foreground">
+                    <p className="mt-1 text-lg font-bold text-foreground">
                       {fundPositions.filter((p) => p.status === "active").length}
+                      <span className="text-sm font-normal text-muted-foreground"> / {fundPositions.length}</span>
                     </p>
-                    <p className="mt-0.5 text-[11px] text-muted-foreground">of {fundPositions.length} total</p>
+                    <p className="mt-0.5 text-[11px] text-muted-foreground">{TRADING_FUND_TERM_MONTHS}-month engagement</p>
                   </div>
                 </div>
 
-                <div className="space-y-2">
-                  {fundPositions.map((p) => (
-                    <div
-                      key={p.ref}
-                      className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border bg-background p-4"
-                    >
-                      <div className="min-w-0">
-                        <div className="flex items-center gap-2">
-                          <span className="text-sm font-semibold text-foreground">
-                            {p.tokens} token{p.tokens === 1 ? "" : "s"}
-                          </span>
-                          {p.status === "reserved" && (
-                            <Badge variant="outline" className="border-amber-500/40 bg-amber-500/10 text-amber-600 text-[10px]">
-                              <Clock className="mr-1 h-3 w-3" /> Reserved · pending
-                            </Badge>
-                          )}
-                          {p.status === "active" && (
-                            <Badge variant="outline" className="border-green-500/40 bg-green-500/10 text-green-600 text-[10px]">
-                              <BadgeCheck className="mr-1 h-3 w-3" /> Active
-                            </Badge>
-                          )}
-                          {p.status === "closed" && (
-                            <Badge variant="outline" className="border-border bg-secondary text-muted-foreground text-[10px]">
-                              <Check className="mr-1 h-3 w-3" /> Closed · capital returned
-                            </Badge>
-                          )}
+                {/* Per-position lifecycle */}
+                <div className="space-y-4">
+                  {positionViews.map((p) => {
+                    const v = p.view
+                    return (
+                      <div key={p.ref} className="rounded-xl border border-border bg-background p-4 sm:p-5">
+                        {/* Header */}
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <div className="flex items-center gap-2">
+                            <span className="text-sm font-semibold text-foreground">
+                              {p.tokens} token{p.tokens === 1 ? "" : "s"}
+                            </span>
+                            {p.status === "reserved" && (
+                              <Badge variant="outline" className="border-amber-500/40 bg-amber-500/10 text-amber-600 text-[10px]">
+                                <Clock className="mr-1 h-3 w-3" /> Reserved · pending
+                              </Badge>
+                            )}
+                            {p.status === "active" && (
+                              <Badge variant="outline" className="border-green-500/40 bg-green-500/10 text-green-600 text-[10px]">
+                                <BadgeCheck className="mr-1 h-3 w-3" /> Active · trading
+                              </Badge>
+                            )}
+                            {p.status === "closed" && (
+                              <Badge variant="outline" className="border-border bg-secondary text-muted-foreground text-[10px]">
+                                <Check className="mr-1 h-3 w-3" />
+                                {v?.expired ? "Matured · capital returned" : "Closed · capital returned"}
+                              </Badge>
+                            )}
+                          </div>
+                          <p className="truncate text-[11px] text-muted-foreground">Ref {p.ref}</p>
                         </div>
-                        <p className="mt-0.5 truncate text-[11px] text-muted-foreground">Ref {p.ref}</p>
-                      </div>
-                      <div className="flex items-center gap-5 text-right">
-                        <div>
-                          <p className="text-[11px] text-muted-foreground">
-                            {p.status === "reserved" ? "Reserved" : "Deployed"}
+
+                        {/* Reserved (pending) — no timeline yet */}
+                        {p.status === "reserved" && (
+                          <p className="mt-3 text-xs text-muted-foreground text-pretty">
+                            {formatEur(p.reserved)} is reserved on your master account and awaiting administrator
+                            authorization. The {TRADING_FUND_TERM_MONTHS}-month engagement and ROI schedule begin once approved.
                           </p>
-                          <p className="text-sm font-semibold text-foreground">
-                            {p.status === "reserved" ? formatEur(p.reserved) : formatEur(p.deployed)}
-                          </p>
-                        </div>
-                        <div>
-                          <p className="text-[11px] text-muted-foreground">ROI earned</p>
-                          <p className="text-sm font-semibold text-green-500">{formatEur(p.roiEarned)}</p>
-                        </div>
+                        )}
+
+                        {v && (
+                          <>
+                            {/* Timeline */}
+                            <div className="mt-4">
+                              <div className="flex items-center justify-between text-[11px] text-muted-foreground">
+                                <span className="inline-flex items-center gap-1">
+                                  <Flag className="h-3 w-3" /> Started {fmtDate(v.activation)}
+                                </span>
+                                <span className="inline-flex items-center gap-1">
+                                  <CalendarClock className="h-3 w-3" /> Expires {fmtDate(v.expiry)}
+                                </span>
+                              </div>
+                              <Progress value={v.termProgress * 100} className="mt-2 h-2" />
+                              <div className="mt-1.5 flex items-center justify-between text-[11px]">
+                                <span className="text-muted-foreground">
+                                  Month {v.monthsMatured} of {v.termMonths}
+                                </span>
+                                <span className={cn("font-medium", v.expired ? "text-muted-foreground" : "text-primary")}>
+                                  {v.expired ? "Engagement matured" : `${v.daysRemaining} day${v.daysRemaining === 1 ? "" : "s"} to auto-termination`}
+                                </span>
+                              </div>
+                            </div>
+
+                            {/* Metrics grid */}
+                            <div className="mt-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
+                              <div className="rounded-lg border border-border/60 bg-secondary/20 p-3">
+                                <p className="inline-flex items-center gap-1 text-[11px] text-muted-foreground">
+                                  <Wallet className="h-3 w-3" /> Capital started
+                                </p>
+                                <p className="mt-1 text-sm font-bold text-foreground">{formatEur(v.capitalStarted)}</p>
+                              </div>
+                              <div className="rounded-lg border border-border/60 bg-secondary/20 p-3">
+                                <p className="inline-flex items-center gap-1 text-[11px] text-muted-foreground">
+                                  <ShieldCheck className="h-3 w-3" /> Value at maturity
+                                </p>
+                                <p className="mt-1 text-sm font-bold text-foreground">{formatEur(v.capitalAtMaturity)}</p>
+                                <p className="mt-0.5 text-[10px] text-muted-foreground">Capital + full-term ROI</p>
+                              </div>
+                              <div className="rounded-lg border border-border/60 bg-secondary/20 p-3">
+                                <p className="inline-flex items-center gap-1 text-[11px] text-muted-foreground">
+                                  <TrendingUp className="h-3 w-3" /> ROI matured
+                                </p>
+                                <p className="mt-1 text-sm font-bold text-green-500">{formatEur(v.roiMatured)}</p>
+                                <p className="mt-0.5 text-[10px] text-muted-foreground">{v.monthsMatured} of {v.termMonths} months</p>
+                              </div>
+                              <div className="rounded-lg border border-border/60 bg-secondary/20 p-3">
+                                <p className="inline-flex items-center gap-1 text-[11px] text-muted-foreground">
+                                  <Hourglass className="h-3 w-3" /> ROI to be paid
+                                </p>
+                                <p className="mt-1 text-sm font-bold text-primary">{formatEur(v.roiRemaining)}</p>
+                                <p className="mt-0.5 text-[10px] text-muted-foreground">{v.monthsRemaining} month{v.monthsRemaining === 1 ? "" : "s"} left</p>
+                              </div>
+                              <div className="rounded-lg border border-border/60 bg-secondary/20 p-3">
+                                <p className="inline-flex items-center gap-1 text-[11px] text-muted-foreground">
+                                  <CalendarDays className="h-3 w-3" /> Trading days
+                                </p>
+                                <p className="mt-1 text-sm font-bold text-foreground">{v.daysElapsed}</p>
+                                <p className="mt-0.5 text-[10px] text-muted-foreground">of {v.daysTotal} total</p>
+                              </div>
+                              <div className="rounded-lg border border-border/60 bg-secondary/20 p-3">
+                                <p className="inline-flex items-center gap-1 text-[11px] text-muted-foreground">
+                                  <CalendarClock className="h-3 w-3" /> Days to expiry
+                                </p>
+                                <p className="mt-1 text-sm font-bold text-foreground">{v.expired ? 0 : v.daysRemaining}</p>
+                                <p className="mt-0.5 text-[10px] text-muted-foreground">{fmtDate(v.expiry)}</p>
+                              </div>
+                              <div className="rounded-lg border border-border/60 bg-secondary/20 p-3">
+                                <p className="inline-flex items-center gap-1 text-[11px] text-muted-foreground">
+                                  <Percent className="h-3 w-3" /> Monthly ROI
+                                </p>
+                                <p className="mt-1 text-sm font-bold text-foreground">{formatEur(v.monthlyRoiAmount)}</p>
+                                <p className="mt-0.5 text-[10px] text-muted-foreground">{(v.monthlyRoiRate * 100).toFixed(0)}% per month</p>
+                              </div>
+                              <div className="rounded-lg border border-border/60 bg-secondary/20 p-3">
+                                <p className="inline-flex items-center gap-1 text-[11px] text-muted-foreground">
+                                  <Coins className="h-3 w-3" /> Next payout
+                                </p>
+                                <p className="mt-1 text-sm font-bold text-foreground">
+                                  {v.nextRoiDate ? fmtDate(v.nextRoiDate) : "—"}
+                                </p>
+                                <p className="mt-0.5 text-[10px] text-muted-foreground">
+                                  {v.nextRoiDate ? "Next ROI credit" : "Fully matured"}
+                                </p>
+                              </div>
+                            </div>
+                          </>
+                        )}
                       </div>
-                    </div>
-                  ))}
+                    )
+                  })}
                 </div>
+
                 <p className="text-[11px] text-muted-foreground text-pretty">
-                  Reserved funds are blocked on your master account while an application is pending. On approval they are
-                  debited and deployed; the 25% monthly ROI is credited back one month after activation and every month
-                  thereafter until the Administrator closes the position.
+                  Reserved funds are blocked on your master account while an application is pending. On approval the
+                  capital is deployed and the fixed {(MONTHLY_ROI * 100).toFixed(0)}% monthly ROI is credited in arrears —
+                  the first payment one month after activation, then every month for the {TRADING_FUND_TERM_MONTHS}-month
+                  engagement. When the term expires the position is automatically terminated and your capital is returned
+                  to the master account (an administrator may also close it earlier). Paused periods extend the expiry by
+                  the paused time.
                 </p>
               </CardContent>
             </Card>
