@@ -17,6 +17,7 @@ import {
 } from "@/lib/ledger-db"
 import { convertCurrency } from "@/lib/fx"
 import { planReservation, formatMoney, type ReservationPlan } from "@/lib/fund-reservation"
+import { buildTradingFundPosts } from "@/lib/trading-fund"
 import type { LedgerEntry } from "@/lib/ledger-store"
 import { insertNotification } from "@/lib/notifications-db"
 import {
@@ -1565,6 +1566,33 @@ export async function reconcileMyApprovedCredits(): Promise<{ ok: boolean; appli
         // on the same ledger the balance is read from.
         const ownerId = await resolveDataOwnerIdFor(req.userId)
         await upsertLedgerEntry(ownerId, entry)
+        applied += 1
+      }
+    }
+
+    // Treuhand trading fund: deploy the subscribed capital (a debit that must
+    // reflect on the master account) and pay the matured 25% MONTHLY ROI as a
+    // credit at each elapsed month-end. Deterministic ids make this idempotent,
+    // and the capital debit reuses `APPR-<id>` so it back-fills a subscription
+    // approved before a ledger effect existed without ever double-debiting one
+    // approved with one. Runs on every ledger read → accrues cross-device with
+    // no scheduler, exactly like the AES funding reconciler.
+    const ownerLedgerIds = new Map<string, Set<string>>()
+    for (const req of approved) {
+      if (req.kind !== "trading_fund") continue
+      const posts = buildTradingFundPosts(req)
+      if (posts.length === 0) continue
+      const ownerId = await resolveDataOwnerIdFor(req.userId)
+      let existing = ownerLedgerIds.get(ownerId)
+      if (!existing) {
+        const rows = await readLedgerEntries(ownerId)
+        existing = new Set(rows.map((r) => r.id))
+        ownerLedgerIds.set(ownerId, existing)
+      }
+      for (const post of posts) {
+        if (existing.has(post.id)) continue
+        await upsertLedgerEntry(ownerId, post)
+        existing.add(post.id)
         applied += 1
       }
     }
