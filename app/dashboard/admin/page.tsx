@@ -18,6 +18,7 @@ import {
   Trash2,
   Layers,
   Landmark,
+  Coins,
   Ship,
   Package,
   Banknote,
@@ -377,7 +378,7 @@ export default function AdminPage() {
   // Count of Payment Gateway account requests awaiting an administrator decision
   // (across EVERY client). Gateway requests live in their own DB table, separate
   // from the approvals backbone, so without this the command center and the
-  // Payment Gateway tile would never surface them �� the admin would see
+  // Payment Gateway tile would never surface them ��� the admin would see
   // "nothing to approve" even while clients have pending requests. Refetched on
   // unlock so the figure is current.
   const [pendingGatewayCount, setPendingGatewayCount] = useState(0)
@@ -2026,7 +2027,7 @@ export default function AdminPage() {
   }
 
   // Stage 3: confirm an approved outgoing payment reached the beneficiary,
-  // advancing it from "Approved & Initiated" to "Completed — Funds Delivered".
+  // advancing it from "Approved & Initiated" to "Completed �� Funds Delivered".
   // The funds already left the account at approval, so no money moves here. We
   // update the local view optimistically and persist to the server so the change
   // survives the next refresh and is reflected on the client's side.
@@ -2082,6 +2083,7 @@ export default function AdminPage() {
     { id: "section-payments", view: "approvals", kind: "payment", label: "Outgoing Payments", count: dbPending.payment ?? 0, icon: ArrowUpRight },
     { id: "section-instruments", view: "approvals", kind: "instrument", label: "Bank Instruments", count: dbPending.instrument ?? 0, icon: FileText },
     { id: "section-ppp", view: "approvals", kind: "ppp", label: "Yield / PPP", count: dbPending.ppp ?? 0, icon: TrendingUp },
+    { id: "section-trading-fund", view: "approvals", kind: "trading_fund", label: "Treuhand Trading Fund", count: dbPending.trading_fund ?? 0, icon: Coins },
     { id: "section-funding", view: "approvals", kind: "project_funding", label: "Project Funding", count: dbPending.project_funding ?? 0, icon: Building2 },
     { id: "section-fiduciary", view: "approvals", kind: "fiduciary", label: "Fiduciary & Assets", count: dbPending.fiduciary ?? 0, icon: Landmark },
     { id: "section-leverage", view: "approvals", kind: "leverage", label: "Leverage Lines", count: dbPending.leverage ?? 0, icon: Gauge },
