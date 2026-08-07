@@ -337,6 +337,22 @@ export default function TradingPage() {
       summary: `${applicant} applied to the Treuhand AG Limited Hedge Fund for ${tokens} tokens (${formatEur(capital)} capital) at 25% fixed monthly ROI (${formatEur(monthlyReturn)}/mo projected).`,
       amount: capital,
       currency: "EUR",
+      // On approval, the token capital is deployed to the Treuhand fund — i.e.
+      // it must actually LEAVE the client's master account. A `gate: true`,
+      // "completed" debit routes the approval through the same feasibility
+      // check + capped cross-currency FX funding + solvency enforcement as an
+      // outgoing payment: the Administrator can only authorize it when the
+      // balance covers it, and it can never overdraw the account.
+      ledgerEffect: {
+        direction: "debit",
+        amount: capital,
+        currency: "EUR",
+        status: "completed",
+        gate: true,
+        counterparty: "Treuhand AG Limited Hedge Fund",
+        category: "NAFTAhub Trading — Fund Subscription",
+        reference: `TREUHAND-${tokens}T`,
+      },
       payload: {
         fund: "Treuhand AG Limited Hedge Fund",
         tokens,
@@ -373,7 +389,7 @@ export default function TradingPage() {
       },
     })
     toast.success("Application submitted", {
-      description: `Your ${tokens}-token application (${formatEur(capital)}) has been sent to the Administrator for authorization. KYC onboarding to follow.`,
+      description: `Your ${tokens}-token application (${formatEur(capital)}) has been sent to the Administrator for authorization. On approval, ${formatEur(capital)} is debited from your master account and deployed to the fund.`,
     })
     setApplyOpen(false)
     setApplicantName("")
