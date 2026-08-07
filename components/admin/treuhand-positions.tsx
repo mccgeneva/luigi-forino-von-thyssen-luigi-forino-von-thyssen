@@ -1,11 +1,12 @@
 "use client"
 
 import { useCallback, useEffect, useMemo, useState } from "react"
-import { Coins, Pause, Play, Ban, RefreshCw } from "lucide-react"
+import { Coins, Pause, Play, Ban, RefreshCw, LogOut, AlertTriangle } from "lucide-react"
 import { toast } from "sonner"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Label } from "@/components/ui/label"
+import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
 import { Textarea } from "@/components/ui/textarea"
 import {
@@ -22,8 +23,10 @@ import {
   pauseTradingFundPosition,
   resumeTradingFundPosition,
   closeTradingFundPosition,
+  reconcileTradingFundTermination,
   type AdminTradingFundPosition,
 } from "@/app/actions/approvals"
+import { quoteTradingFundExit, TRADING_FUND_EXIT_COMMISSION } from "@/lib/trading-fund"
 
 type ActionKind = "pause" | "resume" | "close"
 
@@ -56,6 +59,63 @@ export function TreuhandPositions({ passcode }: { passcode: string }) {
   const [target, setTarget] = useState<{ position: AdminTradingFundPosition; action: ActionKind } | null>(null)
   const [reason, setReason] = useState("")
   const [busy, setBusy] = useState(false)
+
+  // Reconcile-and-close flow (client early-termination or admin-initiated exit).
+  const [reconcileTarget, setReconcileTarget] = useState<AdminTradingFundPosition | null>(null)
+  const [penaltyInput, setPenaltyInput] = useState("")
+  const [chargesInput, setChargesInput] = useState("")
+  const [chargesNote, setChargesNote] = useState("")
+  const [reconcileNote, setReconcileNote] = useState("")
+  const [reconciling, setReconciling] = useState(false)
+
+  // Live settlement quote as the administrator types penalty / charges.
+  const reconcileQuote = useMemo(() => {
+    if (!reconcileTarget) return null
+    return quoteTradingFundExit({
+      capitalStarted: reconcileTarget.capital,
+      activation: new Date(reconcileTarget.activatedAt),
+      pauseWindows: reconcileTarget.pauseWindows,
+      penalty: Number(penaltyInput) || 0,
+      charges: Number(chargesInput) || 0,
+    })
+  }, [reconcileTarget, penaltyInput, chargesInput])
+
+  const openReconcile = (p: AdminTradingFundPosition) => {
+    const q = quoteTradingFundExit({
+      capitalStarted: p.capital,
+      activation: new Date(p.activatedAt),
+      pauseWindows: p.pauseWindows,
+    })
+    // Pre-fill the penalty with the term-scaled suggestion; admin may override.
+    setPenaltyInput(q.suggestedPenalty > 0 ? String(q.suggestedPenalty) : "")
+    setChargesInput("")
+    setChargesNote("")
+    setReconcileNote("")
+    setReconcileTarget(p)
+  }
+
+  const confirmReconcile = async () => {
+    if (!reconcileTarget || reconciling) return
+    setReconciling(true)
+    const res = await reconcileTradingFundTermination(passcode, reconcileTarget.id, {
+      penaltyAmount: Number(penaltyInput) || 0,
+      chargesAmount: Number(chargesInput) || 0,
+      chargesNote,
+      note: reconcileNote,
+    })
+    setReconciling(false)
+    if (!res.ok) {
+      toast.error(res.error)
+      return
+    }
+    toast.success("Position reconciled & closed", {
+      description: `${reconcileTarget.accountName}'s capital was returned, less commission${
+        Number(penaltyInput) ? ", penalty" : ""
+      }${Number(chargesInput) ? " and charges" : ""}.`,
+    })
+    setReconcileTarget(null)
+    await load()
+  }
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -108,8 +168,10 @@ export function TreuhandPositions({ passcode }: { passcode: string }) {
             <div>
               <CardTitle>Treuhand AG Hedge Fund — Positions</CardTitle>
               <CardDescription className="max-w-2xl">
-                Pause, reactivate or close any client&apos;s token position at any time. Pausing halts monthly ROI;
-                closing stops ROI and credits the deployed capital (tokens) back to the client&apos;s master account.
+                Pause, reactivate or reconcile any client&apos;s token position at any time. Pausing halts monthly ROI.
+                Reconcile &amp; close returns the deployed capital to the client&apos;s master account, less the{" "}
+                {(TRADING_FUND_EXIT_COMMISSION * 100).toFixed(0)}% exit commission and any early-resignation penalty or
+                charges you input. Positions flagged &quot;early termination requested&quot; are awaiting your evaluation.
               </CardDescription>
             </div>
           </div>
@@ -151,6 +213,15 @@ export function TreuhandPositions({ passcode }: { passcode: string }) {
                       <Badge variant="outline" className={cn("text-[10px] capitalize", STATUS_STYLES[p.status])}>
                         {p.status}
                       </Badge>
+                      {p.terminationRequestedAt && p.status !== "closed" && (
+                        <Badge
+                          variant="outline"
+                          className="gap-1 border-amber-500/30 bg-amber-500/10 text-[10px] text-amber-600"
+                        >
+                          <AlertTriangle className="h-3 w-3" />
+                          Early termination requested
+                        </Badge>
+                      )}
                     </div>
                     <p className="truncate text-xs text-muted-foreground">
                       {p.accountEmail} · {p.id}
@@ -162,6 +233,12 @@ export function TreuhandPositions({ passcode }: { passcode: string }) {
                       {p.status === "paused" && p.pausedAt ? ` · paused ${formatDate(p.pausedAt)}` : ""}
                       {p.status === "closed" && p.closedAt ? ` · closed ${formatDate(p.closedAt)}` : ""}
                     </p>
+                    {p.terminationRequestedAt && p.status !== "closed" && (
+                      <p className="mt-1 rounded-md bg-amber-500/10 px-2 py-1 text-[11px] text-amber-700 text-pretty">
+                        Client requested anticipated termination on {formatDate(p.terminationRequestedAt)}.
+                        {p.terminationReason ? ` Reason: ${p.terminationReason}` : ""} Evaluate and reconcile below.
+                      </p>
+                    )}
                   </div>
 
                   <div className="flex flex-wrap items-center gap-2 lg:justify-end">
@@ -195,16 +272,18 @@ export function TreuhandPositions({ passcode }: { passcode: string }) {
                     )}
                     {p.status !== "closed" && (
                       <Button
-                        variant="outline"
                         size="sm"
-                        className="h-8 gap-1 border-destructive/30 text-destructive hover:bg-destructive/10 hover:text-destructive"
-                        onClick={() => {
-                          setReason("")
-                          setTarget({ position: p, action: "close" })
-                        }}
+                        className={cn(
+                          "h-8 gap-1",
+                          p.terminationRequestedAt
+                            ? ""
+                            : "border-destructive/30 bg-transparent text-destructive hover:bg-destructive/10 hover:text-destructive",
+                        )}
+                        variant={p.terminationRequestedAt ? "default" : "outline"}
+                        onClick={() => openReconcile(p)}
                       >
-                        <Ban className="h-3.5 w-3.5" />
-                        Close
+                        {p.terminationRequestedAt ? <LogOut className="h-3.5 w-3.5" /> : <Ban className="h-3.5 w-3.5" />}
+                        Reconcile &amp; close
                       </Button>
                     )}
                     {p.status === "closed" && <span className="text-xs text-muted-foreground">Capital returned</span>}
@@ -251,6 +330,147 @@ export function TreuhandPositions({ passcode }: { passcode: string }) {
                   variant={target.action === "close" ? "destructive" : "default"}
                 >
                   {busy ? "Working…" : ACTION_META[target.action].verb}
+                </Button>
+              </DialogFooter>
+            </>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Reconcile & close — apply commission + penalty + charges, return capital */}
+      <Dialog open={!!reconcileTarget} onOpenChange={(open) => !open && !reconciling && setReconcileTarget(null)}>
+        <DialogContent className="sm:max-w-lg">
+          {reconcileTarget && reconcileQuote && (
+            <>
+              <DialogHeader>
+                <DialogTitle className="flex items-center gap-2">
+                  <LogOut className="h-5 w-5 text-primary" />
+                  Reconcile &amp; close position
+                </DialogTitle>
+                <DialogDescription className="text-pretty">
+                  Settle {reconcileTarget.accountName}&apos;s Treuhand position. The {(TRADING_FUND_EXIT_COMMISSION * 100).toFixed(0)}% exit
+                  commission is applied automatically; add any early-resignation penalty and charges below.
+                  {reconcileQuote.early
+                    ? ` This is an EARLY resignation — ${reconcileQuote.monthsRemaining} of ${reconcileQuote.monthsServed + reconcileQuote.monthsRemaining} months remain.`
+                    : " The engagement term has been reached (no early penalty required)."}
+                </DialogDescription>
+              </DialogHeader>
+
+              <div className="space-y-4">
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="space-y-1.5">
+                    <Label htmlFor="penalty" className="text-xs">
+                      Early-resignation penalty ({reconcileTarget.currency})
+                    </Label>
+                    <Input
+                      id="penalty"
+                      type="number"
+                      min={0}
+                      step="0.01"
+                      value={penaltyInput}
+                      onChange={(e) => setPenaltyInput(e.target.value)}
+                      placeholder="0.00"
+                    />
+                    {reconcileQuote.early && reconcileQuote.suggestedPenalty > 0 && (
+                      <button
+                        type="button"
+                        className="text-[11px] text-primary hover:underline"
+                        onClick={() => setPenaltyInput(String(reconcileQuote.suggestedPenalty))}
+                      >
+                        Suggested: {formatMoney(reconcileQuote.suggestedPenalty, reconcileTarget.currency)}
+                      </button>
+                    )}
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label htmlFor="charges" className="text-xs">
+                      Additional charges ({reconcileTarget.currency})
+                    </Label>
+                    <Input
+                      id="charges"
+                      type="number"
+                      min={0}
+                      step="0.01"
+                      value={chargesInput}
+                      onChange={(e) => setChargesInput(e.target.value)}
+                      placeholder="0.00"
+                    />
+                  </div>
+                </div>
+
+                <div className="space-y-1.5">
+                  <Label htmlFor="charges-note" className="text-xs">
+                    Charges description (optional)
+                  </Label>
+                  <Input
+                    id="charges-note"
+                    value={chargesNote}
+                    onChange={(e) => setChargesNote(e.target.value)}
+                    placeholder="e.g. administrative & FX handling"
+                  />
+                </div>
+
+                {/* Settlement preview */}
+                <div className="rounded-lg border border-border bg-secondary/30 p-3 text-sm">
+                  <div className="flex items-center justify-between">
+                    <span className="text-muted-foreground">Capital returned</span>
+                    <span className="font-medium text-green-600">
+                      + {formatMoney(reconcileQuote.capitalReturned, reconcileTarget.currency)}
+                    </span>
+                  </div>
+                  <div className="mt-1.5 flex items-center justify-between">
+                    <span className="text-muted-foreground">
+                      Exit commission ({(TRADING_FUND_EXIT_COMMISSION * 100).toFixed(0)}%)
+                    </span>
+                    <span className="font-medium text-red-500">
+                      − {formatMoney(reconcileQuote.commission, reconcileTarget.currency)}
+                    </span>
+                  </div>
+                  <div className="mt-1.5 flex items-center justify-between">
+                    <span className="text-muted-foreground">Penalty</span>
+                    <span className="font-medium text-red-500">
+                      − {formatMoney(reconcileQuote.penalty, reconcileTarget.currency)}
+                    </span>
+                  </div>
+                  <div className="mt-1.5 flex items-center justify-between">
+                    <span className="text-muted-foreground">Charges</span>
+                    <span className="font-medium text-red-500">
+                      − {formatMoney(reconcileQuote.charges, reconcileTarget.currency)}
+                    </span>
+                  </div>
+                  <div className="mt-2 flex items-center justify-between border-t border-border pt-2">
+                    <span className="font-medium text-foreground">Net credited to master account</span>
+                    <span className="text-base font-bold text-foreground">
+                      {formatMoney(reconcileQuote.netCredited, reconcileTarget.currency)}
+                    </span>
+                  </div>
+                  <p className="mt-2 text-[11px] text-muted-foreground">
+                    ROI of {formatMoney(reconcileQuote.roiMatured, reconcileTarget.currency)} was already paid over{" "}
+                    {reconcileQuote.monthsServed} month{reconcileQuote.monthsServed === 1 ? "" : "s"} and is retained by
+                    the client.
+                  </p>
+                </div>
+
+                <div className="space-y-1.5">
+                  <Label htmlFor="reconcile-note" className="text-xs">
+                    Note to client (optional)
+                  </Label>
+                  <Textarea
+                    id="reconcile-note"
+                    value={reconcileNote}
+                    onChange={(e) => setReconcileNote(e.target.value)}
+                    placeholder="Shown to the client and recorded in the audit log."
+                    rows={2}
+                    className="resize-none"
+                  />
+                </div>
+              </div>
+
+              <DialogFooter>
+                <Button variant="outline" onClick={() => setReconcileTarget(null)} disabled={reconciling}>
+                  Cancel
+                </Button>
+                <Button onClick={confirmReconcile} disabled={reconciling}>
+                  {reconciling ? "Reconciling…" : "Reconcile & close"}
                 </Button>
               </DialogFooter>
             </>
