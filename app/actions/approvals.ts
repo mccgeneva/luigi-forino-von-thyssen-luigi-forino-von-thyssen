@@ -135,6 +135,47 @@ export async function submitApproval(input: SubmitApprovalInput): Promise<Submit
     }
   }
 
+  // Trading-fund subscriptions RESERVE (block) their capital on the master
+  // account the moment they are submitted (a pending `hold`). You cannot reserve
+  // funds you do not have, so this gate refuses an application whose capital
+  // exceeds the available balance — otherwise the reservation would drive the
+  // balance negative (the "allocated tokens with no funds" bug). This is the
+  // authoritative check: the client UI also blocks it, but a UI-only guard is
+  // bypassable by stale state or another device, so it must live here where
+  // every mirrored submission passes.
+  if (input.kind === "trading_fund") {
+    const capital = Number(input.amount)
+    if (!Number.isFinite(capital) || capital <= 0) {
+      return { ok: false, error: "The subscription amount is invalid." }
+    }
+    try {
+      const ownerId = await resolveDataOwnerIdFor(session.id)
+      const available = availableByCurrency(await readLedgerEntries(ownerId))
+      const reqCurrency = input.currency || BASE_CURRENCY
+      // Total spendable balance, every currency converted into the subscription
+      // currency (mirrors the approval gate's capped cross-currency FX funding).
+      const totalAvailable = Object.entries(available).reduce(
+        (sum, [cur, amt]) => sum + convertCurrency(amt, cur, reqCurrency),
+        0,
+      )
+      if (capital > totalAvailable + 0.01) {
+        const fmt = (n: number) =>
+          `${reqCurrency} ${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+        return {
+          ok: false,
+          error: `Insufficient funds to allocate these tokens. This subscription reserves ${fmt(
+            capital,
+          )} but only ${fmt(
+            Math.max(0, totalAvailable),
+          )} is available on your master account. Fund the account before applying.`,
+        }
+      }
+    } catch (err) {
+      console.log("[v0] trading_fund solvency guard failed:", (err as Error).message)
+      return { ok: false, error: "Your available balance could not be verified. Please try again." }
+    }
+  }
+
   // A Sub-account's outgoing payments must clear a second gate: their Master's
   // consent (in addition to administrator approval). Detected here from the
   // authoritative session, so no client can opt out of the Master gate. Joint

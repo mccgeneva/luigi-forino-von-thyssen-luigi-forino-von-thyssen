@@ -372,6 +372,19 @@ export default function TradingPage() {
 
   const submitApplication = async () => {
     if (submitting) return
+
+    // You cannot reserve funds you do not have. Applying blocks the capital on
+    // the master account immediately, so refuse when the available balance
+    // cannot cover it — otherwise the reservation drives the balance negative.
+    if (capital > availableCapital + 0.01) {
+      toast.error("Insufficient funds", {
+        description: `This subscription reserves ${formatEur(capital)} but only ${formatEur(
+          Math.max(0, availableCapital),
+        )} is available on your master account. Fund the account before applying.`,
+      })
+      return
+    }
+
     const applicant = applicantName.trim() || user.fullName
     const email = applicantEmail.trim() || user.email
     setSubmitting(true)
