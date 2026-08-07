@@ -114,12 +114,12 @@ export function buildTradingFundPosts(req: ApprovalRequest, now: Date = new Date
     comment: `Capital deployed to the ${FUND_LABEL}${tokenNote}.`,
   })
 
-  // 2. Fixed 25% monthly ROI, paid in advance for every active month — the
-  //    activation month immediately, then each subsequent month. Pass an `end`
-  //    date (future termination) to `activeRoiMonths` to stop the series.
+  // 2. Fixed 25% monthly ROI, in arrears — the first payment matures one full
+  //    month after activation, then on each monthly anniversary. Pass an `end`
+  //    date (future termination) to `maturedRoiMonths` to stop the series.
   const monthlyRoi = round2(capital * TRADING_FUND_MONTHLY_ROI)
   if (monthlyRoi > 0) {
-    for (const period of activeRoiMonths(start, now)) {
+    for (const period of maturedRoiMonths(start, now)) {
       posts.push({
         id: tradingFundRoiId(req.id, period.yearMonth),
         direction: "credit",
