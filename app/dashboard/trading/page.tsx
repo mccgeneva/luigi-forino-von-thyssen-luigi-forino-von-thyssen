@@ -34,6 +34,8 @@ import {
   AlertTriangle,
   LogOut,
   X,
+  Archive,
+  ChevronDown,
 } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -358,6 +360,10 @@ export default function TradingPage() {
   const totalRoiToBePaid = positionViews
     .filter((p) => p.view && !p.view.expired && p.status === "active")
     .reduce((s, p) => s + (p.view?.roiRemaining ?? 0), 0)
+  // Live positions (reserved + active) get the full lifecycle card; settled ones
+  // are tucked into the "Archived NAFTAhub trades" folder below.
+  const activePositions = positionViews.filter((p) => p.status !== "closed")
+  const closedPositions = positionViews.filter((p) => p.status === "closed")
   // Live market prices power the trade-ticket execution price and the AI-signal
   // context. The on-screen price BOARD itself is rendered by TradingView's own
   // widget (see "Live Markets" below) so the displayed numbers always match the
@@ -451,6 +457,8 @@ export default function TradingPage() {
   const [terminateReason, setTerminateReason] = useState("")
   const [terminating, setTerminating] = useState(false)
   const [withdrawing, setWithdrawing] = useState<string | null>(null)
+  // Collapsible "Archived NAFTAhub trades" folder (closed positions).
+  const [archiveOpen, setArchiveOpen] = useState(false)
 
   const submitTermination = async () => {
     if (!terminateTarget || terminating) return
@@ -1251,9 +1259,9 @@ export default function TradingPage() {
                   </div>
                 </div>
 
-                {/* Per-position lifecycle */}
+                {/* Per-position lifecycle — live (reserved + active) positions */}
                 <div className="space-y-4">
-                  {positionViews.map((p) => {
+                  {activePositions.map((p) => {
                     const v = p.view
                     return (
                       <div key={p.ref} className="rounded-xl border border-border bg-background p-4 sm:p-5">
@@ -1444,7 +1452,99 @@ export default function TradingPage() {
                       </div>
                     )
                   })}
+                  {activePositions.length === 0 && (
+                    <p className="rounded-xl border border-dashed border-border bg-background px-4 py-6 text-center text-xs text-muted-foreground">
+                      No live positions. Your settled trades are filed in the archive below.
+                    </p>
+                  )}
                 </div>
+
+                {/* Archived NAFTAhub trades — collapsible folder of closed positions */}
+                {closedPositions.length > 0 && (
+                  <div className="rounded-xl border border-border bg-background">
+                    <button
+                      type="button"
+                      onClick={() => setArchiveOpen((o) => !o)}
+                      className="flex w-full items-center justify-between gap-3 rounded-xl px-4 py-3 text-left transition-colors hover:bg-secondary/30"
+                      aria-expanded={archiveOpen}
+                    >
+                      <span className="flex items-center gap-2">
+                        <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-secondary">
+                          <Archive className="h-4 w-4 text-muted-foreground" />
+                        </span>
+                        <span>
+                          <span className="block text-sm font-semibold text-foreground">Archived NAFTAhub trades</span>
+                          <span className="block text-[11px] text-muted-foreground">
+                            {closedPositions.length} settled position{closedPositions.length === 1 ? "" : "s"} · capital
+                            returned
+                          </span>
+                        </span>
+                      </span>
+                      <ChevronDown
+                        className={cn(
+                          "h-4 w-4 shrink-0 text-muted-foreground transition-transform",
+                          archiveOpen && "rotate-180",
+                        )}
+                      />
+                    </button>
+
+                    {archiveOpen && (
+                      <div className="space-y-2 border-t border-border p-3">
+                        {closedPositions.map((p) => {
+                          const v = p.view
+                          return (
+                            <div
+                              key={p.ref}
+                              className="rounded-lg border border-border/60 bg-secondary/20 p-3 sm:p-4"
+                            >
+                              <div className="flex flex-wrap items-center justify-between gap-2">
+                                <div className="flex items-center gap-2">
+                                  <span className="text-sm font-semibold text-foreground">
+                                    {p.tokens} token{p.tokens === 1 ? "" : "s"}
+                                  </span>
+                                  <Badge
+                                    variant="outline"
+                                    className="border-border bg-secondary text-[10px] text-muted-foreground"
+                                  >
+                                    <Check className="mr-1 h-3 w-3" />
+                                    {v?.expired ? "Matured" : "Closed early"}
+                                  </Badge>
+                                </div>
+                                <span className="inline-flex items-center gap-1 text-[11px] text-muted-foreground">
+                                  <CalendarClock className="h-3 w-3" /> Closed {fmtDate(new Date(p.date))}
+                                </span>
+                              </div>
+                              <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
+                                <div>
+                                  <p className="text-[10px] text-muted-foreground">Capital deployed</p>
+                                  <p className="mt-0.5 text-sm font-semibold text-foreground">
+                                    {formatEur(p.deployed)}
+                                  </p>
+                                </div>
+                                <div>
+                                  <p className="text-[10px] text-muted-foreground">ROI earned</p>
+                                  <p className="mt-0.5 text-sm font-semibold text-green-500">
+                                    {formatEur(p.roiEarned)}
+                                  </p>
+                                </div>
+                                <div>
+                                  <p className="text-[10px] text-muted-foreground">Capital returned</p>
+                                  <p className="mt-0.5 text-sm font-semibold text-foreground">
+                                    {formatEur(p.returned)}
+                                  </p>
+                                </div>
+                                <div>
+                                  <p className="text-[10px] text-muted-foreground">Reference</p>
+                                  <p className="mt-0.5 truncate text-xs font-medium text-muted-foreground">{p.ref}</p>
+                                </div>
+                              </div>
+                            </div>
+                          )
+                        })}
+                      </div>
+                    )}
+                  </div>
+                )}
 
                 <p className="text-[11px] text-muted-foreground text-pretty">
                   Reserved funds are blocked on your master account while an application is pending. On approval the
