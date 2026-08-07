@@ -43,6 +43,15 @@ import { round2 } from "@/lib/interest-accrual"
 /** Fixed monthly ROI paid by the Treuhand fund on deployed token capital. */
 export const TRADING_FUND_MONTHLY_ROI = 0.25
 
+/**
+ * The fixed engagement term of a Treuhand AG Hedge Fund subscription, in ACTIVE
+ * months. After this many matured monthly payments the position AUTOMATICALLY
+ * terminates ("expires"): ROI stops, and the deployed capital is returned to the
+ * master account — exactly as an administrator close would, but on a schedule.
+ * Paused time never counts toward the term, so a pause pushes the expiry later.
+ */
+export const TRADING_FUND_TERM_MONTHS = 12
+
 const FUND_LABEL = "Treuhand AG Limited Hedge Fund"
 
 /** Add `n` whole months to a date, clamping the day to the target month length. */
@@ -92,31 +101,40 @@ function pausedMsBefore(x: number, pauses: PauseMs[]): number {
 }
 
 /**
+ * The matured DATE (epoch ms) of the Nth monthly anniversary of `start`, pushed
+ * later by any paused time that precedes it (solved as a fixed point) so paused
+ * periods never count toward maturity. This is the single source of truth for
+ * both ROI payment dates and the engagement's expiry (the Nth = term anniversary).
+ */
+function deferredAnniversaryMs(start: Date, n: number, pauses: PauseMs[]): number {
+  const scheduled = addMonths(start, n).getTime()
+  let d = scheduled
+  for (let i = 0; i < 10; i++) {
+    const nd = scheduled + pausedMsBefore(d, pauses)
+    if (nd === d) break
+    d = nd
+  }
+  return d
+}
+
+/**
  * Every 25% ROI payment that has MATURED by `now`, in arrears and pause-aware.
- * A payment's naive anniversary `addMonths(start, n)` is pushed later by any
- * paused time that precedes it (solved as a fixed point), so paused periods
- * never count toward maturity. `closeMs` (an admin exit) stops the series:
- * nothing matures on/after it. Returns the payment index and its matured date.
+ * `closeMs` (an admin exit) stops the series: nothing matures on/after it.
+ * `maxIndex` caps the count — the fixed engagement term, after which the
+ * position expires and no further ROI accrues. Returns index + matured date.
  */
 function maturedRoiPayments(
   start: Date,
   now: Date,
   pauses: PauseMs[],
   closeMs?: number,
+  maxIndex = 1200,
 ): { index: number; date: Date }[] {
   const out: { index: number; date: Date }[] = []
   if (!(start instanceof Date) || Number.isNaN(start.getTime())) return out
   const nowMs = now.getTime()
-  for (let n = 1; n <= 1200; n++) {
-    const scheduled = addMonths(start, n).getTime()
-    // Defer the anniversary by the paused time before it (fixed point — the
-    // deferral can itself pull earlier pause windows into scope).
-    let d = scheduled
-    for (let i = 0; i < 10; i++) {
-      const nd = scheduled + pausedMsBefore(d, pauses)
-      if (nd === d) break
-      d = nd
-    }
+  for (let n = 1; n <= maxIndex; n++) {
+    const d = deferredAnniversaryMs(start, n, pauses)
     if (d > nowMs) break
     if (closeMs != null && d >= closeMs) break
     out.push({ index: n, date: new Date(d) })
@@ -208,11 +226,20 @@ export function buildTradingFundPosts(req: ApprovalRequest, now: Date = new Date
   // schedule or reclaim capital early.
   const closeRaw = payload.closedAt ?? payload.exitedAt
   const closeDate = closeRaw ? new Date(closeRaw) : undefined
-  const closeMs = closeDate && !Number.isNaN(closeDate.getTime()) ? closeDate.getTime() : undefined
+  const adminCloseMs = closeDate && !Number.isNaN(closeDate.getTime()) ? closeDate.getTime() : undefined
 
   // Paused windows never count as active deployment. Open (ongoing) pauses end
   // at the close instant if closed, otherwise at `now`.
-  const pauses = normalizePauses(payload.pauseWindows, closeMs ?? now.getTime())
+  const pauses = normalizePauses(payload.pauseWindows, adminCloseMs ?? now.getTime())
+
+  // Automatic maturity: the engagement lasts exactly TRADING_FUND_TERM_MONTHS
+  // ACTIVE months. Its expiry is the term-th monthly anniversary (pause-aware),
+  // and the position terminates at the EARLIER of that and any admin close.
+  const expiryMs = deferredAnniversaryMs(start, TRADING_FUND_TERM_MONTHS, pauses)
+  const terminationMs = adminCloseMs != null ? Math.min(adminCloseMs, expiryMs) : expiryMs
+  // ROI halts strictly before an admin close, but the final term payment matures
+  // exactly at expiry and must still be paid — so only an admin close gates ROI.
+  const roiStopMs = adminCloseMs
 
   const posts: LedgerEntry[] = []
 
@@ -233,10 +260,11 @@ export function buildTradingFundPosts(req: ApprovalRequest, now: Date = new Date
   })
 
   // 2. Fixed 25% monthly ROI, in arrears and pause-aware — the first payment
-  //    matures one full ACTIVE month after activation, then each active month.
+  //    matures one full ACTIVE month after activation, then each active month,
+  //    up to the fixed engagement term (after which the position expires).
   const monthlyRoi = round2(capital * TRADING_FUND_MONTHLY_ROI)
   if (monthlyRoi > 0) {
-    for (const period of maturedRoiPayments(start, now, pauses, closeMs)) {
+    for (const period of maturedRoiPayments(start, now, pauses, roiStopMs, TRADING_FUND_TERM_MONTHS)) {
       posts.push({
         id: tradingFundRoiId(req.id, period.index),
         direction: "credit",
@@ -247,27 +275,142 @@ export function buildTradingFundPosts(req: ApprovalRequest, now: Date = new Date
         counterparty: FUND_LABEL,
         reference: req.id,
         category: "NAFTAhub Trading — Fund ROI",
-        comment: `Month ${period.index} — ${(TRADING_FUND_MONTHLY_ROI * 100).toFixed(0)}% ROI on the ${FUND_LABEL}${tokenNote}.`,
+        comment: `Month ${period.index} of ${TRADING_FUND_TERM_MONTHS} — ${(TRADING_FUND_MONTHLY_ROI * 100).toFixed(0)}% ROI on the ${FUND_LABEL}${tokenNote}.`,
       })
     }
   }
 
-  // 3. Position closed by the administrator → return the deployed capital (the
-  //    tokens) to the master account, netting the original debit to zero.
-  if (closeMs != null) {
+  // 3. Position terminated → return the deployed capital (the tokens) to the
+  //    master account, netting the original debit to zero. This fires either
+  //    when an administrator closes early OR automatically when the engagement
+  //    term expires, whichever comes first.
+  if (adminCloseMs != null || now.getTime() >= expiryMs) {
+    const byAdmin = adminCloseMs != null && adminCloseMs <= expiryMs
     posts.push({
       id: tradingFundReturnId(req.id),
       direction: "credit",
       amount: capital,
       currency,
       status: "completed",
-      date: new Date(closeMs).toISOString(),
+      date: new Date(terminationMs).toISOString(),
       counterparty: FUND_LABEL,
       reference: req.id,
       category: "NAFTAhub Trading — Fund Exit",
-      comment: `Position closed — capital${tokenNote} returned to the master account.`,
+      comment: byAdmin
+        ? `Position closed by the administrator — capital${tokenNote} returned to the master account.`
+        : `Engagement term reached — position expired, capital${tokenNote} returned to the master account.`,
     })
   }
 
   return posts
+}
+
+const MS_PER_DAY = 24 * 60 * 60 * 1000
+
+/** A complete, client-facing view of a Treuhand fund position's lifecycle. */
+export interface TradingFundView {
+  /** Fixed engagement term, in months. */
+  termMonths: number
+  /** Fixed monthly ROI rate (e.g. 0.25). */
+  monthlyRoiRate: number
+  /** When the capital was deployed and ROI began accruing. */
+  activation: Date
+  /** When the engagement automatically terminates (capital returned). */
+  expiry: Date
+  /** True once the term has been reached (position matured/expired). */
+  expired: boolean
+  /** Calendar days since activation (clamped to the term length). */
+  daysElapsed: number
+  /** Total calendar days across the whole engagement (activation → expiry). */
+  daysTotal: number
+  /** Calendar days remaining until automatic termination (>= 0). */
+  daysRemaining: number
+  /** Progress through the term, 0..1. */
+  termProgress: number
+  /** Monthly payments already matured (paid). */
+  monthsMatured: number
+  /** Monthly payments still to come before expiry. */
+  monthsRemaining: number
+  /** One month's ROI amount. */
+  monthlyRoiAmount: number
+  /** ROI paid so far (authoritative, from the ledger). */
+  roiMatured: number
+  /** Total ROI paid across the full term. */
+  roiPerTerm: number
+  /** ROI still to be paid before expiry (>= 0). */
+  roiRemaining: number
+  /** Capital originally deployed. */
+  capitalStarted: number
+  /** Total value returned at maturity: capital + all ROI over the term. */
+  capitalAtMaturity: number
+  /** The next scheduled ROI payout date, or null once fully matured. */
+  nextRoiDate: Date | null
+}
+
+/**
+ * Build the full lifecycle view of a position for the trading dashboard. Driven
+ * purely by the values the client's own ledger already exposes (capital,
+ * activation date, ROI paid), plus the fixed term — so it stays consistent with
+ * the ledger the master account reads. Pause windows (admin-only, rarely set)
+ * are optional; when omitted the term runs on calendar time.
+ */
+export function analyzeTradingFundPosition(opts: {
+  capitalStarted: number
+  activation: Date
+  roiMatured: number
+  now?: Date
+  pauseWindows?: TradingFundPauseWindow[]
+}): TradingFundView {
+  const now = opts.now ?? new Date()
+  const capital = Math.max(0, opts.capitalStarted)
+  const activation = opts.activation
+  const pauses = normalizePauses(opts.pauseWindows, now.getTime())
+
+  const monthlyRoiAmount = round2(capital * TRADING_FUND_MONTHLY_ROI)
+  const roiPerTerm = round2(monthlyRoiAmount * TRADING_FUND_TERM_MONTHS)
+  const capitalAtMaturity = round2(capital + roiPerTerm)
+
+  const activationMs = activation.getTime()
+  const expiryMs = deferredAnniversaryMs(activation, TRADING_FUND_TERM_MONTHS, pauses)
+  const expiry = new Date(expiryMs)
+  const nowMs = now.getTime()
+
+  const daysTotal = Math.max(1, Math.round((expiryMs - activationMs) / MS_PER_DAY))
+  const daysElapsed = Math.min(daysTotal, Math.max(0, Math.round((nowMs - activationMs) / MS_PER_DAY)))
+  const daysRemaining = Math.max(0, Math.ceil((expiryMs - nowMs) / MS_PER_DAY))
+  const expired = nowMs >= expiryMs
+  const termProgress = Math.min(1, Math.max(0, daysElapsed / daysTotal))
+
+  const monthsMatured =
+    monthlyRoiAmount > 0
+      ? Math.min(TRADING_FUND_TERM_MONTHS, Math.round(opts.roiMatured / monthlyRoiAmount))
+      : 0
+  const monthsRemaining = Math.max(0, TRADING_FUND_TERM_MONTHS - monthsMatured)
+  const roiRemaining = round2(Math.max(0, roiPerTerm - opts.roiMatured))
+
+  const nextRoiDate =
+    !expired && monthsMatured < TRADING_FUND_TERM_MONTHS
+      ? new Date(deferredAnniversaryMs(activation, monthsMatured + 1, pauses))
+      : null
+
+  return {
+    termMonths: TRADING_FUND_TERM_MONTHS,
+    monthlyRoiRate: TRADING_FUND_MONTHLY_ROI,
+    activation,
+    expiry,
+    expired,
+    daysElapsed,
+    daysTotal,
+    daysRemaining,
+    termProgress,
+    monthsMatured,
+    monthsRemaining,
+    monthlyRoiAmount,
+    roiMatured: round2(opts.roiMatured),
+    roiPerTerm,
+    roiRemaining,
+    capitalStarted: capital,
+    capitalAtMaturity,
+    nextRoiDate,
+  }
 }
