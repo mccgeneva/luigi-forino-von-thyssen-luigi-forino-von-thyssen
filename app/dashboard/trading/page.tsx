@@ -209,7 +209,7 @@ export default function TradingPage() {
   const user = useCurrentUser()
   const { membership, hydrated: membershipHydrated, refresh: refreshMembership } = useMembership()
   const [upgradeSubmitting, setUpgradeSubmitting] = useState(false)
-  const { totalIn } = useLedger()
+  const { totalIn, entries } = useLedger()
 
   // The client's real effective tier drives which ROI-tier card is "current"
   // and whether an Avant-Garde upgrade request is already in flight — so the
@@ -246,6 +246,54 @@ export default function TradingPage() {
   }
   // Real funds available to the client, aggregated from the ledger (EUR equiv.).
   const availableCapital = totalIn("EUR")
+
+  // The client's Treuhand fund positions, reconstructed straight from the ledger
+  // the master account already reads. Every fund entry is tagged with a
+  // "NAFTAhub Trading —" category and shares `reference = <subscription id>`, so
+  // grouping by reference gives one position per subscription. This makes the
+  // reservation, the deployed (debited) capital, and the ROI undeniably visible
+  // as their own line items — independent of the master account's overall
+  // balance, where a €30k move can be dwarfed by a multi-billion figure.
+  const fundPositions = useMemo(() => {
+    const groups = new Map<string, typeof entries>()
+    for (const e of entries) {
+      if (!e.category?.startsWith("NAFTAhub Trading —")) continue
+      const key = e.reference || e.id
+      const list = groups.get(key)
+      if (list) list.push(e)
+      else groups.set(key, [e])
+    }
+    return Array.from(groups.entries())
+      .map(([ref, list]) => {
+        const reserved = list
+          .filter((e) => e.status === "hold" && e.direction === "debit")
+          .reduce((s, e) => s + e.amount, 0)
+        const deployed = list
+          .filter((e) => e.status === "completed" && e.direction === "debit")
+          .reduce((s, e) => s + e.amount, 0)
+        const roiEarned = list
+          .filter((e) => e.status === "completed" && e.direction === "credit" && e.category === "NAFTAhub Trading — Fund ROI")
+          .reduce((s, e) => s + e.amount, 0)
+        const returned = list
+          .filter((e) => e.status === "completed" && e.direction === "credit" && e.category === "NAFTAhub Trading — Fund Exit")
+          .reduce((s, e) => s + e.amount, 0)
+        const capitalBase = deployed || reserved
+        const tokens = capitalBase > 0 ? Math.round(capitalBase / TOKEN_VALUE) : 0
+        const status: "reserved" | "active" | "closed" =
+          returned > 0 ? "closed" : deployed > 0 ? "active" : "reserved"
+        const latest = list.reduce(
+          (acc, e) => (new Date(e.date).getTime() > new Date(acc).getTime() ? e.date : acc),
+          list[0].date,
+        )
+        return { ref, reserved, deployed, roiEarned, returned, tokens, status, currency: list[0].currency, date: latest }
+      })
+      .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
+  }, [entries])
+
+  const activeFundCapital = fundPositions
+    .filter((p) => p.status === "active")
+    .reduce((s, p) => s + p.deployed, 0)
+  const totalRoiEarned = fundPositions.reduce((s, p) => s + p.roiEarned, 0)
   // Live market prices power the trade-ticket execution price and the AI-signal
   // context. The on-screen price BOARD itself is rendered by TradingView's own
   // widget (see "Live Markets" below) so the displayed numbers always match the
@@ -1000,6 +1048,92 @@ export default function TradingPage() {
 
         {/* Treuhand AG Limited Hedge Fund */}
         <TabsContent value="fund" className="mt-6 space-y-6">
+          {/* My positions — reconstructed from the ledger so the reservation and
+              the debited capital are visible as their own line items. */}
+          {fundPositions.length > 0 && (
+            <Card className="bg-card border-border">
+              <CardHeader className="pb-3">
+                <CardTitle className="flex items-center gap-2 text-lg font-semibold">
+                  <Coins className="h-5 w-5 text-primary" />
+                  My Treuhand Positions
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="grid gap-3 sm:grid-cols-3">
+                  <div className="rounded-lg border border-border bg-secondary/30 p-4">
+                    <p className="text-xs text-muted-foreground">Capital deployed (active)</p>
+                    <p className="mt-1 text-xl font-bold text-foreground">{formatEur(activeFundCapital)}</p>
+                    <p className="mt-0.5 text-[11px] text-muted-foreground">Debited from your master account</p>
+                  </div>
+                  <div className="rounded-lg border border-border bg-secondary/30 p-4">
+                    <p className="text-xs text-muted-foreground">ROI earned to date</p>
+                    <p className="mt-1 text-xl font-bold text-green-500">{formatEur(totalRoiEarned)}</p>
+                    <p className="mt-0.5 text-[11px] text-muted-foreground">Credited to your master account</p>
+                  </div>
+                  <div className="rounded-lg border border-border bg-secondary/30 p-4">
+                    <p className="text-xs text-muted-foreground">Active positions</p>
+                    <p className="mt-1 text-xl font-bold text-foreground">
+                      {fundPositions.filter((p) => p.status === "active").length}
+                    </p>
+                    <p className="mt-0.5 text-[11px] text-muted-foreground">of {fundPositions.length} total</p>
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  {fundPositions.map((p) => (
+                    <div
+                      key={p.ref}
+                      className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border bg-background p-4"
+                    >
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2">
+                          <span className="text-sm font-semibold text-foreground">
+                            {p.tokens} token{p.tokens === 1 ? "" : "s"}
+                          </span>
+                          {p.status === "reserved" && (
+                            <Badge variant="outline" className="border-amber-500/40 bg-amber-500/10 text-amber-600 text-[10px]">
+                              <Clock className="mr-1 h-3 w-3" /> Reserved · pending
+                            </Badge>
+                          )}
+                          {p.status === "active" && (
+                            <Badge variant="outline" className="border-green-500/40 bg-green-500/10 text-green-600 text-[10px]">
+                              <BadgeCheck className="mr-1 h-3 w-3" /> Active
+                            </Badge>
+                          )}
+                          {p.status === "closed" && (
+                            <Badge variant="outline" className="border-border bg-secondary text-muted-foreground text-[10px]">
+                              <Check className="mr-1 h-3 w-3" /> Closed · capital returned
+                            </Badge>
+                          )}
+                        </div>
+                        <p className="mt-0.5 truncate text-[11px] text-muted-foreground">Ref {p.ref}</p>
+                      </div>
+                      <div className="flex items-center gap-5 text-right">
+                        <div>
+                          <p className="text-[11px] text-muted-foreground">
+                            {p.status === "reserved" ? "Reserved" : "Deployed"}
+                          </p>
+                          <p className="text-sm font-semibold text-foreground">
+                            {p.status === "reserved" ? formatEur(p.reserved) : formatEur(p.deployed)}
+                          </p>
+                        </div>
+                        <div>
+                          <p className="text-[11px] text-muted-foreground">ROI earned</p>
+                          <p className="text-sm font-semibold text-green-500">{formatEur(p.roiEarned)}</p>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                <p className="text-[11px] text-muted-foreground text-pretty">
+                  Reserved funds are blocked on your master account while an application is pending. On approval they are
+                  debited and deployed; the 25% monthly ROI is credited back one month after activation and every month
+                  thereafter until the Administrator closes the position.
+                </p>
+              </CardContent>
+            </Card>
+          )}
+
           {/* Hero */}
           <Card className="border-primary/20 bg-gradient-to-br from-primary/10 to-primary/5">
             <CardContent className="p-5 sm:p-6">
