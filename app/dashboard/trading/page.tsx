@@ -337,12 +337,16 @@ export default function TradingPage() {
       summary: `${applicant} applied to the Treuhand AG Limited Hedge Fund for ${tokens} tokens (${formatEur(capital)} capital) at 25% fixed monthly ROI (${formatEur(monthlyReturn)}/mo projected).`,
       amount: capital,
       currency: "EUR",
-      // On approval, the token capital is deployed to the Treuhand fund — i.e.
-      // it must actually LEAVE the client's master account. A `gate: true`,
-      // "completed" debit routes the approval through the same feasibility
-      // check + capped cross-currency FX funding + solvency enforcement as an
-      // outgoing payment: the Administrator can only authorize it when the
-      // balance covers it, and it can never overdraw the account.
+      // Two-phase funds handling:
+      //   • On APPLICATION the capital is RESERVED (blocked) on the master
+      //     account as a `hold` — posted by the trading-fund reconciler while
+      //     the request is pending (see buildTradingFundPosts).
+      //   • On APPROVAL this `gate: true`, "completed" effect SETTLES that same
+      //     reservation into a real debit: the capital leaves the master
+      //     account. `gate: true` routes it through the feasibility check +
+      //     capped cross-currency FX funding + solvency enforcement, so the
+      //     Administrator can only authorize it when the balance covers it and
+      //     it can never overdraw the account.
       ledgerEffect: {
         direction: "debit",
         amount: capital,
@@ -389,7 +393,7 @@ export default function TradingPage() {
       },
     })
     toast.success("Application submitted", {
-      description: `Your ${tokens}-token application (${formatEur(capital)}) has been sent to the Administrator for authorization. On approval, ${formatEur(capital)} is debited from your master account and deployed to the fund.`,
+      description: `${formatEur(capital)} has been reserved on your master account for this ${tokens}-token application and sent to the Administrator. The funds stay blocked while pending; on approval they are debited and deployed to the fund.`,
     })
     setApplyOpen(false)
     setApplicantName("")

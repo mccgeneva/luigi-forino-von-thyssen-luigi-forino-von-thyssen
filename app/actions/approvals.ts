@@ -1570,29 +1570,55 @@ export async function reconcileMyApprovedCredits(): Promise<{ ok: boolean; appli
       }
     }
 
-    // Treuhand trading fund: deploy the subscribed capital (a debit that must
-    // reflect on the master account) and pay the matured 25% MONTHLY ROI as a
-    // credit at each elapsed month-end. Deterministic ids make this idempotent,
-    // and the capital debit reuses `APPR-<id>` so it back-fills a subscription
-    // approved before a ledger effect existed without ever double-debiting one
-    // approved with one. Runs on every ledger read → accrues cross-device with
-    // no scheduler, exactly like the AES funding reconciler.
-    const ownerLedgerIds = new Map<string, Set<string>>()
-    for (const req of approved) {
-      if (req.kind !== "trading_fund") continue
-      const posts = buildTradingFundPosts(req)
-      if (posts.length === 0) continue
-      const ownerId = await resolveDataOwnerIdFor(req.userId)
-      let existing = ownerLedgerIds.get(ownerId)
-      if (!existing) {
-        const rows = await readLedgerEntries(ownerId)
-        existing = new Set(rows.map((r) => r.id))
-        ownerLedgerIds.set(ownerId, existing)
+    // Treuhand trading fund lifecycle on the ledger, driven off the approval
+    // status (no scheduler — runs on every ledger read, self-healing/cross-
+    // device). Deterministic ids keep every post idempotent:
+    //   • PENDING   → RESERVE the capital as a `hold` debit `APPR-<id>` so the
+    //                 funds are BLOCKED on the master account while the
+    //                 administrator reviews the application.
+    //   • APPROVED  → SETTLE that same `APPR-<id>` into a `completed` debit
+    //                 (capital deducted, reflecting on the master account) plus
+    //                 matured 25% monthly ROI credits and any capital-return.
+    //   • REJECTED/CANCELLED → RELEASE the reservation hold (unfreeze funds).
+    const tradingFundReqs = mine.filter((r) => r.kind === "trading_fund")
+    const ownerLedgerRows = new Map<string, Map<string, LedgerEntry>>()
+    const loadOwnerRows = async (ownerId: string) => {
+      let rows = ownerLedgerRows.get(ownerId)
+      if (!rows) {
+        const list = await readLedgerEntries(ownerId)
+        rows = new Map(list.map((r) => [r.id, r]))
+        ownerLedgerRows.set(ownerId, rows)
       }
+      return rows
+    }
+    for (const req of tradingFundReqs) {
+      const ownerId = await resolveDataOwnerIdFor(req.userId)
+      const rows = await loadOwnerRows(ownerId)
+
+      // A decided-against application must not keep funds frozen: drop the
+      // reservation hold if one is still present.
+      if (req.status === "rejected" || req.status === "cancelled") {
+        const capId = `APPR-${req.id}`
+        const cur = rows.get(capId)
+        if (cur && cur.status === "hold") {
+          await deleteLedgerEntry(ownerId, capId)
+          rows.delete(capId)
+          applied += 1
+        }
+        continue
+      }
+
+      const posts = buildTradingFundPosts(req)
       for (const post of posts) {
-        if (existing.has(post.id)) continue
+        const cur = rows.get(post.id)
+        // Post when missing OR when the entry must change (the pending `hold`
+        // becoming the approved `completed` settlement). Re-running with an
+        // identical entry is a no-op, so this never double-posts.
+        if (cur && cur.status === post.status && cur.direction === post.direction && cur.amount === post.amount) {
+          continue
+        }
         await upsertLedgerEntry(ownerId, post)
-        existing.add(post.id)
+        rows.set(post.id, post)
         applied += 1
       }
     }
