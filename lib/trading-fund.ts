@@ -145,22 +145,55 @@ function activationDate(req: ApprovalRequest): Date {
 }
 
 /**
- * Every ledger post an approved Treuhand fund subscription implies: the capital
- * deployment debit (once) plus each matured monthly 25% ROI credit. Callers
- * skip ids already on the ledger; posting is idempotent regardless.
+ * Every ledger post a Treuhand fund subscription implies, keyed to its status:
+ *
+ *   - PENDING  → a single `hold` debit that RESERVES / BLOCKS the capital on the
+ *     master account while the administrator reviews the application. The funds
+ *     are frozen (not yet spent), so the client cannot double-spend them.
+ *   - APPROVED → the `hold` becomes a permanent `completed` debit (capital
+ *     deployed / deducted, reflecting on the master account) plus each matured
+ *     monthly 25% ROI credit and, once closed, the capital-return credit.
+ *   - any other status (rejected / cancelled) → nothing; the reservation hold is
+ *     released by the reconciler / decision action.
+ *
+ * The capital entry uses the SAME `APPR-<id>` id in both phases, so approval
+ * simply upgrades the reservation hold into a settled debit (no double-count),
+ * and callers overwrite when the status differs. Posting is idempotent.
  */
 export function buildTradingFundPosts(req: ApprovalRequest, now: Date = new Date()): LedgerEntry[] {
-  if (req.kind !== "trading_fund" || req.status !== "approved") return []
+  if (req.kind !== "trading_fund") return []
+  if (req.status !== "pending" && req.status !== "approved") return []
 
   const capital = Number(req.amount ?? (req.payload as { capital?: number })?.capital)
   if (!Number.isFinite(capital) || capital <= 0) return []
 
   const currency = req.currency || "EUR"
-  const start = activationDate(req)
-  if (Number.isNaN(start.getTime())) return []
 
   const tokens = Number((req.payload as { tokens?: number })?.tokens)
   const tokenNote = Number.isFinite(tokens) && tokens > 0 ? ` (${tokens} token${tokens === 1 ? "" : "s"})` : ""
+
+  // PENDING application → reserve/block the capital so it is frozen on the
+  // master account until the administrator decides. No ROI accrues while
+  // pending. This is the single entry the client sees as "reserved".
+  if (req.status === "pending") {
+    return [
+      {
+        id: tradingFundCapitalDebitId(req.id),
+        direction: "debit",
+        amount: capital,
+        currency,
+        status: "hold",
+        date: new Date(req.createdAt).toISOString(),
+        counterparty: FUND_LABEL,
+        reference: req.id,
+        category: "NAFTAhub Trading — Reserved for Fund Subscription",
+        comment: `Reserved for a pending ${FUND_LABEL} subscription${tokenNote} — awaiting authorization.`,
+      },
+    ]
+  }
+
+  const start = activationDate(req)
+  if (Number.isNaN(start.getTime())) return []
 
   const payload = (req.payload ?? {}) as {
     pauseWindows?: TradingFundPauseWindow[]
