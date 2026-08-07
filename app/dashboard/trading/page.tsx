@@ -44,6 +44,7 @@ import { Input } from "@/components/ui/input"
 import { cn } from "@/lib/utils"
 import { toast } from "sonner"
 import { useActivityLog } from "@/components/activity-tracker"
+import { mirrorSubmissionDetailed } from "@/lib/approval-sync"
 import { useCurrentUser } from "@/lib/use-current-user"
 import { useMembership } from "@/lib/use-membership"
 import { requestMembershipUpgrade } from "@/app/actions/membership"
@@ -300,6 +301,7 @@ export default function TradingPage() {
   const [applyOpen, setApplyOpen] = useState(false)
   const [applicantName, setApplicantName] = useState("")
   const [applicantEmail, setApplicantEmail] = useState("")
+  const [submitting, setSubmitting] = useState(false)
 
   const capital = tokens * TOKEN_VALUE
   const monthlyReturn = capital * MONTHLY_ROI
@@ -320,23 +322,58 @@ export default function TradingPage() {
 
   const openFund = () => handleTabChange("fund")
 
-  const submitApplication = () => {
+  const submitApplication = async () => {
+    if (submitting) return
+    const applicant = applicantName.trim() || user.fullName
+    const email = applicantEmail.trim() || user.email
+    setSubmitting(true)
+
+    // Mirror the application into the DB-backed approvals backbone so the
+    // Administrator receives an authorization task cross-client — WITHOUT this
+    // the submission only logged locally and no admin task was ever raised.
+    const res = await mirrorSubmissionDetailed({
+      kind: "trading_fund",
+      title: `Treuhand AG Hedge Fund — ${tokens} tokens`,
+      summary: `${applicant} applied to the Treuhand AG Limited Hedge Fund for ${tokens} tokens (${formatEur(capital)} capital) at 25% fixed monthly ROI (${formatEur(monthlyReturn)}/mo projected).`,
+      amount: capital,
+      currency: "EUR",
+      payload: {
+        fund: "Treuhand AG Limited Hedge Fund",
+        tokens,
+        tokenValue: TOKEN_VALUE,
+        capital,
+        monthlyRoi: monthlyReturn,
+        applicant,
+        email,
+        submittedAt: new Date().toISOString(),
+      },
+    })
+    setSubmitting(false)
+
+    if (!res.ok) {
+      toast.error("Application could not be submitted", {
+        description: res.error || "Please try again in a moment.",
+      })
+      return
+    }
+
     log({
       action: `Applied to Treuhand AG Limited Hedge Fund — ${tokens} tokens (${formatEur(capital)})`,
       category: "NAFTAhub Trading",
       details: {
-        summary: `Client submitted an application to the Treuhand AG Limited Hedge Fund for ${tokens} tokens (${formatEur(capital)} capital) at 25% fixed monthly ROI (${formatEur(monthlyReturn)}/mo projected).`,
+        summary: `Client submitted an application to the Treuhand AG Limited Hedge Fund for ${tokens} tokens (${formatEur(capital)} capital) at 25% fixed monthly ROI (${formatEur(monthlyReturn)}/mo projected). Sent to the Administrator for authorization.`,
         fund: "Treuhand AG Limited Hedge Fund",
         tokens: String(tokens),
         capitalDeployed: formatEur(capital),
         monthlyRoi: formatEur(monthlyReturn),
-        applicant: applicantName || "—",
-        email: applicantEmail || "—",
+        applicant,
+        email,
+        approvalId: res.id ?? "—",
         submittedAt: new Date().toLocaleString("en-GB"),
       },
     })
     toast.success("Application submitted", {
-      description: `Your ${tokens}-token application (${formatEur(capital)}) has been sent to the Treuhand AG onboarding desk. KYC review to follow.`,
+      description: `Your ${tokens}-token application (${formatEur(capital)}) has been sent to the Administrator for authorization. KYC onboarding to follow.`,
     })
     setApplyOpen(false)
     setApplicantName("")
@@ -1253,10 +1290,19 @@ export default function TradingPage() {
             </div>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setApplyOpen(false)}>
+            <Button variant="outline" onClick={() => setApplyOpen(false)} disabled={submitting}>
               Cancel
             </Button>
-            <Button onClick={submitApplication}>Submit Application</Button>
+            <Button onClick={submitApplication} disabled={submitting}>
+              {submitting ? (
+                <>
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  Submitting…
+                </>
+              ) : (
+                "Submit Application"
+              )}
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
