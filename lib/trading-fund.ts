@@ -96,6 +96,14 @@ export function buildTradingFundPosts(req: ApprovalRequest, now: Date = new Date
   const tokens = Number((req.payload as { tokens?: number })?.tokens)
   const tokenNote = Number.isFinite(tokens) && tokens > 0 ? ` (${tokens} token${tokens === 1 ? "" : "s"})` : ""
 
+  // Admin-authorized exit: once set, ROI stops maturing on/after this date. The
+  // capital debit still stands (the deployment already happened). Only an
+  // administrator can set `exitedAt` (see `exitTradingFund` in the approvals
+  // action), so a client can never end their own ROI schedule.
+  const exitedAtRaw = (req.payload as { exitedAt?: string })?.exitedAt
+  const exitedAt = exitedAtRaw ? new Date(exitedAtRaw) : undefined
+  const exitDate = exitedAt && !Number.isNaN(exitedAt.getTime()) ? exitedAt : undefined
+
   const posts: LedgerEntry[] = []
 
   // 1. Capital deployed to the fund — permanent debit, once. Same id the
@@ -119,7 +127,7 @@ export function buildTradingFundPosts(req: ApprovalRequest, now: Date = new Date
   //    date (future termination) to `maturedRoiMonths` to stop the series.
   const monthlyRoi = round2(capital * TRADING_FUND_MONTHLY_ROI)
   if (monthlyRoi > 0) {
-    for (const period of maturedRoiMonths(start, now)) {
+    for (const period of maturedRoiMonths(start, now, exitDate)) {
       posts.push({
         id: tradingFundRoiId(req.id, period.yearMonth),
         direction: "credit",
