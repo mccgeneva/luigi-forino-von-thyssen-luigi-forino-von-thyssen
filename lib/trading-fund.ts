@@ -10,16 +10,15 @@ import { round2, yearMonthKey } from "@/lib/interest-accrual"
  *
  *   1. The subscribed CAPITAL is DEBITED once — it is deployed to the fund and
  *      leaves the master account.
- *   2. The fund pays a fixed 25% MONTHLY ROI, credited MONTHLY IN ADVANCE: a
- *      CREDIT of `capital * 25%` is posted for the activation month IMMEDIATELY
- *      when the subscription starts, then again at the first of every following
- *      calendar month for as long as it is active. Crediting in advance is what
- *      makes the ROI reflect on the master account the moment the position
- *      starts (rather than only weeks later at the first month-end), which is
- *      the behaviour the desk expects for "once started, pay 25% each month".
+ *   2. The fund pays a fixed 25% MONTHLY ROI, credited IN ARREARS: a CREDIT of
+ *      `capital * 25%` matures only after each FULL month of the capital being
+ *      deployed. The first ROI posts one month after activation (e.g. deployed
+ *      Aug 7 → first ROI Sep 7), then on each subsequent monthly anniversary
+ *      for as long as the subscription is active. No ROI is ever paid in
+ *      advance — the client must wait a full month for each payment to mature.
  *
  * There is no server scheduler, so — exactly like the AES funding cost-of-
- * capital engine — credits are posted lazily: every reconcile posts any active
+ * capital engine — credits are posted lazily: every reconcile posts any matured
  * months that are not yet on the ledger. All entries use deterministic ids so
  * reconciliation is fully idempotent (re-running never double-posts).
  *
@@ -35,30 +34,31 @@ export const TRADING_FUND_MONTHLY_ROI = 0.25
 
 const FUND_LABEL = "Treuhand AG Limited Hedge Fund"
 
+/** Add `n` whole months to a date, clamping the day to the target month length. */
+function addMonths(base: Date, n: number): Date {
+  const d = new Date(base.getTime())
+  const day = d.getDate()
+  d.setDate(1)
+  d.setMonth(d.getMonth() + n)
+  const daysInMonth = new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate()
+  d.setDate(Math.min(day, daysInMonth))
+  return d
+}
+
 /**
- * Every active MONTHLY ROI period between activation and `now`, credited in
- * advance: the activation month (dated at the exact activation instant so it
- * reflects immediately) followed by the first of every subsequent calendar
- * month up to and including the current one. `end` (a future termination date)
- * stops the series — no ROI is paid for a month that begins on/after `end`.
+ * Every 25% ROI payment that has MATURED by `now`, in arrears. ROI matures on
+ * each monthly anniversary of the activation date — the first a full month
+ * AFTER activation (never on the activation day itself), then monthly. `end`
+ * (a future termination date) stops the series: nothing matures on/after it.
  */
-function activeRoiMonths(start: Date, now: Date, end?: Date): { yearMonth: string; date: Date }[] {
+function maturedRoiMonths(start: Date, now: Date, end?: Date): { yearMonth: string; date: Date }[] {
   const out: { yearMonth: string; date: Date }[] = []
   if (!(start instanceof Date) || Number.isNaN(start.getTime())) return out
-  let year = start.getFullYear()
-  let month = start.getMonth()
-  for (let i = 0; i < 1200; i++) {
-    const monthStart = new Date(year, month, 1, 0, 0, 0, 0)
-    // The activation month posts at the activation instant, not the 1st.
-    const postDate = monthStart.getTime() < start.getTime() ? start : monthStart
-    if (postDate.getTime() > now.getTime()) break
-    if (end && postDate.getTime() >= end.getTime()) break
-    out.push({ yearMonth: yearMonthKey(monthStart), date: postDate })
-    month += 1
-    if (month > 11) {
-      month = 0
-      year += 1
-    }
+  for (let n = 1; n <= 1200; n++) {
+    const date = addMonths(start, n)
+    if (date.getTime() > now.getTime()) break
+    if (end && date.getTime() >= end.getTime()) break
+    out.push({ yearMonth: yearMonthKey(date), date })
   }
   return out
 }
