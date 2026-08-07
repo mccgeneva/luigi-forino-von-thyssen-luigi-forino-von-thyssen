@@ -1855,6 +1855,154 @@ export async function closeTradingFundPosition(passcode: string, id: string, not
   }
 }
 
+/**
+ * CLIENT requests an anticipated termination (early resignation) of one of their
+ * OWN Treuhand positions. This only records the request on the payload and
+ * notifies the administrator — it moves NO money and does NOT close the position.
+ * The administrator evaluates it and, if agreed, runs the reconciliation
+ * (`reconcileTradingFundTermination`) which is where the fees are applied and the
+ * capital is returned. Ownership is enforced against the caller's environment.
+ */
+export async function requestTradingFundTermination(
+  id: string,
+  reason?: string,
+): Promise<DecideResult> {
+  const session = await resolveCurrentSession()
+  if (!session) return { ok: false, error: "Your session has expired. Please sign in again." }
+  try {
+    const existing = await getApprovalById(id)
+    if (!existing || existing.kind !== "trading_fund") return { ok: false, error: "Position not found." }
+    if (existing.status !== "approved") return { ok: false, error: "Only an active position can be terminated." }
+    const memberIds = await resolveEnvironmentMemberIds(session.id)
+    if (!memberIds.includes(existing.userId)) return { ok: false, error: "You cannot manage this position." }
+    const payload = (existing.payload ?? {}) as Record<string, unknown>
+    if (payload.closedAt || payload.exitedAt) return { ok: false, error: "This position is already closed." }
+    if (payload.terminationRequestedAt) return { ok: false, error: "A termination request is already under review." }
+
+    const updated = await updateApprovalPayload(id, {
+      ...payload,
+      terminationRequestedAt: new Date().toISOString(),
+      terminationReason: reason?.trim() || null,
+    })
+    if (!updated) return { ok: false, error: "The request could not be recorded. Please try again." }
+
+    // Surface to the administrator via the activity log (the admin panel reads
+    // the flag directly from the position, so this is the audit trail).
+    await logPositionChange(
+      updated,
+      `Client requested early termination of Treuhand position "${updated.title}"`,
+      "Termination requested",
+      reason,
+    )
+    return { ok: true, request: updated }
+  } catch (err) {
+    console.log("[v0] requestTradingFundTermination failed:", (err as Error).message)
+    return { ok: false, error: "The request could not be submitted. Please try again." }
+  }
+}
+
+/** CLIENT withdraws a pending early-termination request on their own position. */
+export async function withdrawTradingFundTermination(id: string): Promise<DecideResult> {
+  const session = await resolveCurrentSession()
+  if (!session) return { ok: false, error: "Your session has expired. Please sign in again." }
+  try {
+    const existing = await getApprovalById(id)
+    if (!existing || existing.kind !== "trading_fund") return { ok: false, error: "Position not found." }
+    const memberIds = await resolveEnvironmentMemberIds(session.id)
+    if (!memberIds.includes(existing.userId)) return { ok: false, error: "You cannot manage this position." }
+    const payload = (existing.payload ?? {}) as Record<string, unknown>
+    if (!payload.terminationRequestedAt) return { ok: false, error: "There is no pending request to withdraw." }
+    if (payload.closedAt || payload.exitedAt) return { ok: false, error: "This position is already closed." }
+
+    const { terminationRequestedAt: _r, terminationReason: _n, ...rest } = payload
+    const updated = await updateApprovalPayload(id, rest)
+    if (!updated) return { ok: false, error: "The request could not be withdrawn. Please try again." }
+    return { ok: true, request: updated }
+  } catch (err) {
+    console.log("[v0] withdrawTradingFundTermination failed:", (err as Error).message)
+    return { ok: false, error: "The request could not be withdrawn. Please try again." }
+  }
+}
+
+/**
+ * ADMINISTRATOR reconciles and closes a Treuhand position in ONE step — used to
+ * grant an anticipated (early) termination the client requested, or to settle a
+ * normal exit. Records the agreed early-resignation `penalty` and any additional
+ * `charges` on the payload, sets `closedAt`, then posts the whole settlement to
+ * the ledger: capital returned, the 2% platform commission, and the penalty /
+ * charges. The client then sees the capital credited MINUS all fees.
+ */
+export async function reconcileTradingFundTermination(
+  passcode: string,
+  id: string,
+  input: { penaltyAmount?: number; chargesAmount?: number; chargesNote?: string; note?: string },
+): Promise<DecideResult> {
+  if (!(await adminOk(passcode))) return { ok: false, error: "Administrator authorization failed." }
+  try {
+    const loaded = await loadOpenPosition(id)
+    if (!loaded.ok) return loaded
+    const { payload } = loaded
+    if (tradingFundStatus(payload) === "closed") return { ok: false, error: "This position is already closed." }
+
+    const penalty = Math.max(0, Number(input.penaltyAmount) || 0)
+    const charges = Math.max(0, Number(input.chargesAmount) || 0)
+    if (!Number.isFinite(penalty) || !Number.isFinite(charges)) {
+      return { ok: false, error: "Penalty and charges must be valid amounts." }
+    }
+
+    const nowIso = new Date().toISOString()
+    const windows: TradingFundPauseWindow[] = Array.isArray(payload.pauseWindows)
+      ? [...(payload.pauseWindows as TradingFundPauseWindow[])]
+      : []
+    const open = windows.find((w) => w && w.from && !w.to)
+    if (open) open.to = nowIso
+
+    const updated = await updateApprovalPayload(id, {
+      ...payload,
+      pauseWindows: windows,
+      closedAt: nowIso,
+      positionStatus: "closed",
+      earlyPenaltyAmount: penalty,
+      exitChargesAmount: charges,
+      exitChargesNote: input.chargesNote?.trim() || null,
+      terminationHandledAt: nowIso,
+      terminationRequestedAt: null,
+    })
+    if (!updated) return { ok: false, error: "The position could not be updated." }
+
+    // Post the full settlement (capital return + commission + penalty + charges).
+    await syncTradingFundLedger(updated)
+
+    const currency = updated.currency ?? "EUR"
+    const capital = Number(updated.amount ?? (updated.payload as { capital?: number })?.capital) || 0
+    const commission = Math.round(capital * 0.02 * 100) / 100
+    const net = Math.max(0, capital - commission - penalty - charges)
+    const feeLine = [
+      `${formatMoney(commission, currency)} commission`,
+      penalty > 0 ? `${formatMoney(penalty, currency)} penalty` : null,
+      charges > 0 ? `${formatMoney(charges, currency)} charges` : null,
+    ]
+      .filter(Boolean)
+      .join(", ")
+
+    await notifyPositionChange(
+      updated,
+      "Treuhand termination reconciled",
+      `Your Treuhand AG Hedge Fund position "${updated.title}" has been terminated and reconciled by MCC Capital${input.note?.trim() ? ` — ${input.note.trim()}` : ""}. ${formatMoney(capital, currency)} capital was returned, less ${feeLine}. Net credited to your Master Account: ${formatMoney(net, currency)}.`,
+    )
+    await logPositionChange(
+      updated,
+      `Administrator reconciled and closed Treuhand position "${updated.title}"`,
+      "Reconciled & closed",
+      `Capital ${formatMoney(capital, currency)}, commission ${formatMoney(commission, currency)}, penalty ${formatMoney(penalty, currency)}, charges ${formatMoney(charges, currency)}, net ${formatMoney(net, currency)}. ${input.note?.trim() ?? ""}`,
+    )
+    return { ok: true, request: updated }
+  } catch (err) {
+    console.log("[v0] reconcileTradingFundTermination failed:", (err as Error).message)
+    return { ok: false, error: "The termination could not be reconciled. Please try again." }
+  }
+}
+
 /** A Treuhand position summarized for the administrator control panel. */
 export interface AdminTradingFundPosition {
   id: string
@@ -1870,6 +2018,9 @@ export interface AdminTradingFundPosition {
   status: TradingFundPositionStatus
   pausedAt: string | null
   closedAt: string | null
+  pauseWindows: TradingFundPauseWindow[]
+  terminationRequestedAt: string | null
+  terminationReason: string | null
 }
 
 /** Every authorized Treuhand position across all accounts, for the admin panel. */
@@ -1887,14 +2038,15 @@ export async function adminListTradingFundPositions(
         pauseWindows?: TradingFundPauseWindow[]
         closedAt?: string
         exitedAt?: string
+        terminationRequestedAt?: string
+        terminationReason?: string
       }
       const capital = Number(req.amount ?? payload.capital)
       if (!Number.isFinite(capital) || capital <= 0) continue
       const profile = await resolveAccountProfileById(req.userId)
       const status = tradingFundStatus(payload)
-      const openPause = Array.isArray(payload.pauseWindows)
-        ? payload.pauseWindows.find((w) => w && w.from && !w.to)
-        : undefined
+      const windows = Array.isArray(payload.pauseWindows) ? payload.pauseWindows : []
+      const openPause = windows.find((w) => w && w.from && !w.to)
       positions.push({
         id: req.id,
         userId: req.userId,
@@ -1909,6 +2061,9 @@ export async function adminListTradingFundPositions(
         status,
         pausedAt: openPause?.from ?? null,
         closedAt: payload.closedAt ?? payload.exitedAt ?? null,
+        pauseWindows: windows,
+        terminationRequestedAt: payload.terminationRequestedAt ?? null,
+        terminationReason: payload.terminationReason ?? null,
       })
     }
     return { ok: true, positions }

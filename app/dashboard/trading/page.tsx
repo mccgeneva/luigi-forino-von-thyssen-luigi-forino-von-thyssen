@@ -1,6 +1,7 @@
 "use client"
 
 import { useState, useRef, useMemo } from "react"
+import useSWR from "swr"
 import {
   Activity,
   TrendingUp,
@@ -30,6 +31,9 @@ import {
   Wallet,
   Percent,
   Flag,
+  AlertTriangle,
+  LogOut,
+  X,
 } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -47,16 +51,27 @@ import {
 } from "@/components/ui/dialog"
 import { Label } from "@/components/ui/label"
 import { Input } from "@/components/ui/input"
+import { Textarea } from "@/components/ui/textarea"
 import { cn } from "@/lib/utils"
 import { toast } from "sonner"
 import { useActivityLog } from "@/components/activity-tracker"
 import { mirrorSubmissionDetailed } from "@/lib/approval-sync"
+import {
+  listMyApprovals,
+  requestTradingFundTermination,
+  withdrawTradingFundTermination,
+} from "@/app/actions/approvals"
 import { useCurrentUser } from "@/lib/use-current-user"
 import { useMembership } from "@/lib/use-membership"
 import { requestMembershipUpgrade } from "@/app/actions/membership"
 import { effectivePlatformTier, MEMBERSHIP_STATUS_LABEL } from "@/lib/membership"
 import { useLedger } from "@/lib/ledger-store"
-import { analyzeTradingFundPosition, TRADING_FUND_TERM_MONTHS } from "@/lib/trading-fund"
+import {
+  analyzeTradingFundPosition,
+  quoteTradingFundExit,
+  TRADING_FUND_TERM_MONTHS,
+  TRADING_FUND_EXIT_COMMISSION,
+} from "@/lib/trading-fund"
 import { useMarketQuotes } from "@/lib/use-market"
 import { TradingViewWidget } from "@/components/market/tradingview-widget"
 import { tradingViewSymbol } from "@/lib/market-symbols"
@@ -385,6 +400,78 @@ export default function TradingPage() {
   const [applicantName, setApplicantName] = useState("")
   const [applicantEmail, setApplicantEmail] = useState("")
   const [submitting, setSubmitting] = useState(false)
+
+  // Early-termination request state, loaded from the user's own trading_fund
+  // approvals (keyed by subscription id = the ledger position ref). Tells us
+  // which positions already have a request under administrator review.
+  const { data: termRequests, mutate: mutateTermRequests } = useSWR(
+    "trading-fund-termination-requests",
+    async () => {
+      const reqs = await listMyApprovals("trading_fund")
+      const map: Record<string, { requestedAt: string | null; reason: string | null; closed: boolean }> = {}
+      for (const r of reqs) {
+        const p = (r.payload ?? {}) as {
+          terminationRequestedAt?: string
+          terminationReason?: string
+          closedAt?: string
+          exitedAt?: string
+        }
+        map[r.id] = {
+          requestedAt: p.terminationRequestedAt ?? null,
+          reason: p.terminationReason ?? null,
+          closed: Boolean(p.closedAt || p.exitedAt),
+        }
+      }
+      return map
+    },
+    { refreshInterval: 20000 },
+  )
+
+  // The position the user is requesting to terminate early (opens the dialog).
+  const [terminateTarget, setTerminateTarget] = useState<
+    { ref: string; capital: number; roiMatured: number; activation: string } | null
+  >(null)
+  const [terminateReason, setTerminateReason] = useState("")
+  const [terminating, setTerminating] = useState(false)
+  const [withdrawing, setWithdrawing] = useState<string | null>(null)
+
+  const submitTermination = async () => {
+    if (!terminateTarget || terminating) return
+    setTerminating(true)
+    try {
+      const res = await requestTradingFundTermination(terminateTarget.ref, terminateReason)
+      if (!res.ok) {
+        toast.error(res.error || "The request could not be submitted.")
+        return
+      }
+      toast.success("Termination request submitted — MCC Capital will evaluate it and reconcile your position.")
+      setTerminateTarget(null)
+      setTerminateReason("")
+      void mutateTermRequests()
+    } catch {
+      toast.error("The request could not be submitted. Please try again.")
+    } finally {
+      setTerminating(false)
+    }
+  }
+
+  const withdrawTermination = async (ref: string) => {
+    if (withdrawing) return
+    setWithdrawing(ref)
+    try {
+      const res = await withdrawTradingFundTermination(ref)
+      if (!res.ok) {
+        toast.error(res.error || "The request could not be withdrawn.")
+        return
+      }
+      toast.success("Termination request withdrawn.")
+      void mutateTermRequests()
+    } catch {
+      toast.error("The request could not be withdrawn. Please try again.")
+    } finally {
+      setWithdrawing(null)
+    }
+  }
 
   const capital = tokens * TOKEN_VALUE
   const monthlyReturn = capital * MONTHLY_ROI
@@ -1262,6 +1349,69 @@ export default function TradingPage() {
                                 </p>
                               </div>
                             </div>
+
+                            {/* Early-resignation control (active positions only) */}
+                            {p.status === "active" && !v.expired && (() => {
+                              const reqState = termRequests?.[p.ref]
+                              const requested = Boolean(reqState?.requestedAt)
+                              return requested ? (
+                                <div className="mt-4 flex flex-col gap-2 rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 sm:flex-row sm:items-center sm:justify-between">
+                                  <div className="flex items-start gap-2">
+                                    <Clock className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
+                                    <div>
+                                      <p className="text-xs font-medium text-amber-700">
+                                        Anticipated termination requested — under administrator review
+                                      </p>
+                                      <p className="mt-0.5 text-[11px] text-amber-700/80 text-pretty">
+                                        MCC Capital will evaluate your request and reconcile the position, returning your
+                                        capital minus the {(TRADING_FUND_EXIT_COMMISSION * 100).toFixed(0)}% exit commission
+                                        and any penalty or charges.
+                                        {reqState?.reason ? ` Reason: ${reqState.reason}` : ""}
+                                      </p>
+                                    </div>
+                                  </div>
+                                  <Button
+                                    variant="outline"
+                                    size="sm"
+                                    className="shrink-0 border-amber-500/40 text-amber-700 hover:bg-amber-500/10"
+                                    disabled={withdrawing === p.ref}
+                                    onClick={() => withdrawTermination(p.ref)}
+                                  >
+                                    {withdrawing === p.ref ? (
+                                      <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+                                    ) : (
+                                      <X className="mr-1.5 h-3.5 w-3.5" />
+                                    )}
+                                    Withdraw
+                                  </Button>
+                                </div>
+                              ) : (
+                                <div className="mt-4 flex flex-col gap-2 border-t border-border/60 pt-4 sm:flex-row sm:items-center sm:justify-between">
+                                  <p className="text-[11px] text-muted-foreground text-pretty">
+                                    Need to exit before the {v.termMonths}-month term? You can request an anticipated
+                                    termination for administrator evaluation. Early resignation may incur a penalty in
+                                    addition to the {(TRADING_FUND_EXIT_COMMISSION * 100).toFixed(0)}% exit commission.
+                                  </p>
+                                  <Button
+                                    variant="outline"
+                                    size="sm"
+                                    className="shrink-0"
+                                    onClick={() => {
+                                      setTerminateTarget({
+                                        ref: p.ref,
+                                        capital: v.capitalStarted,
+                                        roiMatured: v.roiMatured,
+                                        activation: v.activation.toISOString(),
+                                      })
+                                      setTerminateReason("")
+                                    }}
+                                  >
+                                    <LogOut className="mr-1.5 h-3.5 w-3.5" />
+                                    Request early termination
+                                  </Button>
+                                </div>
+                              )
+                            })()}
                           </>
                         )}
                       </div>
@@ -1602,6 +1752,84 @@ export default function TradingPage() {
                 </>
               ) : (
                 "Submit Application"
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Early-termination request confirmation */}
+      <Dialog open={terminateTarget !== null} onOpenChange={(o) => !o && setTerminateTarget(null)}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <AlertTriangle className="h-5 w-5 text-amber-500" />
+              Request early termination
+            </DialogTitle>
+            <DialogDescription className="text-pretty">
+              You are requesting to resign from the Treuhand AG Limited Hedge Fund before the{" "}
+              {TRADING_FUND_TERM_MONTHS}-month term. MCC Capital will evaluate your request and, if agreed, reconcile
+              your position.
+            </DialogDescription>
+          </DialogHeader>
+
+          {terminateTarget && (() => {
+            const q = quoteTradingFundExit({
+              capitalStarted: terminateTarget.capital,
+              activation: new Date(terminateTarget.activation),
+            })
+            return (
+              <div className="space-y-3">
+                <div className="rounded-lg border border-border bg-secondary/30 p-3 text-sm">
+                  <div className="flex items-center justify-between">
+                    <span className="text-muted-foreground">Capital returned</span>
+                    <span className="font-medium text-foreground">{formatEur(q.capitalReturned)}</span>
+                  </div>
+                  <div className="mt-1.5 flex items-center justify-between">
+                    <span className="text-muted-foreground">
+                      Exit commission ({(TRADING_FUND_EXIT_COMMISSION * 100).toFixed(0)}%)
+                    </span>
+                    <span className="font-medium text-red-500">− {formatEur(q.commission)}</span>
+                  </div>
+                  <div className="mt-1.5 flex items-center justify-between">
+                    <span className="text-muted-foreground">Early-resignation penalty</span>
+                    <span className="font-medium text-muted-foreground">Set by administrator</span>
+                  </div>
+                </div>
+                <p className="rounded-md bg-amber-500/10 px-3 py-2 text-[11px] text-amber-700 text-pretty">
+                  {q.monthsRemaining} of {TRADING_FUND_TERM_MONTHS} months remain. Because this is an early resignation, a
+                  penalty will be calculated and applied by the administrator in addition to the commission. Your final
+                  net credit is confirmed at reconciliation.
+                </p>
+                <div className="space-y-1.5">
+                  <Label htmlFor="terminate-reason" className="text-xs">
+                    Reason (optional)
+                  </Label>
+                  <Textarea
+                    id="terminate-reason"
+                    value={terminateReason}
+                    onChange={(e) => setTerminateReason(e.target.value)}
+                    placeholder="Let the administrator know why you wish to exit early…"
+                    rows={3}
+                    className="resize-none text-sm"
+                  />
+                </div>
+              </div>
+            )
+          })()}
+
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setTerminateTarget(null)} disabled={terminating}>
+              Cancel
+            </Button>
+            <Button onClick={submitTermination} disabled={terminating}>
+              {terminating ? (
+                <>
+                  <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
+                  Submitting…
+                </>
+              ) : (
+                "Submit request"
               )}
             </Button>
           </DialogFooter>

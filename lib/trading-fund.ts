@@ -52,6 +52,22 @@ export const TRADING_FUND_MONTHLY_ROI = 0.25
  */
 export const TRADING_FUND_TERM_MONTHS = 12
 
+/**
+ * Platform commission charged on EVERY exit ("when money goes out"), applied to
+ * the CAPITAL RETURNED. Debited from the master account at termination, whether
+ * the position matures at term end or is terminated early.
+ */
+export const TRADING_FUND_EXIT_COMMISSION = 0.02
+
+/**
+ * Reference rate used only to SUGGEST an early-resignation penalty to the
+ * administrator (who has final say and can override). The suggestion is this
+ * rate applied to the capital, pro-rated by how much of the term remains — the
+ * earlier an investor resigns, the larger the suggested penalty. A position that
+ * has reached its term has no remaining term, so the suggested penalty is 0.
+ */
+export const TRADING_FUND_EARLY_EXIT_PENALTY_RATE = 0.1
+
 const FUND_LABEL = "Treuhand AG Limited Hedge Fund"
 
 /** Add `n` whole months to a date, clamping the day to the target month length. */
@@ -157,6 +173,21 @@ export function tradingFundReturnId(reqId: string): string {
   return `TFUND-RETURN-${reqId}`
 }
 
+/** Deterministic ledger id for the 2% exit commission debit posted at exit. */
+export function tradingFundCommissionId(reqId: string): string {
+  return `TFUND-COMM-${reqId}`
+}
+
+/** Deterministic ledger id for the early-resignation penalty debit. */
+export function tradingFundPenaltyId(reqId: string): string {
+  return `TFUND-PENALTY-${reqId}`
+}
+
+/** Deterministic ledger id for any additional exit charges debit. */
+export function tradingFundChargesId(reqId: string): string {
+  return `TFUND-CHARGE-${reqId}`
+}
+
 /** The date a subscription's capital is deployed (and from which ROI accrues). */
 function activationDate(req: ApprovalRequest): Date {
   return req.decidedAt ? new Date(req.decidedAt) : new Date(req.createdAt)
@@ -217,6 +248,9 @@ export function buildTradingFundPosts(req: ApprovalRequest, now: Date = new Date
     pauseWindows?: TradingFundPauseWindow[]
     closedAt?: string
     exitedAt?: string
+    earlyPenaltyAmount?: number
+    exitChargesAmount?: number
+    exitChargesNote?: string
   }
 
   // Admin-authorized close/exit: once set, ROI stops maturing on/after this
@@ -283,16 +317,22 @@ export function buildTradingFundPosts(req: ApprovalRequest, now: Date = new Date
   // 3. Position terminated → return the deployed capital (the tokens) to the
   //    master account, netting the original debit to zero. This fires either
   //    when an administrator closes early OR automatically when the engagement
-  //    term expires, whichever comes first.
+  //    term expires, whichever comes first. On EVERY exit the platform charges a
+  //    2% commission on the returned capital, plus — for an EARLY resignation the
+  //    administrator has reconciled — any penalty and charges recorded on the
+  //    payload. All fees are dated at termination and referenced to the position.
   if (adminCloseMs != null || now.getTime() >= expiryMs) {
     const byAdmin = adminCloseMs != null && adminCloseMs <= expiryMs
+    const terminationIso = new Date(terminationMs).toISOString()
+
+    // 3a. Capital returned.
     posts.push({
       id: tradingFundReturnId(req.id),
       direction: "credit",
       amount: capital,
       currency,
       status: "completed",
-      date: new Date(terminationMs).toISOString(),
+      date: terminationIso,
       counterparty: FUND_LABEL,
       reference: req.id,
       category: "NAFTAhub Trading — Fund Exit",
@@ -300,9 +340,67 @@ export function buildTradingFundPosts(req: ApprovalRequest, now: Date = new Date
         ? `Position closed by the administrator — capital${tokenNote} returned to the master account.`
         : `Engagement term reached — position expired, capital${tokenNote} returned to the master account.`,
     })
+
+    // 3b. 2% platform commission on the capital going out (every exit).
+    const commission = round2(capital * TRADING_FUND_EXIT_COMMISSION)
+    if (commission > 0) {
+      posts.push({
+        id: tradingFundCommissionId(req.id),
+        direction: "debit",
+        amount: commission,
+        currency,
+        status: "completed",
+        date: terminationIso,
+        counterparty: FUND_LABEL,
+        reference: req.id,
+        category: "NAFTAhub Trading — Exit Commission",
+        comment: `${(TRADING_FUND_EXIT_COMMISSION * 100).toFixed(0)}% platform commission on ${formatFundMoney(capital, currency)} of capital withdrawn.`,
+      })
+    }
+
+    // 3c. Early-resignation penalty (admin-reconciled, early exits only).
+    const penalty = round2(Math.max(0, Number(payload.earlyPenaltyAmount) || 0))
+    if (penalty > 0) {
+      posts.push({
+        id: tradingFundPenaltyId(req.id),
+        direction: "debit",
+        amount: penalty,
+        currency,
+        status: "completed",
+        date: terminationIso,
+        counterparty: FUND_LABEL,
+        reference: req.id,
+        category: "NAFTAhub Trading — Early Termination Penalty",
+        comment: `Penalty applied for anticipated resignation from the ${FUND_LABEL} engagement.`,
+      })
+    }
+
+    // 3d. Any additional charges the administrator recorded at reconciliation.
+    const charges = round2(Math.max(0, Number(payload.exitChargesAmount) || 0))
+    if (charges > 0) {
+      posts.push({
+        id: tradingFundChargesId(req.id),
+        direction: "debit",
+        amount: charges,
+        currency,
+        status: "completed",
+        date: terminationIso,
+        counterparty: FUND_LABEL,
+        reference: req.id,
+        category: "NAFTAhub Trading — Exit Charges",
+        comment: payload.exitChargesNote?.trim()
+          ? `Exit charges: ${payload.exitChargesNote.trim()}`
+          : "Additional charges applied at reconciliation.",
+      })
+    }
   }
 
   return posts
+}
+
+/** Compact money label for engine-generated ledger comments. */
+function formatFundMoney(amount: number, currency: string): string {
+  return `${currency} ${amount.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 }
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000
@@ -412,5 +510,81 @@ export function analyzeTradingFundPosition(opts: {
     capitalStarted: capital,
     capitalAtMaturity,
     nextRoiDate,
+  }
+}
+
+/** The reconciliation figures for terminating a Treuhand position. */
+export interface TradingFundExitQuote {
+  /** Whether this is an early resignation (term not yet reached). */
+  early: boolean
+  /** Whole months of the term already served. */
+  monthsServed: number
+  /** Whole months still remaining in the term. */
+  monthsRemaining: number
+  /** Capital returned to the master account. */
+  capitalReturned: number
+  /** ROI already matured and paid over the life of the position. */
+  roiMatured: number
+  /** 2% platform commission on the capital returned. */
+  commission: number
+  /** Early-resignation penalty being applied (admin-decided). */
+  penalty: number
+  /** Any additional charges being applied (admin-decided). */
+  charges: number
+  /** Administrator's suggested penalty (term-scaled; admin may override). */
+  suggestedPenalty: number
+  /** Net amount credited to the master account at exit = capital − all fees. */
+  netCredited: number
+}
+
+/**
+ * Compute the money movement of terminating a position, for the admin
+ * reconciliation panel and the client's pre-request preview. Matured ROI is
+ * derived deterministically from the activation date (the same schedule the
+ * ledger posts), so the quote is authoritative without reading the ledger.
+ * `penalty`/`charges` are the administrator's inputs (default 0 → the client
+ * preview shows the commission-only floor).
+ */
+export function quoteTradingFundExit(opts: {
+  capitalStarted: number
+  activation: Date
+  now?: Date
+  pauseWindows?: TradingFundPauseWindow[]
+  penalty?: number
+  charges?: number
+}): TradingFundExitQuote {
+  const now = opts.now ?? new Date()
+  const capital = Math.max(0, opts.capitalStarted)
+  const pauses = normalizePauses(opts.pauseWindows, now.getTime())
+
+  const monthsServed = maturedRoiPayments(opts.activation, now, pauses, undefined, TRADING_FUND_TERM_MONTHS).length
+  const monthsRemaining = Math.max(0, TRADING_FUND_TERM_MONTHS - monthsServed)
+  const roiMatured = round2(capital * TRADING_FUND_MONTHLY_ROI * monthsServed)
+
+  const expiryMs = deferredAnniversaryMs(opts.activation, TRADING_FUND_TERM_MONTHS, pauses)
+  const early = now.getTime() < expiryMs
+
+  const commission = round2(capital * TRADING_FUND_EXIT_COMMISSION)
+  const penalty = round2(Math.max(0, opts.penalty ?? 0))
+  const charges = round2(Math.max(0, opts.charges ?? 0))
+
+  // Term-scaled suggestion: the more of the term remains, the larger the hint.
+  const suggestedPenalty = early
+    ? round2(capital * TRADING_FUND_EARLY_EXIT_PENALTY_RATE * (monthsRemaining / TRADING_FUND_TERM_MONTHS))
+    : 0
+
+  const netCredited = round2(Math.max(0, capital - commission - penalty - charges))
+
+  return {
+    early,
+    monthsServed,
+    monthsRemaining,
+    capitalReturned: capital,
+    roiMatured,
+    commission,
+    penalty,
+    charges,
+    suggestedPenalty,
+    netCredited,
   }
 }
