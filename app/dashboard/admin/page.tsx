@@ -115,6 +115,7 @@ import { round2 } from "@/lib/interest-accrual"
 import { ADMIN_PASSCODE, ADMIN_SESSION_KEY } from "@/lib/admin-config"
 import { verifyAdminGate, confirmAdminSession } from "@/app/actions/admin-session"
 import { ApiKeysManager } from "@/components/admin/api-keys-manager"
+import { TreuhandPositions } from "@/components/admin/treuhand-positions"
 import { resetServerAccountDataForUser } from "@/app/actions/reset-account"
 import { listUsers, type AdminUserView } from "@/app/actions/admin-users"
 import { AdminGatewaySection } from "@/components/dashboard/admin-gateway-section"
@@ -2132,6 +2133,7 @@ export default function AdminPage() {
         { id: "settlement", label: "Securities Settlement", description: "DTC and Euroclear settlement instructions.", icon: Globe, count: pendingDTC.length + pendingEuroclear.length },
         { id: "commodity", label: "Commodity Deals", description: "POP/POF review and trade execution.", icon: Ship, count: pendingDeals.length },
         { id: "spotdeals", label: "Spot Deals & Vessels", description: "Manage tankers and publish limited-time spot offers.", icon: Tag, count: 0 },
+        { id: "treuhand", label: "Treuhand Fund Positions", description: "Pause, reactivate or close any client's hedge-fund position.", icon: Coins, count: 0 },
       ],
     },
     {
@@ -5161,6 +5163,9 @@ export default function AdminPage() {
 
       {/* Document Traceability: trace any generated document to its origin */}
       {activeView === "apikeys" && <ApiKeysManager passcode={ADMIN_PASSCODE} />}
+
+      {/* Treuhand fund: pause / reactivate / close any customer position */}
+      {activeView === "treuhand" && <TreuhandPositions passcode={ADMIN_PASSCODE} />}
 
       {activeView === "traceability" && (
       <div className="space-y-6">

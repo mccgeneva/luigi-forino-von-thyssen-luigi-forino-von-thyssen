@@ -17,7 +17,7 @@ import {
 } from "@/lib/ledger-db"
 import { convertCurrency } from "@/lib/fx"
 import { planReservation, formatMoney, type ReservationPlan } from "@/lib/fund-reservation"
-import { buildTradingFundPosts } from "@/lib/trading-fund"
+import { buildTradingFundPosts, TRADING_FUND_MONTHLY_ROI, type TradingFundPauseWindow } from "@/lib/trading-fund"
 import type { LedgerEntry } from "@/lib/ledger-store"
 import { insertNotification } from "@/lib/notifications-db"
 import {
@@ -1606,6 +1606,250 @@ export async function reconcileMyApprovedCredits(): Promise<{ ok: boolean; appli
 export type DecideResult =
   | { ok: true; request: ApprovalRequest }
   | { ok: false; error: string }
+
+/**
+ * Post any missing trading-fund ledger entries (capital debit, matured ROI, and
+ * the capital-return credit once closed) for ONE approved subscription to its
+ * balance owner (Master for a sub). Idempotent — skips ids already present.
+ * Used by the admin position-control actions so the effect reflects for the
+ * client immediately, without waiting for their next ledger read.
+ */
+async function syncTradingFundLedger(req: ApprovalRequest): Promise<void> {
+  const posts = buildTradingFundPosts(req)
+  if (posts.length === 0) return
+  const ownerId = await resolveDataOwnerIdFor(req.userId)
+  const rows = await readLedgerEntries(ownerId)
+  const existing = new Set(rows.map((r) => r.id))
+  for (const post of posts) {
+    if (existing.has(post.id)) continue
+    await upsertLedgerEntry(ownerId, post)
+  }
+}
+
+/** Current lifecycle state of a Treuhand position, derived from its payload. */
+export type TradingFundPositionStatus = "active" | "paused" | "closed"
+
+function tradingFundStatus(payload: Record<string, unknown> | null | undefined): TradingFundPositionStatus {
+  const p = (payload ?? {}) as { closedAt?: string; exitedAt?: string; pauseWindows?: TradingFundPauseWindow[] }
+  if (p.closedAt || p.exitedAt) return "closed"
+  if (Array.isArray(p.pauseWindows) && p.pauseWindows.some((w) => w && w.from && !w.to)) return "paused"
+  return "active"
+}
+
+/** Load an approved trading_fund position and guard it, for an admin action. */
+async function loadOpenPosition(
+  id: string,
+): Promise<{ ok: true; req: ApprovalRequest; payload: Record<string, unknown> } | { ok: false; error: string }> {
+  const existing = await getApprovalById(id)
+  if (!existing) return { ok: false, error: "Position not found." }
+  if (existing.kind !== "trading_fund") return { ok: false, error: "This is not a Treuhand fund position." }
+  if (existing.status !== "approved") return { ok: false, error: "Only an authorized position can be managed." }
+  return { ok: true, req: existing, payload: (existing.payload ?? {}) as Record<string, unknown> }
+}
+
+async function notifyPositionChange(req: ApprovalRequest, title: string, body: string): Promise<void> {
+  try {
+    await insertNotification({
+      userId: req.userId,
+      tone: "info",
+      title,
+      body,
+      href: KIND_HREF.trading_fund ?? "/dashboard/trading",
+    })
+  } catch (err) {
+    console.log("[v0] trading-fund notification failed:", (err as Error).message)
+  }
+}
+
+async function logPositionChange(req: ApprovalRequest, action: string, decision: string, note?: string): Promise<void> {
+  try {
+    const target = await resolveAccountProfileById(req.userId)
+    await logActivity({
+      action,
+      category: "Administration / Approvals",
+      user: "Administrator",
+      details: {
+        referenceId: req.id,
+        targetAccount: `${target.fullName} — ${target.email}`,
+        summary: req.summary || req.title,
+        decision,
+        reason: note?.trim() || "(none)",
+      },
+    })
+  } catch (err) {
+    console.log("[v0] trading-fund activity log failed:", (err as Error).message)
+  }
+}
+
+/**
+ * Administrator PAUSES a live Treuhand position. Opens a pause window so ROI
+ * stops maturing and every future anniversary is deferred by the paused time.
+ * The capital stays deployed (debit untouched). Client cannot do this.
+ */
+export async function pauseTradingFundPosition(passcode: string, id: string, note?: string): Promise<DecideResult> {
+  if (!(await adminOk(passcode))) return { ok: false, error: "Administrator authorization failed." }
+  try {
+    const loaded = await loadOpenPosition(id)
+    if (!loaded.ok) return loaded
+    const { req, payload } = loaded
+    if (tradingFundStatus(payload) === "closed") return { ok: false, error: "This position is closed." }
+    const windows: TradingFundPauseWindow[] = Array.isArray(payload.pauseWindows)
+      ? [...(payload.pauseWindows as TradingFundPauseWindow[])]
+      : []
+    if (windows.some((w) => w && w.from && !w.to)) return { ok: false, error: "This position is already paused." }
+    windows.push({ from: new Date().toISOString() })
+    const updated = await updateApprovalPayload(id, { ...payload, pauseWindows: windows, positionStatus: "paused" })
+    if (!updated) return { ok: false, error: "The position could not be updated." }
+    await notifyPositionChange(
+      updated,
+      "Treuhand position paused",
+      `Your Treuhand AG Hedge Fund position "${updated.title}" was paused by MCC Capital${note?.trim() ? ` — ${note.trim()}` : ""}. Monthly ROI is on hold until it is reactivated.`,
+    )
+    await logPositionChange(updated, `Administrator paused Treuhand position "${updated.title}"`, "Paused", note)
+    return { ok: true, request: updated }
+  } catch (err) {
+    console.log("[v0] pauseTradingFundPosition failed:", (err as Error).message)
+    return { ok: false, error: "The position could not be paused. Please try again." }
+  }
+}
+
+/**
+ * Administrator RESUMES a paused Treuhand position. Closes the open pause window
+ * so ROI accrual continues from where it left off.
+ */
+export async function resumeTradingFundPosition(passcode: string, id: string, note?: string): Promise<DecideResult> {
+  if (!(await adminOk(passcode))) return { ok: false, error: "Administrator authorization failed." }
+  try {
+    const loaded = await loadOpenPosition(id)
+    if (!loaded.ok) return loaded
+    const { payload } = loaded
+    if (tradingFundStatus(payload) === "closed") return { ok: false, error: "This position is closed." }
+    const windows: TradingFundPauseWindow[] = Array.isArray(payload.pauseWindows)
+      ? [...(payload.pauseWindows as TradingFundPauseWindow[])]
+      : []
+    const open = windows.find((w) => w && w.from && !w.to)
+    if (!open) return { ok: false, error: "This position is not paused." }
+    open.to = new Date().toISOString()
+    const updated = await updateApprovalPayload(id, { ...payload, pauseWindows: windows, positionStatus: "active" })
+    if (!updated) return { ok: false, error: "The position could not be updated." }
+    await notifyPositionChange(
+      updated,
+      "Treuhand position reactivated",
+      `Your Treuhand AG Hedge Fund position "${updated.title}" was reactivated by MCC Capital${note?.trim() ? ` — ${note.trim()}` : ""}. Monthly ROI accrual has resumed.`,
+    )
+    await logPositionChange(updated, `Administrator reactivated Treuhand position "${updated.title}"`, "Reactivated", note)
+    return { ok: true, request: updated }
+  } catch (err) {
+    console.log("[v0] resumeTradingFundPosition failed:", (err as Error).message)
+    return { ok: false, error: "The position could not be reactivated. Please try again." }
+  }
+}
+
+/**
+ * Administrator CLOSES / EXITS a Treuhand position. ROI stops maturing and the
+ * deployed capital (the tokens) is CREDITED BACK to the master account, netting
+ * the original debit to zero. Matured ROI already earned stays paid. The
+ * capital return + any final matured ROI are posted immediately.
+ */
+export async function closeTradingFundPosition(passcode: string, id: string, note?: string): Promise<DecideResult> {
+  if (!(await adminOk(passcode))) return { ok: false, error: "Administrator authorization failed." }
+  try {
+    const loaded = await loadOpenPosition(id)
+    if (!loaded.ok) return loaded
+    const { payload } = loaded
+    if (tradingFundStatus(payload) === "closed") return { ok: false, error: "This position is already closed." }
+    const nowIso = new Date().toISOString()
+    const windows: TradingFundPauseWindow[] = Array.isArray(payload.pauseWindows)
+      ? [...(payload.pauseWindows as TradingFundPauseWindow[])]
+      : []
+    const open = windows.find((w) => w && w.from && !w.to)
+    if (open) open.to = nowIso
+    const updated = await updateApprovalPayload(id, {
+      ...payload,
+      pauseWindows: windows,
+      closedAt: nowIso,
+      positionStatus: "closed",
+    })
+    if (!updated) return { ok: false, error: "The position could not be updated." }
+    // Post the capital-return credit (and any final matured ROI) right away.
+    await syncTradingFundLedger(updated)
+    const capital = Number(updated.amount ?? (updated.payload as { capital?: number })?.capital)
+    const capitalLabel = Number.isFinite(capital) ? formatMoney(capital, updated.currency ?? "EUR") : "the deployed capital"
+    await notifyPositionChange(
+      updated,
+      "Treuhand position closed",
+      `Your Treuhand AG Hedge Fund position "${updated.title}" was closed by MCC Capital${note?.trim() ? ` — ${note.trim()}` : ""}. ${capitalLabel} (your tokens) has been credited back to your Master Account and monthly ROI has stopped.`,
+    )
+    await logPositionChange(updated, `Administrator closed Treuhand position "${updated.title}" and returned capital`, "Closed", note)
+    return { ok: true, request: updated }
+  } catch (err) {
+    console.log("[v0] closeTradingFundPosition failed:", (err as Error).message)
+    return { ok: false, error: "The position could not be closed. Please try again." }
+  }
+}
+
+/** A Treuhand position summarized for the administrator control panel. */
+export interface AdminTradingFundPosition {
+  id: string
+  userId: string
+  accountName: string
+  accountEmail: string
+  title: string
+  tokens: number | null
+  capital: number
+  currency: string
+  monthlyRoi: number
+  activatedAt: string
+  status: TradingFundPositionStatus
+  pausedAt: string | null
+  closedAt: string | null
+}
+
+/** Every authorized Treuhand position across all accounts, for the admin panel. */
+export async function adminListTradingFundPositions(
+  passcode: string,
+): Promise<{ ok: true; positions: AdminTradingFundPosition[] } | { ok: false; error: string }> {
+  if (!(await adminOk(passcode))) return { ok: false, error: "Administrator authorization failed." }
+  try {
+    const reqs = await listAllApprovals({ kind: "trading_fund", status: "approved" })
+    const positions: AdminTradingFundPosition[] = []
+    for (const req of reqs) {
+      const payload = (req.payload ?? {}) as {
+        capital?: number
+        tokens?: number
+        pauseWindows?: TradingFundPauseWindow[]
+        closedAt?: string
+        exitedAt?: string
+      }
+      const capital = Number(req.amount ?? payload.capital)
+      if (!Number.isFinite(capital) || capital <= 0) continue
+      const profile = await resolveAccountProfileById(req.userId)
+      const status = tradingFundStatus(payload)
+      const openPause = Array.isArray(payload.pauseWindows)
+        ? payload.pauseWindows.find((w) => w && w.from && !w.to)
+        : undefined
+      positions.push({
+        id: req.id,
+        userId: req.userId,
+        accountName: profile.fullName,
+        accountEmail: profile.email,
+        title: req.title,
+        tokens: Number.isFinite(Number(payload.tokens)) ? Number(payload.tokens) : null,
+        capital,
+        currency: req.currency || "EUR",
+        monthlyRoi: Math.round(capital * TRADING_FUND_MONTHLY_ROI * 100) / 100,
+        activatedAt: req.decidedAt || req.createdAt,
+        status,
+        pausedAt: openPause?.from ?? null,
+        closedAt: payload.closedAt ?? payload.exitedAt ?? null,
+      })
+    }
+    return { ok: true, positions }
+  } catch (err) {
+    console.log("[v0] adminListTradingFundPositions failed:", (err as Error).message)
+    return { ok: false, error: "Positions could not be loaded. Please try again." }
+  }
+}
 
 export async function adminDecideApproval(
   passcode: string,
