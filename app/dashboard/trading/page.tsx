@@ -277,10 +277,24 @@ export default function TradingPage() {
   // as their own line items — independent of the master account's overall
   // balance, where a €30k move can be dwarfed by a multi-billion figure.
   const fundPositions = useMemo(() => {
+    // The position's approval id is embedded in EVERY entry's id, regardless of
+    // its `reference` (the subscription debit carries a token label like
+    // "TREUHAND-3T", while engine entries carry the approval id). Deriving the
+    // id from the entry id gives a stable grouping key that also equals the real
+    // approval id — so the early-termination request can address the position.
+    const approvalIdFromEntryId = (id: string): string | null => {
+      if (id.startsWith("TFUND-ROI-")) return id.slice("TFUND-ROI-".length).replace(/-M\d+$/, "")
+      if (id.startsWith("TFUND-RETURN-")) return id.slice("TFUND-RETURN-".length)
+      if (id.startsWith("TFUND-COMM-")) return id.slice("TFUND-COMM-".length)
+      if (id.startsWith("TFUND-PENALTY-")) return id.slice("TFUND-PENALTY-".length)
+      if (id.startsWith("TFUND-CHARGE-")) return id.slice("TFUND-CHARGE-".length)
+      if (id.startsWith("APPR-")) return id.slice("APPR-".length)
+      return null
+    }
     const groups = new Map<string, typeof entries>()
     for (const e of entries) {
       if (!e.category?.startsWith("NAFTAhub Trading —")) continue
-      const key = e.reference || e.id
+      const key = approvalIdFromEntryId(e.id) || e.reference || e.id
       const list = groups.get(key)
       if (list) list.push(e)
       else groups.set(key, [e])
