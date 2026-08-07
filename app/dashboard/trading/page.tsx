@@ -489,6 +489,9 @@ export default function TradingPage() {
 
   const capital = tokens * TOKEN_VALUE
   const monthlyReturn = capital * MONTHLY_ROI
+  // There is no upper cap on tokens — the only limit is the money on the master
+  // account. This is the largest whole-token position the balance can fund.
+  const maxAffordableTokens = Math.floor(Math.max(0, availableCapital) / TOKEN_VALUE)
 
   const formatEur = (n: number) =>
     `€${n.toLocaleString("en-US", { maximumFractionDigits: 0 })}`
@@ -1511,7 +1514,19 @@ export default function TradingPage() {
                   >
                     <Minus className="h-4 w-4" />
                   </Button>
-                  <span className="w-10 text-center text-xl font-bold text-foreground">{tokens}</span>
+                  <Input
+                    type="number"
+                    min={MIN_TOKENS}
+                    step={1}
+                    value={tokens}
+                    onChange={(e) => {
+                      const n = Math.floor(Number(e.target.value))
+                      setTokens(Number.isFinite(n) && n > 0 ? n : MIN_TOKENS)
+                    }}
+                    onBlur={() => setTokens((t) => (t < MIN_TOKENS ? MIN_TOKENS : t))}
+                    className="w-24 text-center text-xl font-bold [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+                    aria-label="Number of tokens"
+                  />
                   <Button
                     type="button"
                     variant="outline"
@@ -1537,6 +1552,17 @@ export default function TradingPage() {
                     {q}
                   </Button>
                 ))}
+                {maxAffordableTokens >= MIN_TOKENS && (
+                  <Button
+                    type="button"
+                    variant={tokens === maxAffordableTokens ? "default" : "outline"}
+                    size="sm"
+                    onClick={() => setTokens(maxAffordableTokens)}
+                    title={`Invest your full available balance (${formatEur(availableCapital)})`}
+                  >
+                    Max · {maxAffordableTokens}
+                  </Button>
+                )}
               </div>
 
               <div className="grid gap-3 sm:grid-cols-3">
