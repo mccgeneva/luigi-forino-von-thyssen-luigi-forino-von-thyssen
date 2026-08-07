@@ -410,6 +410,9 @@ export default function TradingPage() {
   const [lots, setLots] = useState("0.10")
   const [activeTab, setActiveTab] = useState("markets")
   const [tokens, setTokens] = useState(MIN_TOKENS)
+  // Draft string for the manual token field, so the user can clear it and type
+  // a large number (e.g. 1000) freely; committed/clamped on blur.
+  const [tokenDraft, setTokenDraft] = useState(String(MIN_TOKENS))
   const [applyOpen, setApplyOpen] = useState(false)
   const [applicantName, setApplicantName] = useState("")
   const [applicantEmail, setApplicantEmail] = useState("")
@@ -492,6 +495,13 @@ export default function TradingPage() {
   // There is no upper cap on tokens — the only limit is the money on the master
   // account. This is the largest whole-token position the balance can fund.
   const maxAffordableTokens = Math.floor(Math.max(0, availableCapital) / TOKEN_VALUE)
+  // Set the token count from any control (stepper, preset, Max) and keep the
+  // manual-entry draft field in sync.
+  const setTokensSynced = (n: number) => {
+    const v = Math.max(MIN_TOKENS, Math.floor(n))
+    setTokens(v)
+    setTokenDraft(String(v))
+  }
 
   const formatEur = (n: number) =>
     `€${n.toLocaleString("en-US", { maximumFractionDigits: 0 })}`
@@ -1508,7 +1518,7 @@ export default function TradingPage() {
                     variant="outline"
                     size="icon"
                     className="h-9 w-9"
-                    onClick={() => setTokens((t) => Math.max(MIN_TOKENS, t - 1))}
+                    onClick={() => setTokensSynced(tokens - 1)}
                     disabled={tokens <= MIN_TOKENS}
                     aria-label="Decrease tokens"
                   >
@@ -1516,23 +1526,30 @@ export default function TradingPage() {
                   </Button>
                   <Input
                     type="number"
+                    inputMode="numeric"
                     min={MIN_TOKENS}
                     step={1}
-                    value={tokens}
+                    value={tokenDraft}
                     onChange={(e) => {
-                      const n = Math.floor(Number(e.target.value))
-                      setTokens(Number.isFinite(n) && n > 0 ? n : MIN_TOKENS)
+                      // Allow free typing (including a temporarily empty field);
+                      // reflect a valid positive integer immediately, don't clamp
+                      // until blur so large numbers can be typed digit by digit.
+                      const raw = e.target.value
+                      setTokenDraft(raw)
+                      const n = Math.floor(Number(raw))
+                      if (raw !== "" && Number.isFinite(n) && n > 0) setTokens(n)
                     }}
-                    onBlur={() => setTokens((t) => (t < MIN_TOKENS ? MIN_TOKENS : t))}
+                    onBlur={() => setTokensSynced(Number(tokenDraft) || MIN_TOKENS)}
+                    onFocus={(e) => e.currentTarget.select()}
                     className="w-24 text-center text-xl font-bold [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
-                    aria-label="Number of tokens"
+                    aria-label="Number of tokens to buy"
                   />
                   <Button
                     type="button"
                     variant="outline"
                     size="icon"
                     className="h-9 w-9"
-                    onClick={() => setTokens((t) => t + 1)}
+                    onClick={() => setTokensSynced(tokens + 1)}
                     aria-label="Increase tokens"
                   >
                     <Plus className="h-4 w-4" />
@@ -1547,7 +1564,7 @@ export default function TradingPage() {
                     type="button"
                     variant={tokens === q ? "default" : "outline"}
                     size="sm"
-                    onClick={() => setTokens(q)}
+                    onClick={() => setTokensSynced(q)}
                   >
                     {q}
                   </Button>
@@ -1557,7 +1574,7 @@ export default function TradingPage() {
                     type="button"
                     variant={tokens === maxAffordableTokens ? "default" : "outline"}
                     size="sm"
-                    onClick={() => setTokens(maxAffordableTokens)}
+                    onClick={() => setTokensSynced(maxAffordableTokens)}
                     title={`Invest your full available balance (${formatEur(availableCapital)})`}
                   >
                     Max · {maxAffordableTokens}
