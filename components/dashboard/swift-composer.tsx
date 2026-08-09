@@ -379,20 +379,24 @@ export function SwiftComposer({ onSent, onSaveDraft }: SwiftComposerProps) {
   const set = (key: keyof FormState) => (value: string) => setForm((prev) => ({ ...prev, [key]: value }))
 
   // Bank reality: the beneficiary's bank (:57a: Account With Institution) IS the
-  // receiving institution. Selecting the Receiver BIC therefore also sets the
+  // receiving institution. Setting the Receiver BIC therefore also sets the
   // beneficiary BIC — they cannot legitimately differ in this direct flow.
   const setReceiver = (value: string) => setForm((prev) => ({ ...prev, receiverBic: value, beneficiaryBic: value }))
 
-  // Warning when the entered beneficiary IBAN is held at a DIFFERENT bank than
-  // the selected receiving institution (i.e. the account is not at the receiver).
-  const [bicMismatch, setBicMismatch] = useState<string | null>(null)
+  // Bank name resolved from the beneficiary IBAN (external registry lookup),
+  // used to label the auto-filled Receiver / :57a: fields for banks that aren't
+  // in the short correspondent list.
+  const [resolvedBankName, setResolvedBankName] = useState<string | null>(null)
 
-  const beneficiaryBankName = CORRESPONDENT_BANKS.find((b) => b.bic === form.receiverBic)?.name ?? null
+  const beneficiaryBankName =
+    resolvedBankName ?? CORRESPONDENT_BANKS.find((b) => b.bic === form.receiverBic)?.name ?? null
+
+  const isPayment = activeDef?.family === "payment"
 
   const openCompose = (code: string) => {
     setActiveCode(code)
     setForm(EMPTY_FORM)
-    setBicMismatch(null)
+    setResolvedBankName(null)
     setOpen(true)
   }
 
@@ -502,18 +506,34 @@ export function SwiftComposer({ onSent, onSaveDraft }: SwiftComposerProps) {
                 </div>
                 <div className="space-y-2">
                   <Label className="text-foreground">Receiver BIC / SWIFT</Label>
-                  <Select value={form.receiverBic} onValueChange={setReceiver}>
-                    <SelectTrigger className="bg-background border-border text-foreground">
-                      <SelectValue placeholder="Select bank" />
-                    </SelectTrigger>
-                    <SelectContent className="bg-card border-border">
-                      {CORRESPONDENT_BANKS.map((b) => (
-                        <SelectItem key={b.bic} value={b.bic}>
-                          {b.bic} — {b.name}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+                  {isPayment ? (
+                    // For payments the receiver IS the beneficiary's bank, which we
+                    // resolve automatically from the beneficiary IBAN below — no
+                    // manual bank menu needed.
+                    <Input
+                      value={
+                        form.receiverBic
+                          ? `${form.receiverBic}${beneficiaryBankName ? ` — ${beneficiaryBankName}` : ""}`
+                          : ""
+                      }
+                      disabled
+                      placeholder="Auto-fills from beneficiary IBAN"
+                      className="bg-muted border-border text-foreground"
+                    />
+                  ) : (
+                    <Select value={form.receiverBic} onValueChange={setReceiver}>
+                      <SelectTrigger className="bg-background border-border text-foreground">
+                        <SelectValue placeholder="Select bank" />
+                      </SelectTrigger>
+                      <SelectContent className="bg-card border-border">
+                        {CORRESPONDENT_BANKS.map((b) => (
+                          <SelectItem key={b.bic} value={b.bic}>
+                            {b.bic} — {b.name}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  )}
                 </div>
               </div>
 
@@ -573,25 +593,18 @@ export function SwiftComposer({ onSent, onSaveDraft }: SwiftComposerProps) {
                       placeholder="IBAN / account"
                       inputClassName="bg-background border-border text-foreground"
                       onResolved={(info) => {
-                        // The beneficiary's bank is the Receiver (:57a:). Verify the
-                        // entered IBAN is actually held there; warn on a mismatch.
-                        const ibanBic = info?.bic?.toUpperCase()
-                        const receiver = form.receiverBic?.toUpperCase()
-                        if (ibanBic && receiver && ibanBic.slice(0, 6) !== receiver.slice(0, 6)) {
-                          setBicMismatch(
-                            `This IBAN is held at ${info?.name ? `${info.name} (${ibanBic})` : ibanBic}, not the selected receiving bank (${receiver}). Confirm the receiver.`,
-                          )
+                        // The beneficiary's bank IS the receiving institution
+                        // (:57a:). Resolve its BIC/SWIFT from the IBAN and fill the
+                        // Receiver + :57a: fields automatically — no manual menu.
+                        if (info?.bic) {
+                          setReceiver(info.bic.toUpperCase())
+                          setResolvedBankName(info.name ?? null)
                         } else {
-                          setBicMismatch(null)
+                          setReceiver("")
+                          setResolvedBankName(null)
                         }
                       }}
                     />
-                    {bicMismatch && (
-                      <p className="flex items-start gap-1.5 text-xs text-amber-500">
-                        <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-                        <span>{bicMismatch}</span>
-                      </p>
-                    )}
                   </div>
 
                   <div className="space-y-2">
@@ -601,12 +614,12 @@ export function SwiftComposer({ onSent, onSaveDraft }: SwiftComposerProps) {
                         form.receiverBic ? `${form.receiverBic}${beneficiaryBankName ? ` — ${beneficiaryBankName}` : ""}` : ""
                       }
                       disabled
-                      placeholder="Set by the Receiver BIC / SWIFT above"
+                      placeholder="Auto-fills from the beneficiary IBAN"
                       className="bg-muted border-border text-foreground"
                     />
                     <p className="text-xs text-muted-foreground">
-                      The beneficiary&apos;s bank is the receiving institution (Receiver BIC / SWIFT). It always matches and is
-                      not entered separately.
+                      Automatically resolved from the beneficiary IBAN above — this is the receiving institution (Receiver
+                      BIC / SWIFT) and is not entered separately.
                     </p>
                   </div>
                   <div className="space-y-2">
