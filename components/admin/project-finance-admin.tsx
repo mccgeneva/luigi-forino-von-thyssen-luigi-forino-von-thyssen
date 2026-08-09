@@ -52,7 +52,7 @@ function ClientSelect({
 }) {
   return (
     <Select value={value} onValueChange={onChange}>
-      <SelectTrigger className="h-11">
+      <SelectTrigger className="h-11 w-full min-w-0 [&>span]:truncate">
         <SelectValue placeholder={placeholder} />
       </SelectTrigger>
       <SelectContent>
