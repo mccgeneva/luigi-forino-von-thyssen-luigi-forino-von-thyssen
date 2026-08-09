@@ -27,7 +27,12 @@ function emailInfo(r: SwiftRoutingRequest): SwiftEmailInfo {
     amount: r.amount,
     currency: r.currency,
     senderBic: r.senderBic,
+    receiverBic: r.receiverBic,
   }
+}
+
+function isValidEmail(email: string): boolean {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())
 }
 
 export interface SubmitSwiftInput {
@@ -135,10 +140,16 @@ export async function listSwiftBeneficiaries(
 export async function approveSwiftRoutingAdmin(
   passcode: string,
   id: string,
-  beneficiary: { userId: string; email: string; name: string },
+  beneficiary: { userId: string | null; email: string; name: string },
 ): Promise<{ ok: true; request: SwiftRoutingRequest; emailed: boolean } | { ok: false; error: string }> {
   if (!(await adminActionAuthorized(passcode))) return { ok: false, error: "Administrator authorization failed." }
-  if (!beneficiary.email) return { ok: false, error: "Select a beneficiary before routing." }
+  const email = beneficiary.email.trim()
+  const name = beneficiary.name.trim()
+  if (!email) return { ok: false, error: "Enter a recipient email before routing." }
+  if (!isValidEmail(email)) return { ok: false, error: "Enter a valid recipient email address." }
+  // External (non-customer) recipients have no platform user id but must be
+  // identified by name so the transmission advice is properly addressed.
+  if (!beneficiary.userId && !name) return { ok: false, error: "Enter the external recipient's name." }
 
   const session = await resolveCurrentSession()
   const decidedBy = session?.profile.fullName || "Administrator"
@@ -148,10 +159,19 @@ export async function approveSwiftRoutingAdmin(
     if (!existing) return { ok: false, error: "Routing request not found." }
     if (existing.status !== "pending") return { ok: false, error: "This request has already been decided." }
 
-    const request = await approveSwiftRoutingRequest(id, beneficiary, decidedBy)
+    const request = await approveSwiftRoutingRequest(
+      id,
+      { userId: beneficiary.userId, email, name: name || email },
+      decidedBy,
+    )
     if (!request) return { ok: false, error: "This request has already been decided." }
 
-    const res = await sendSwiftRoutedEmail(beneficiary.email, beneficiary.name, emailInfo(request), request.raw)
+    const res = await sendSwiftRoutedEmail(
+      request.beneficiaryEmail || email,
+      request.beneficiaryName || name || email,
+      emailInfo(request),
+      request.raw,
+    )
     return { ok: true, request, emailed: res.ok }
   } catch (err) {
     console.log("[v0] approveSwiftRoutingAdmin failed:", err instanceof Error ? err.message : String(err))
