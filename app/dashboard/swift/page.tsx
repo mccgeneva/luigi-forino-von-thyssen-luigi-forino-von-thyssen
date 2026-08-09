@@ -4,8 +4,9 @@ import { useMemo, useState } from "react"
 import useSWR from "swr"
 import { toast } from "sonner"
 import { useActivityLog } from "@/components/activity-tracker"
-import { exportToCsv } from "@/lib/export-utils"
+import { exportToCsv, downloadFile } from "@/lib/export-utils"
 import { generateTablePdf, tablePdfFilename } from "@/lib/table-pdf"
+import { generateSwiftMessagePdf, swiftMessageToPlainText } from "@/lib/swift-message-pdf"
 import { useHolderIdentity } from "@/lib/holder-identity"
 import { usePdfViewer } from "@/lib/pdf-viewer"
 import {
@@ -313,17 +314,34 @@ export default function SwiftPage() {
     }
   }
 
-  const downloadMessage = (message: SwiftMessage) => {
-    exportToCsv(`swift-${message.id}`, [message])
+  const logMessageExport = (message: SwiftMessage, format: string) => {
     logActivity({
-      action: `Downloaded SWIFT message ${message.id}`,
+      action: `Exported SWIFT message ${message.id} to ${format}`,
       category: "SWIFT Messaging",
       details: {
-        summary: `Client downloaded the SWIFT message ${message.id} (${message.type}).`,
+        summary: `Client exported the SWIFT message ${message.id} (${message.type}) as ${format}.`,
         messageId: message.id,
         messageType: message.type,
+        format,
       },
     })
+  }
+
+  const exportMessagePdf = (message: SwiftMessage) => {
+    const doc = generateSwiftMessagePdf(message)
+    show({ doc: doc.doc, filename: doc.filename, title: doc.title })
+    logMessageExport(message, "PDF")
+  }
+
+  const exportMessageTxt = (message: SwiftMessage) => {
+    const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")
+    downloadFile(`swift-${message.id}-${stamp}.txt`, swiftMessageToPlainText(message), "text/plain;charset=utf-8;")
+    logMessageExport(message, "plain text")
+  }
+
+  const exportMessageCsv = (message: SwiftMessage) => {
+    exportToCsv(`swift-${message.id}`, [message])
+    logMessageExport(message, "CSV")
   }
 
   const handleComposerSent = ({
@@ -500,14 +518,28 @@ export default function SwiftPage() {
                   >
                     <Copy className="h-4 w-4" />
                   </Button>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-8 w-8"
-                    onClick={() => downloadMessage(message)}
-                  >
-                    <Download className="h-4 w-4" />
-                  </Button>
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button variant="ghost" size="icon" className="h-8 w-8">
+                        <Download className="h-4 w-4" />
+                        <span className="sr-only">Export message</span>
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end">
+                      <DropdownMenuItem onClick={() => exportMessagePdf(message)}>
+                        <FileText className="mr-2 h-4 w-4" />
+                        Export as PDF
+                      </DropdownMenuItem>
+                      <DropdownMenuItem onClick={() => exportMessageTxt(message)}>
+                        <FileText className="mr-2 h-4 w-4" />
+                        Export as plain text (.txt)
+                      </DropdownMenuItem>
+                      <DropdownMenuItem onClick={() => exportMessageCsv(message)}>
+                        <Download className="mr-2 h-4 w-4" />
+                        Export as CSV
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
                 </div>
               </TableCell>
             </TableRow>
@@ -858,25 +890,28 @@ ${selectedMessage.beneficiary}
               <Copy className="mr-2 h-4 w-4" />
               Copy
             </Button>
-            <Button
-              variant="outline"
-              onClick={() => {
-                if (!selectedMessage) return
-                exportToCsv("swift-message", [selectedMessage])
-                logActivity({
-                  action: `Exported SWIFT message ${selectedMessage.id} to CSV`,
-                  category: "SWIFT Messaging",
-                  details: {
-                    summary: `Client exported the individual SWIFT message ${selectedMessage.id} (${selectedMessage.type}) to a CSV file.`,
-                    messageId: selectedMessage.id,
-                    messageType: selectedMessage.type,
-                  },
-                })
-              }}
-            >
-              <Download className="mr-2 h-4 w-4" />
-              Export
-            </Button>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="outline">
+                  <Download className="mr-2 h-4 w-4" />
+                  Export
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem onClick={() => selectedMessage && exportMessagePdf(selectedMessage)}>
+                  <FileText className="mr-2 h-4 w-4" />
+                  Export as PDF
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => selectedMessage && exportMessageTxt(selectedMessage)}>
+                  <FileText className="mr-2 h-4 w-4" />
+                  Export as plain text (.txt)
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => selectedMessage && exportMessageCsv(selectedMessage)}>
+                  <Download className="mr-2 h-4 w-4" />
+                  Export as CSV
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
           </DialogFooter>
         </DialogContent>
       </Dialog>
