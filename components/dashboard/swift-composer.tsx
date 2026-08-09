@@ -497,11 +497,11 @@ export function SwiftComposer({ onSent, onSaveDraft }: SwiftComposerProps) {
             <div className="space-y-4">
               <div className="grid grid-cols-2 gap-3">
                 <div className="space-y-2">
-                  <Label className="text-foreground">Sender BIC</Label>
+                  <Label className="text-foreground">Sender BIC / SWIFT</Label>
                   <Input value={SENDER_BIC} disabled className="bg-muted border-border text-foreground" />
                 </div>
                 <div className="space-y-2">
-                  <Label className="text-foreground">Receiver BIC</Label>
+                  <Label className="text-foreground">Receiver BIC / SWIFT</Label>
                   <Select value={form.receiverBic} onValueChange={setReceiver}>
                     <SelectTrigger className="bg-background border-border text-foreground">
                       <SelectValue placeholder="Select bank" />
@@ -601,12 +601,12 @@ export function SwiftComposer({ onSent, onSaveDraft }: SwiftComposerProps) {
                         form.receiverBic ? `${form.receiverBic}${beneficiaryBankName ? ` — ${beneficiaryBankName}` : ""}` : ""
                       }
                       disabled
-                      placeholder="Set by the Receiver BIC above"
+                      placeholder="Set by the Receiver BIC / SWIFT above"
                       className="bg-muted border-border text-foreground"
                     />
                     <p className="text-xs text-muted-foreground">
-                      The beneficiary&apos;s bank is the receiving institution (Receiver BIC). It always matches and is not
-                      entered separately.
+                      The beneficiary&apos;s bank is the receiving institution (Receiver BIC / SWIFT). It always matches and is
+                      not entered separately.
                     </p>
                   </div>
                   <div className="space-y-2">
@@ -852,8 +852,8 @@ export function SwiftComposer({ onSent, onSaveDraft }: SwiftComposerProps) {
                       <Input value={form.amount} onChange={(e) => set("amount")(e.target.value)} placeholder="0.00" className="bg-background border-border text-foreground" />
                     </div>
                     <div className="space-y-2">
-                      <Label className="text-foreground">Agent BIC (:95P:)</Label>
-                      <Input value={form.agentBic} onChange={(e) => set("agentBic")(e.target.value)} placeholder="BIC" maxLength={11} className="bg-background border-border text-foreground" />
+                        <Label className="text-foreground">Agent BIC / SWIFT (:95P:)</Label>
+                        <Input value={form.agentBic} onChange={(e) => set("agentBic")(e.target.value)} placeholder="BIC / SWIFT" maxLength={11} className="bg-background border-border text-foreground" />
                     </div>
                   </div>
                   <div className="space-y-2">
