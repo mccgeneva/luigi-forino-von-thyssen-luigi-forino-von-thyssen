@@ -54,7 +54,7 @@ const actions = [
     description: "Compliance verification",
     icon: Shield,
     color: "bg-red-500/10 text-red-400",
-    href: "/dashboard/transactions",
+    href: "/dashboard/services",
   },
   {
     title: "Internal Transfer",
