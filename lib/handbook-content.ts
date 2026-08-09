@@ -425,13 +425,13 @@ export const HANDBOOK_SECTIONS: HandbookSection[] = [
       {
         heading: "Leverage & Risk",
         paragraphs: [
-          "Request leveraged trading lines against your account equity and monitor margin in real time. You choose a leverage ratio of 1:2, 1:5, 1:10, 1:20, or up to 1:30; the borrowed amount, total buying power, and accrued debit interest are calculated for you before you submit.",
-          "Borrowed funds carry debit interest of 1.8% per year, which accrues from the moment the line is activated. When you switch a line off, the accrued interest is settled and the borrowed principal is repaid from your balance. Each line is denominated in your account's currency (EUR, USD, GBP, or CHF), and both activation and switch-off require Administrator approval.",
+          "Request leveraged trading lines against your account equity and monitor margin in real time. You choose a leverage ratio of 1:2, 1:5, 1:10, 1:15, 1:20, 1:25, or up to 1:30; the borrowed amount, total buying power, and accrued debit interest are calculated for you before you submit.",
+          "Borrowed funds carry debit interest under a risk-based inverse scale — a higher leverage multiple signals lower risk and carries a lower annual rate: 14% at 1:2, 10% at 1:5, 8% at 1:10, 7% at 1:15, 6% at 1:20, 4% at 1:25 and 3% at 1:30. Interest accrues from the moment the line is activated. When you switch a line off, the accrued interest is settled and the borrowed principal is repaid from your balance. Each line is denominated in your account's currency (EUR, USD, GBP, or CHF), and both activation and switch-off require Administrator approval.",
         ],
         bullets: [
           "Selectable leverage ratios from 1:2 up to 1:30.",
           "Live preview of borrowed funds, buying power, and interest before submitting.",
-          "Debit interest of 1.8% per year on borrowed funds, settled on switch-off.",
+          "Risk-based debit interest (14% at 1:2 down to 3% at 1:30) on borrowed funds, settled on switch-off.",
           "Real-time margin monitoring with Administrator-approved activation and switch-off.",
         ],
       },
@@ -619,7 +619,7 @@ export const HANDBOOK_SECTIONS: HandbookSection[] = [
       {
         heading: "Leverage Costs",
         paragraphs: [
-          "Leveraged trading lines carry debit interest of 1.8% per year on borrowed funds, accruing from activation. When a line is switched off, accrued interest is settled and the borrowed principal is repaid from your balance. There are no separate activation fees — the cost is the transparent interest on what you actually borrow.",
+          "Leveraged trading lines carry debit interest on borrowed funds under a risk-based inverse scale — a higher ratio carries a lower rate (14% at 1:2, 10% at 1:5, 8% at 1:10, 7% at 1:15, 6% at 1:20, 4% at 1:25, 3% at 1:30) — accruing from activation. When a line is switched off, accrued interest is settled and the borrowed principal is repaid from your balance. There are no separate activation fees — the cost is the transparent interest on what you actually borrow.",
         ],
       },
       {

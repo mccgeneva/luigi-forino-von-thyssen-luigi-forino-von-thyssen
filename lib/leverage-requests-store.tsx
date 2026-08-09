@@ -4,6 +4,15 @@ import { createContext, useContext } from "react"
 import { mirrorSubmission, mapApprovalStatus, type ApprovalRecord } from "@/lib/approval-sync"
 import { useServerRequestList } from "@/lib/use-server-request-list"
 import { updateMyApprovalRecord } from "@/app/actions/approvals"
+import {
+  LEVERAGE_RATIOS,
+  TREASURY_LEVERAGE_RATIOS,
+  debitInterestRateFor,
+} from "@/lib/leverage-rates"
+
+// Re-export the shared, configurable rate model so existing importers of the
+// leverage store keep working unchanged.
+export { LEVERAGE_RATIOS, TREASURY_LEVERAGE_RATIOS, debitInterestRateFor }
 
 export type LeverageRequestStatus =
   | "pending" // activation requested, awaiting admin
@@ -64,13 +73,27 @@ export const ACCOUNT_MAX_LEVERAGE: Record<LeverageAccountKey, number> = LEVERAGE
 // display copy and global guards.
 export const MAX_LEVERAGE = Math.max(...LEVERAGE_ACCOUNTS.map((a) => a.maxLeverage))
 
-// Full ladder of selectable leverage ratios offered by the platform.
-export const LEVERAGE_RATIOS = [2, 5, 10, 20, 30]
-
 // Resolve the maximum leverage permitted for a given funding category.
 export function maxLeverageFor(account: LeverageAccountKey): number {
   return ACCOUNT_MAX_LEVERAGE[account] ?? MAX_LEVERAGE
 }
+
+// Selectable ratios for a funding category. Treasury financing is restricted to
+// exactly 1:5 and 1:10; every other facility offers the full 1:2 … 1:30 ladder
+// (filtered to the category's ceiling).
+export function leverageRatiosFor(account: LeverageAccountKey): number[] {
+  if (account === "treasury") {
+    return TREASURY_LEVERAGE_RATIOS.slice()
+  }
+  const cap = maxLeverageFor(account)
+  return LEVERAGE_RATIOS.filter((r) => r <= cap)
+}
+
+// Annual debit interest on the borrowed (leveraged) funds follows the
+// risk-based INVERSE scale in `lib/leverage-rates.ts` (higher leverage = lower
+// rate): 1:2 → 14% … 1:30 → 3%, charged monthly as (annual ÷ 12). This is
+// distinct from Project Finance, which is an INVESTMENT product carrying a 1.8%
+// p.a. ROI, not a debit rate. `debitInterestRateFor` is re-exported above.
 
 // Selectable ratios filtered to a category's ceiling (e.g. Treasury caps at 1:10).
 export function leverageRatiosFor(account: LeverageAccountKey): number[] {

@@ -19,10 +19,10 @@ import { cn } from "@/lib/utils"
 import { toast } from "sonner"
 import { ADMIN_PASSCODE } from "@/lib/admin-config"
 import { listSelectableClients, type SelectableClient } from "@/app/actions/admin-users"
+import { debitInterestRateFor } from "@/lib/leverage-rates"
 import {
   TREASURY_PROFILES,
   TREASURY_CURRENCY,
-  DEBIT_CYCLE_FEE_RATE,
   MAX_LEVERAGE_RATIO,
   TREASURY_LEVERAGE_RATIOS,
   normalizeTreasuryLeverageRatio,
@@ -161,7 +161,10 @@ export function TreasuryManager() {
   const financed = leverageEnabled ? Math.min(Math.max(0, numRequired - numContribution), maxFinanceable) : 0
   const secured = numContribution + financed
   const shortfall = Math.max(0, numRequired - secured)
-  const annualFee = leverageEnabled ? (financed + numExposure) * DEBIT_CYCLE_FEE_RATE : 0
+  // Debit interest follows the risk-based scale by facility (1:5 → 10%,
+  // 1:10 → 8%), charged on the financed amount plus any transaction exposure.
+  const feeRate = leverageEnabled ? debitInterestRateFor(facilityRatio) : 0
+  const annualFee = (financed + numExposure) * feeRate
 
   // For a fully-secured position the contribution must be ≥ (1 / ratio) of the
   // deposit — 10% at 1:10, 20% at 1:5. Below that the deposit is simply
@@ -369,7 +372,8 @@ export function TreasuryManager() {
               <p className="text-sm font-medium text-foreground">Leverage facility — approved 1:{facilityRatio}</p>
               <p className="text-[11px] text-muted-foreground">
                 Finance up to {100 - minPct}% of the deposit via MCC HOLDING SA at a 1:{facilityRatio} ratio, then apply
-                the 1.8% debit cycle fee. The client must contribute at least {minPct}% of the required deposit.
+                the {(debitInterestRateFor(facilityRatio) * 100).toFixed(0)}% p.a. debit interest for that facility. The
+                client must contribute at least {minPct}% of the required deposit.
               </p>
             </div>
             <Switch checked={leverageEnabled} onCheckedChange={setLeverageEnabled} aria-label="Toggle leverage facility" />
@@ -389,14 +393,16 @@ export function TreasuryManager() {
                   <SelectContent>
                     {TREASURY_LEVERAGE_RATIOS.map((r) => (
                       <SelectItem key={r} value={String(r)}>
-                        1:{r} — client contributes {Math.round(100 / r)}% ({fmt0(Math.ceil(numRequired / r))})
+                        1:{r} — {(debitInterestRateFor(r) * 100).toFixed(0)}% p.a. · client contributes{" "}
+                        {Math.round(100 / r)}% ({fmt0(Math.ceil(numRequired / r))})
                       </SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
                 <p className="text-[11px] text-muted-foreground">
-                  1:{MAX_LEVERAGE_RATIO} finances up to 90% of the deposit (10% client contribution); 1:5 finances up to
-                  80% (20% client contribution).
+                  Risk-based debit interest: 1:5 finances up to 80% (20% contribution) at{" "}
+                  {(debitInterestRateFor(5) * 100).toFixed(0)}% p.a.; 1:{MAX_LEVERAGE_RATIO} finances up to 90% (10%
+                  contribution) at {(debitInterestRateFor(MAX_LEVERAGE_RATIO) * 100).toFixed(0)}% p.a.
                 </p>
               </div>
 
@@ -451,7 +457,11 @@ export function TreasuryManager() {
                 />
                 <Derived label="Financed (MCC HOLDING SA)" value={fmt0(financed)} tone="negative" />
                 <Derived label="Treasury Received" value={fmt0(secured)} tone="positive" />
-                <Derived label="Annual Cycle Fee" value={`${fmt0(annualFee)}/yr`} tone="negative" />
+                <Derived
+                  label={`Debit Interest (${(feeRate * 100).toFixed(0)}% p.a.)`}
+                  value={`${fmt0(annualFee)}/yr`}
+                  tone="negative"
+                />
               </div>
             </div>
           )}

@@ -338,8 +338,8 @@ function Metric({
 }
 
 // Real-money leverage economics for a live line: shows the borrowed funds
-// credited to the balance, the running debit interest accrued at 1.8%/yr, and
-// what it would cost to switch the line off today.
+// credited to the balance, the running debit interest accrued at the line's
+// risk-based rate, and what it would cost to switch the line off today.
 function LeverageEconomics({ line, now }: { line: LeverageRequest; now: number }) {
   const accrued = accruedInterest(line, now)
   const days = daysBetween(line.activatedAt, now)
@@ -820,10 +820,10 @@ export default function LeveragePage() {
                   <p className="mt-1 text-sm text-muted-foreground">
                     Allocate your own equity and choose a ratio up to 1:{MAX_LEVERAGE}. On Administrator
                     approval, the borrowed portion — equity × (ratio − 1) — is credited to your balance, and
-                    debit interest begins accruing on those borrowed funds at 0.36% per year for every unit of
-                    leverage (so 1.80% at 1:5, up to 10.80% at 1:30). One twelfth of the annual interest is
-                    charged to your Master Account each month; the borrowed principal is repaid when you switch
-                    the line off.
+                    debit interest begins accruing on those borrowed funds under a risk-based scale where a
+                    higher ratio carries a lower rate (14% at 1:2, 10% at 1:5, down to 3% at 1:30). One twelfth
+                    of the annual interest is charged to your Master Account each month; the borrowed principal
+                    is repaid when you switch the line off.
                   </p>
                 </div>
               </div>
@@ -1432,15 +1432,15 @@ export default function LeveragePage() {
             </AccordionItem>
             <AccordionItem value="interest">
               <AccordionTrigger>
-                Debit interest — 0.36% per year for every unit of leverage
+                Debit interest — risk-based scale, higher leverage means a lower rate
               </AccordionTrigger>
               <AccordionContent className="text-sm text-muted-foreground">
                 When a line is activated, the borrowed portion — equity × (ratio − 1) — is credited to your
-                balance. Debit interest scales linearly with the leverage multiple at 0.36% per year per unit:
-                1.80% at 1:5, 3.60% at 1:10, 5.40% at 1:15, 7.20% at 1:20, 9.00% at 1:25 and 10.80% at 1:30. One
-                twelfth of the annual interest is automatically charged to your Master Account each month (you
-                receive a notification with the amount and remaining balance), and any remainder is settled when
-                you switch the line off.
+                balance. Debit interest follows a risk-based inverse scale: a higher leverage multiple signals
+                lower risk and carries a lower annual rate — 14% at 1:2, 10% at 1:5, 8% at 1:10, 7% at 1:15,
+                6% at 1:20, 4% at 1:25 and 3% at 1:30. One twelfth of the annual interest is automatically
+                charged to your Master Account each month (you receive a notification with the amount and
+                remaining balance), and any remainder is settled when you switch the line off.
               </AccordionContent>
             </AccordionItem>
             <AccordionItem value="switchoff">

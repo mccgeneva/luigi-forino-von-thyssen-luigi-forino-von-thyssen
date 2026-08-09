@@ -336,12 +336,12 @@ export const DEBIT_SCENARIOS: Record<DebitKind, DebitScenarioExplainer> = {
   leverage: {
     kind: "leverage",
     title: "Leverage Line — Debit Interest on Borrowed Funds",
-    rate: "0.36% p.a. per unit of leverage (e.g. 1:5 → 1.80% p.a.), scaling with the leverage multiple.",
+    rate: "Risk-based inverse scale: 14% p.a. at 1:2, 10% at 1:5, 8% at 1:10, 7% at 1:15, 6% at 1:20, 4% at 1:25, 3% at 1:30 — a higher leverage multiple carries a lower rate.",
     whenCharged: "At the end of every calendar month while the line is live.",
     accrualStart: "The activation date, when the borrowed funds are credited to your balance.",
     conditions: [
       "Applies to active leverage lines. Interest is charged on the borrowed amount (equity × (ratio − 1)), not on your own equity.",
-      "The rate scales linearly with the leverage ratio, so a higher multiple carries a higher annual rate.",
+      "Higher leverage signals lower risk, so the annual rate DECREASES as the ratio increases (1:2 is the most expensive, 1:30 the cheapest).",
       "If an administrator adjusts your ratio, interest is billed segment-by-segment at the ratio in force during each window.",
       "The first month is pro-rated from the activation date; a switch-off settles any interest not yet collected monthly.",
     ],

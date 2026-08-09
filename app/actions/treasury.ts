@@ -8,6 +8,7 @@ import { logActivity } from "@/app/actions/log-activity"
 import { readLedgerEntries, upsertLedgerEntry } from "@/lib/ledger-db"
 import { captureServerError } from "@/lib/debug-log-db"
 import { buildTreasuryFinancingLedgerPosts, treasuryFinancingTxns } from "@/lib/treasury-financing"
+import { debitInterestRateFor } from "@/lib/leverage-rates"
 import type {
   TreasuryAccount,
   TreasuryProfileKey,
@@ -16,8 +17,17 @@ import type {
   TreasuryTxnType,
 } from "@/lib/treasury-store"
 
-// Annual debit cycle fee rate (kept in sync with lib/treasury-store.ts).
+// Fallback annual debit cycle fee rate for a non-leveraged record (kept in sync
+// with lib/treasury-store.ts).
 const DEBIT_CYCLE_FEE_RATE = 0.018
+
+// The debit interest rate persisted for a treasury facility. When a leverage
+// facility is approved the rate follows the risk-based scale (1:5 → 10%,
+// 1:10 → 8%); with no leverage there is nothing borrowed, so the fallback rate
+// applies.
+function treasuryFeeRate(leverageEnabled: boolean, ratio: number): number {
+  return leverageEnabled ? debitInterestRateFor(ratio) : DEBIT_CYCLE_FEE_RATE
+}
 
 // Maximum leverage approved on a security deposit (1:10). Kept in sync with
 // MAX_LEVERAGE_RATIO in lib/treasury-store.ts.
@@ -292,7 +302,7 @@ export async function saveTreasuryRecordAdmin(
         ratio,
         financed,
         exposure,
-        DEBIT_CYCLE_FEE_RATE,
+        treasuryFeeRate(leverageEnabled, ratio),
         status,
         establishedAt,
         securedAt,
@@ -558,7 +568,7 @@ async function upsertTreasuryWithLedger(p: {
       p.ratio,
       p.financed,
       p.exposure,
-      DEBIT_CYCLE_FEE_RATE,
+      treasuryFeeRate(p.leverageEnabled, p.ratio),
       p.status,
       p.establishedAt,
       p.securedAt,
