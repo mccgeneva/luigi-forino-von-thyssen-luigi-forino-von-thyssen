@@ -26,7 +26,12 @@ function TabsList({
     <TabsPrimitive.List
       data-slot="tabs-list"
       className={cn(
-        'bg-muted text-muted-foreground inline-flex h-9 w-fit items-center justify-center rounded-lg p-[3px]',
+        // `max-w-full overflow-x-auto` + hidden scrollbar makes any tab bar that
+        // is wider than its container swipe/scroll horizontally on mobile so no
+        // tab is ever clipped/unreachable. `justify-start` keeps the first tab
+        // reachable when overflowing (a no-op for content-sized bars that fit).
+        // Grid/`w-full` lists override display + width via their own className.
+        'bg-muted text-muted-foreground inline-flex h-9 w-fit max-w-full items-center justify-start overflow-x-auto rounded-lg p-[3px] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden',
         className,
       )}
       {...props}
