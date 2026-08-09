@@ -17,6 +17,7 @@ import {
   sendSwiftRoutedEmail,
   type SwiftEmailInfo,
 } from "@/lib/swift-routing-email"
+import { deliverRoutedSwiftToInbox } from "@/lib/incoming-swift-deliver"
 
 function emailInfo(r: SwiftRoutingRequest): SwiftEmailInfo {
   return {
@@ -172,6 +173,30 @@ export async function approveSwiftRoutingAdmin(
       emailInfo(request),
       request.raw,
     )
+
+    // When routed to an existing platform user, ALSO deliver the SWIFT copy to
+    // their in-app inbox and raise a notification — so the beneficiary gets the
+    // message and an alert even if email delivery fails. Best-effort: a failure
+    // here must not fail the routing (the email already went out).
+    if (beneficiary.userId) {
+      try {
+        await deliverRoutedSwiftToInbox({
+          userId: beneficiary.userId,
+          beneficiaryName: request.beneficiaryName || name || email,
+          messageType: request.messageType,
+          senderBic: request.senderBic,
+          receiverBic: request.receiverBic,
+          amount: request.amount,
+          currency: request.currency,
+          reference: request.reference,
+          uetr: request.uetr,
+          raw: request.raw,
+        })
+      } catch (err) {
+        console.log("[v0] deliverRoutedSwiftToInbox failed:", err instanceof Error ? err.message : String(err))
+      }
+    }
+
     return { ok: true, request, emailed: res.ok }
   } catch (err) {
     console.log("[v0] approveSwiftRoutingAdmin failed:", err instanceof Error ? err.message : String(err))
