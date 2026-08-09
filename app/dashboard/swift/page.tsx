@@ -169,6 +169,7 @@ export default function SwiftPage() {
 
   const inboxMessages = filteredMessages.filter(m => m.direction === "incoming")
   const outboxMessages = filteredMessages.filter(m => m.direction === "outgoing")
+  const unreadInboxCount = inboxMessages.filter(m => m.unread).length
 
   const getStatusColor = (status: string) => {
     switch (status) {
@@ -307,9 +308,15 @@ export default function SwiftPage() {
 
   const openMessage = (message: SwiftMessage) => {
     setSelectedMessage(message)
-    // Mark a received message read the first time it is opened, then refresh so
-    // the unread indicator clears (and the notification bell count follows).
+    // Mark a received message read the first time it is opened. Optimistically
+    // clear the unread flag in the SWR cache so the badge/dot update instantly
+    // (independent of the server round-trip), then persist and revalidate.
     if (message.direction === "incoming" && message.unread) {
+      const nowIso = new Date().toISOString()
+      void mutateIncoming(
+        (current) => (current ?? []).map((m) => (m.id === message.id ? { ...m, readAt: nowIso } : m)),
+        { revalidate: false },
+      )
       void markMyIncomingSwiftRead(message.id).then(() => mutateIncoming())
     }
   }
@@ -670,7 +677,12 @@ export default function SwiftPage() {
           <TabsList className="bg-card border border-border">
             <TabsTrigger value="inbox" className="shrink-0 gap-2 whitespace-nowrap">
               <Inbox className="h-4 w-4" />
-              Inbox ({inboxMessages.length})
+              Inbox
+              {unreadInboxCount > 0 && (
+                <span className="ml-1 inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-primary px-1.5 text-xs font-semibold text-primary-foreground">
+                  {unreadInboxCount}
+                </span>
+              )}
             </TabsTrigger>
             <TabsTrigger value="outbox" className="shrink-0 gap-2 whitespace-nowrap">
               <Send className="h-4 w-4" />
