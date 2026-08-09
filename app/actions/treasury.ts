@@ -872,15 +872,28 @@ export async function fundTreasuryDepositFromBalance(amountInput: number): Promi
     return { ok: false, error: "The deposit funding could not be charged. Please try again." }
   }
 
+  // Buy-down semantics: the applied own-cash raises the client's contribution
+  // and reduces the leverage-financed portion pound-for-pound (it does NOT get
+  // re-multiplied by the leverage ratio — that is the whole point of funding it
+  // yourself). We derive the NEW financed amount directly from the previous
+  // one rather than through `deriveCoverage`, whose ratio-based model would
+  // otherwise grow the financed figure as the contribution rises.
   const contribution = round2(prev.customerContribution + applied)
-  const { financed, secured, ratio, status } = deriveCoverage({
-    required: prev.requiredDeposit,
-    contribution,
-    leverageEnabled: prev.leverageEnabled,
-    collateral,
-    explicitClosed: false,
-    approvedRatio: prev.leverageRatio,
-  })
+  const ratio = prev.leverageEnabled ? prev.leverageRatio : 1
+  const prevFinanced = Math.max(0, prev.financedAmount || 0)
+  // Own cash first covers any uncovered gap, then buys down financing.
+  const prevSecured = prev.customerContribution + prevFinanced + collateral
+  const prevShortfall = Math.max(0, prev.requiredDeposit - prevSecured)
+  const towardShortfall = Math.min(applied, prevShortfall)
+  const towardBuyDown = round2(applied - towardShortfall)
+  const financed = round2(Math.max(0, prevFinanced - towardBuyDown))
+  const secured = round2(contribution + financed + collateral)
+  const status: TreasuryStatus =
+    prev.requiredDeposit > 0 && secured >= prev.requiredDeposit - 0.01
+      ? "secured"
+      : secured > 0
+        ? "shortfall"
+        : "pending"
   const establishedAt = prev.establishedAt ?? now
   const securedAt = status === "secured" ? prev.securedAt ?? now : prev.securedAt ?? null
 
