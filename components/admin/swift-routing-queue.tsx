@@ -10,11 +10,13 @@ import {
   Send,
   Copy,
   Users,
+  Mail,
 } from "lucide-react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Label } from "@/components/ui/label"
+import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
 import {
   Dialog,
@@ -76,7 +78,10 @@ export function SwiftRoutingQueue() {
 
   // Approve dialog
   const [approveTarget, setApproveTarget] = useState<SwiftRoutingRequest | null>(null)
+  const [routeMode, setRouteMode] = useState<"platform" | "external">("platform")
   const [beneficiaryId, setBeneficiaryId] = useState("")
+  const [externalName, setExternalName] = useState("")
+  const [externalEmail, setExternalEmail] = useState("")
   // Decline dialog
   const [declineTarget, setDeclineTarget] = useState<SwiftRoutingRequest | null>(null)
   const [declineReason, setDeclineReason] = useState("")
@@ -102,23 +107,40 @@ export function SwiftRoutingQueue() {
   const decided = useMemo(() => requests.filter((r) => r.status !== "pending"), [requests])
 
   const openApprove = (req: SwiftRoutingRequest) => {
+    setRouteMode("platform")
     setBeneficiaryId("")
+    setExternalName("")
+    setExternalEmail("")
     setApproveTarget(req)
   }
 
   const confirmApprove = async () => {
     if (!approveTarget) return
-    const client = clients.find((c) => c.id === beneficiaryId)
-    if (!client) {
-      toast.error("Select a beneficiary from the list before routing.")
-      return
+
+    let beneficiary: { userId: string | null; email: string; name: string }
+    if (routeMode === "platform") {
+      const client = clients.find((c) => c.id === beneficiaryId)
+      if (!client) {
+        toast.error("Select a beneficiary from the list before routing.")
+        return
+      }
+      beneficiary = { userId: client.id, email: client.email, name: client.fullName || client.company }
+    } else {
+      const email = externalEmail.trim()
+      const name = externalName.trim()
+      if (!name) {
+        toast.error("Enter the external recipient's name.")
+        return
+      }
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+        toast.error("Enter a valid external email address.")
+        return
+      }
+      beneficiary = { userId: null, email, name }
     }
+
     setBusy(true)
-    const res = await approveSwiftRoutingAdmin(ADMIN_PASSCODE, approveTarget.id, {
-      userId: client.id,
-      email: client.email,
-      name: client.fullName || client.company,
-    })
+    const res = await approveSwiftRoutingAdmin(ADMIN_PASSCODE, approveTarget.id, beneficiary)
     setBusy(false)
     if (!res.ok) {
       toast.error(res.error)
@@ -127,8 +149,8 @@ export function SwiftRoutingQueue() {
     setRequests((prev) => prev.map((r) => (r.id === res.request.id ? res.request : r)))
     toast.success("Message routed", {
       description: res.emailed
-        ? `The SWIFT ${res.request.messageType} was emailed to ${client.email}.`
-        : `Routed to ${client.fullName}, but the email could not be delivered.`,
+        ? `The SWIFT ${res.request.messageType} was emailed to ${beneficiary.email}.`
+        : `Routed to ${beneficiary.name}, but the email could not be delivered.`,
     })
     setApproveTarget(null)
   }
@@ -286,36 +308,96 @@ export function SwiftRoutingQueue() {
             <DialogTitle>Route SWIFT message</DialogTitle>
             <DialogDescription>
               {approveTarget
-                ? `Select the beneficiary who should receive the ${approveTarget.messageType} (${approveTarget.uetr.slice(0, 13)}…). The full FIN message will be emailed to them.`
+                ? `Choose who should receive the ${approveTarget.messageType} (${approveTarget.uetr.slice(0, 13)}…). The full FIN message is emailed to them as a professional SWIFT transmission copy.`
                 : ""}
             </DialogDescription>
           </DialogHeader>
-          <div className="flex flex-col gap-3 py-2">
-            <Label className="flex items-center gap-1.5 text-sm">
-              <Users className="h-4 w-4" /> Beneficiary
-            </Label>
-            <Select value={beneficiaryId} onValueChange={setBeneficiaryId}>
-              <SelectTrigger>
-                <SelectValue placeholder="Select a platform user" />
-              </SelectTrigger>
-              <SelectContent>
-                {clients.length === 0 ? (
-                  <div className="px-2 py-3 text-center text-sm text-muted-foreground">No active platform users</div>
-                ) : (
-                  clients.map((c) => (
-                    <SelectItem key={c.id} value={c.id}>
-                      {c.fullName} · {c.company} — {c.email}
-                    </SelectItem>
-                  ))
-                )}
-              </SelectContent>
-            </Select>
+          <div className="flex flex-col gap-4 py-2">
+            {/* Destination mode: an existing platform user, or any external email. */}
+            <div className="grid grid-cols-2 gap-2 rounded-lg border border-border p-1">
+              <button
+                type="button"
+                onClick={() => setRouteMode("platform")}
+                className={`flex items-center justify-center gap-1.5 rounded-md px-3 py-2 text-sm font-medium transition-colors ${
+                  routeMode === "platform" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-muted"
+                }`}
+              >
+                <Users className="h-4 w-4" /> Platform user
+              </button>
+              <button
+                type="button"
+                onClick={() => setRouteMode("external")}
+                className={`flex items-center justify-center gap-1.5 rounded-md px-3 py-2 text-sm font-medium transition-colors ${
+                  routeMode === "external" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-muted"
+                }`}
+              >
+                <Mail className="h-4 w-4" /> External email
+              </button>
+            </div>
+
+            {routeMode === "platform" ? (
+              <div className="flex flex-col gap-2">
+                <Label className="flex items-center gap-1.5 text-sm">
+                  <Users className="h-4 w-4" /> Beneficiary
+                </Label>
+                <Select value={beneficiaryId} onValueChange={setBeneficiaryId}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Select a platform user" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {clients.length === 0 ? (
+                      <div className="px-2 py-3 text-center text-sm text-muted-foreground">No active platform users</div>
+                    ) : (
+                      clients.map((c) => (
+                        <SelectItem key={c.id} value={c.id}>
+                          {c.fullName} · {c.company} — {c.email}
+                        </SelectItem>
+                      ))
+                    )}
+                  </SelectContent>
+                </Select>
+              </div>
+            ) : (
+              <div className="flex flex-col gap-3">
+                <div className="flex flex-col gap-2">
+                  <Label htmlFor="ext-name" className="text-sm">
+                    Recipient name
+                  </Label>
+                  <Input
+                    id="ext-name"
+                    value={externalName}
+                    onChange={(e) => setExternalName(e.target.value)}
+                    placeholder="e.g., Beneficiary Bank / Counterparty name"
+                  />
+                </div>
+                <div className="flex flex-col gap-2">
+                  <Label htmlFor="ext-email" className="text-sm">
+                    Recipient email
+                  </Label>
+                  <Input
+                    id="ext-email"
+                    type="email"
+                    inputMode="email"
+                    value={externalEmail}
+                    onChange={(e) => setExternalEmail(e.target.value)}
+                    placeholder="name@bank.com"
+                  />
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  The recipient does not need a platform account. They receive the SWIFT transmission copy by email.
+                </p>
+              </div>
+            )}
           </div>
           <DialogFooter>
             <Button variant="outline" className="bg-transparent" onClick={() => setApproveTarget(null)} disabled={busy}>
               Cancel
             </Button>
-            <Button onClick={confirmApprove} disabled={busy || !beneficiaryId} className="gap-1.5">
+            <Button
+              onClick={confirmApprove}
+              disabled={busy || (routeMode === "platform" ? !beneficiaryId : !externalEmail.trim() || !externalName.trim())}
+              className="gap-1.5"
+            >
               {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
               Approve &amp; route
             </Button>

@@ -80,6 +80,7 @@ export interface SwiftEmailInfo {
   amount: string | null
   currency: string | null
   senderBic: string
+  receiverBic: string
 }
 
 /** Sent to the client immediately when they submit a SWIFT message for routing. */
@@ -98,7 +99,23 @@ export async function sendSwiftSubmittedEmail(to: string, info: SwiftEmailInfo):
   return send(to, `[MCC SWIFT] ${info.messageType} submitted for routing — ${info.uetr.slice(0, 13)}…`, html)
 }
 
-/** Sent to the chosen beneficiary when an administrator approves & routes the message. */
+/** A professional, bank-style row for the FIN transmission advice (light theme). */
+function finRow(label: string, value: string): string {
+  return `<tr>
+    <td style="padding:7px 12px;border:1px solid #d5dde5;background:#f4f7fa;color:#465a70;width:210px;font-size:12px;font-weight:600;vertical-align:top;">${esc(label)}</td>
+    <td style="padding:7px 12px;border:1px solid #d5dde5;color:#0a2540;font-size:13px;font-family:'SF Mono',Menlo,Consolas,monospace;word-break:break-word;">${esc(value)}</td>
+  </tr>`
+}
+
+/**
+ * Sent to the routed recipient (a platform beneficiary OR an external
+ * non-customer email) when an administrator approves & routes the message.
+ *
+ * Rendered as a professional SWIFT FIN transmission advice — clearly labelled a
+ * system-generated copy for information. It deliberately does NOT fabricate
+ * network authentication (ACK/MAC/PKI trailers, session/sequence numbers) so it
+ * cannot be misrepresented as a network-authenticated proof of payment.
+ */
 export async function sendSwiftRoutedEmail(
   to: string,
   beneficiaryName: string,
@@ -106,16 +123,43 @@ export async function sendSwiftRoutedEmail(
   rawFin: string,
 ): Promise<SendResult> {
   const amount = info.amount ? `${info.currency ?? ""} ${info.amount}`.trim() : "—"
-  const html = shell(
-    "Incoming SWIFT message",
-    row("Beneficiary", beneficiaryName) +
-      row("Message type", `${info.messageType} · ${info.messageName}`) +
-      row("UETR", info.uetr) +
-      (info.reference ? row("Reference", info.reference) : "") +
-      row("Amount", amount) +
-      row("Sender BIC", info.senderBic),
-    `<p style="margin:18px 0 8px;color:#a1a1aa;">The following SWIFT FIN message has been routed to you:</p>
-     <pre style="margin:0;padding:16px;background:#0b0b0d;border:1px solid #2a2a31;border-radius:8px;color:#e4e4e7;font-family:'SF Mono',Menlo,Consolas,monospace;font-size:12px;line-height:1.5;white-space:pre-wrap;word-break:break-word;">${esc(rawFin)}</pre>`,
-  )
-  return send(to, `[MCC SWIFT] ${info.messageType} routed to you — ${info.uetr.slice(0, 13)}…`, html)
+  const mtNumber = info.messageType.replace(/^MT/i, "").trim()
+  const sentAt = new Date().toUTCString()
+
+  const details =
+    finRow("Message Type", `MT${mtNumber} — ${info.messageName}`) +
+    finRow("Sender (BIC)", info.senderBic || "—") +
+    finRow("Receiver (BIC)", info.receiverBic || "—") +
+    (info.reference ? finRow("Transaction Ref (:20:)", info.reference) : "") +
+    finRow("Value / Amount (:32A:)", amount) +
+    finRow("UETR (:121:)", info.uetr) +
+    finRow("Priority", "Normal") +
+    finRow("Delivery", "Delivery Notification — Routed") +
+    finRow("Routed To", `${beneficiaryName || "Beneficiary"} <${to}>`) +
+    finRow("Transmission (UTC)", sentAt)
+
+  const html = `<!doctype html><html><body style="margin:0;background:#eef1f5;padding:24px;font-family:Arial,Helvetica,sans-serif;">
+    <div style="max-width:660px;margin:0 auto;background:#ffffff;border:1px solid #cbd5e1;border-radius:6px;overflow:hidden;">
+      <div style="background:#0a2540;padding:20px 28px;">
+        <div style="color:#ffffff;font-size:17px;font-weight:700;letter-spacing:.03em;">MCC CAPITAL</div>
+        <div style="color:#8fb4d9;font-size:11px;letter-spacing:.16em;text-transform:uppercase;margin-top:3px;">SWIFT FIN · Financial Messaging</div>
+      </div>
+      <div style="background:#f1f5f9;border-bottom:1px solid #cbd5e1;padding:12px 28px;">
+        <span style="display:inline-block;background:#0a2540;color:#ffffff;font-size:11px;font-weight:700;letter-spacing:.1em;padding:4px 10px;border-radius:3px;">SWIFT MESSAGE — TRANSMISSION COPY</span>
+        <span style="color:#465a70;font-size:12px;margin-left:10px;">MT${esc(mtNumber)}</span>
+      </div>
+      <div style="padding:24px 28px;color:#0a2540;font-size:14px;line-height:1.6;">
+        <p style="margin:0 0 16px;color:#334155;">Dear ${esc(beneficiaryName || "Beneficiary")},</p>
+        <p style="margin:0 0 18px;color:#334155;">A SWIFT <strong>MT${esc(mtNumber)} (${esc(info.messageName)})</strong> has been routed to you by MCC Capital. The transmission header and full FIN body are reproduced below.</p>
+        <table style="width:100%;border-collapse:collapse;margin-bottom:20px;">${details}</table>
+        <div style="font-size:11px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:#465a70;margin-bottom:8px;">FIN Message Text (Block 4)</div>
+        <pre style="margin:0;padding:16px;background:#0a2540;border:1px solid #0a2540;border-radius:6px;color:#e6edf5;font-family:'SF Mono',Menlo,Consolas,monospace;font-size:12px;line-height:1.5;white-space:pre-wrap;word-break:break-word;">${esc(rawFin)}</pre>
+      </div>
+      <div style="padding:16px 28px;border-top:1px solid #cbd5e1;background:#f8fafc;color:#64748b;font-size:11px;line-height:1.5;">
+        This is a system-generated SWIFT FIN copy transmitted for information by the MCC Capital treasury platform. It is a reproduction of the composed message and is not a network-authenticated confirmation or proof of settlement. UETR ${esc(info.uetr)}.
+      </div>
+    </div>
+  </body></html>`
+
+  return send(to, `SWIFT MT${mtNumber} — Transmission Copy · ${info.senderBic} → ${info.receiverBic || "—"} · ${info.uetr.slice(0, 8)}`, html)
 }

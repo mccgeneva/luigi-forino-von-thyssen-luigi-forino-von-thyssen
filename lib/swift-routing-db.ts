@@ -192,7 +192,7 @@ export async function getSwiftRoutingRequest(id: string): Promise<SwiftRoutingRe
  */
 export async function approveSwiftRoutingRequest(
   id: string,
-  beneficiary: { userId: string; email: string; name: string },
+  beneficiary: { userId: string | null; email: string; name: string },
   decidedBy: string,
 ): Promise<SwiftRoutingRequest | null> {
   await ensureTable()
@@ -206,7 +206,7 @@ export async function approveSwiftRoutingRequest(
             decided_at = now()
       WHERE id = $1 AND status = 'pending'
       RETURNING *`,
-    [id, beneficiary.userId, beneficiary.email, beneficiary.name, decidedBy],
+    [id, beneficiary.userId ?? null, beneficiary.email, beneficiary.name, decidedBy],
   )
   return rows[0] ? rowToRequest(rows[0]) : null
 }
