@@ -5,6 +5,8 @@ import {
   getApprovalById,
   listApprovalsForUser,
   updateApprovalPayload,
+  cancelApproval,
+  revokeApprovedApproval,
 } from "@/lib/approvals-db"
 import { submitApproval } from "@/app/actions/approvals"
 import { quoteDebitSettlement, terminateDebitFacility } from "@/app/actions/debit-settlement"
@@ -618,4 +620,79 @@ export async function repayTreasuryLending(approvalId: string): Promise<RepayLen
     interest,
     currency: term.quote.currency,
   }
+}
+
+// ---------------------------------------------------------------------------
+// Revoke — client self-service cancellation of a lending facility on which NO
+// money has moved yet. Two safe cases:
+//   • a PENDING application still under administrator review → withdrawn; and
+//   • an APPROVED but NOT-yet-funded facility → declined before drawdown.
+// In both cases the client has paid nothing and nothing was credited (the money
+// only moves at the pay/drawdown step), so cancelling simply frees them to
+// apply again. A FUNDED facility can never be revoked here — it must be settled
+// through "Repay & close" — and a closed one is already done.
+// ---------------------------------------------------------------------------
+
+export type RevokeLendingResult =
+  | { ok: true; wasApproved: boolean }
+  | { ok: false; error: string }
+
+export async function revokeTreasuryLending(approvalId: string): Promise<RevokeLendingResult> {
+  const session = await resolveCurrentSession()
+  if (!session) return { ok: false, error: "Your session has expired. Please sign in again." }
+
+  const approval = await getApprovalById(approvalId)
+  if (!approval || approval.kind !== "treasury_lending") {
+    return { ok: false, error: "This lending facility could not be found." }
+  }
+
+  const ledgerOwnerId = session.dataOwnerId || (await resolveDataOwnerIdFor(session.id))
+  if (approval.userId !== session.id && approval.userId !== ledgerOwnerId) {
+    return { ok: false, error: "This lending facility could not be found." }
+  }
+
+  const payload = (approval.payload ?? {}) as LendingPayload
+  if (payload.fundedAt && !payload.closedAt) {
+    return {
+      ok: false,
+      error: "This facility is already funded. Use “Repay & close” to settle and close it.",
+    }
+  }
+  if (payload.closedAt) {
+    return { ok: false, error: "This lending facility is already closed." }
+  }
+
+  const profile: TreasuryProfileKey = payload.profile === "avantgarde" ? "avantgarde" : "pro"
+  const label = PROFILE_LABELS[profile]
+
+  let wasApproved: boolean
+  if (approval.status === "pending") {
+    const res = await cancelApproval(approvalId, approval.userId)
+    if (!res) return { ok: false, error: "This application can no longer be withdrawn." }
+    wasApproved = false
+  } else if (approval.status === "approved") {
+    const res = await revokeApprovedApproval(
+      approvalId,
+      approval.userId,
+      "Lending facility declined by the client before drawdown.",
+    )
+    if (!res) return { ok: false, error: "This facility can no longer be declined." }
+    wasApproved = true
+  } else {
+    return { ok: false, error: "This facility can no longer be revoked." }
+  }
+
+  void logActivity({
+    action: wasApproved
+      ? `Declined an approved treasury capital lending before drawdown (${label})`
+      : `Withdrew a treasury capital lending application (${label})`,
+    category: "Treasury",
+    userId: session.id,
+    details: {
+      facility: label,
+      decision: wasApproved ? "Declined before drawdown (client self-service)" : "Withdrawn (client self-service)",
+    },
+  }).catch(() => {})
+
+  return { ok: true, wasApproved }
 }

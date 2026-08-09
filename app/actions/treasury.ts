@@ -5,10 +5,13 @@ import { adminActionAuthorized } from "@/lib/admin-auth"
 import { type UserProfile } from "@/lib/users"
 import { resolveAccountProfileById, resolveCurrentSession, resolveDataOwnerIdFor } from "@/lib/session-user"
 import { logActivity } from "@/app/actions/log-activity"
-import { readLedgerEntries, upsertLedgerEntry } from "@/lib/ledger-db"
+import { readLedgerEntries, upsertLedgerEntry, availableByCurrency, assertOwnerSolvent } from "@/lib/ledger-db"
 import { captureServerError } from "@/lib/debug-log-db"
 import { buildTreasuryFinancingLedgerPosts, treasuryFinancingTxns } from "@/lib/treasury-financing"
 import { debitInterestRateFor } from "@/lib/leverage-rates"
+import { insertNotification } from "@/lib/notifications-db"
+import { round2 } from "@/lib/interest-accrual"
+import type { LedgerEntry } from "@/lib/ledger-store"
 import type {
   TreasuryAccount,
   TreasuryProfileKey,
@@ -758,5 +761,200 @@ export async function reverseSkrCollateralAdmin(
   } catch (err) {
     console.log("[v0] reverseSkrCollateralAdmin failed:", (err as Error).message)
     return { ok: false, error: "The SKR treasury credit could not be reversed. Please try again." }
+  }
+}
+
+// --- Client self-service: fund the security deposit from the master balance --
+//
+// A client may top up their own security-deposit contribution with their own
+// money from the master account. The applied cash raises their contribution,
+// which first fills any remaining shortfall and then buys DOWN the
+// leverage-financed portion (MCC HOLDING SA financing), reducing the financed
+// amount and therefore the 1.8% debit cycle fee. Fully server-authoritative:
+// the amount is balance-gated against the master EUR balance, capped so it can
+// never over-fund beyond a fully self-secured deposit, the EUR debit is posted
+// with a hard solvency assertion (rolled back on any overdraft), and the
+// coverage (financed / secured / status) is recomputed with the same
+// `deriveCoverage` used everywhere else so the two channels always agree.
+
+const DEPOSIT_CURRENCY = "EUR"
+
+export type FundDepositResult =
+  | {
+      ok: true
+      applied: number
+      contribution: number
+      financed: number
+      secured: number
+      shortfall: number
+      status: TreasuryStatus
+    }
+  | { ok: false; error: string }
+
+export async function fundTreasuryDepositFromBalance(amountInput: number): Promise<FundDepositResult> {
+  const session = await resolveCurrentSession()
+  if (!session) return { ok: false, error: "Your session has expired. Please sign in again." }
+
+  const amount = Number(amountInput)
+  if (!Number.isFinite(amount) || amount <= 0) {
+    return { ok: false, error: "Enter a valid amount to apply to your security deposit." }
+  }
+
+  const prev = await readAccount(session.id)
+  if (prev.status === "none" || prev.status === "closed") {
+    return {
+      ok: false,
+      error: "A treasury account must be established before you can fund its security deposit.",
+    }
+  }
+
+  const fmt = (n: number) =>
+    `${DEPOSIT_CURRENCY} ${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+
+  const collateral = Math.max(0, prev.skrCollateral || 0)
+  // The most own-cash that still does something useful: enough to fully secure
+  // the deposit with the client's own money (no leverage). Beyond this, extra
+  // cash would just be locked, so we never charge more than this.
+  const maxUseful = round2(Math.max(0, prev.requiredDeposit - collateral - prev.customerContribution))
+  if (maxUseful <= 0.01) {
+    return {
+      ok: false,
+      error:
+        "Your security deposit is already fully funded by your own contribution — there is nothing left to buy down.",
+    }
+  }
+
+  const ledgerOwnerId = session.dataOwnerId || (await resolveDataOwnerIdFor(session.id))
+  const entries = await readLedgerEntries(ledgerOwnerId)
+  const availableEur = round2(availableByCurrency(entries)[DEPOSIT_CURRENCY] ?? 0)
+
+  // Apply the smallest of: what they asked for, what is still useful, and what
+  // their balance can actually cover.
+  const applied = round2(Math.min(amount, maxUseful, availableEur))
+  if (applied <= 0.01) {
+    return {
+      ok: false,
+      error: `Your master account balance can’t cover this. Available ${fmt(Math.max(0, availableEur))}. Nothing was charged.`,
+    }
+  }
+
+  const now = new Date().toISOString()
+  const profileLabel = prev.profile === "avantgarde" ? "Avant-Garde Account" : "PRO Account"
+  const entryId = `TRYDEP-${Date.now()}-${Math.floor(Math.random() * 1_000_000)}`
+  const debit: LedgerEntry = {
+    id: entryId,
+    direction: "debit",
+    amount: applied,
+    currency: DEPOSIT_CURRENCY,
+    status: "completed",
+    date: now,
+    counterparty: "MCC Capital — Treasury Security Deposit",
+    reference: entryId,
+    category: "Treasury Deposit",
+    comment: `Security-deposit contribution funded from the master account (${profileLabel}).`,
+  }
+
+  // Post the EUR debit and assert solvency; roll back on any overdraft.
+  try {
+    await upsertLedgerEntry(ledgerOwnerId, debit)
+    await assertOwnerSolvent(ledgerOwnerId)
+  } catch (err) {
+    try {
+      await query(`DELETE FROM ledger_entries WHERE user_id = $1 AND entry_id = $2`, [ledgerOwnerId, entryId])
+    } catch {
+      /* best-effort rollback */
+    }
+    const msg = (err as Error).message
+    if (msg.startsWith("INSUFFICIENT_FUNDS")) {
+      return { ok: false, error: "Your master account balance can’t cover this amount. Nothing was charged." }
+    }
+    console.log("[v0] fundTreasuryDepositFromBalance debit failed:", msg)
+    return { ok: false, error: "The deposit funding could not be charged. Please try again." }
+  }
+
+  const contribution = round2(prev.customerContribution + applied)
+  const { financed, secured, ratio, status } = deriveCoverage({
+    required: prev.requiredDeposit,
+    contribution,
+    leverageEnabled: prev.leverageEnabled,
+    collateral,
+    explicitClosed: false,
+    approvedRatio: prev.leverageRatio,
+  })
+  const establishedAt = prev.establishedAt ?? now
+  const securedAt = status === "secured" ? prev.securedAt ?? now : prev.securedAt ?? null
+
+  const txn: TreasuryTransaction = {
+    id: genTreasuryId("DEP"),
+    date: now,
+    type: "deposit",
+    label: "Security Deposit — Self-funded",
+    amount: applied,
+    currency: DEPOSIT_CURRENCY,
+    note: "Funded from the master account balance by the client.",
+  }
+
+  try {
+    const account = await upsertTreasuryWithLedger({
+      userId: session.id,
+      profile: prev.profile,
+      required: prev.requiredDeposit,
+      contribution,
+      leverageEnabled: prev.leverageEnabled,
+      ratio,
+      financed,
+      exposure: prev.transactionExposure,
+      status,
+      establishedAt,
+      securedAt,
+      now,
+      note: prev.note ?? null,
+      collateral,
+      transactions: [txn, ...prev.transactions],
+    })
+
+    const shortfall = round2(Math.max(0, prev.requiredDeposit - secured))
+    void logActivity({
+      action: `Funded treasury security deposit from master balance (${fmt(applied)})`,
+      category: "Treasury",
+      userId: session.id,
+      details: {
+        facility: profileLabel,
+        applied: fmt(applied),
+        newContribution: fmt(contribution),
+        financedRemaining: fmt(financed),
+        shortfallRemaining: fmt(shortfall),
+        status,
+        decision: "Funded from master balance (client self-service)",
+      },
+    }).catch(() => {})
+
+    try {
+      await insertNotification({
+        userId: session.id,
+        tone: "success",
+        title: "Security deposit funded",
+        body:
+          `${fmt(applied)} was applied to your ${profileLabel} security deposit from your master account. ` +
+          (financed > 0
+            ? `The leverage-financed portion is now ${fmt(financed)}.`
+            : `Your deposit is now fully secured by your own contribution.`),
+        href: "/dashboard/treasury",
+      })
+    } catch {
+      /* notification is best-effort */
+    }
+
+    return { ok: true, applied, contribution, financed, secured, shortfall, status }
+  } catch (err) {
+    // The debit posted but the record write failed — roll the debit back so
+    // money and coverage never diverge.
+    try {
+      await query(`DELETE FROM ledger_entries WHERE user_id = $1 AND entry_id = $2`, [ledgerOwnerId, entryId])
+    } catch {
+      /* best-effort rollback */
+    }
+    console.log("[v0] fundTreasuryDepositFromBalance record write failed:", (err as Error).message)
+    return { ok: false, error: "The deposit funding could not be recorded. Please try again. Nothing was charged." }
   }
 }

@@ -44,6 +44,7 @@ import {
 } from "@/lib/treasury-financing"
 import { useLedger } from "@/lib/ledger-store"
 import { CapitalLendingCard } from "@/components/dashboard/treasury/capital-lending-card"
+import { FundDepositCard } from "@/components/dashboard/treasury/fund-deposit-card"
 
 const fmt = (value: number, currency = "EUR") =>
   `${currency} ${value.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
@@ -110,7 +111,7 @@ function Metric({
 
 export default function TreasuryPage() {
   const { account, hydrated, refresh: refreshTreasury } = useTreasury()
-  const { refresh: refreshLedger } = useLedger()
+  const { refresh: refreshLedger, totalIn } = useLedger()
 
   // Live clock so the accruing debit cycle fee ticks while the page is open.
   const [now, setNow] = useState(() => Date.now())
@@ -420,6 +421,19 @@ export default function TreasuryPage() {
                 </div>
               </CardContent>
             </Card>
+          )}
+
+          {/* Fund the security deposit from the master balance */}
+          {account.status !== "none" && account.status !== "closed" && (
+            <FundDepositCard
+              account={account}
+              currency={account.currency}
+              availableEur={totalIn("EUR")}
+              onFunded={() => {
+                void refreshLedger()
+                void refreshTreasury()
+              }}
+            />
           )}
 
           {/* Internal capital lending */}
