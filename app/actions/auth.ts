@@ -271,12 +271,9 @@ export async function login(_prevState: LoginState, formData: FormData): Promise
     // (NODE_ENV === "production") for BOTH production and preview deployments,
     // so this branch can only ever run under a development build — i.e. the v0
     // sandbox or a local `next dev`. The deployed site at www.mcc-btp.app can
-    // NEVER trigger it. The optional PREVIEW_LOGIN_BYPASS flag, when present,
-    // lets you disable the shortcut in dev too (set it to "0").
+    // NEVER trigger it.
     // ------------------------------------------------------------------
-    const previewBypassEnabled =
-      process.env.NODE_ENV !== "production" && process.env.PREVIEW_LOGIN_BYPASS !== "0"
-    if (previewBypassEnabled) {
+    if (process.env.NODE_ENV !== "production") {
       await establishSessionAndRedirect(matchedUser, email)
     }
 
