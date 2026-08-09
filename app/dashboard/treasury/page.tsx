@@ -16,6 +16,7 @@ import {
   Banknote,
   Info,
   XCircle,
+  RotateCcw,
 } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
@@ -45,6 +46,8 @@ import {
 import { useLedger } from "@/lib/ledger-store"
 import { CapitalLendingCard } from "@/components/dashboard/treasury/capital-lending-card"
 import { FundDepositCard } from "@/components/dashboard/treasury/fund-deposit-card"
+import { DebitFacilityActions } from "@/components/dashboard/debits/debit-facility-actions"
+import type { DebitFacility } from "@/lib/debit-schedule"
 
 const fmt = (value: number, currency = "EUR") =>
   `${currency} ${value.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
@@ -151,6 +154,40 @@ export default function TreasuryPage() {
         financingTxns[0].date,
       )
     : undefined
+
+  // Each treasury financing drawdown is a self-service-settleable debit facility
+  // (kind "treasury", keyed by its drawdown txn id). We surface the same
+  // Reconcile / Reverse-&-terminate controls used on the Debits & Financing page
+  // right here, so a client can clear (reconcile) and terminate the financing —
+  // refunding/settling the principal + outstanding interest from the master
+  // balance — without leaving the treasury view.
+  const financingFacilities = useMemo<DebitFacility[]>(
+    () =>
+      financingTxns.map((t) => {
+        const settledAt = (t as { settledAt?: string }).settledAt
+        const closed = typeof settledAt === "string" && settledAt.length > 0
+        return {
+          id: t.id,
+          kind: "treasury",
+          title: t.label || "Treasury Financing",
+          principal: Math.max(0, t.amount),
+          currency: t.currency || account.currency,
+          startDate: t.date,
+          annualRate: TREASURY_FINANCING_ANNUAL_RATE,
+          rateLabel: `${(TREASURY_FINANCING_ANNUAL_RATE * 100).toFixed(0)}% p.a.`,
+          monthlyAmount: monthlyTreasuryInterest(Math.max(0, t.amount)),
+          status: closed ? "closed" : "active",
+          closed,
+          settleable: !closed,
+        }
+      }),
+    [financingTxns, account.currency],
+  )
+
+  const settleFinancing = () => {
+    void refreshLedger()
+    void refreshTreasury()
+  }
 
   // Show the status the actual coverage implies, never a stale "secured".
   const effectiveStatus = effectiveTreasuryStatus(account)
@@ -418,6 +455,48 @@ export default function TreasuryPage() {
                     the first month pro-rated to the financing day. Each charge is logged in your transaction
                     history.
                   </p>
+                </div>
+
+                {/* Clear / reconcile / reverse-&-terminate each financing drawdown */}
+                <div className="space-y-2">
+                  <div className="flex items-center gap-2">
+                    <RotateCcw className="h-4 w-4 text-primary" />
+                    <p className="text-sm font-medium text-foreground">Clear this financing</p>
+                  </div>
+                  <p className="text-[12px] leading-relaxed text-muted-foreground text-pretty">
+                    Reconcile brings the interest current; Reverse &amp; terminate settles the principal plus
+                    any outstanding interest from your master account balance and closes the financing.
+                  </p>
+                  <div className="space-y-2">
+                    {financingFacilities.map((facility) => (
+                      <div
+                        key={facility.id}
+                        className="rounded-lg border border-border bg-secondary/20 p-3"
+                      >
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <div className="min-w-0">
+                            <p className="truncate text-sm font-medium text-foreground">{facility.title}</p>
+                            <p className="truncate text-xs text-muted-foreground">
+                              {facility.id} · {fmt0(facility.principal, facility.currency)} financed
+                            </p>
+                          </div>
+                          {facility.closed ? (
+                            <Badge variant="outline" className="gap-1.5 text-muted-foreground">
+                              <XCircle className="h-3.5 w-3.5" /> Settled
+                            </Badge>
+                          ) : (
+                            <Badge
+                              variant="outline"
+                              className="gap-1.5 border-orange-500/20 bg-orange-500/10 text-orange-400"
+                            >
+                              <AlertTriangle className="h-3.5 w-3.5" /> Active
+                            </Badge>
+                          )}
+                        </div>
+                        <DebitFacilityActions facility={facility} onSettled={settleFinancing} />
+                      </div>
+                    ))}
+                  </div>
                 </div>
               </CardContent>
             </Card>
