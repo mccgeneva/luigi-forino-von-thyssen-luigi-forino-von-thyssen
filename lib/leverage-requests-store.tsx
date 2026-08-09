@@ -4,6 +4,15 @@ import { createContext, useContext } from "react"
 import { mirrorSubmission, mapApprovalStatus, type ApprovalRecord } from "@/lib/approval-sync"
 import { useServerRequestList } from "@/lib/use-server-request-list"
 import { updateMyApprovalRecord } from "@/app/actions/approvals"
+import {
+  LEVERAGE_RATIOS,
+  TREASURY_LEVERAGE_RATIOS,
+  debitInterestRateFor,
+} from "@/lib/leverage-rates"
+
+// Re-export the shared, configurable rate model so existing importers of the
+// leverage store keep working unchanged.
+export { LEVERAGE_RATIOS, TREASURY_LEVERAGE_RATIOS, debitInterestRateFor }
 
 export type LeverageRequestStatus =
   | "pending" // activation requested, awaiting admin
@@ -64,39 +73,27 @@ export const ACCOUNT_MAX_LEVERAGE: Record<LeverageAccountKey, number> = LEVERAGE
 // display copy and global guards.
 export const MAX_LEVERAGE = Math.max(...LEVERAGE_ACCOUNTS.map((a) => a.maxLeverage))
 
-// Full ladder of selectable leverage ratios offered by the platform.
-export const LEVERAGE_RATIOS = [2, 5, 10, 20, 30]
-
 // Resolve the maximum leverage permitted for a given funding category.
 export function maxLeverageFor(account: LeverageAccountKey): number {
   return ACCOUNT_MAX_LEVERAGE[account] ?? MAX_LEVERAGE
 }
 
-// Selectable ratios filtered to a category's ceiling (e.g. Treasury caps at 1:10).
+// Selectable ratios for a funding category. Treasury financing is restricted to
+// exactly 1:5 and 1:10; every other facility offers the full 1:2 … 1:30 ladder
+// (filtered to the category's ceiling).
 export function leverageRatiosFor(account: LeverageAccountKey): number[] {
+  if (account === "treasury") {
+    return TREASURY_LEVERAGE_RATIOS.slice()
+  }
   const cap = maxLeverageFor(account)
   return LEVERAGE_RATIOS.filter((r) => r <= cap)
 }
 
-// Annual debit interest charged on the borrowed (leveraged) funds. Leverage is
-// DEBIT LENDING and the rate scales LINEARLY with the leverage multiple at
-// 0.36% p.a. per unit of leverage (1.80% ÷ 5). Charged monthly as (annual ÷ 12):
-//
-//   1:5  -> 1.80%   1:10 -> 3.60%   1:15 -> 5.40%
-//   1:20 -> 7.20%   1:25 -> 9.00%   1:30 -> 10.80%
-//
-// This is distinct from Project Finance, which is an INVESTMENT product
-// carrying a 1.8% p.a. ROI, not a debit rate.
-export const DEBIT_INTEREST_RATE_PER_UNIT = 0.0036 // 0.36% p.a. per unit of leverage
-
-/**
- * Annual debit interest rate for a given leverage ratio, under the linear
- * scaling model (0.36% per unit). Rounded to 6 dp to avoid float noise.
- */
-export function debitInterestRateFor(leverageRatio: number): number {
-  const ratio = Number.isFinite(leverageRatio) ? Math.max(0, leverageRatio) : 0
-  return Math.round(ratio * DEBIT_INTEREST_RATE_PER_UNIT * 1e6) / 1e6
-}
+// Annual debit interest on the borrowed (leveraged) funds follows the
+// risk-based INVERSE scale in `lib/leverage-rates.ts` (higher leverage = lower
+// rate): 1:2 → 14% … 1:30 → 3%, charged monthly as (annual ÷ 12). This is
+// distinct from Project Finance, which is an INVESTMENT product carrying a 1.8%
+// p.a. ROI, not a debit rate. `debitInterestRateFor` is re-exported above.
 
 // Risk thresholds expressed as a margin level percentage (equity / used margin).
 export const RISK_THRESHOLDS = {
@@ -203,9 +200,8 @@ export function accruedInterest(request: LeverageRequest, asOf: number = Date.no
   let cursor = start
   // The borrowed amount and ratio in force at activation are the first
   // modification's "from" values (if any modifications exist), otherwise the
-  // line's current borrowed amount and ratio. Because the rate scales linearly
-  // with the ratio, each segment is charged at the rate of the ratio that was
-  // actually in force during that window.
+  // line's current borrowed amount and ratio. Each segment is charged at the
+  // risk-based rate of the ratio that was actually in force during that window.
   let borrowed = mods.length > 0 ? mods[0].fromBorrowed : request.borrowedAmount
   let ratio = mods.length > 0 ? mods[0].fromRatio : request.leverageRatio
 
@@ -294,8 +290,8 @@ export function LeverageRequestsProvider({ children }: { children: React.ReactNo
   const addRequest: LeverageRequestsContextValue["addRequest"] = (request) => {
     const full: LeverageRequest = {
       ...request,
-      // Authoritative rate: always derived from the ratio (linear model), so a
-      // stale value from the caller can never diverge from policy.
+      // Authoritative rate: always derived from the ratio via the risk-based
+      // scale, so a stale value from the caller can never diverge from policy.
       interestRate: debitInterestRateFor(request.leverageRatio),
       status: "pending",
       submittedAt: new Date().toISOString(),
@@ -383,7 +379,7 @@ export function LeverageRequestsProvider({ children }: { children: React.ReactNo
           leverageRatio: toRatio,
           buyingPower: newBuyingPower,
           borrowedAmount: newBorrowed,
-          // Rate follows the new ratio under the linear model (historical
+          // Rate follows the new ratio under the risk-based scale (historical
           // segments keep their own rate via `accruedInterest`).
           interestRate: debitInterestRateFor(toRatio),
           modifications: [...(r.modifications ?? []), modification],

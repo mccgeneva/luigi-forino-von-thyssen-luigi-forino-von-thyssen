@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import {
   ArrowDownToLine,
   CheckCircle2,
@@ -9,6 +9,8 @@ import {
   Send,
   UserPlus,
   Inbox,
+  Banknote,
+  ShieldCheck,
 } from "lucide-react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -26,6 +28,8 @@ import {
   ingestIncomingSwiftAdmin,
   listUnmatchedIncomingSwiftAdmin,
   assignIncomingSwiftAdmin,
+  listCreditableIncomingSwiftAdmin,
+  creditIncomingSwiftAdmin,
   type IngestResult,
 } from "@/app/actions/incoming-swift"
 import { listSelectableClients, type SelectableClient } from "@/app/actions/admin-users"
@@ -60,12 +64,31 @@ export function IncomingSwiftDelivery() {
   const [raw, setRaw] = useState("")
   const [ingesting, setIngesting] = useState(false)
   const [result, setResult] = useState<IngestResult | null>(null)
+  const fileRef = useRef<HTMLInputElement>(null)
+
+  const handleUpload = async (file: File | undefined) => {
+    if (!file) return
+    try {
+      const text = await file.text()
+      setRaw(text)
+      setResult(null)
+      toast.success(`Loaded ${file.name}. Review then receive & match.`)
+    } catch {
+      toast.error("Could not read that file. Upload a plain-text SWIFT printout.")
+    } finally {
+      if (fileRef.current) fileRef.current.value = ""
+    }
+  }
 
   const [unmatched, setUnmatched] = useState<IncomingSwiftMessage[]>([])
   const [loadingQueue, setLoadingQueue] = useState(false)
   const [clients, setClients] = useState<SelectableClient[]>([])
   const [assignSel, setAssignSel] = useState<Record<string, string>>({})
   const [assigning, setAssigning] = useState<string | null>(null)
+
+  const [creditable, setCreditable] = useState<IncomingSwiftMessage[]>([])
+  const [loadingCreditable, setLoadingCreditable] = useState(false)
+  const [crediting, setCrediting] = useState<string | null>(null)
 
   const loadQueue = async () => {
     setLoadingQueue(true)
@@ -74,10 +97,38 @@ export function IncomingSwiftDelivery() {
     if (res.ok) setUnmatched(res.messages)
   }
 
+  const loadCreditable = async () => {
+    setLoadingCreditable(true)
+    const res = await listCreditableIncomingSwiftAdmin(ADMIN_PASSCODE)
+    setLoadingCreditable(false)
+    if (res.ok) setCreditable(res.messages)
+  }
+
   useEffect(() => {
     void loadQueue()
+    void loadCreditable()
     void listSelectableClients(ADMIN_PASSCODE).then(setClients)
   }, [])
+
+  const handleCredit = async (m: IncomingSwiftMessage) => {
+    setCrediting(m.id)
+    try {
+      const res = await creditIncomingSwiftAdmin(ADMIN_PASSCODE, m.id)
+      if (res.ok) {
+        toast.success(`Credited ${res.creditedLabel}${res.creditedTo ? ` to ${res.creditedTo}` : ""}.`)
+        setCreditable((prev) => prev.filter((x) => x.id !== m.id))
+      } else if (res.alreadyCredited) {
+        toast.warning("This message was already credited.")
+        setCreditable((prev) => prev.filter((x) => x.id !== m.id))
+      } else {
+        toast.error(res.error ?? "Could not execute the credit.")
+      }
+    } catch {
+      toast.error("Could not reach the credit engine.")
+    } finally {
+      setCrediting(null)
+    }
+  }
 
   const handleIngest = async () => {
     if (!raw.trim()) return
@@ -89,8 +140,9 @@ export function IncomingSwiftDelivery() {
       if (!res.ok) {
         toast.error(res.error ?? "Could not ingest the message.")
       } else if (res.status === "matched") {
-        toast.success(`Delivered to ${res.matchedTo}.`)
+        toast.success(`Delivered to ${res.matchedTo}. Review it below to execute the credit.`)
         setRaw("")
+        void loadCreditable()
       } else {
         toast.warning("No matching account — added to the review queue.")
         setRaw("")
@@ -113,8 +165,9 @@ export function IncomingSwiftDelivery() {
     const res = await assignIncomingSwiftAdmin(ADMIN_PASSCODE, id, userId)
     setAssigning(null)
     if (res.ok) {
-      toast.success("Message assigned and delivered.")
+      toast.success("Message assigned and delivered. Execute the credit below.")
       setUnmatched((prev) => prev.filter((m) => m.id !== id))
+      void loadCreditable()
     } else {
       toast.error(res.error ?? "Could not assign the message.")
     }
@@ -125,11 +178,13 @@ export function IncomingSwiftDelivery() {
       {/* Ingest + auto-match */}
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">Receive &amp; deliver an incoming SWIFT message</CardTitle>
+          <CardTitle className="text-base">Analyze, verify &amp; credit an incoming SWIFT message</CardTitle>
           <CardDescription>
-            Paste an inbound SWIFT FIN message. It is cross-checked against every active bank account by beneficiary
-            IBAN (:59:) and receiving bank BIC (:57a:). On a confident match it is delivered straight to that
-            customer&apos;s SWIFT Messages inbox and they are notified; otherwise it goes to the review queue below.
+            Paste (or upload) an inbound SWIFT FIN printout received from a customer. It is analyzed and cross-checked
+            against every active bank account by beneficiary IBAN (:59:) and receiving bank BIC (:57a:). On a confident
+            match it is delivered to that customer&apos;s SWIFT Messages inbox and they are notified; otherwise it goes
+            to the review queue. Matched messages then appear under <strong>Awaiting credit</strong>, where you verify
+            the details and execute the credit to the customer&apos;s Master Account.
           </CardDescription>
         </CardHeader>
         <CardContent className="flex flex-col gap-3">
@@ -144,6 +199,21 @@ export function IncomingSwiftDelivery() {
             <Button onClick={handleIngest} disabled={ingesting || !raw.trim()} className="gap-2">
               {ingesting ? <Loader2 className="h-4 w-4 animate-spin" /> : <ArrowDownToLine className="h-4 w-4" />}
               Receive &amp; match
+            </Button>
+            <input
+              ref={fileRef}
+              type="file"
+              accept=".txt,.fin,.swift,.dat,text/plain"
+              className="hidden"
+              onChange={(e) => handleUpload(e.target.files?.[0])}
+            />
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => fileRef.current?.click()}
+              className="gap-2 bg-transparent"
+            >
+              <ArrowDownToLine className="h-4 w-4" /> Upload printout
             </Button>
             <Button variant="outline" size="sm" onClick={() => setRaw(SAMPLE)} className="bg-transparent">
               Load sample
@@ -177,6 +247,85 @@ export function IncomingSwiftDelivery() {
                   <>Not matched. {result.reason} Review it in the queue below.</>
                 )}
               </span>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Matched — awaiting credit execution */}
+      <Card>
+        <CardHeader>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <CardTitle className="flex items-center gap-2 text-base">
+                <Banknote className="h-4 w-4" /> Awaiting credit
+                {creditable.length > 0 && <Badge variant="secondary">{creditable.length}</Badge>}
+              </CardTitle>
+              <CardDescription>
+                Verified messages matched to a platform bank account. Review the details, then execute the credit to
+                the customer&apos;s Master Account. Crediting is idempotent — a message can only be credited once.
+              </CardDescription>
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={loadCreditable}
+              disabled={loadingCreditable}
+              className="gap-2 bg-transparent"
+            >
+              {loadingCreditable ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+              Refresh
+            </Button>
+          </div>
+        </CardHeader>
+        <CardContent>
+          {creditable.length === 0 ? (
+            <p className="py-10 text-center text-sm text-muted-foreground">
+              {loadingCreditable ? "Loading…" : "No matched messages awaiting a credit."}
+            </p>
+          ) : (
+            <div className="flex flex-col gap-4">
+              {creditable.map((m) => (
+                <div key={m.id} className="rounded-lg border border-border p-4">
+                  <div className="mb-3 flex flex-wrap items-center gap-2">
+                    <Badge className="bg-primary/15 text-primary">{m.messageType}</Badge>
+                    {m.amount && <span className="text-sm font-semibold text-foreground">{m.amount}</span>}
+                    {m.bicConfirmed ? (
+                      <Badge className="gap-1 bg-emerald-500/15 text-emerald-600 dark:text-emerald-400">
+                        <ShieldCheck className="h-3.5 w-3.5" /> IBAN + BIC verified
+                      </Badge>
+                    ) : (
+                      <Badge variant="outline" className="gap-1 text-amber-600 dark:text-amber-400">
+                        <AlertTriangle className="h-3.5 w-3.5" /> IBAN only
+                      </Badge>
+                    )}
+                    <span className="ml-auto text-xs text-muted-foreground">{fmtDate(m.createdAt)}</span>
+                  </div>
+                  <div className="grid gap-x-6 gap-y-1.5 text-sm sm:grid-cols-2">
+                    <Detail label="Credit to" value={m.matchedAccountHolder || "—"} />
+                    <Detail label="Beneficiary IBAN" value={m.beneficiaryIban || "—"} mono />
+                    <Detail label="Ordering customer" value={m.orderingCustomer || "—"} />
+                    <Detail label="Receiving bank (:57a:)" value={m.receiverBic || "—"} mono />
+                    {m.reference && <Detail label="Reference" value={m.reference} />}
+                    {m.uetr && <Detail label="UETR" value={m.uetr} mono />}
+                  </div>
+                  <div className="mt-3 flex flex-wrap items-center gap-2">
+                    <Button
+                      size="sm"
+                      onClick={() => handleCredit(m)}
+                      disabled={crediting === m.id}
+                      className="gap-1.5"
+                    >
+                      {crediting === m.id ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <Banknote className="h-4 w-4" />
+                      )}
+                      Execute &amp; credit to Master Account
+                    </Button>
+                  </div>
+                </div>
+              ))}
             </div>
           )}
         </CardContent>

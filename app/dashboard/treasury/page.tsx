@@ -41,6 +41,8 @@ import {
   monthlyTreasuryInterest,
   TREASURY_FINANCING_ANNUAL_RATE,
 } from "@/lib/treasury-financing"
+import { useLedger } from "@/lib/ledger-store"
+import { CapitalLendingCard } from "@/components/dashboard/treasury/capital-lending-card"
 
 const fmt = (value: number, currency = "EUR") =>
   `${currency} ${value.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
@@ -106,7 +108,8 @@ function Metric({
 }
 
 export default function TreasuryPage() {
-  const { account, hydrated } = useTreasury()
+  const { account, hydrated, refresh: refreshTreasury } = useTreasury()
+  const { refresh: refreshLedger } = useLedger()
 
   // Live clock so the accruing debit cycle fee ticks while the page is open.
   const [now, setNow] = useState(() => Date.now())
@@ -322,7 +325,7 @@ export default function TreasuryPage() {
                   <div className="flex items-start gap-2 rounded-lg border border-border bg-secondary/40 p-3 text-sm text-muted-foreground">
                     <Building2 className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
                     <span className="text-pretty">
-                      Under the approved 1:10 leveraged security deposit mechanism, your contribution of{" "}
+                      Under the approved 1:{account.leverageRatio} leveraged security deposit mechanism, your contribution of{" "}
                       {fmt0(account.customerContribution, account.currency)} is amplified at 1:{account.leverageRatio}.
                       The remaining {fmt0(financed, account.currency)} is financed by{" "}
                       <span className="font-medium text-foreground">MCC HOLDING SA, Switzerland</span> and recorded
@@ -414,6 +417,16 @@ export default function TreasuryPage() {
               </CardContent>
             </Card>
           )}
+
+          {/* Internal capital lending */}
+          <CapitalLendingCard
+            profile={account.profile}
+            currency={account.currency}
+            onFunded={() => {
+              void refreshLedger()
+              void refreshTreasury()
+            }}
+          />
 
           {/* Transaction history */}
           <Card className="bg-card border-border">
