@@ -1,6 +1,6 @@
 "use client"
 
-import { BadgeCheck, FileText, ExternalLink, Cpu } from "lucide-react"
+import { BadgeCheck, Cpu } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { ProfileAvatarEditor } from "@/components/dashboard/profile-avatar-editor"
@@ -10,7 +10,7 @@ import { ApiAccess } from "@/components/settings/api-access"
 import { DebitProfileCard } from "@/components/dashboard/debits/debit-profile-card"
 import { Separator } from "@/components/ui/separator"
 import { useCurrentUser } from "@/lib/use-current-user"
-import { KYC_DOCUMENT_LABELS, blobFileUrl } from "@/lib/kyc-types"
+import { KycDocumentsCard } from "@/components/dashboard/kyc-documents-card"
 
 function InfoList({ items }: { items: { label: string; value: string; icon: React.ElementType }[] }) {
   return (
@@ -180,42 +180,9 @@ export default function ProfilePage() {
         </Card>
       )}
 
-      {/* KYC Documents */}
+      {/* KYC Documents — opened in an in-app viewer with a Back button */}
       {user.kycDocuments && user.kycDocuments.length > 0 && (
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-base">KYC Documents</CardTitle>
-            <CardDescription>Identity and compliance documents on file</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <div className="grid gap-3 sm:grid-cols-2">
-              {user.kycDocuments.map((doc) => (
-                <a
-                  key={`${doc.type}-${doc.pageNumber}`}
-                  href={`${blobFileUrl(doc.pathname)}#page=${doc.pageNumber}`}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="group flex items-center justify-between gap-2 rounded-lg border border-border bg-secondary/30 p-3 transition-colors hover:border-primary"
-                >
-                  <div className="flex min-w-0 items-center gap-3">
-                    <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md bg-primary/10">
-                      <FileText className="h-5 w-5 text-primary" />
-                    </div>
-                    <div className="min-w-0">
-                      <p className="truncate text-sm font-medium text-foreground">
-                        {KYC_DOCUMENT_LABELS[doc.type]}
-                      </p>
-                      <p className="truncate text-xs text-muted-foreground">
-                        {doc.label} · Page {doc.pageNumber}
-                      </p>
-                    </div>
-                  </div>
-                  <ExternalLink className="h-4 w-4 shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100" />
-                </a>
-              ))}
-            </div>
-          </CardContent>
-        </Card>
+        <KycDocumentsCard documents={user.kycDocuments} />
       )}
     </div>
   )
