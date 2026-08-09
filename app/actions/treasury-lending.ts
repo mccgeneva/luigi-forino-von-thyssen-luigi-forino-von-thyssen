@@ -7,6 +7,7 @@ import {
   updateApprovalPayload,
 } from "@/lib/approvals-db"
 import { submitApproval } from "@/app/actions/approvals"
+import { quoteDebitSettlement, terminateDebitFacility } from "@/app/actions/debit-settlement"
 import {
   readLedgerEntries,
   availableByCurrency,
@@ -68,6 +69,8 @@ export interface TreasuryLendingView {
   /** Set once the client has paid the lending cost and the capital is drawn. */
   fundedAt: string | null
   lendingCostPaidAt: string | null
+  /** Set once the client has repaid the facility (principal + interest) and closed it. */
+  closedAt: string | null
   createdAt: string
   decisionNote: string | null
 }
@@ -83,6 +86,8 @@ interface LendingPayload {
   drawdownTxnId?: string
   feeEntryId?: string
   creditEntryId?: string
+  closedAt?: string
+  repayPayoff?: number
 }
 
 /** Read the signed-in user's treasury account row (keyed by account id). */
@@ -124,6 +129,7 @@ function toView(req: {
     annualRate: Number(payload.annualRate ?? TREASURY_LENDING_ANNUAL_RATE),
     fundedAt: payload.fundedAt ?? null,
     lendingCostPaidAt: payload.lendingCostPaidAt ?? null,
+    closedAt: payload.closedAt ?? null,
     createdAt: req.createdAt,
     decisionNote: req.decisionNote,
   }
@@ -170,7 +176,13 @@ export async function applyForTreasuryLending(): Promise<ApplyLendingResult> {
   // Refuse a second facility while one is already pending or live (approved).
   try {
     const existing = await listApprovalsForUser(session.id, "treasury_lending")
-    const live = existing.find((r) => r.status === "pending" || r.status === "approved")
+    // A facility is "live" while pending, or approved and not yet repaid/closed.
+    // A repaid (closedAt) or rejected facility no longer blocks a new request.
+    const live = existing.find((r) => {
+      if (r.status === "pending") return true
+      if (r.status === "approved") return !((r.payload ?? {}) as LendingPayload).closedAt
+      return false
+    })
     if (live) {
       return {
         ok: false,
@@ -422,4 +434,126 @@ export async function payTreasuryLendingCost(approvalId: string): Promise<PayLen
   }).catch(() => {})
 
   return { ok: true, amount, cost }
+}
+
+// ---------------------------------------------------------------------------
+// Repay & close — client self-service settlement of a live lending facility.
+//
+// A funded facility carries 3% p.a. debit interest until it is repaid. The
+// payoff (borrowed principal + outstanding interest that has accrued but is not
+// yet billed) is computed and settled by the SAME audited debit-settlement
+// engine used on the Debits & Financing page — we key it on the drawdown
+// transaction id so the quote, the master-balance gate, and the ledger posts
+// all agree to the cent, and the drawdown is stamped `settledAt` so no further
+// interest accrues. This is additive: the facility also remains settleable from
+// /dashboard/debits, which shares the exact same engine.
+// ---------------------------------------------------------------------------
+
+/** Resolve a funded, not-yet-closed lending facility owned by the session. */
+async function resolveLiveLending(
+  approvalId: string,
+): Promise<{ ok: true; drawdownTxnId: string } | { ok: false; error: string }> {
+  const session = await resolveCurrentSession()
+  if (!session) return { ok: false, error: "Your session has expired. Please sign in again." }
+
+  const approval = await getApprovalById(approvalId)
+  if (!approval || approval.kind !== "treasury_lending") {
+    return { ok: false, error: "This lending facility could not be found." }
+  }
+  const ledgerOwnerId = session.dataOwnerId || (await resolveDataOwnerIdFor(session.id))
+  if (approval.userId !== session.id && approval.userId !== ledgerOwnerId) {
+    return { ok: false, error: "This lending facility could not be found." }
+  }
+  const payload = (approval.payload ?? {}) as LendingPayload
+  if (!payload.fundedAt || !payload.drawdownTxnId) {
+    return { ok: false, error: "This facility has not been funded yet." }
+  }
+  if (payload.closedAt) {
+    return { ok: false, error: "This lending facility is already closed." }
+  }
+  return { ok: true, drawdownTxnId: payload.drawdownTxnId }
+}
+
+export type LendingRepayQuoteResult =
+  | {
+      ok: true
+      principal: number
+      interest: number
+      payoff: number
+      currency: string
+      available: number
+      covered: boolean
+      shortfall: number
+    }
+  | { ok: false; error: string }
+
+/**
+ * Read-only payoff to repay & close a funded facility: borrowed principal +
+ * all outstanding 3% interest, and whether the master balance covers it.
+ */
+export async function quoteTreasuryLendingRepay(approvalId: string): Promise<LendingRepayQuoteResult> {
+  const live = await resolveLiveLending(approvalId)
+  if (!live.ok) return live
+  const res = await quoteDebitSettlement("treasury", live.drawdownTxnId)
+  if (!res.ok) return { ok: false, error: res.error }
+  return {
+    ok: true,
+    principal: res.quote.principal,
+    interest: round2(res.quote.interestTail + res.quote.dueNow),
+    payoff: res.quote.payoff,
+    currency: res.quote.currency,
+    available: res.available,
+    covered: res.covered,
+    shortfall: res.shortfall,
+  }
+}
+
+export type RepayLendingResult =
+  | { ok: true; payoff: number; principal: number; interest: number; currency: string }
+  | { ok: false; error: string }
+
+/**
+ * Repay & close a funded facility: settle principal + outstanding interest from
+ * the master balance (blocked with a shortfall notice if it can't cover the
+ * payoff), stop the 3% accrual, and mark the lending approval closed so the
+ * client can borrow again in future.
+ */
+export async function repayTreasuryLending(approvalId: string): Promise<RepayLendingResult> {
+  const session = await resolveCurrentSession()
+  if (!session) return { ok: false, error: "Your session has expired. Please sign in again." }
+
+  const live = await resolveLiveLending(approvalId)
+  if (!live.ok) return { ok: false, error: live.error }
+
+  const term = await terminateDebitFacility("treasury", live.drawdownTxnId)
+  if (!term.ok) return { ok: false, error: term.error }
+
+  const now = new Date().toISOString()
+  const payload = ((await getApprovalById(approvalId))?.payload ?? {}) as LendingPayload
+  await updateApprovalPayload(approvalId, {
+    ...payload,
+    closedAt: now,
+    repayPayoff: term.quote.payoff,
+  })
+
+  const interest = round2(term.quote.interestTail + term.quote.dueNow)
+  void logActivity({
+    action: `Repaid & closed treasury capital lending (payoff ${term.quote.currency} ${term.quote.payoff.toLocaleString("en-US")})`,
+    category: "Treasury",
+    userId: session.id,
+    details: {
+      principal: `${term.quote.currency} ${term.quote.principal.toLocaleString("en-US")}`,
+      interest: `${term.quote.currency} ${interest.toLocaleString("en-US")}`,
+      totalPayoff: `${term.quote.currency} ${term.quote.payoff.toLocaleString("en-US")}`,
+      decision: "Repaid & closed (client self-service)",
+    },
+  }).catch(() => {})
+
+  return {
+    ok: true,
+    payoff: term.quote.payoff,
+    principal: term.quote.principal,
+    interest,
+    currency: term.quote.currency,
+  }
 }

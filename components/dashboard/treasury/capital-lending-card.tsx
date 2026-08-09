@@ -1,7 +1,7 @@
 "use client"
 
 import { useCallback, useEffect, useState } from "react"
-import { HandCoins, Clock, CheckCircle2, AlertTriangle, Loader2, Info, Percent } from "lucide-react"
+import { HandCoins, Clock, CheckCircle2, AlertTriangle, Loader2, Info, Percent, Undo2, X } from "lucide-react"
 import { toast } from "sonner"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
@@ -18,8 +18,13 @@ import {
   applyForTreasuryLending,
   payTreasuryLendingCost,
   getMyTreasuryLending,
+  quoteTreasuryLendingRepay,
+  repayTreasuryLending,
   type TreasuryLendingView,
+  type LendingRepayQuoteResult,
 } from "@/app/actions/treasury-lending"
+
+type RepayQuote = Extract<LendingRepayQuoteResult, { ok: true }>
 
 const fmt0 = (value: number, currency = "EUR") =>
   `${currency} ${value.toLocaleString("en-US", { maximumFractionDigits: 0 })}`
@@ -66,6 +71,8 @@ export function CapitalLendingCard({
   const [requests, setRequests] = useState<TreasuryLendingView[]>([])
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
+  const [quoting, setQuoting] = useState(false)
+  const [repayQuote, setRepayQuote] = useState<RepayQuote | null>(null)
 
   const amount = treasuryLendingAmount(profile)
   const cost = treasuryLendingCost(amount)
@@ -86,13 +93,13 @@ export function CapitalLendingCard({
   }, [load])
 
   // The most relevant facility: a live one (pending / approved-unfunded /
-  // funded) takes priority over historical rejected/closed rows.
+  // funded-but-not-repaid) takes priority over historical rejected/closed rows.
   const active =
     requests.find((r) => r.status === "pending") ||
-    requests.find((r) => r.status === "approved") ||
+    requests.find((r) => r.status === "approved" && !r.closedAt) ||
     requests[0] ||
     null
-  const funded = Boolean(active?.fundedAt)
+  const funded = Boolean(active?.fundedAt) && !active?.closedAt
 
   const apply = async () => {
     setBusy(true)
@@ -133,7 +140,49 @@ export function CapitalLendingCard({
     }
   }
 
+  const openRepay = async (id: string) => {
+    setQuoting(true)
+    try {
+      const res = await quoteTreasuryLendingRepay(id)
+      if (!res.ok) {
+        toast.error(res.error)
+        return
+      }
+      setRepayQuote(res)
+    } catch {
+      toast.error("The payoff could not be calculated. Please try again.")
+    } finally {
+      setQuoting(false)
+    }
+  }
+
+  const confirmRepay = async (id: string) => {
+    setBusy(true)
+    try {
+      const res = await repayTreasuryLending(id)
+      if (!res.ok) {
+        toast.error(res.error)
+        return
+      }
+      toast.success(
+        `Facility repaid. ${fmt2(res.payoff, currency)} (principal ${fmt0(res.principal, currency)} + interest ${fmt2(
+          res.interest,
+          currency,
+        )}) was settled from your master account.`,
+      )
+      setRepayQuote(null)
+      await load()
+      onFunded?.()
+    } catch {
+      toast.error("The repayment could not be completed. Please try again.")
+    } finally {
+      setBusy(false)
+    }
+  }
+
   const badge = (() => {
+    if (active?.closedAt)
+      return { label: "Repaid & closed", className: "text-muted-foreground", Icon: CheckCircle2 }
     if (funded)
       return { label: "Active", className: "border-green-500/20 bg-green-500/10 text-green-500", Icon: CheckCircle2 }
     if (active?.status === "approved")
@@ -172,7 +221,17 @@ export function CapitalLendingCard({
           />
           <Stat
             label="Status"
-            value={funded ? "Funded" : active?.status === "approved" ? "Approved" : active?.status === "pending" ? "Pending" : "Available"}
+            value={
+              active?.closedAt
+                ? "Closed"
+                : funded
+                  ? "Funded"
+                  : active?.status === "approved"
+                    ? "Approved"
+                    : active?.status === "pending"
+                      ? "Pending"
+                      : "Available"
+            }
             tone={funded ? "positive" : "default"}
           />
         </div>
@@ -192,17 +251,84 @@ export function CapitalLendingCard({
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
             <Loader2 className="h-4 w-4 animate-spin" /> Loading lending status…
           </div>
-        ) : funded ? (
-          <div className="flex items-start gap-2 rounded-lg border border-green-500/20 bg-green-500/5 p-3 text-sm">
-            <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-green-500" />
-            <span className="text-pretty text-muted-foreground">
-              <span className="font-medium text-foreground">Capital lending active.</span>{" "}
-              {fmt0(active?.amount ?? amount, currency)} was drawn down to your master account. The{" "}
-              {(TREASURY_LENDING_ANNUAL_RATE * 100).toFixed(0)}% p.a. debit interest is shown in the Treasury
-              Financing Interest panel above.
-            </span>
+        ) : funded && active ? (
+          <div className="space-y-3">
+            <div className="flex flex-col gap-3 rounded-lg border border-green-500/20 bg-green-500/5 p-3 text-sm sm:flex-row sm:items-center sm:justify-between">
+              <span className="text-pretty text-muted-foreground">
+                <CheckCircle2 className="mr-1.5 inline h-4 w-4 shrink-0 text-green-500 align-text-bottom" />
+                <span className="font-medium text-foreground">Capital lending active.</span>{" "}
+                {fmt0(active.amount, currency)} was drawn down to your master account. The{" "}
+                {(TREASURY_LENDING_ANNUAL_RATE * 100).toFixed(0)}% p.a. debit interest is shown in the Treasury
+                Financing Interest panel above.
+              </span>
+              {!repayQuote && (
+                <Button
+                  variant="outline"
+                  onClick={() => openRepay(active.id)}
+                  disabled={quoting || busy}
+                  className="shrink-0 gap-2"
+                >
+                  {quoting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Undo2 className="h-4 w-4" />}
+                  Repay &amp; close
+                </Button>
+              )}
+            </div>
+
+            {repayQuote && (
+              <div className="rounded-lg border border-border bg-secondary/40 p-4">
+                <div className="flex items-center gap-2">
+                  <Undo2 className="h-4 w-4 text-primary" />
+                  <p className="text-sm font-medium text-foreground">Repay &amp; close this facility</p>
+                  <button
+                    type="button"
+                    onClick={() => setRepayQuote(null)}
+                    disabled={busy}
+                    aria-label="Cancel repayment"
+                    className="ml-auto rounded-md p-1 text-muted-foreground hover:bg-secondary hover:text-foreground disabled:opacity-50"
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
+                </div>
+                <dl className="mt-3 space-y-1.5 text-sm">
+                  <div className="flex items-center justify-between">
+                    <dt className="text-muted-foreground">Principal returned</dt>
+                    <dd className="font-medium text-foreground">{fmt2(repayQuote.principal, repayQuote.currency)}</dd>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <dt className="text-muted-foreground">Outstanding interest ({(TREASURY_LENDING_ANNUAL_RATE * 100).toFixed(0)}% p.a.)</dt>
+                    <dd className="font-medium text-foreground">{fmt2(repayQuote.interest, repayQuote.currency)}</dd>
+                  </div>
+                  <div className="flex items-center justify-between border-t border-border pt-1.5">
+                    <dt className="font-medium text-foreground">Total payoff</dt>
+                    <dd className="font-semibold text-foreground">{fmt2(repayQuote.payoff, repayQuote.currency)}</dd>
+                  </div>
+                </dl>
+                {repayQuote.covered ? (
+                  <p className="mt-2 text-[11px] text-muted-foreground">
+                    Settled from your master account balance (available{" "}
+                    {fmt2(repayQuote.available, repayQuote.currency)}). Accrual stops immediately.
+                  </p>
+                ) : (
+                  <p className="mt-2 flex items-start gap-1.5 text-[11px] text-orange-400">
+                    <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                    Your master balance ({fmt2(repayQuote.available, repayQuote.currency)}) can&apos;t cover the
+                    payoff — short by {fmt2(repayQuote.shortfall, repayQuote.currency)}. Fund the account before
+                    repaying.
+                  </p>
+                )}
+                <div className="mt-3 flex justify-end gap-2">
+                  <Button variant="ghost" onClick={() => setRepayQuote(null)} disabled={busy}>
+                    Cancel
+                  </Button>
+                  <Button onClick={() => confirmRepay(active.id)} disabled={busy || !repayQuote.covered} className="gap-2">
+                    {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Undo2 className="h-4 w-4" />}
+                    Confirm repayment — {fmt2(repayQuote.payoff, repayQuote.currency)}
+                  </Button>
+                </div>
+              </div>
+            )}
           </div>
-        ) : active?.status === "approved" ? (
+        ) : active?.status === "approved" && !active.closedAt ? (
           <div className="flex flex-col gap-3 rounded-lg border border-primary/20 bg-primary/5 p-4 sm:flex-row sm:items-center sm:justify-between">
             <div className="text-sm text-muted-foreground text-pretty">
               <span className="font-medium text-foreground">Approved.</span> Pay the one-time lending cost of{" "}
@@ -230,6 +356,14 @@ export function CapitalLendingCard({
                 <span className="text-pretty">
                   A previous application was declined{active.decisionNote ? `: ${active.decisionNote}` : "."} You
                   may apply again.
+                </span>
+              </div>
+            )}
+            {active?.closedAt && (
+              <div className="flex items-start gap-2 text-sm text-muted-foreground">
+                <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-green-500" />
+                <span className="text-pretty">
+                  Your previous lending facility was repaid and closed. You may borrow again.
                 </span>
               </div>
             )}
