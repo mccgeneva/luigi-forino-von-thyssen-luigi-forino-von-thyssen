@@ -5,6 +5,7 @@ import { adminActionAuthorized } from "@/lib/admin-auth"
 import { type UserProfile } from "@/lib/users"
 import { resolveAccountProfileById, resolveCurrentSession, resolveDataOwnerIdFor } from "@/lib/session-user"
 import { logActivity } from "@/app/actions/log-activity"
+import { insertNotification } from "@/lib/notifications-db"
 import type { GatewayAccount, FundingEvent } from "@/lib/gateway-store"
 import type { LedgerEntry } from "@/lib/ledger-store"
 import {
@@ -417,6 +418,25 @@ export async function recordGatewayDepositForApproval(
           decision: isFx ? "Auto-matched by IBAN with FX conversion" : "Auto-matched by IBAN",
         },
       })
+
+      // Alert the account owner (the beneficiary) that funds landed and were
+      // credited to their Master Account. Fires once per genuinely new deposit
+      // (guarded by `!alreadyFunded`), so a self-heal re-post never re-notifies.
+      // Best-effort: a notification failure must not undo the recorded credit.
+      try {
+        const creditedLabel = `${account.currency} ${amount.toLocaleString("en-US")}`
+        await insertNotification({
+          userId: account.userId,
+          tone: "success",
+          title: `Payment received — ${creditedLabel}`,
+          body: `You received ${creditedLabel} from ${sender.fullName}${
+            reference ? ` (reference ${reference})` : ""
+          }. The funds were credited to your Master Account.`,
+          href: "/dashboard",
+        })
+      } catch (err) {
+        console.log("[v0] deposit notification failed:", (err as Error).message)
+      }
     }
 
     return { matched: true }
@@ -690,6 +710,22 @@ export async function recordRegisteredAccountDepositForApproval(
           decision: isFx ? "Auto-matched by IBAN with FX conversion" : "Auto-matched by IBAN",
         },
       })
+
+      // Alert the receiving account owner (beneficiary) that funds landed on
+      // their registered bank account and were credited to the Master Account.
+      // Fires once per new credit (guarded by `!alreadyPosted`); best-effort.
+      try {
+        const creditedLabel = `${account.currency} ${amount.toLocaleString("en-US")}`
+        await insertNotification({
+          userId: account.ownerUserId,
+          tone: "success",
+          title: `Payment received — ${creditedLabel}`,
+          body: `You received ${creditedLabel} from ${sender.fullName} into ${account.bankName}. The funds were credited to your Master Account.`,
+          href: "/dashboard",
+        })
+      } catch (err) {
+        console.log("[v0] registered-account deposit notification failed:", (err as Error).message)
+      }
     }
 
     return { matched: true }
