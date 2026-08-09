@@ -322,7 +322,7 @@ export default function TreasuryPage() {
                   <div className="flex items-start gap-2 rounded-lg border border-border bg-secondary/40 p-3 text-sm text-muted-foreground">
                     <Building2 className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
                     <span className="text-pretty">
-                      Under the approved 1:10 leveraged security deposit mechanism, your contribution of{" "}
+                      Under the approved 1:{account.leverageRatio} leveraged security deposit mechanism, your contribution of{" "}
                       {fmt0(account.customerContribution, account.currency)} is amplified at 1:{account.leverageRatio}.
                       The remaining {fmt0(financed, account.currency)} is financed by{" "}
                       <span className="font-medium text-foreground">MCC HOLDING SA, Switzerland</span> and recorded

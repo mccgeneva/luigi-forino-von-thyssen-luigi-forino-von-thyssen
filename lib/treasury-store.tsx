@@ -59,11 +59,33 @@ export const TREASURY_CURRENCY = "EUR"
 export const MAX_LEVERAGE_RATIO = 10
 
 /**
- * Minimum customer contribution required to reach `requiredDeposit` under the
- * approved 1:10 leverage facility (i.e. 10% of the required deposit).
+ * Leverage facilities the administrator may approve on a treasury security
+ * deposit. 1:5 requires a larger client contribution (20% of the deposit) than
+ * 1:10 (10%). Kept ascending; the last entry is the maximum (MAX_LEVERAGE_RATIO).
  */
-export function leverageMinContribution(requiredDeposit: number): number {
-  return Math.ceil(requiredDeposit / MAX_LEVERAGE_RATIO)
+export const TREASURY_LEVERAGE_RATIOS = [5, 10] as const
+
+/**
+ * Snap a stored/legacy leverage value to an approved facility level. Historic
+ * records stored an *observed* ratio (required ÷ contribution) that may not be
+ * one of the offered facilities; those default to the 1:10 facility that was
+ * the only option at the time, so financing capacity never regresses.
+ */
+export function normalizeTreasuryLeverageRatio(ratio: number | undefined | null): number {
+  const n = Number(ratio)
+  return (TREASURY_LEVERAGE_RATIOS as readonly number[]).includes(n) ? n : MAX_LEVERAGE_RATIO
+}
+
+/**
+ * Minimum customer contribution required to reach `requiredDeposit` under the
+ * approved leverage facility — i.e. `requiredDeposit / ratio` (10% at 1:10,
+ * 20% at 1:5). Defaults to the maximum facility when no ratio is given.
+ */
+export function leverageMinContribution(
+  requiredDeposit: number,
+  ratio: number = MAX_LEVERAGE_RATIO,
+): number {
+  return Math.ceil(requiredDeposit / Math.max(1, ratio))
 }
 
 // Annual debit cycle fee charged on leveraged positions. Applied to the
@@ -179,11 +201,12 @@ export function maxFinanceable(contribution: number, ratio: number = MAX_LEVERAG
 export function financedAmountFor(account: TreasuryAccount): number {
   if (!account.leverageEnabled) return 0
   // Pledged SKR collateral already covers part of the deposit, so MCC HOLDING SA
-  // only finances the remaining gap — never more than the 1:10 facility allows
-  // on the client's own cash contribution.
+  // only finances the remaining gap — never more than the approved facility
+  // (1:5 or 1:10) allows on the client's own cash contribution.
   const collateral = Math.max(0, account.skrCollateral || 0)
   const gap = Math.max(0, account.requiredDeposit - account.customerContribution - collateral)
-  return Math.min(gap, maxFinanceable(account.customerContribution, MAX_LEVERAGE_RATIO))
+  const ratioCap = normalizeTreasuryLeverageRatio(account.leverageRatio)
+  return Math.min(gap, maxFinanceable(account.customerContribution, ratioCap))
 }
 
 /**

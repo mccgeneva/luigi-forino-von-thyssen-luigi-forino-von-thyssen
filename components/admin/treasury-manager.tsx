@@ -24,6 +24,8 @@ import {
   TREASURY_CURRENCY,
   DEBIT_CYCLE_FEE_RATE,
   MAX_LEVERAGE_RATIO,
+  TREASURY_LEVERAGE_RATIOS,
+  normalizeTreasuryLeverageRatio,
   leverageMinContribution,
   getProfile,
   emptyTreasuryAccount,
@@ -113,6 +115,8 @@ export function TreasuryManager() {
   const [requiredDeposit, setRequiredDeposit] = useState("500000")
   const [contribution, setContribution] = useState("0")
   const [leverageEnabled, setLeverageEnabled] = useState(false)
+  // Approved facility level (1:5 or 1:10). Defaults to the maximum facility.
+  const [leverageRatio, setLeverageRatio] = useState<number>(MAX_LEVERAGE_RATIO)
   const [transactionExposure, setTransactionExposure] = useState("0")
   const [status, setStatus] = useState<TreasuryStatus>("pending")
   const [note, setNote] = useState("")
@@ -135,6 +139,7 @@ export function TreasuryManager() {
         setRequiredDeposit(String(acc.requiredDeposit || getProfile(acc.profile).requiredDeposit))
         setContribution(String(acc.customerContribution))
         setLeverageEnabled(acc.leverageEnabled)
+        setLeverageRatio(normalizeTreasuryLeverageRatio(acc.leverageRatio))
         setTransactionExposure(String(acc.transactionExposure))
         setStatus(acc.status === "none" ? "pending" : acc.status)
         setNote(acc.note ?? "")
@@ -148,20 +153,21 @@ export function TreasuryManager() {
   const numRequired = Number(requiredDeposit) || 0
   const numContribution = Number(contribution) || 0
   const numExposure = Number(transactionExposure) || 0
-  // The 1:10 facility can finance at most (10 − 1)× the client's contribution,
-  // so a low/zero contribution leaves the deposit uncovered (a real shortfall)
-  // rather than being silently topped up to fully secured.
-  const maxFinanceable = leverageEnabled ? numContribution * (MAX_LEVERAGE_RATIO - 1) : 0
+  // The approved facility (1:5 or 1:10) can finance at most (ratio − 1)× the
+  // client's contribution, so a low/zero contribution leaves the deposit
+  // uncovered (a real shortfall) rather than being topped up to fully secured.
+  const facilityRatio = leverageEnabled ? leverageRatio : 1
+  const maxFinanceable = leverageEnabled ? numContribution * (facilityRatio - 1) : 0
   const financed = leverageEnabled ? Math.min(Math.max(0, numRequired - numContribution), maxFinanceable) : 0
-  const ratio = leverageEnabled && numContribution > 0 ? numRequired / numContribution : 1
   const secured = numContribution + financed
   const shortfall = Math.max(0, numRequired - secured)
   const annualFee = leverageEnabled ? (financed + numExposure) * DEBIT_CYCLE_FEE_RATE : 0
 
-  // For a fully-secured 1:10 position the contribution must be ≥ 10% of the
-  // deposit. Below that the deposit is simply under-secured — we warn but allow
-  // it, so the desk can record a client withdrawal / uncovered position.
-  const minContribution = leverageMinContribution(numRequired)
+  // For a fully-secured position the contribution must be ≥ (1 / ratio) of the
+  // deposit — 10% at 1:10, 20% at 1:5. Below that the deposit is simply
+  // under-secured — we warn but allow it (e.g. a client withdrawal).
+  const minContribution = leverageMinContribution(numRequired, facilityRatio)
+  const minPct = Math.round(100 / facilityRatio)
   const leverageBreached = leverageEnabled && numContribution < minContribution
 
   const applyMinLeverage = () => setContribution(String(minContribution))
@@ -182,6 +188,7 @@ export function TreasuryManager() {
       requiredDeposit: numRequired,
       customerContribution: numContribution,
       leverageEnabled,
+      leverageRatio: facilityRatio,
       transactionExposure: numExposure,
       status,
       note: note.trim() || undefined,
@@ -359,10 +366,10 @@ export function TreasuryManager() {
         <div className="rounded-lg border border-border bg-secondary/30 p-4">
           <div className="flex items-center justify-between">
             <div>
-              <p className="text-sm font-medium text-foreground">Leverage facility — approved 1:{MAX_LEVERAGE_RATIO}</p>
+              <p className="text-sm font-medium text-foreground">Leverage facility — approved 1:{facilityRatio}</p>
               <p className="text-[11px] text-muted-foreground">
-                Finance up to 90% of the deposit via MCC HOLDING SA at a 1:{MAX_LEVERAGE_RATIO} ratio, then apply the
-                1.8% debit cycle fee. The client must contribute at least 10% of the required deposit.
+                Finance up to {100 - minPct}% of the deposit via MCC HOLDING SA at a 1:{facilityRatio} ratio, then apply
+                the 1.8% debit cycle fee. The client must contribute at least {minPct}% of the required deposit.
               </p>
             </div>
             <Switch checked={leverageEnabled} onCheckedChange={setLeverageEnabled} aria-label="Toggle leverage facility" />
@@ -370,10 +377,33 @@ export function TreasuryManager() {
 
           {leverageEnabled && (
             <div className="mt-4 space-y-4">
+              <div className="space-y-2">
+                <Label htmlFor="tm-ratio">Approved facility</Label>
+                <Select
+                  value={String(leverageRatio)}
+                  onValueChange={(v) => setLeverageRatio(Number(v))}
+                >
+                  <SelectTrigger id="tm-ratio">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {TREASURY_LEVERAGE_RATIOS.map((r) => (
+                      <SelectItem key={r} value={String(r)}>
+                        1:{r} — client contributes {Math.round(100 / r)}% ({fmt0(Math.ceil(numRequired / r))})
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <p className="text-[11px] text-muted-foreground">
+                  1:{MAX_LEVERAGE_RATIO} finances up to 90% of the deposit (10% client contribution); 1:5 finances up to
+                  80% (20% client contribution).
+                </p>
+              </div>
+
               <div className="flex flex-wrap items-center gap-2 rounded-lg border border-primary/20 bg-primary/5 p-3">
                 <ShieldCheck className="h-4 w-4 shrink-0 text-primary" />
                 <p className="text-[11px] text-muted-foreground">
-                  Approved 1:{MAX_LEVERAGE_RATIO} structure — minimum client contribution{" "}
+                  Approved 1:{facilityRatio} structure — minimum client contribution{" "}
                   <span className="font-semibold text-foreground">{fmt0(minContribution)}</span> covers the{" "}
                   <span className="font-semibold text-foreground">{fmt0(numRequired)}</span> deposit.
                 </p>
@@ -384,7 +414,7 @@ export function TreasuryManager() {
                   className="ml-auto h-7 text-[11px]"
                   onClick={applyMinLeverage}
                 >
-                  Apply 1:{MAX_LEVERAGE_RATIO} (10%)
+                  Apply 1:{facilityRatio} ({minPct}%)
                 </Button>
               </div>
 
@@ -392,7 +422,7 @@ export function TreasuryManager() {
                 <p className="flex items-start gap-1.5 text-[11px] text-orange-400">
                   <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
                   Contribution {fmt0(numContribution)} is below the {fmt0(minContribution)} minimum to fully
-                  secure a 1:{MAX_LEVERAGE_RATIO} facility. This will be recorded as a shortfall of {fmt0(shortfall)} —
+                  secure a 1:{facilityRatio} facility. This will be recorded as a shortfall of {fmt0(shortfall)} —
                   the deposit will show as under-secured on the client&apos;s Treasury page.
                 </p>
               )}
@@ -415,8 +445,8 @@ export function TreasuryManager() {
 
               <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
                 <Derived
-                  label="Applied Leverage"
-                  value={`1:${ratio % 1 === 0 ? ratio : ratio.toFixed(1)}`}
+                  label="Approved Leverage"
+                  value={`1:${facilityRatio}`}
                   tone={leverageBreached ? "negative" : "default"}
                 />
                 <Derived label="Financed (MCC HOLDING SA)" value={fmt0(financed)} tone="negative" />

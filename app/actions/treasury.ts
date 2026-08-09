@@ -23,6 +23,17 @@ const DEBIT_CYCLE_FEE_RATE = 0.018
 // MAX_LEVERAGE_RATIO in lib/treasury-store.ts.
 const MAX_LEVERAGE_RATIO = 10
 
+// Leverage facilities the administrator may approve (1:5 or 1:10). Kept in sync
+// with TREASURY_LEVERAGE_RATIOS in lib/treasury-store.ts.
+const TREASURY_LEVERAGE_RATIOS = [5, 10]
+
+// Snap a value to an approved facility level; legacy/observed ratios default to
+// the historical 1:10 facility so financing capacity never regresses.
+function normalizeLeverageRatio(ratio: number | undefined | null): number {
+  const n = Number(ratio)
+  return TREASURY_LEVERAGE_RATIOS.includes(n) ? n : MAX_LEVERAGE_RATIO
+}
+
 // --- Session / admin helpers ------------------------------------------------
 
 async function getSessionUser(): Promise<UserProfile | undefined> {
@@ -190,6 +201,8 @@ export async function saveTreasuryRecordAdmin(
     requiredDeposit: number
     customerContribution: number
     leverageEnabled: boolean
+    /** Approved facility level (1:5 or 1:10). Defaults to 1:10 when omitted. */
+    leverageRatio?: number
     transactionExposure: number
     status: TreasuryStatus
     note?: string
@@ -210,12 +223,11 @@ export async function saveTreasuryRecordAdmin(
 
   const exposure = leverageEnabled ? Math.max(0, Number(fields.transactionExposure) || 0) : 0
 
-  // The approved facility is capped at 1:10, which means it can finance at most
-  // (10 − 1)× the client's own contribution. We finance the gap to the required
-  // deposit, but never more than that cap allows — so reducing or removing the
-  // contribution correctly leaves the deposit uncovered (a shortfall) instead of
-  // being silently topped up to "fully secured".
-  const ratio = leverageEnabled && contribution > 0 ? Math.round((required / contribution) * 100) / 100 : 1
+  // Approved facility level chosen by the administrator (1:5 or 1:10). When the
+  // facility is off we store 1 (no leverage). This is the AUTHORITATIVE ratio —
+  // it drives the financing cap, the minimum contribution, and what the client
+  // sees, rather than an observed required/contribution figure.
+  const ratio = leverageEnabled ? normalizeLeverageRatio(fields.leverageRatio) : 1
 
   const note = fields.note?.toString().trim() || null
   const now = new Date().toISOString()
@@ -228,7 +240,10 @@ export async function saveTreasuryRecordAdmin(
     // Pledged SKR collateral is preserved across administrator edits and counts
     // toward the secured deposit, reducing the amount MCC HOLDING SA finances.
     const collateral = Math.max(0, prev.skrCollateral || 0)
-    const maxFinanceable = leverageEnabled ? contribution * (MAX_LEVERAGE_RATIO - 1) : 0
+    // The approved facility (1:5 or 1:10) can finance at most (ratio − 1)× the
+    // client's own contribution; we finance the gap to the required deposit but
+    // never beyond that cap, so a thin contribution leaves a real shortfall.
+    const maxFinanceable = leverageEnabled ? contribution * (ratio - 1) : 0
     const financed = leverageEnabled
       ? Math.min(Math.max(0, required - contribution - collateral), maxFinanceable)
       : 0
@@ -474,14 +489,18 @@ function deriveCoverage(opts: {
   leverageEnabled: boolean
   collateral: number
   explicitClosed: boolean
+  /** Approved facility level to preserve (1:5 or 1:10); defaults to 1:10. */
+  approvedRatio?: number
 }): { financed: number; secured: number; ratio: number; status: TreasuryStatus } {
   const { required, contribution, leverageEnabled, collateral } = opts
-  const maxFin = leverageEnabled ? contribution * (MAX_LEVERAGE_RATIO - 1) : 0
+  // Keep the administrator's approved facility; never overwrite it with an
+  // observed required/contribution figure when collateral moves.
+  const ratio = leverageEnabled ? normalizeLeverageRatio(opts.approvedRatio) : 1
+  const maxFin = leverageEnabled ? contribution * (ratio - 1) : 0
   const financed = leverageEnabled
     ? Math.min(Math.max(0, required - contribution - collateral), maxFin)
     : 0
   const secured = contribution + financed + collateral
-  const ratio = leverageEnabled && contribution > 0 ? Math.round((required / contribution) * 100) / 100 : 1
   let status: TreasuryStatus
   if (opts.explicitClosed) status = "closed"
   else if (required > 0 && secured >= required) status = "secured"
@@ -587,6 +606,7 @@ export async function creditSkrCollateralAdmin(
       leverageEnabled: prev.leverageEnabled,
       collateral,
       explicitClosed: prev.status === "closed",
+      approvedRatio: prev.leverageRatio,
     })
 
     const now = new Date().toISOString()
@@ -685,6 +705,7 @@ export async function reverseSkrCollateralAdmin(
       leverageEnabled: prev.leverageEnabled,
       collateral,
       explicitClosed: prev.status === "closed",
+      approvedRatio: prev.leverageRatio,
     })
 
     const now = new Date().toISOString()
