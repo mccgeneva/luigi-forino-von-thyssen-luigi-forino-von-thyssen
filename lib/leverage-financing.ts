@@ -6,10 +6,10 @@ import { dueMonthEnds, round2, yearMonthKey } from "@/lib/interest-accrual"
  * Leverage line -> balance integration (monthly debit interest).
  *
  * When a leverage line is activated, its borrowed funds are credited to the
- * client's balance. Those borrowed funds carry a debit interest that scales
- * linearly with the leverage multiple (0.36% p.a. per unit of leverage) and
- * must be charged MONTHLY from the activation date so the balance reflects the
- * accruing cost over time — not only as a single lump at switch-off.
+ * client's balance. Those borrowed funds carry a debit interest set by the
+ * risk-based scale (higher leverage → lower rate; see lib/leverage-rates.ts)
+ * and must be charged MONTHLY from the activation date so the balance reflects
+ * the accruing cost over time — not only as a single lump at switch-off.
  *
  * This module builds the due monthly interest charges for every active line,
  * with deterministic ids so the client-side reconciler never double-posts. The

@@ -28,7 +28,7 @@ import type { TreasuryAccount } from "@/lib/treasury-store"
  *
  *   • Project Funding (AES)   — 1.8% p.a. flat cost of capital
  *   • Credit facilities       — progressive/tiered loan interest (1.8%–3.5%)
- *   • Leverage lines          — 0.36% p.a. per unit of leverage (scales w/ ratio)
+ *   • Leverage lines          — risk-based inverse scale (14% at 1:2 … 3% at 1:30)
  *   • Treasury Financing       — 3% p.a. flat on the drawn deposit facility
  *
  * This module does NOT re-derive any interest math. It calls each product's own
@@ -204,7 +204,7 @@ export function buildDebitSchedule(input: BuildDebitScheduleInput): DebitSchedul
     }
   }
 
-  // --- 3. Leverage lines — 0.36% p.a. per unit of leverage -------------------
+  // --- 3. Leverage lines — risk-based inverse scale (14% at 1:2 … 3% at 1:30) --
   const leverage = (input.leverage ?? []).filter(
     (l) => (l.status === "approved" || l.status === "switchoff_pending") && !!l.activatedAt && !l.closedAt,
   )

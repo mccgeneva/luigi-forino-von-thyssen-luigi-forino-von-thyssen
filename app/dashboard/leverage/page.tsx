@@ -505,7 +505,7 @@ export default function LeveragePage() {
   const availableRatios = account ? leverageRatiosFor(account) : LEVERAGE_RATIOS
   const projectedBuyingPower = numericEquity * numericRatio
   const projectedBorrowed = numericEquity * (numericRatio - 1)
-  // Rate scales linearly with the chosen ratio (0.36% per unit of leverage).
+  // Risk-based rate for the chosen ratio (higher leverage → lower rate).
   const projectedAnnualRate = debitInterestRateFor(numericRatio)
   const projectedAnnualInterest = projectedBorrowed * projectedAnnualRate
 
@@ -613,7 +613,7 @@ export default function LeveragePage() {
         leverage: `1:${numericRatio}`,
         borrowedFunds: formatMoney(projectedBorrowed, currency),
         buyingPower: formatMoney(projectedBuyingPower, currency),
-        debitInterestRate: `${(projectedAnnualRate * 100).toFixed(2)}% per year (1:${numericRatio} × 0.36%/unit)`,
+        debitInterestRate: `${(projectedAnnualRate * 100).toFixed(2)}% per year (risk-based rate for 1:${numericRatio})`,
         instrumentType,
         status: "Pending Administrator Approval",
         submittedAt: new Date().toLocaleString("en-GB"),
@@ -774,7 +774,7 @@ export default function LeveragePage() {
               format={formatMoney2}
             />
           }
-          hint="0.36% / yr per unit of leverage · charged monthly"
+          hint={`${(projectedAnnualRate * 100).toFixed(2)}% / yr at 1:${numericRatio} · charged monthly`}
           icon={Percent}
           tint="bg-orange-500/10 text-orange-400"
         />
