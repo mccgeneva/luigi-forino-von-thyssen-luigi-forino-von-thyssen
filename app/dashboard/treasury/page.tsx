@@ -41,6 +41,8 @@ import {
   monthlyTreasuryInterest,
   TREASURY_FINANCING_ANNUAL_RATE,
 } from "@/lib/treasury-financing"
+import { useLedger } from "@/lib/ledger-store"
+import { CapitalLendingCard } from "@/components/dashboard/treasury/capital-lending-card"
 
 const fmt = (value: number, currency = "EUR") =>
   `${currency} ${value.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
@@ -106,7 +108,8 @@ function Metric({
 }
 
 export default function TreasuryPage() {
-  const { account, hydrated } = useTreasury()
+  const { account, hydrated, refresh: refreshTreasury } = useTreasury()
+  const { refresh: refreshLedger } = useLedger()
 
   // Live clock so the accruing debit cycle fee ticks while the page is open.
   const [now, setNow] = useState(() => Date.now())
@@ -414,6 +417,16 @@ export default function TreasuryPage() {
               </CardContent>
             </Card>
           )}
+
+          {/* Internal capital lending */}
+          <CapitalLendingCard
+            profile={account.profile}
+            currency={account.currency}
+            onFunded={() => {
+              void refreshLedger()
+              void refreshTreasury()
+            }}
+          />
 
           {/* Transaction history */}
           <Card className="bg-card border-border">
