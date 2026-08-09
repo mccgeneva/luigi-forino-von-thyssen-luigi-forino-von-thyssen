@@ -90,6 +90,40 @@ interface LendingPayload {
   repayPayoff?: number
 }
 
+/**
+ * Total treasury financing principal still OUTSTANDING on the account (sum of
+ * unsettled "Treasury Financing" deposit transactions — from either an admin
+ * Treasury Financing or a prior internal lending drawdown). Used to refuse
+ * financing a security deposit that is already financed, so the two channels
+ * can never stack into a double principal.
+ */
+async function outstandingTreasuryFinancing(accountId: string): Promise<number> {
+  try {
+    const { rows } = await query(`SELECT transactions FROM treasury_accounts WHERE user_id = $1`, [accountId])
+    if (!rows.length || !Array.isArray(rows[0].transactions)) return 0
+    const txns = rows[0].transactions as Array<Record<string, unknown>>
+    let total = 0
+    for (const t of txns) {
+      const label = t.label
+      const amount = t.amount
+      if (
+        t.type === "deposit" &&
+        typeof label === "string" &&
+        label.startsWith("Treasury Financing") &&
+        !t.settledAt &&
+        typeof amount === "number" &&
+        amount > 0
+      ) {
+        total += amount
+      }
+    }
+    return round2(total)
+  } catch (err) {
+    console.log("[v0] outstandingTreasuryFinancing failed:", (err as Error).message)
+    return 0
+  }
+}
+
 /** Read the signed-in user's treasury account row (keyed by account id). */
 async function readOwnTreasury(accountId: string): Promise<{ profile: TreasuryProfileKey; status: string } | null> {
   try {
@@ -170,8 +204,23 @@ export async function applyForTreasuryLending(): Promise<ApplyLendingResult> {
   }
 
   const profile = treasury.profile
+  const label = PROFILE_LABELS[profile]
   const amount = treasuryLendingAmount(profile)
   const cost = treasuryLendingCost(amount)
+
+  // Refuse if the security deposit is already financed (by an administrator
+  // Treasury Financing or a prior internal lending). The deposit can only be
+  // financed once up to its full amount — the two channels must never stack.
+  const outstanding = await outstandingTreasuryFinancing(session.id)
+  if (outstanding > 0.01) {
+    return {
+      ok: false,
+      error:
+        `Your ${label} security deposit is already financed ` +
+        `(${LENDING_CURRENCY} ${outstanding.toLocaleString("en-US")} outstanding). ` +
+        `It can't be borrowed again until the existing financing is repaid or settled.`,
+    }
+  }
 
   // Refuse a second facility while one is already pending or live (approved).
   try {
@@ -196,7 +245,6 @@ export async function applyForTreasuryLending(): Promise<ApplyLendingResult> {
     console.log("[v0] applyForTreasuryLending duplicate check failed:", (err as Error).message)
   }
 
-  const label = PROFILE_LABELS[profile]
   const res = await submitApproval({
     kind: "treasury_lending",
     title: `Treasury Capital Lending — ${label}`,
@@ -273,6 +321,20 @@ export async function payTreasuryLendingCost(approvalId: string): Promise<PayLen
     return { ok: false, error: "The lending amount is invalid." }
   }
   const cost = treasuryLendingCost(amount)
+
+  // Re-assert the deposit is not already financed (e.g. an administrator
+  // executed a Treasury Financing between application and payment). This
+  // facility's own drawdown does not exist yet, so it never self-triggers.
+  const outstanding = await outstandingTreasuryFinancing(session.id)
+  if (outstanding > 0.01) {
+    return {
+      ok: false,
+      error:
+        `Your security deposit is already financed ` +
+        `(${LENDING_CURRENCY} ${outstanding.toLocaleString("en-US")} outstanding), ` +
+        `so this internal lending can't be drawn down. Nothing was charged.`,
+    }
+  }
 
   // Balance gate: the client must be able to pay the one-time lending cost.
   const entries = await readLedgerEntries(ledgerOwnerId)

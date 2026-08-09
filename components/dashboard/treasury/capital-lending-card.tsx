@@ -63,10 +63,16 @@ export function CapitalLendingCard({
   profile,
   currency = "EUR",
   onFunded,
+  alreadyFinanced = false,
+  financedAmount = 0,
 }: {
   profile: TreasuryProfileKey
   currency?: string
   onFunded?: () => void
+  /** True when the deposit is already financed (admin financing or a prior lending). */
+  alreadyFinanced?: boolean
+  /** Outstanding financed principal, for the blocked-state message. */
+  financedAmount?: number
 }) {
   const [requests, setRequests] = useState<TreasuryLendingView[]>([])
   const [loading, setLoading] = useState(true)
@@ -346,6 +352,16 @@ export function CapitalLendingCard({
             <span className="text-pretty text-muted-foreground">
               Your application to borrow {fmt0(active.amount, currency)} is awaiting administrator approval.
               You will be able to pay the lending cost here once it is approved.
+            </span>
+          </div>
+        ) : alreadyFinanced ? (
+          <div className="flex items-start gap-2 rounded-lg border border-border bg-secondary/40 p-3 text-sm">
+            <Info className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
+            <span className="text-pretty text-muted-foreground">
+              <span className="font-medium text-foreground">Deposit already financed.</span> Your security
+              deposit is currently financed{financedAmount > 0 ? ` (${fmt0(financedAmount, currency)} outstanding)` : ""}
+              , so it can&apos;t be borrowed again. Once the existing financing is repaid or settled, internal
+              lending becomes available here.
             </span>
           </div>
         ) : (
