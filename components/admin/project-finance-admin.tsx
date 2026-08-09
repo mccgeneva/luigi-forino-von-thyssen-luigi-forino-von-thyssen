@@ -174,9 +174,9 @@ export function ProjectFinanceAdmin({ onDone }: { onDone?: () => void }) {
   }
 
   return (
-    <div className="grid gap-6 lg:grid-cols-2">
+    <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
       {/* Project finance on behalf of a client */}
-      <Card className="bg-card border-border">
+      <Card className="min-w-0 bg-card border-border">
         <CardHeader>
           <div className="flex items-center gap-2">
             <Building2 className="h-5 w-5 text-muted-foreground" />
@@ -343,7 +343,7 @@ export function ProjectFinanceAdmin({ onDone }: { onDone?: () => void }) {
       </Card>
 
       {/* Treasury financing exception (admin only) */}
-      <Card className="bg-card border-border">
+      <Card className="min-w-0 bg-card border-border">
         <CardHeader>
           <div className="flex items-center gap-2">
             <ShieldCheck className="h-5 w-5 text-muted-foreground" />
@@ -375,7 +375,7 @@ export function ProjectFinanceAdmin({ onDone }: { onDone?: () => void }) {
 
           <div className="space-y-2">
             <Label>Financing facility</Label>
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               {TREASURY_PROFILES.map((p) => {
                 const active = tier === p.key
                 return (
