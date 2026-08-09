@@ -1,7 +1,7 @@
 "use client"
 
 import { useState } from "react"
-import { Bell, Shield, Globe, Moon, Mail, Smartphone } from "lucide-react"
+import { Bell, Shield, Globe, Moon, Mail, Smartphone, Info } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Label } from "@/components/ui/label"
 import { Switch } from "@/components/ui/switch"
@@ -147,6 +147,27 @@ export default function SettingsPage() {
               <Label htmlFor="dark-mode">Dark mode</Label>
             </div>
             <Switch id="dark-mode" checked={darkMode} onCheckedChange={handleDarkMode} />
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* About */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-base">
+            <Info className="h-4 w-4" /> About
+          </CardTitle>
+          <CardDescription>Platform information</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div className="flex items-center justify-between">
+            <div>
+              <Label>Version</Label>
+              <p className="text-xs text-muted-foreground">NAFTAhub (/:) — Bank Trading Platform</p>
+            </div>
+            <span className="rounded-md bg-secondary px-2.5 py-1 font-mono text-sm text-foreground">
+              v10.762
+            </span>
           </div>
         </CardContent>
       </Card>
