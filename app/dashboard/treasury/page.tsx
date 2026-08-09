@@ -37,6 +37,7 @@ import {
 import {
   treasuryFinancingTxns,
   treasuryFinancingPrincipal,
+  outstandingTreasuryFinancingPrincipal,
   accruedTreasuryInterest,
   monthlyTreasuryInterest,
   TREASURY_FINANCING_ANNUAL_RATE,
@@ -138,6 +139,9 @@ export default function TreasuryPage() {
   // monthly charge so the client sees both incurred and upcoming interest.
   const financingTxns = treasuryFinancingTxns(account)
   const financingPrincipal = treasuryFinancingPrincipal(account)
+  // Outstanding (unsettled) financing caps internal lending: a deposit already
+  // financed can't be borrowed again until the existing financing is settled.
+  const outstandingFinancing = outstandingTreasuryFinancingPrincipal(account)
   const financingAccrued = accruedTreasuryInterest(account, new Date(now))
   const financingMonthly = monthlyTreasuryInterest(financingPrincipal)
   const financingSince = financingTxns.length
@@ -422,6 +426,8 @@ export default function TreasuryPage() {
           <CapitalLendingCard
             profile={account.profile}
             currency={account.currency}
+            alreadyFinanced={outstandingFinancing > 0.01}
+            financedAmount={outstandingFinancing}
             onFunded={() => {
               void refreshLedger()
               void refreshTreasury()

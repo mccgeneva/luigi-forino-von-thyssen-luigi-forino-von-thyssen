@@ -68,6 +68,25 @@ export function treasuryFinancingPrincipal(account: TreasuryAccount | null | und
   return treasuryFinancingTxns(account).reduce((sum, t) => sum + Math.max(0, t.amount), 0)
 }
 
+/** Whether a financing drawdown has been settled (repaid / terminated). */
+function isSettledFinancingTxn(txn: TreasuryTransaction): boolean {
+  const settled = (txn as { settledAt?: string }).settledAt
+  return typeof settled === "string" && settled.length > 0
+}
+
+/**
+ * Treasury financing principal that is still OUTSTANDING (excludes drawdowns
+ * that have already been repaid / terminated). This is the figure that caps how
+ * much of the security deposit can still be financed: a deposit already financed
+ * up to its full amount — whether by an administrator Treasury Financing or a
+ * prior internal capital lending — must not be financed again.
+ */
+export function outstandingTreasuryFinancingPrincipal(account: TreasuryAccount | null | undefined): number {
+  return treasuryFinancingTxns(account)
+    .filter((t) => !isSettledFinancingTxn(t))
+    .reduce((sum, t) => sum + Math.max(0, t.amount), 0)
+}
+
 /** One full month's treasury financing interest on a principal (3% ÷ 12). */
 export function monthlyTreasuryInterest(principal: number): number {
   return monthlyInterestAmount(Math.max(0, principal), TREASURY_FINANCING_ANNUAL_RATE)
