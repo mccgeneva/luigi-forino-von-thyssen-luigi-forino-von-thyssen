@@ -12,6 +12,7 @@ import {
   Braces,
   FileText,
   Inbox,
+  Send,
 } from "lucide-react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -39,6 +40,7 @@ import {
 } from "@/lib/swift-mt"
 import { submitSwiftMessageAdmin } from "@/app/actions/reconciliation"
 import { SwiftRoutingQueue } from "@/components/admin/swift-routing-queue"
+import { IncomingSwiftDelivery } from "@/components/admin/incoming-swift-delivery"
 import { toast } from "sonner"
 
 const SAMPLE_MT103 = `{1:F01DEUTDEFFAXXX0000000000}
@@ -241,9 +243,12 @@ export function AdminSwiftInspector() {
 
   return (
     <Tabs defaultValue="routing" className="flex flex-col gap-6">
-      <TabsList className="grid w-full grid-cols-2 sm:grid-cols-4">
+      <TabsList className="grid w-full grid-cols-2 sm:grid-cols-3 lg:grid-cols-5">
         <TabsTrigger value="routing" className="gap-2">
           <Inbox className="h-4 w-4" /> Routing
+        </TabsTrigger>
+        <TabsTrigger value="deliver" className="gap-2">
+          <Send className="h-4 w-4" /> Receive &amp; deliver
         </TabsTrigger>
         <TabsTrigger value="inspect" className="gap-2">
           <FileSearch className="h-4 w-4" /> Inspect &amp; parse
@@ -259,6 +264,11 @@ export function AdminSwiftInspector() {
       {/* ---------------- Routing approvals ---------------- */}
       <TabsContent value="routing" className="flex flex-col gap-6">
         <SwiftRoutingQueue />
+      </TabsContent>
+
+      {/* ---------------- Receive & deliver (inbound auto-match) ---------------- */}
+      <TabsContent value="deliver" className="flex flex-col gap-6">
+        <IncomingSwiftDelivery />
       </TabsContent>
 
       {/* ---------------- Inspect ---------------- */}
