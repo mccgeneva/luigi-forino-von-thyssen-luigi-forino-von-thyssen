@@ -6,6 +6,7 @@ import { type UserProfile } from "@/lib/users"
 import { resolveAccountProfileById, resolveCurrentSession, resolveDataOwnerIdFor } from "@/lib/session-user"
 import { logActivity } from "@/app/actions/log-activity"
 import { readLedgerEntries, upsertLedgerEntry, availableByCurrency, assertOwnerSolvent } from "@/lib/ledger-db"
+import { convertCurrency } from "@/lib/fx"
 import { captureServerError } from "@/lib/debug-log-db"
 import { buildTreasuryFinancingLedgerPosts, treasuryFinancingTxns } from "@/lib/treasury-financing"
 import { debitInterestRateFor } from "@/lib/leverage-rates"
@@ -202,6 +203,50 @@ export async function getTreasuryForUserAdmin(
   }
 }
 
+// --- Client available cash-flow (master account balance) --------------------
+
+/**
+ * Compute a client's AVAILABLE master-account balance, expressed as a single
+ * EUR figure plus the per-currency breakdown. "Available" already nets out any
+ * pending holds (see `availableByCurrency`). Every currency bucket is converted
+ * to EUR so it can be compared against a EUR treasury contribution. Balances
+ * always live on the data owner's (Master) ledger, so a sub-account's cash flow
+ * is read from its Master — exactly like every other ledger effect.
+ */
+async function readClientAvailableEur(
+  userId: string,
+): Promise<{ eur: number; byCurrency: Record<string, number> }> {
+  const ledgerOwnerId = await resolveDataOwnerIdFor(userId)
+  const byCurrency = availableByCurrency(await readLedgerEntries(ledgerOwnerId))
+  let eur = 0
+  for (const [cur, amount] of Object.entries(byCurrency)) {
+    eur += cur === "EUR" ? amount : convertCurrency(amount, cur, "EUR")
+  }
+  return { eur: round2(eur), byCurrency }
+}
+
+export type ClientBalanceResult =
+  | { ok: true; availableEur: number; byCurrency: Record<string, number> }
+  | { ok: false; error: string }
+
+/**
+ * Admin: read a client's real-time available master-account balance (EUR
+ * equivalent). Used by the treasury manager to validate, live, that a customer
+ * contribution actually fits the client's cash flow before it is saved.
+ */
+export async function getClientAvailableBalanceAdmin(
+  passcode: string,
+  userId: string,
+): Promise<ClientBalanceResult> {
+  try {
+    await requireAdmin(passcode)
+    const { eur, byCurrency } = await readClientAvailableEur(userId)
+    return { ok: true, availableEur: eur, byCurrency }
+  } catch (err) {
+    return { ok: false, error: (err as Error).message }
+  }
+}
+
 /**
  * Admin: create or update a client's treasury record. The leverage math
  * (financed amount, applied ratio) is computed authoritatively on the server.
@@ -249,6 +294,29 @@ export async function saveTreasuryRecordAdmin(
 
   try {
     const prev = await readAccount(userId)
+
+    // Real-time cash-flow gate: the customer contribution is funded from the
+    // client's own money, so any ADDITIONAL contribution beyond what is already
+    // on record must fit their available master-account balance. We check the
+    // increase (not the absolute figure) so re-saving or lowering an existing
+    // record is never blocked, and we read the balance live at save time so the
+    // decision reflects the client's real cash flow — not a stale UI value.
+    const addedContribution = round2(Math.max(0, contribution - (prev.customerContribution || 0)))
+    if (addedContribution > 0) {
+      const { eur: availableEur } = await readClientAvailableEur(userId)
+      // Allow a 1-cent tolerance for rounding across FX conversion.
+      if (addedContribution > availableEur + 0.01) {
+        return {
+          ok: false,
+          error: `Customer contribution exceeds the client's available balance. ${target.fullName} has EUR ${availableEur.toLocaleString(
+            "en-US",
+            { maximumFractionDigits: 2 },
+          )} available, but this adds EUR ${addedContribution.toLocaleString("en-US", {
+            maximumFractionDigits: 2,
+          })} of new contribution. Reduce the contribution or fund the client's account first.`,
+        }
+      }
+    }
 
     // Pledged SKR collateral is preserved across administrator edits and counts
     // toward the secured deposit, reducing the amount MCC HOLDING SA finances.

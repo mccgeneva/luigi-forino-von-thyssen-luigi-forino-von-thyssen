@@ -1,7 +1,7 @@
 "use client"
 
 import { useEffect, useState } from "react"
-import { Landmark, Plus, Trash2, Save, Building2, Loader2, ShieldCheck, AlertTriangle } from "lucide-react"
+import { Landmark, Plus, Trash2, Save, Building2, Loader2, ShieldCheck, AlertTriangle, Wallet } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -36,6 +36,7 @@ import {
 } from "@/lib/treasury-store"
 import {
   getTreasuryForUserAdmin,
+  getClientAvailableBalanceAdmin,
   saveTreasuryRecordAdmin,
   postTreasuryTxnAdmin,
   deleteTreasuryTxnAdmin,
@@ -121,6 +122,12 @@ export function TreasuryManager() {
   const [status, setStatus] = useState<TreasuryStatus>("pending")
   const [note, setNote] = useState("")
 
+  // Real-time available cash flow on the client's master account (EUR
+  // equivalent, net of holds). Fetched live per client so the admin can only
+  // commit a customer contribution the client can actually fund.
+  const [availableEur, setAvailableEur] = useState<number | null>(null)
+  const [balanceLoading, setBalanceLoading] = useState(false)
+
   // Load the selected client's record from the server (passcode-verified).
   useEffect(() => {
     if (!targetUserId) return
@@ -150,9 +157,42 @@ export function TreasuryManager() {
     }
   }, [targetUserId])
 
+  // Fetch the client's real-time available master-account balance whenever the
+  // selected client changes, so contribution validation reflects live cash flow.
+  useEffect(() => {
+    if (!targetUserId) {
+      setAvailableEur(null)
+      return
+    }
+    let active = true
+    setBalanceLoading(true)
+    setAvailableEur(null)
+    getClientAvailableBalanceAdmin(ADMIN_PASSCODE, targetUserId)
+      .then((res) => {
+        if (!active) return
+        if (res.ok) setAvailableEur(res.availableEur)
+      })
+      .catch(() => {})
+      .finally(() => active && setBalanceLoading(false))
+    return () => {
+      active = false
+    }
+  }, [targetUserId])
+
   const numRequired = Number(requiredDeposit) || 0
   const numContribution = Number(contribution) || 0
   const numExposure = Number(transactionExposure) || 0
+
+  // Cash-flow validation: any NEW contribution beyond what is already on record
+  // must fit the client's available balance. We validate the increase (not the
+  // absolute figure) so editing/lowering an existing record is never blocked.
+  const addedContribution = Math.max(0, numContribution - (stored.customerContribution || 0))
+  const cashFlowBreached =
+    availableEur !== null && addedContribution > 0 && addedContribution > availableEur + 0.01
+  const cashFlowShortfall = cashFlowBreached ? addedContribution - (availableEur ?? 0) : 0
+
+  const applyMaxContribution = () =>
+    setContribution(String(Math.round((stored.customerContribution || 0) + (availableEur ?? 0))))
   // The approved facility (1:5 or 1:10) can finance at most (ratio − 1)× the
   // client's contribution, so a low/zero contribution leaves the deposit
   // uncovered (a real shortfall) rather than being topped up to fully secured.
@@ -183,6 +223,12 @@ export function TreasuryManager() {
   const handleSaveRecord = async () => {
     if (numRequired <= 0) {
       toast.error("Enter a valid required security deposit.")
+      return
+    }
+    if (cashFlowBreached) {
+      toast.error("Customer contribution exceeds available balance", {
+        description: `${targetUser.fullName} has ${fmt0(availableEur ?? 0)} available. Reduce the contribution or fund the client's account first.`,
+      })
       return
     }
     setSaving(true)
@@ -354,7 +400,24 @@ export function TreasuryManager() {
 
         {/* Contribution */}
         <div className="space-y-2">
-          <Label htmlFor="tm-contribution">Customer contribution (EUR)</Label>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <Label htmlFor="tm-contribution">Customer contribution (EUR)</Label>
+            <span className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+              <Wallet className="h-3.5 w-3.5" />
+              {balanceLoading ? (
+                <span className="flex items-center gap-1">
+                  <Loader2 className="h-3 w-3 animate-spin" /> Checking balance…
+                </span>
+              ) : availableEur !== null ? (
+                <>
+                  Available cash flow:{" "}
+                  <span className="font-semibold text-foreground">{fmt0(availableEur)}</span>
+                </>
+              ) : (
+                "Balance unavailable"
+              )}
+            </span>
+          </div>
           <Input
             id="tm-contribution"
             type="number"
@@ -362,7 +425,30 @@ export function TreasuryManager() {
             step="1000"
             value={contribution}
             onChange={(e) => setContribution(e.target.value)}
+            aria-invalid={cashFlowBreached}
+            className={cn(cashFlowBreached && "border-red-500/60 focus-visible:ring-red-500/30")}
           />
+          {cashFlowBreached && (
+            <div className="flex flex-wrap items-start gap-2 rounded-lg border border-red-500/30 bg-red-500/10 p-2.5">
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-red-400" />
+              <p className="flex-1 text-[11px] text-red-300">
+                This contribution adds <span className="font-semibold">{fmt0(addedContribution)}</span> of new
+                client funding, but only <span className="font-semibold">{fmt0(availableEur ?? 0)}</span> is
+                available on {targetUser.fullName}&apos;s master account — a shortfall of{" "}
+                <span className="font-semibold">{fmt0(cashFlowShortfall)}</span>. Reduce the contribution or fund
+                the account first. Saving is blocked.
+              </p>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-7 shrink-0 text-[11px]"
+                onClick={applyMaxContribution}
+              >
+                Use max ({fmt0((stored.customerContribution || 0) + (availableEur ?? 0))})
+              </Button>
+            </div>
+          )}
         </div>
 
         {/* Leverage facility */}
@@ -503,7 +589,11 @@ export function TreasuryManager() {
         </div>
 
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
-          <Button onClick={handleSaveRecord} disabled={saving || loading || removing} className="w-full sm:w-auto">
+          <Button
+            onClick={handleSaveRecord}
+            disabled={saving || loading || removing || cashFlowBreached}
+            className="w-full sm:w-auto"
+          >
             {saving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Save className="mr-2 h-4 w-4" />}
             Save treasury record
           </Button>
