@@ -66,42 +66,48 @@ const variantStyles: Record<BankCard["variant"], string> = {
 }
 
 export function CardVisual({ card, className }: { card: BankCard; className?: string }) {
+  // NOTE: the aspect-ratio box is a plain BLOCK wrapper (not a flex container).
+  // Putting `aspect-ratio` on an element that is itself `display:flex` makes some
+  // browsers (notably iOS Safari) ignore the ratio and stretch the card into a
+  // giant panel. The flex layout lives on an absolutely-positioned inner layer.
   return (
     <div
       className={cn(
-        "relative flex aspect-[1.586/1] w-full flex-col justify-between rounded-xl p-5 shadow-lg",
+        "relative aspect-[1.586/1] w-full max-w-sm overflow-hidden rounded-xl shadow-lg",
         variantStyles[card.variant],
         card.frozen && "opacity-60",
         className,
       )}
     >
-      <div className="flex items-start justify-between">
-        <div>
-          <p className="text-xs font-medium uppercase tracking-wider opacity-80">MCC Capital</p>
-          <p className="mt-0.5 text-[11px] opacity-70">{card.label}</p>
-        </div>
-        <Wifi className="h-5 w-5 rotate-90 opacity-80" />
-      </div>
-
-      <div className="flex h-8 w-11 items-center justify-center rounded-md bg-white/25">
-        <CreditCard className="h-4 w-4 opacity-90" />
-      </div>
-
-      <div>
-        <p className="font-mono text-base tracking-[0.2em]">
-          {"•••• •••• •••• "}
-          {card.last4}
-        </p>
-        <div className="mt-2 flex items-end justify-between">
+      <div className="absolute inset-0 flex flex-col justify-between p-5">
+        <div className="flex items-start justify-between">
           <div>
-            <p className="text-[9px] uppercase tracking-wider opacity-70">Card Holder</p>
-            <p className="text-xs font-medium">{card.holder}</p>
+            <p className="text-xs font-medium uppercase tracking-wider opacity-80">MCC Capital</p>
+            <p className="mt-0.5 text-[11px] opacity-70">{card.label}</p>
           </div>
-          <div className="text-right">
-            <p className="text-[9px] uppercase tracking-wider opacity-70">Expires</p>
-            <p className="text-xs font-medium">{card.expiry}</p>
+          <Wifi className="h-5 w-5 rotate-90 opacity-80" />
+        </div>
+
+        <div className="flex h-8 w-11 items-center justify-center rounded-md bg-white/25">
+          <CreditCard className="h-4 w-4 opacity-90" />
+        </div>
+
+        <div>
+          <p className="font-mono text-base tracking-[0.2em]">
+            {"•••• •••• •••• "}
+            {card.last4}
+          </p>
+          <div className="mt-2 flex items-end justify-between">
+            <div>
+              <p className="text-[9px] uppercase tracking-wider opacity-70">Card Holder</p>
+              <p className="text-xs font-medium">{card.holder}</p>
+            </div>
+            <div className="text-right">
+              <p className="text-[9px] uppercase tracking-wider opacity-70">Expires</p>
+              <p className="text-xs font-medium">{card.expiry}</p>
+            </div>
+            <p className="text-sm font-bold italic">{card.network}</p>
           </div>
-          <p className="text-sm font-bold italic">{card.network}</p>
         </div>
       </div>
 
