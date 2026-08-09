@@ -570,24 +570,28 @@ export default function SwiftPage() {
       {/* Main Content */}
       <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-4">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-          <TabsList className="bg-card border border-border">
-            <TabsTrigger value="inbox" className="gap-2">
-              <Inbox className="h-4 w-4" />
-              Inbox ({inboxMessages.length})
-            </TabsTrigger>
-            <TabsTrigger value="outbox" className="gap-2">
-              <Send className="h-4 w-4" />
-              Sent ({outboxMessages.length})
-            </TabsTrigger>
-            <TabsTrigger value="all" className="gap-2">
-              <FileText className="h-4 w-4" />
-              All Messages
-            </TabsTrigger>
-            <TabsTrigger value="correspondents" className="gap-2">
-              <Building2 className="h-4 w-4" />
-              Banks
-            </TabsTrigger>
-          </TabsList>
+          {/* Horizontally scrollable on mobile so every tab (incl. Banks) stays
+              reachable when the bar is wider than the viewport. */}
+          <div className="-mx-1 w-full overflow-x-auto px-1 sm:mx-0 sm:w-auto sm:overflow-visible sm:px-0 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+            <TabsList className="inline-flex w-max bg-card border border-border">
+              <TabsTrigger value="inbox" className="shrink-0 gap-2 whitespace-nowrap">
+                <Inbox className="h-4 w-4" />
+                Inbox ({inboxMessages.length})
+              </TabsTrigger>
+              <TabsTrigger value="outbox" className="shrink-0 gap-2 whitespace-nowrap">
+                <Send className="h-4 w-4" />
+                Sent ({outboxMessages.length})
+              </TabsTrigger>
+              <TabsTrigger value="all" className="shrink-0 gap-2 whitespace-nowrap">
+                <FileText className="h-4 w-4" />
+                All Messages
+              </TabsTrigger>
+              <TabsTrigger value="correspondents" className="shrink-0 gap-2 whitespace-nowrap">
+                <Building2 className="h-4 w-4" />
+                Banks
+              </TabsTrigger>
+            </TabsList>
+          </div>
         </div>
 
         {/* Filters - shown for message tabs */}
