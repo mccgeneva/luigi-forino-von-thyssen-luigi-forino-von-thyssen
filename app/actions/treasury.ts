@@ -29,19 +29,19 @@ function treasuryFeeRate(leverageEnabled: boolean, ratio: number): number {
   return leverageEnabled ? debitInterestRateFor(ratio) : DEBIT_CYCLE_FEE_RATE
 }
 
-// Maximum leverage approved on a security deposit (1:10). Kept in sync with
-// MAX_LEVERAGE_RATIO in lib/treasury-store.ts.
-const MAX_LEVERAGE_RATIO = 10
+// Leverage facilities the administrator may approve — full ladder 1:2 … 1:30.
+// Kept in sync with TREASURY_LEVERAGE_RATIOS in lib/treasury-store.ts.
+const TREASURY_LEVERAGE_RATIOS = [2, 5, 10, 15, 20, 25, 30]
 
-// Leverage facilities the administrator may approve (1:5 or 1:10). Kept in sync
-// with TREASURY_LEVERAGE_RATIOS in lib/treasury-store.ts.
-const TREASURY_LEVERAGE_RATIOS = [5, 10]
+// Maximum leverage approved on a security deposit (1:30). Kept in sync with
+// MAX_LEVERAGE_RATIO in lib/treasury-store.ts.
+const MAX_LEVERAGE_RATIO = TREASURY_LEVERAGE_RATIOS[TREASURY_LEVERAGE_RATIOS.length - 1]
 
 // Snap a value to an approved facility level; legacy/observed ratios default to
 // the historical 1:10 facility so financing capacity never regresses.
 function normalizeLeverageRatio(ratio: number | undefined | null): number {
   const n = Number(ratio)
-  return TREASURY_LEVERAGE_RATIOS.includes(n) ? n : MAX_LEVERAGE_RATIO
+  return TREASURY_LEVERAGE_RATIOS.includes(n) ? n : 10
 }
 
 // --- Session / admin helpers ------------------------------------------------

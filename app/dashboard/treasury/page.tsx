@@ -336,9 +336,9 @@ export default function TreasuryPage() {
               ) : (
                 <p className="text-sm text-muted-foreground text-pretty">
                   No leverage facility is currently applied to your security deposit. The deposit is held in
-                  full from your own contribution. Should MCC CAPITAL approve a leverage facility (up to 1:10),
-                  your contribution would cover 10% of the deposit — the financed portion and its debit cycle
-                  fee will appear here.
+                  full from your own contribution. Should MCC CAPITAL approve a leverage facility (up to 1:30),
+                  your contribution could cover as little as ~3% of the deposit — the financed portion and its
+                  debit interest will appear here.
                 </p>
               )}
             </CardContent>
