@@ -40,6 +40,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
+import { VerifiedBankField } from "@/components/verified-bank-field"
 import {
   Banknote,
   SendHorizontal,
@@ -549,15 +550,34 @@ export function SwiftComposer({ onSent, onSaveDraft }: SwiftComposerProps) {
                     <Label className="text-foreground">Ordering Customer (:50:)</Label>
                     <Textarea value={form.orderingName} onChange={(e) => set("orderingName")(e.target.value)} placeholder="Name and address" rows={2} className="bg-background border-border text-foreground resize-none" />
                   </div>
-                  <div className="grid grid-cols-2 gap-3">
-                    <div className="space-y-2">
-                      <Label className="text-foreground">Beneficiary Account</Label>
-                      <Input value={form.beneficiaryAccount} onChange={(e) => set("beneficiaryAccount")(e.target.value)} placeholder="IBAN / account" className="bg-background border-border text-foreground" />
-                    </div>
-                    <div className="space-y-2">
-                      <Label className="text-foreground">Beneficiary BIC</Label>
-                      <Input value={form.beneficiaryBic} onChange={(e) => set("beneficiaryBic")(e.target.value)} placeholder="BIC" maxLength={11} className="bg-background border-border text-foreground" />
-                    </div>
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                    <VerifiedBankField
+                      id="beneficiary-account"
+                      label="Beneficiary Account"
+                      kind="iban"
+                      lenient
+                      value={form.beneficiaryAccount}
+                      onChange={set("beneficiaryAccount")}
+                      placeholder="IBAN / account"
+                      inputClassName="bg-background border-border text-foreground"
+                      onResolved={(info) => {
+                        // Pull the beneficiary bank's SWIFT/BIC out of the verified
+                        // IBAN and auto-fill the BIC field only while it is empty.
+                        if (info?.bic && !form.beneficiaryBic.trim()) {
+                          set("beneficiaryBic")(info.bic)
+                        }
+                      }}
+                    />
+                    <VerifiedBankField
+                      id="beneficiary-bic"
+                      label="Beneficiary BIC"
+                      kind="bic"
+                      value={form.beneficiaryBic}
+                      onChange={set("beneficiaryBic")}
+                      placeholder="BIC"
+                      maxLength={11}
+                      inputClassName="bg-background border-border text-foreground"
+                    />
                   </div>
                   <div className="space-y-2">
                     <Label className="text-foreground">Beneficiary (:59:)</Label>
