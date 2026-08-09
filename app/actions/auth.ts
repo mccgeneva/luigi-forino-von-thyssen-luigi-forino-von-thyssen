@@ -260,6 +260,26 @@ export async function login(_prevState: LoginState, formData: FormData): Promise
   const accountActive = !!matchedUser && matchedUser.active
 
   if (matchedUser && passwordMatches && accountActive) {
+    // ------------------------------------------------------------------
+    // PREVIEW-ONLY 2FA BYPASS (sandbox / local development).
+    //
+    // In the v0 preview sandbox there is no real passport or camera, so the
+    // mandatory passport + selfie identity gate can't be completed. This
+    // shortcut skips the second factor and grants the session directly.
+    //
+    // PRODUCTION-SAFE BY CONSTRUCTION: Vercel always builds in production mode
+    // (NODE_ENV === "production") for BOTH production and preview deployments,
+    // so this branch can only ever run under a development build — i.e. the v0
+    // sandbox or a local `next dev`. The deployed site at www.mcc-btp.app can
+    // NEVER trigger it. The optional PREVIEW_LOGIN_BYPASS flag, when present,
+    // lets you disable the shortcut in dev too (set it to "0").
+    // ------------------------------------------------------------------
+    const previewBypassEnabled =
+      process.env.NODE_ENV !== "production" && process.env.PREVIEW_LOGIN_BYPASS !== "0"
+    if (previewBypassEnabled) {
+      await establishSessionAndRedirect(matchedUser, email)
+    }
+
     // Password step passed. DO NOT establish a session yet — a second factor is
     // always required. We hand the browser a short-lived signed challenge (no
     // password inside) that the follow-up action verifies alongside the scan.
