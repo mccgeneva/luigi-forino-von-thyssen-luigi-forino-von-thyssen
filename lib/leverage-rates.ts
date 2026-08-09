@@ -49,8 +49,8 @@ export const LEVERAGE_RATIOS: number[] = DEBIT_INTEREST_SCALE.map((a) => a.ratio
 /** Highest leverage the platform offers (1:30). */
 export const MAX_LEVERAGE_LADDER = LEVERAGE_RATIOS[LEVERAGE_RATIOS.length - 1]
 
-/** Treasury financing is restricted to these facilities (1:5 and 1:10). */
-export const TREASURY_LEVERAGE_RATIOS: number[] = [5, 10]
+/** Treasury financing offers the full ladder (1:2 … 1:30), same as trading lines. */
+export const TREASURY_LEVERAGE_RATIOS: number[] = [...LEVERAGE_RATIOS]
 
 /**
  * Annual debit interest rate for a given leverage ratio under the risk-based

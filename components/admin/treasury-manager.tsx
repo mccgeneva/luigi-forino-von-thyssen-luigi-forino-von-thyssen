@@ -115,8 +115,8 @@ export function TreasuryManager() {
   const [requiredDeposit, setRequiredDeposit] = useState("500000")
   const [contribution, setContribution] = useState("0")
   const [leverageEnabled, setLeverageEnabled] = useState(false)
-  // Approved facility level (1:5 or 1:10). Defaults to the maximum facility.
-  const [leverageRatio, setLeverageRatio] = useState<number>(MAX_LEVERAGE_RATIO)
+  // Approved facility level (1:2 … 1:30). Defaults to the moderate 1:10.
+  const [leverageRatio, setLeverageRatio] = useState<number>(10)
   const [transactionExposure, setTransactionExposure] = useState("0")
   const [status, setStatus] = useState<TreasuryStatus>("pending")
   const [note, setNote] = useState("")
@@ -400,9 +400,11 @@ export function TreasuryManager() {
                   </SelectContent>
                 </Select>
                 <p className="text-[11px] text-muted-foreground">
-                  Risk-based debit interest: 1:5 finances up to 80% (20% contribution) at{" "}
-                  {(debitInterestRateFor(5) * 100).toFixed(0)}% p.a.; 1:{MAX_LEVERAGE_RATIO} finances up to 90% (10%
-                  contribution) at {(debitInterestRateFor(MAX_LEVERAGE_RATIO) * 100).toFixed(0)}% p.a.
+                  Risk-based debit interest on the full ladder — a higher ratio means a smaller client
+                  contribution and a lower rate: 1:2 needs a 50% contribution at{" "}
+                  {(debitInterestRateFor(2) * 100).toFixed(0)}% p.a., up to 1:{MAX_LEVERAGE_RATIO} at{" "}
+                  {(debitInterestRateFor(MAX_LEVERAGE_RATIO) * 100).toFixed(0)}% p.a. (~
+                  {Math.round(100 / MAX_LEVERAGE_RATIO)}% contribution).
                 </p>
               </div>
 

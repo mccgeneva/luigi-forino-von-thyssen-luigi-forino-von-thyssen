@@ -52,28 +52,33 @@ export function getProfile(key: TreasuryProfileKey): TreasuryProfile {
 // Security deposits and the leverage facility are denominated in EUR.
 export const TREASURY_CURRENCY = "EUR"
 
-// Maximum leverage that may be approved by the administrator on a security
-// deposit: 1:10. With it, a €50,000 contribution covers a €500,000 PRO deposit
-// and €100,000 covers a €1,000,000 Avant-Garde deposit. The administrator must
-// explicitly approve the facility per client.
-export const MAX_LEVERAGE_RATIO = 10
-
 /**
  * Leverage facilities the administrator may approve on a treasury security
- * deposit. 1:5 requires a larger client contribution (20% of the deposit) than
- * 1:10 (10%). Kept ascending; the last entry is the maximum (MAX_LEVERAGE_RATIO).
+ * deposit — the full risk-based ladder 1:2 … 1:30 (same as trading lines). A
+ * lower ratio requires a larger client contribution (1:2 → 50%) and a higher
+ * ratio a smaller one (1:30 → ~3.3%). Kept ascending; the last entry is the
+ * maximum (MAX_LEVERAGE_RATIO).
  */
-export const TREASURY_LEVERAGE_RATIOS = [5, 10] as const
+export const TREASURY_LEVERAGE_RATIOS = [2, 5, 10, 15, 20, 25, 30] as const
+
+// Maximum leverage that may be approved by the administrator on a security
+// deposit: 1:30. The administrator must explicitly approve the facility per
+// client.
+export const MAX_LEVERAGE_RATIO = TREASURY_LEVERAGE_RATIOS[TREASURY_LEVERAGE_RATIOS.length - 1]
+
+// Legacy fallback: historic records stored an *observed* ratio (required ÷
+// contribution) that may not be one of the offered facilities. Those default to
+// 1:10 — the facility that was the only maximum at the time — so financing
+// capacity for existing records never regresses.
+const LEGACY_TREASURY_RATIO = 10
 
 /**
- * Snap a stored/legacy leverage value to an approved facility level. Historic
- * records stored an *observed* ratio (required ÷ contribution) that may not be
- * one of the offered facilities; those default to the 1:10 facility that was
- * the only option at the time, so financing capacity never regresses.
+ * Snap a stored/legacy leverage value to an approved facility level. Values not
+ * on the ladder default to the legacy 1:10 facility.
  */
 export function normalizeTreasuryLeverageRatio(ratio: number | undefined | null): number {
   const n = Number(ratio)
-  return (TREASURY_LEVERAGE_RATIOS as readonly number[]).includes(n) ? n : MAX_LEVERAGE_RATIO
+  return (TREASURY_LEVERAGE_RATIOS as readonly number[]).includes(n) ? n : LEGACY_TREASURY_RATIO
 }
 
 /**
