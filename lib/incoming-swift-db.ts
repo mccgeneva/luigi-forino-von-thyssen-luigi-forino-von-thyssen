@@ -43,6 +43,12 @@ export interface IncomingSwiftMessage {
   matchReason: string
   /** Set when the matched customer has opened the message. */
   readAt: string | null
+  /** Set once an administrator has executed the credit to the Master Account. */
+  creditedAt: string | null
+  /** Deterministic ledger entry id posted for the credit (idempotency key). */
+  creditedEntryId: string | null
+  /** Credited amount + currency label (as posted to the Master Account). */
+  creditedAmount: string | null
   createdAt: string
 }
 
@@ -103,6 +109,11 @@ async function ensureTable(): Promise<void> {
   await query(
     `CREATE INDEX IF NOT EXISTS incoming_swift_status_idx ON incoming_swift_messages (status, created_at DESC)`,
   )
+  // Credit-tracking columns (added after the table shipped) — idempotent so an
+  // existing store is upgraded in place without a migration step.
+  await query(`ALTER TABLE incoming_swift_messages ADD COLUMN IF NOT EXISTS credited_at timestamptz`)
+  await query(`ALTER TABLE incoming_swift_messages ADD COLUMN IF NOT EXISTS credited_entry_id text`)
+  await query(`ALTER TABLE incoming_swift_messages ADD COLUMN IF NOT EXISTS credited_amount text`)
   ensured = true
 }
 
@@ -128,6 +139,9 @@ function rowToMessage(row: Record<string, unknown>): IncomingSwiftMessage {
     bicConfirmed: Boolean(row.bic_confirmed),
     matchReason: (row.match_reason as string) ?? "",
     readAt: row.read_at ? new Date(row.read_at as string).toISOString() : null,
+    creditedAt: row.credited_at ? new Date(row.credited_at as string).toISOString() : null,
+    creditedEntryId: (row.credited_entry_id as string) ?? null,
+    creditedAmount: (row.credited_amount as string) ?? null,
     createdAt: row.created_at ? new Date(row.created_at as string).toISOString() : new Date().toISOString(),
   }
 }
@@ -219,6 +233,40 @@ export async function markIncomingSwiftRead(id: string, userIds: string[]): Prom
        WHERE id = $1 AND user_id = ANY($2) AND read_at IS NULL`,
     [id, userIds],
   )
+}
+
+/**
+ * Messages that concern a platform account (matched or admin-assigned) and are
+ * awaiting the administrator's credit execution — i.e. not yet credited.
+ */
+export async function listCreditableIncomingSwift(): Promise<IncomingSwiftMessage[]> {
+  await ensureTable()
+  const { rows } = await query(
+    `SELECT * FROM incoming_swift_messages
+       WHERE status IN ('matched','assigned') AND user_id IS NOT NULL AND credited_at IS NULL
+     ORDER BY created_at DESC`,
+  )
+  return rows.map(rowToMessage)
+}
+
+/**
+ * Stamp a message credited. Guarded on `credited_at IS NULL` so a concurrent /
+ * repeat call never double-credits — returns null when it was already credited.
+ */
+export async function markIncomingSwiftCredited(
+  id: string,
+  entryId: string,
+  amountLabel: string,
+): Promise<IncomingSwiftMessage | null> {
+  await ensureTable()
+  const { rows } = await query(
+    `UPDATE incoming_swift_messages
+       SET credited_at = now(), credited_entry_id = $2, credited_amount = $3
+     WHERE id = $1 AND credited_at IS NULL
+     RETURNING *`,
+    [id, entryId, amountLabel],
+  )
+  return rows[0] ? rowToMessage(rows[0]) : null
 }
 
 /** Administrator manual resolution: attach an unmatched message to a customer. */

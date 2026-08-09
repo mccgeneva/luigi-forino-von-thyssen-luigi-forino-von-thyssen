@@ -18,10 +18,24 @@ import {
   insertIncomingSwift,
   listIncomingSwiftForUsers,
   listUnmatchedIncomingSwift,
+  listCreditableIncomingSwift,
+  markIncomingSwiftCredited,
   markIncomingSwiftRead,
   type IncomingSwiftMessage,
 } from "@/lib/incoming-swift-db"
+import { convertCurrency } from "@/lib/fx"
 import type { GatewayAccount } from "@/lib/gateway-store"
+
+/** FX spread applied when the received currency differs from the account. */
+const GATEWAY_FX_FEE_RATE = 0.005
+
+function normalizeIban(raw: string | undefined | null): string {
+  return (raw ?? "").toUpperCase().replace(/[^A-Z0-9]/g, "")
+}
+
+function round2(n: number): number {
+  return Math.round((n + Number.EPSILON) * 100) / 100
+}
 
 // ---------------------------------------------------------------------------
 // Match targets — every user's ACTIVE gateway (bank) account carries an
@@ -50,6 +64,28 @@ async function readActiveMatchAccounts(): Promise<MatchAccount[]> {
       currency: payload.currency,
     }
   })
+}
+
+/**
+ * Read the full active gateway (bank) account payload for a matched customer.
+ * Prefers the exact matched account id; otherwise falls back to the customer's
+ * single active account. Used by the credit executor to resolve the account
+ * currency, partner bank and reference exactly like the reconciliation engine.
+ */
+async function readActiveGatewayAccount(
+  userId: string,
+  accountId: string | null,
+): Promise<GatewayAccount | null> {
+  const { rows } = await query(
+    `SELECT payload, request_id FROM gateway_accounts WHERE user_id = $1 AND status = 'active'`,
+    [userId],
+  )
+  if (!rows.length) return null
+  const mapped = rows.map((row: Record<string, unknown>) => {
+    const payload = (row.payload as GatewayAccount) ?? ({} as GatewayAccount)
+    return { ...payload, id: (row.request_id as string) ?? payload.id }
+  })
+  return (accountId ? mapped.find((a) => a.id === accountId) : undefined) ?? mapped[0] ?? null
 }
 
 // ---------------------------------------------------------------------------
@@ -286,5 +322,148 @@ export async function assignIncomingSwiftAdmin(
   } catch (err) {
     console.log("[v0] assignIncomingSwiftAdmin failed:", (err as Error).message)
     return { ok: false, error: "Could not assign the message." }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Admin: execute the credit for a verified inbound SWIFT message.
+//
+// Only messages that concern a platform bank account (status matched/assigned
+// with an owning customer) can be credited. The funds are posted to that
+// customer's Master Account ledger — mirroring the reconciliation credit engine
+// (data-owner ledger, deterministic idempotent id, automatic FX into the
+// account currency) — then the customer is notified and the action is audited.
+// ---------------------------------------------------------------------------
+
+export async function listCreditableIncomingSwiftAdmin(
+  passcode: string,
+): Promise<{ ok: boolean; error?: string; messages: IncomingSwiftMessage[] }> {
+  if (!(await adminActionAuthorized(passcode))) {
+    return { ok: false, error: "Administrator authorization failed.", messages: [] }
+  }
+  try {
+    return { ok: true, messages: await listCreditableIncomingSwift() }
+  } catch {
+    return { ok: true, messages: [] }
+  }
+}
+
+export interface CreditResult {
+  ok: boolean
+  error?: string
+  creditedLabel?: string
+  creditedTo?: string
+  alreadyCredited?: boolean
+}
+
+export async function creditIncomingSwiftAdmin(passcode: string, id: string): Promise<CreditResult> {
+  if (!(await adminActionAuthorized(passcode))) {
+    return { ok: false, error: "Administrator authorization failed." }
+  }
+
+  const message = await getIncomingSwiftById(id)
+  if (!message) return { ok: false, error: "Message not found." }
+  if (!message.userId || (message.status !== "matched" && message.status !== "assigned")) {
+    return { ok: false, error: "This message is not matched to a platform account." }
+  }
+  if (message.creditedAt) {
+    return { ok: false, alreadyCredited: true, error: "This message has already been credited." }
+  }
+
+  try {
+    // Re-parse the raw FIN so the credited amount is authoritative (never a
+    // hand-edited display string).
+    const parsed = parseSwiftMessage(message.raw)
+    const receivedAmount = Number(parsed.amount ?? 0)
+    const receivedCurrency = (parsed.currency ?? message.currency ?? "").toUpperCase()
+    if (!Number.isFinite(receivedAmount) || receivedAmount <= 0) {
+      return { ok: false, error: "The message has no positive amount to credit." }
+    }
+    if (!receivedCurrency) return { ok: false, error: "The message has no currency to credit." }
+
+    const account = await readActiveGatewayAccount(message.userId, message.matchedAccountId)
+    // Credit in the ACCOUNT currency when we can resolve it (so a balance never
+    // mixes currencies); otherwise fall back to the received currency.
+    const accountCurrency = (account?.currency ?? receivedCurrency).toUpperCase()
+
+    const isFx = receivedCurrency !== accountCurrency
+    const grossConverted = isFx ? convertCurrency(receivedAmount, receivedCurrency, accountCurrency) : receivedAmount
+    const fxRate = isFx && receivedAmount > 0 ? grossConverted / receivedAmount : 1
+    const fxFee = isFx ? round2(grossConverted * GATEWAY_FX_FEE_RATE) : 0
+    const amount = round2(grossConverted - fxFee)
+    if (!Number.isFinite(amount) || amount <= 0) {
+      return { ok: false, error: "The credit amount could not be computed." }
+    }
+
+    const senderName = message.orderingCustomer || message.senderBic || "the ordering party"
+    const bankName = account?.coordinates?.partnerBankName ?? message.senderBic ?? null
+    const reference = message.reference?.trim() || account?.coordinates?.reference || account?.id || message.id
+    const creditedLabel = `${accountCurrency} ${amount.toLocaleString("en-US")}`
+
+    const fxNote = isFx
+      ? ` Received ${receivedCurrency} ${receivedAmount.toLocaleString("en-US")}, converted to ${accountCurrency} at ${fxRate.toFixed(6)} (FX fee ${accountCurrency} ${fxFee.toLocaleString("en-US")}), net credited ${creditedLabel}.`
+      : ""
+
+    // Deterministic idempotency key derived from the message id.
+    const ledgerEntryId = `ISWC-${message.id}`
+    const ledgerOwnerId = (await resolveDataOwnerIdFor(message.userId)) ?? message.userId
+
+    await query(
+      `INSERT INTO ledger_entries
+         (user_id, entry_id, direction, amount, currency, status, entry_date,
+          counterparty, account, bank, reference, comment, category)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+       ON CONFLICT (user_id, entry_id) DO NOTHING`,
+      [
+        ledgerOwnerId,
+        ledgerEntryId,
+        "credit",
+        amount,
+        accountCurrency,
+        "completed",
+        new Date().toISOString(),
+        senderName,
+        account?.id ?? null,
+        bankName,
+        reference,
+        `Inbound SWIFT ${message.messageType} from ${senderName} (reference ${reference}${message.uetr ? `, UETR ${message.uetr}` : ""}) verified and credited to the Master Account by the administrator.${fxNote}`,
+        isFx ? "Inbound SWIFT Credit (FX)" : "Inbound SWIFT Credit",
+      ],
+    )
+
+    // Stamp credited (idempotency-guarded). If another call already stamped it,
+    // stop here so we never notify or audit twice.
+    const stamped = await markIncomingSwiftCredited(message.id, ledgerEntryId, creditedLabel)
+    if (!stamped) {
+      return { ok: false, alreadyCredited: true, error: "This message has already been credited." }
+    }
+
+    await insertNotification({
+      userId: message.userId,
+      tone: "success",
+      title: `Payment received — ${creditedLabel}`,
+      body: `You received ${creditedLabel} from ${senderName}${
+        reference ? ` (reference ${reference})` : ""
+      } via SWIFT ${message.messageType}. The funds were credited to your Master Account.`,
+      href: "/dashboard",
+    })
+
+    await logActivity({
+      action: `Inbound SWIFT ${message.messageType} verified and credited ${creditedLabel} to ${message.matchedAccountHolder ?? message.userId}`,
+      category: "SWIFT",
+      details: {
+        summary: `Administrator executed the credit for inbound SWIFT ${message.messageType} (${message.id}, beneficiary IBAN ${message.beneficiaryIban || "n/a"}${message.uetr ? `, UETR ${message.uetr}` : ""}) and credited ${creditedLabel} to the Master Account of ${message.matchedAccountHolder ?? message.userId} under ledger reference ${ledgerEntryId}.${fxNote}`,
+        messageId: message.id,
+        matchedUserId: message.userId,
+        ledgerReference: ledgerEntryId,
+        amount: creditedLabel,
+        decision: isFx ? "Credited with FX conversion" : "Credited",
+      },
+    })
+
+    return { ok: true, creditedLabel, creditedTo: message.matchedAccountHolder ?? undefined }
+  } catch (err) {
+    console.log("[v0] creditIncomingSwiftAdmin failed:", (err as Error).message)
+    return { ok: false, error: "Could not execute the credit." }
   }
 }
