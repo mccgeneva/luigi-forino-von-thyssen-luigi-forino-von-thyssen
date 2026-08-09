@@ -15,6 +15,7 @@ import { cn } from "@/lib/utils"
 import { useLedger, convertCurrency, type LedgerEntry } from "@/lib/ledger-store"
 import { useInstrumentRequests } from "@/lib/instrument-requests-store"
 import { useBeneficiaries } from "@/lib/beneficiaries-store"
+import { BlockedFundsNotice } from "@/components/dashboard/blocked-funds-notice"
 
 const currencySymbols: Record<string, string> = {
   EUR: "€",
@@ -218,6 +219,10 @@ export function PortfolioOverview() {
           </Link>
         </CardContent>
       </Card>
+
+      {/* Administrative fund blocks — visible directly under the balances so the
+          client always sees what is blocked and why. Renders nothing when none. */}
+      <BlockedFundsNotice />
 
       {/* Stat cards */}
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">

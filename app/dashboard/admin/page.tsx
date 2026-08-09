@@ -146,6 +146,7 @@ import {
 import { KIND_LABELS, type ApprovalKind } from "@/lib/approval-kinds"
 import { adminListPendingKyc } from "@/app/actions/beneficiaries"
 import { BalanceManager } from "@/components/admin/balance-manager"
+import { FundBlockManager } from "@/components/admin/fund-block-manager"
 import { SkrManager } from "@/components/admin/skr-manager"
 import { SkrOverview } from "@/components/admin/skr-overview"
 import { InstrumentIssuer } from "@/components/admin/instrument-issuer"
@@ -2149,6 +2150,7 @@ export default function AdminPage() {
         { id: "users", label: "Client Accounts", description: "Create, edit, suspend and reset users.", icon: Users, count: 0 },
         { id: "membership", label: "Membership Upgrades", description: "Approve tiers and validate deposits.", icon: Award, count: 0 },
         { id: "balances", label: "Balances & Transactions", description: "Credit, debit, adjust and reverse.", icon: Wallet, count: 0 },
+        { id: "fundblocks", label: "Fund Blocking Controls", description: "Block funds from a client's Master Account; release or permanently withdraw.", icon: Lock, count: 0 },
         { id: "kyc", label: "KYC / Beneficiaries", description: "Verify beneficiaries and KYC documents.", icon: BadgeCheck, count: pendingKycCount },
         { id: "gateway", label: "Payment Gateway", description: "Approve client account requests; configure partner banks and routing.", icon: Settings, count: pendingGatewayCount },
         { id: "swiftrouting", label: "SWIFT Routing", description: "Review client SWIFT messages and route them to the chosen beneficiary.", icon: Send, count: pendingSwiftRoutingCount },
@@ -5089,6 +5091,12 @@ export default function AdminPage() {
       {activeView === "balances" && (
       <div className="space-y-6">
         <BalanceManager />
+      </div>
+      )}
+
+      {activeView === "fundblocks" && (
+      <div className="space-y-6">
+        <FundBlockManager />
       </div>
       )}
 
