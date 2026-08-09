@@ -1,0 +1,242 @@
+import "server-only"
+import { query } from "@/lib/db"
+
+/**
+ * Inbound SWIFT message store.
+ *
+ * Every SWIFT message received by the platform is parsed, cross-checked against
+ * the active bank (gateway) accounts by beneficiary IBAN + receiver BIC, and
+ * persisted here. A matched message is namespaced to the owning customer's
+ * user_id so it surfaces in their dedicated "SWIFT Messages" inbox; an
+ * unmatched message is stored with a null user_id and status `unmatched` so an
+ * administrator can review and assign it manually.
+ *
+ * Lives in Neon (not per-browser state) so the customer sees the message on
+ * their next load from any device and the full audit trail is durable.
+ */
+
+export type IncomingSwiftStatus = "matched" | "unmatched" | "assigned"
+
+export interface IncomingSwiftMessage {
+  id: string
+  /** Matched (or admin-assigned) owning customer; null while unmatched. */
+  userId: string | null
+  status: IncomingSwiftStatus
+  messageType: string
+  senderBic: string
+  receiverBic: string
+  beneficiaryIban: string
+  beneficiaryName: string
+  orderingCustomer: string
+  amount: string | null
+  currency: string | null
+  reference: string | null
+  valueDate: string | null
+  uetr: string | null
+  /** Raw SWIFT FIN text (the copy of the message). */
+  raw: string
+  /** Gateway account the message was matched to. */
+  matchedAccountId: string | null
+  matchedAccountHolder: string | null
+  /** Whether the receiver BIC confirmed the IBAN match. */
+  bicConfirmed: boolean
+  matchReason: string
+  /** Set when the matched customer has opened the message. */
+  readAt: string | null
+  createdAt: string
+}
+
+export interface NewIncomingSwiftMessage {
+  id?: string
+  userId: string | null
+  status: IncomingSwiftStatus
+  messageType: string
+  senderBic: string
+  receiverBic: string
+  beneficiaryIban: string
+  beneficiaryName: string
+  orderingCustomer: string
+  amount?: string | null
+  currency?: string | null
+  reference?: string | null
+  valueDate?: string | null
+  uetr?: string | null
+  raw: string
+  matchedAccountId?: string | null
+  matchedAccountHolder?: string | null
+  bicConfirmed?: boolean
+  matchReason: string
+}
+
+let ensured = false
+
+async function ensureTable(): Promise<void> {
+  if (ensured) return
+  await query(
+    `CREATE TABLE IF NOT EXISTS incoming_swift_messages (
+       id                    text        PRIMARY KEY,
+       user_id               text,
+       status                text        NOT NULL DEFAULT 'unmatched',
+       message_type          text        NOT NULL DEFAULT '',
+       sender_bic            text        NOT NULL DEFAULT '',
+       receiver_bic          text        NOT NULL DEFAULT '',
+       beneficiary_iban      text        NOT NULL DEFAULT '',
+       beneficiary_name      text        NOT NULL DEFAULT '',
+       ordering_customer     text        NOT NULL DEFAULT '',
+       amount                text,
+       currency              text,
+       reference             text,
+       value_date            text,
+       uetr                  text,
+       raw                   text        NOT NULL DEFAULT '',
+       matched_account_id    text,
+       matched_account_holder text,
+       bic_confirmed         boolean     NOT NULL DEFAULT false,
+       match_reason          text        NOT NULL DEFAULT '',
+       read_at               timestamptz,
+       created_at            timestamptz NOT NULL DEFAULT now()
+     )`,
+  )
+  await query(
+    `CREATE INDEX IF NOT EXISTS incoming_swift_user_idx ON incoming_swift_messages (user_id, created_at DESC)`,
+  )
+  await query(
+    `CREATE INDEX IF NOT EXISTS incoming_swift_status_idx ON incoming_swift_messages (status, created_at DESC)`,
+  )
+  ensured = true
+}
+
+function rowToMessage(row: Record<string, unknown>): IncomingSwiftMessage {
+  return {
+    id: row.id as string,
+    userId: (row.user_id as string) ?? null,
+    status: row.status as IncomingSwiftStatus,
+    messageType: (row.message_type as string) ?? "",
+    senderBic: (row.sender_bic as string) ?? "",
+    receiverBic: (row.receiver_bic as string) ?? "",
+    beneficiaryIban: (row.beneficiary_iban as string) ?? "",
+    beneficiaryName: (row.beneficiary_name as string) ?? "",
+    orderingCustomer: (row.ordering_customer as string) ?? "",
+    amount: (row.amount as string) ?? null,
+    currency: (row.currency as string) ?? null,
+    reference: (row.reference as string) ?? null,
+    valueDate: (row.value_date as string) ?? null,
+    uetr: (row.uetr as string) ?? null,
+    raw: (row.raw as string) ?? "",
+    matchedAccountId: (row.matched_account_id as string) ?? null,
+    matchedAccountHolder: (row.matched_account_holder as string) ?? null,
+    bicConfirmed: Boolean(row.bic_confirmed),
+    matchReason: (row.match_reason as string) ?? "",
+    readAt: row.read_at ? new Date(row.read_at as string).toISOString() : null,
+    createdAt: row.created_at ? new Date(row.created_at as string).toISOString() : new Date().toISOString(),
+  }
+}
+
+function genId(): string {
+  return `ISW-${Date.now().toString(36).toUpperCase()}-${Math.random().toString(36).slice(2, 7).toUpperCase()}`
+}
+
+export async function insertIncomingSwift(msg: NewIncomingSwiftMessage): Promise<IncomingSwiftMessage> {
+  await ensureTable()
+  const id = msg.id ?? genId()
+  const { rows } = await query(
+    `INSERT INTO incoming_swift_messages
+       (id, user_id, status, message_type, sender_bic, receiver_bic, beneficiary_iban,
+        beneficiary_name, ordering_customer, amount, currency, reference, value_date,
+        uetr, raw, matched_account_id, matched_account_holder, bic_confirmed, match_reason)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
+     RETURNING *`,
+    [
+      id,
+      msg.userId,
+      msg.status,
+      msg.messageType,
+      msg.senderBic,
+      msg.receiverBic,
+      msg.beneficiaryIban,
+      msg.beneficiaryName,
+      msg.orderingCustomer,
+      msg.amount ?? null,
+      msg.currency ?? null,
+      msg.reference ?? null,
+      msg.valueDate ?? null,
+      msg.uetr ?? null,
+      msg.raw,
+      msg.matchedAccountId ?? null,
+      msg.matchedAccountHolder ?? null,
+      msg.bicConfirmed ?? false,
+      msg.matchReason,
+    ],
+  )
+  return rowToMessage(rows[0])
+}
+
+/** Every inbound message routed to a set of linked customer ids (newest first). */
+export async function listIncomingSwiftForUsers(userIds: string[]): Promise<IncomingSwiftMessage[]> {
+  await ensureTable()
+  if (!userIds.length) return []
+  const { rows } = await query(
+    `SELECT * FROM incoming_swift_messages
+       WHERE user_id = ANY($1) AND status IN ('matched','assigned')
+     ORDER BY created_at DESC`,
+    [userIds],
+  )
+  return rows.map(rowToMessage)
+}
+
+export async function countUnreadIncomingSwiftForUsers(userIds: string[]): Promise<number> {
+  await ensureTable()
+  if (!userIds.length) return 0
+  const { rows } = await query<{ n: string }>(
+    `SELECT COUNT(*)::int AS n FROM incoming_swift_messages
+       WHERE user_id = ANY($1) AND status IN ('matched','assigned') AND read_at IS NULL`,
+    [userIds],
+  )
+  return Number(rows[0]?.n ?? 0)
+}
+
+/** All still-unmatched messages, for the administrator review queue. */
+export async function listUnmatchedIncomingSwift(): Promise<IncomingSwiftMessage[]> {
+  await ensureTable()
+  const { rows } = await query(
+    `SELECT * FROM incoming_swift_messages WHERE status = 'unmatched' ORDER BY created_at DESC`,
+  )
+  return rows.map(rowToMessage)
+}
+
+export async function getIncomingSwiftById(id: string): Promise<IncomingSwiftMessage | undefined> {
+  await ensureTable()
+  const { rows } = await query(`SELECT * FROM incoming_swift_messages WHERE id = $1`, [id])
+  return rows[0] ? rowToMessage(rows[0]) : undefined
+}
+
+/** Mark a message read, but only for the customer(s) it belongs to. */
+export async function markIncomingSwiftRead(id: string, userIds: string[]): Promise<void> {
+  await ensureTable()
+  if (!userIds.length) return
+  await query(
+    `UPDATE incoming_swift_messages SET read_at = now()
+       WHERE id = $1 AND user_id = ANY($2) AND read_at IS NULL`,
+    [id, userIds],
+  )
+}
+
+/** Administrator manual resolution: attach an unmatched message to a customer. */
+export async function assignIncomingSwift(
+  id: string,
+  userId: string,
+  accountId: string | null,
+  accountHolder: string | null,
+  reason: string,
+): Promise<IncomingSwiftMessage | null> {
+  await ensureTable()
+  const { rows } = await query(
+    `UPDATE incoming_swift_messages
+       SET user_id = $2, status = 'assigned', matched_account_id = $3,
+           matched_account_holder = $4, match_reason = $5, read_at = NULL
+     WHERE id = $1
+     RETURNING *`,
+    [id, userId, accountId, accountHolder, reason],
+  )
+  return rows[0] ? rowToMessage(rows[0]) : null
+}

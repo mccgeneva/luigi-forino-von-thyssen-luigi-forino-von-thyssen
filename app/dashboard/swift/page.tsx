@@ -1,6 +1,7 @@
 "use client"
 
-import { useState } from "react"
+import { useMemo, useState } from "react"
+import useSWR from "swr"
 import { toast } from "sonner"
 import { useActivityLog } from "@/components/activity-tracker"
 import { exportToCsv } from "@/lib/export-utils"
@@ -16,6 +17,7 @@ import {
 import { SwiftComposer, SWIFT_MESSAGE_TYPES, type SwiftSentSummary } from "@/components/dashboard/swift-composer"
 import { parseSwiftMessage } from "@/lib/swift-mt"
 import { submitSwiftForRouting } from "@/app/actions/swift-routing"
+import { getMyIncomingSwiftMessages, markMyIncomingSwiftRead } from "@/app/actions/incoming-swift"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -83,6 +85,7 @@ type SwiftMessage = {
   ack: string
   raw?: string
   uetr?: string
+  unread?: boolean
 }
 
 const swiftMessages: SwiftMessage[] = []
@@ -108,7 +111,50 @@ export default function SwiftPage() {
   const [selectedMessage, setSelectedMessage] = useState<SwiftMessage | null>(null)
   const [activeTab, setActiveTab] = useState("inbox")
 
-  const filteredMessages = messages.filter((msg) => {
+  // Inbound SWIFT messages that were received by the platform and auto-matched
+  // to this customer's bank account (by beneficiary IBAN + receiver BIC). These
+  // are delivered server-side; the customer sees them here on next load / poll.
+  const { data: incomingData, mutate: mutateIncoming } = useSWR(
+    "incoming-swift-messages",
+    async () => (await getMyIncomingSwiftMessages()).messages,
+    { refreshInterval: 30000, revalidateOnFocus: true },
+  )
+
+  const incomingMessages = useMemo<SwiftMessage[]>(() => {
+    return (incomingData ?? []).map((m) => {
+      const created = new Date(m.createdAt)
+      return {
+        id: m.id,
+        type: m.messageType || "MT103",
+        direction: "incoming",
+        status: "received",
+        sender: m.senderBic,
+        receiver: m.receiverBic,
+        // Stored amount is prefixed with the currency (e.g. "EUR 15,000.00");
+        // strip it since the table/dialog render the currency separately.
+        amount: m.amount ? m.amount.replace(/^[A-Z]{3}\s*/, "") : "N/A",
+        currency: m.currency || "",
+        beneficiary: m.beneficiaryName,
+        beneficiaryAccount: m.beneficiaryIban,
+        orderingCustomer: m.orderingCustomer,
+        date: created.toLocaleDateString("en-GB"),
+        time: created.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" }),
+        reference: m.reference || "",
+        valueDate: m.valueDate || created.toLocaleDateString("en-GB"),
+        ack: "ACK",
+        raw: m.raw,
+        uetr: m.uetr || undefined,
+        unread: m.readAt == null,
+      }
+    })
+  }, [incomingData])
+
+  const combinedMessages = useMemo(
+    () => [...incomingMessages, ...messages],
+    [incomingMessages, messages],
+  )
+
+  const filteredMessages = combinedMessages.filter((msg) => {
     const matchesSearch =
       msg.id.toLowerCase().includes(searchQuery.toLowerCase()) ||
       msg.beneficiary.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -240,6 +286,7 @@ export default function SwiftPage() {
 
   const handleRefresh = () => {
     setIsRefreshing(true)
+    void mutateIncoming()
     setTimeout(() => setIsRefreshing(false), 600)
     logActivity({
       action: "Refreshed the SWIFT message queue",
@@ -255,6 +302,15 @@ export default function SwiftPage() {
   const copyMessage = (message: SwiftMessage) => {
     navigator.clipboard?.writeText(message.raw || JSON.stringify(message, null, 2))
     toast.success(`Copied ${message.id}`)
+  }
+
+  const openMessage = (message: SwiftMessage) => {
+    setSelectedMessage(message)
+    // Mark a received message read the first time it is opened, then refresh so
+    // the unread indicator clears (and the notification bell count follows).
+    if (message.direction === "incoming" && message.unread) {
+      void markMyIncomingSwiftRead(message.id).then(() => mutateIncoming())
+    }
   }
 
   const downloadMessage = (message: SwiftMessage) => {
@@ -376,9 +432,18 @@ export default function SwiftPage() {
           messages.map((message) => (
             <TableRow key={message.id} className="border-border">
               <TableCell>
-                <code className="text-xs bg-muted px-1.5 py-0.5 rounded text-foreground">
-                  {message.id}
-                </code>
+                <div className="flex items-center gap-2">
+                  {message.unread && (
+                    <span
+                      className="h-2 w-2 shrink-0 rounded-full bg-primary"
+                      aria-label="Unread message"
+                      title="Unread"
+                    />
+                  )}
+                  <code className="text-xs bg-muted px-1.5 py-0.5 rounded text-foreground">
+                    {message.id}
+                  </code>
+                </div>
               </TableCell>
               <TableCell>
                 <Badge variant="outline" className="border-primary/30 text-primary">
@@ -423,7 +488,7 @@ export default function SwiftPage() {
                     variant="ghost"
                     size="icon"
                     className="h-8 w-8"
-                    onClick={() => setSelectedMessage(message)}
+                    onClick={() => openMessage(message)}
                   >
                     <Eye className="h-4 w-4" />
                   </Button>
