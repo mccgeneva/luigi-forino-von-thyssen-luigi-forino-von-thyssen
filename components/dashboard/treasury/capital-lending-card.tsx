@@ -1,7 +1,7 @@
 "use client"
 
 import { useCallback, useEffect, useState } from "react"
-import { HandCoins, Clock, CheckCircle2, AlertTriangle, Loader2, Info, Percent, Undo2, X } from "lucide-react"
+import { HandCoins, Clock, CheckCircle2, AlertTriangle, Loader2, Info, Percent, Undo2, X, XCircle } from "lucide-react"
 import { toast } from "sonner"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
@@ -20,6 +20,7 @@ import {
   getMyTreasuryLending,
   quoteTreasuryLendingRepay,
   repayTreasuryLending,
+  revokeTreasuryLending,
   type TreasuryLendingView,
   type LendingRepayQuoteResult,
 } from "@/app/actions/treasury-lending"
@@ -186,6 +187,28 @@ export function CapitalLendingCard({
     }
   }
 
+  const revoke = async (id: string) => {
+    setBusy(true)
+    try {
+      const res = await revokeTreasuryLending(id)
+      if (!res.ok) {
+        toast.error(res.error)
+        return
+      }
+      toast.success(
+        res.wasApproved
+          ? "Facility declined. You can apply again whenever you're ready."
+          : "Application withdrawn. You can apply again whenever you're ready.",
+      )
+      await load()
+      onFunded?.()
+    } catch {
+      toast.error("The facility could not be revoked. Please try again.")
+    } finally {
+      setBusy(false)
+    }
+  }
+
   const badge = (() => {
     if (active?.closedAt)
       return { label: "Repaid & closed", className: "text-muted-foreground", Icon: CheckCircle2 }
@@ -341,18 +364,38 @@ export function CapitalLendingCard({
               {fmt2(active.lendingCost, currency)} to draw down {fmt0(active.amount, currency)} to your master
               account.
             </div>
-            <Button onClick={() => pay(active.id)} disabled={busy} className="shrink-0 gap-2">
-              {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <HandCoins className="h-4 w-4" />}
-              Pay {fmt2(active.lendingCost, currency)} &amp; activate
-            </Button>
+            <div className="flex shrink-0 flex-col gap-2 sm:flex-row sm:items-center">
+              <Button
+                variant="outline"
+                onClick={() => revoke(active.id)}
+                disabled={busy}
+                className="min-h-11 gap-2"
+              >
+                <XCircle className="h-4 w-4" />
+                Decline
+              </Button>
+              <Button onClick={() => pay(active.id)} disabled={busy} className="min-h-11 gap-2">
+                {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <HandCoins className="h-4 w-4" />}
+                Pay {fmt2(active.lendingCost, currency)} &amp; activate
+              </Button>
+            </div>
           </div>
         ) : active?.status === "pending" ? (
-          <div className="flex items-start gap-2 rounded-lg border border-yellow-500/20 bg-yellow-500/5 p-3 text-sm">
-            <Clock className="mt-0.5 h-4 w-4 shrink-0 text-yellow-500" />
-            <span className="text-pretty text-muted-foreground">
+          <div className="flex flex-col gap-3 rounded-lg border border-yellow-500/20 bg-yellow-500/5 p-3 text-sm sm:flex-row sm:items-center sm:justify-between">
+            <span className="flex items-start gap-2 text-pretty text-muted-foreground">
+              <Clock className="mt-0.5 h-4 w-4 shrink-0 text-yellow-500" />
               Your application to borrow {fmt0(active.amount, currency)} is awaiting administrator approval.
               You will be able to pay the lending cost here once it is approved.
             </span>
+            <Button
+              variant="outline"
+              onClick={() => revoke(active.id)}
+              disabled={busy}
+              className="min-h-11 shrink-0 gap-2"
+            >
+              {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <XCircle className="h-4 w-4" />}
+              Withdraw application
+            </Button>
           </div>
         ) : alreadyFinanced ? (
           <div className="flex items-start gap-2 rounded-lg border border-border bg-secondary/40 p-3 text-sm">
