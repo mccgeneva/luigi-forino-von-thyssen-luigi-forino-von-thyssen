@@ -2020,7 +2020,7 @@ export default function InstrumentsPage() {
                   />
                 </div>
                 <div className="space-y-2">
-                  <Label htmlFor="mon-recv-bic">Receiving Bank BIC (optional)</Label>
+                  <Label htmlFor="mon-recv-bic">Receiving Bank BIC / SWIFT (optional)</Label>
                   <Input
                     id="mon-recv-bic"
                     value={monetizeForm.receivingBankBic}

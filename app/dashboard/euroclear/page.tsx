@@ -830,10 +830,10 @@ export default function EuroclearSettlementPage() {
                     <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
                       <Detail label="Counterparty" value={r.counterpartyName || "—"} />
                       <Detail label="Counterparty account" value={r.counterpartyAccount || "—"} />
-                      <Detail label="Counterparty BIC" value={r.counterpartyBic || "—"} mono />
+                      <Detail label="Counterparty BIC / SWIFT" value={r.counterpartyBic || "—"} mono />
                       <Detail label="Your Euroclear account" value={r.euroclearAccount || "—"} />
                       <Detail label="Custodian" value={r.custodianBank || "—"} />
-                      <Detail label="Custodian BIC" value={r.custodianBic || "—"} mono />
+                      <Detail label="Custodian BIC / SWIFT" value={r.custodianBic || "—"} mono />
                       <Detail label="Security type" value={r.securityType} />
                       <Detail
                         label="Price"

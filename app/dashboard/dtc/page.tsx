@@ -631,7 +631,7 @@ export default function SecuritiesSettlementPage() {
               </div>
               <VerifiedBankField
                 id="counterpartyBic"
-                label="Counterparty BIC"
+                label="Counterparty BIC / SWIFT"
                 kind="bic"
                 maxLength={11}
                 placeholder="e.g. MGTCBEBE"

@@ -378,9 +378,21 @@ export function SwiftComposer({ onSent, onSaveDraft }: SwiftComposerProps) {
 
   const set = (key: keyof FormState) => (value: string) => setForm((prev) => ({ ...prev, [key]: value }))
 
+  // Bank reality: the beneficiary's bank (:57a: Account With Institution) IS the
+  // receiving institution. Selecting the Receiver BIC therefore also sets the
+  // beneficiary BIC — they cannot legitimately differ in this direct flow.
+  const setReceiver = (value: string) => setForm((prev) => ({ ...prev, receiverBic: value, beneficiaryBic: value }))
+
+  // Warning when the entered beneficiary IBAN is held at a DIFFERENT bank than
+  // the selected receiving institution (i.e. the account is not at the receiver).
+  const [bicMismatch, setBicMismatch] = useState<string | null>(null)
+
+  const beneficiaryBankName = CORRESPONDENT_BANKS.find((b) => b.bic === form.receiverBic)?.name ?? null
+
   const openCompose = (code: string) => {
     setActiveCode(code)
     setForm(EMPTY_FORM)
+    setBicMismatch(null)
     setOpen(true)
   }
 
@@ -485,12 +497,12 @@ export function SwiftComposer({ onSent, onSaveDraft }: SwiftComposerProps) {
             <div className="space-y-4">
               <div className="grid grid-cols-2 gap-3">
                 <div className="space-y-2">
-                  <Label className="text-foreground">Sender BIC</Label>
+                  <Label className="text-foreground">Sender BIC / SWIFT</Label>
                   <Input value={SENDER_BIC} disabled className="bg-muted border-border text-foreground" />
                 </div>
                 <div className="space-y-2">
-                  <Label className="text-foreground">Receiver BIC</Label>
-                  <Select value={form.receiverBic} onValueChange={set("receiverBic")}>
+                  <Label className="text-foreground">Receiver BIC / SWIFT</Label>
+                  <Select value={form.receiverBic} onValueChange={setReceiver}>
                     <SelectTrigger className="bg-background border-border text-foreground">
                       <SelectValue placeholder="Select bank" />
                     </SelectTrigger>
@@ -550,7 +562,7 @@ export function SwiftComposer({ onSent, onSaveDraft }: SwiftComposerProps) {
                     <Label className="text-foreground">Ordering Customer (:50:)</Label>
                     <Textarea value={form.orderingName} onChange={(e) => set("orderingName")(e.target.value)} placeholder="Name and address" rows={2} className="bg-background border-border text-foreground resize-none" />
                   </div>
-                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  <div className="space-y-2">
                     <VerifiedBankField
                       id="beneficiary-account"
                       label="Beneficiary Account"
@@ -561,23 +573,41 @@ export function SwiftComposer({ onSent, onSaveDraft }: SwiftComposerProps) {
                       placeholder="IBAN / account"
                       inputClassName="bg-background border-border text-foreground"
                       onResolved={(info) => {
-                        // Pull the beneficiary bank's SWIFT/BIC out of the verified
-                        // IBAN and auto-fill the BIC field only while it is empty.
-                        if (info?.bic && !form.beneficiaryBic.trim()) {
-                          set("beneficiaryBic")(info.bic)
+                        // The beneficiary's bank is the Receiver (:57a:). Verify the
+                        // entered IBAN is actually held there; warn on a mismatch.
+                        const ibanBic = info?.bic?.toUpperCase()
+                        const receiver = form.receiverBic?.toUpperCase()
+                        if (ibanBic && receiver && ibanBic.slice(0, 6) !== receiver.slice(0, 6)) {
+                          setBicMismatch(
+                            `This IBAN is held at ${info?.name ? `${info.name} (${ibanBic})` : ibanBic}, not the selected receiving bank (${receiver}). Confirm the receiver.`,
+                          )
+                        } else {
+                          setBicMismatch(null)
                         }
                       }}
                     />
-                    <VerifiedBankField
-                      id="beneficiary-bic"
-                      label="Beneficiary BIC"
-                      kind="bic"
-                      value={form.beneficiaryBic}
-                      onChange={set("beneficiaryBic")}
-                      placeholder="BIC"
-                      maxLength={11}
-                      inputClassName="bg-background border-border text-foreground"
+                    {bicMismatch && (
+                      <p className="flex items-start gap-1.5 text-xs text-amber-500">
+                        <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                        <span>{bicMismatch}</span>
+                      </p>
+                    )}
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label className="text-foreground">Beneficiary Bank (:57a:)</Label>
+                    <Input
+                      value={
+                        form.receiverBic ? `${form.receiverBic}${beneficiaryBankName ? ` — ${beneficiaryBankName}` : ""}` : ""
+                      }
+                      disabled
+                      placeholder="Set by the Receiver BIC / SWIFT above"
+                      className="bg-muted border-border text-foreground"
                     />
+                    <p className="text-xs text-muted-foreground">
+                      The beneficiary&apos;s bank is the receiving institution (Receiver BIC / SWIFT). It always matches and is
+                      not entered separately.
+                    </p>
                   </div>
                   <div className="space-y-2">
                     <Label className="text-foreground">Beneficiary (:59:)</Label>
@@ -822,8 +852,8 @@ export function SwiftComposer({ onSent, onSaveDraft }: SwiftComposerProps) {
                       <Input value={form.amount} onChange={(e) => set("amount")(e.target.value)} placeholder="0.00" className="bg-background border-border text-foreground" />
                     </div>
                     <div className="space-y-2">
-                      <Label className="text-foreground">Agent BIC (:95P:)</Label>
-                      <Input value={form.agentBic} onChange={(e) => set("agentBic")(e.target.value)} placeholder="BIC" maxLength={11} className="bg-background border-border text-foreground" />
+                        <Label className="text-foreground">Agent BIC / SWIFT (:95P:)</Label>
+                        <Input value={form.agentBic} onChange={(e) => set("agentBic")(e.target.value)} placeholder="BIC / SWIFT" maxLength={11} className="bg-background border-border text-foreground" />
                     </div>
                   </div>
                   <div className="space-y-2">
