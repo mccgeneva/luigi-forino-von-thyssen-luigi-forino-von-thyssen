@@ -61,7 +61,7 @@ const actions = [
     description: "Between accounts",
     icon: ArrowRightLeft,
     color: "bg-indigo-500/10 text-indigo-400",
-    href: "/dashboard/payments",
+    href: "/dashboard/send",
   },
   {
     title: "Add Beneficiary",
