@@ -292,6 +292,11 @@ export async function saveTreasuryRecordAdmin(
 
   const target = await resolveAccountProfileById(userId)
 
+  // Rolls back the contribution ledger debit if the record write later fails,
+  // so money moved out of the client's balance and the saved record never
+  // diverge. Assigned once the debit adjustment is applied below.
+  let rollbackContribution: (() => Promise<void>) | null = null
+
   try {
     const prev = await readAccount(userId)
 
@@ -341,6 +346,69 @@ export async function saveTreasuryRecordAdmin(
     const establishedAt = prev.establishedAt ?? now
     // Stamp securedAt the first time the deposit becomes secured (fee accrual start).
     const securedAt = status === "secured" ? prev.securedAt ?? now : prev.securedAt ?? null
+
+    // --- Move the customer contribution OUT of the master balance ------------
+    // The contribution is the client's own money pledged as the security
+    // deposit, so it must LEAVE the master balance — recording the figure alone
+    // (the previous behaviour) left the cash visibly sitting in the client's
+    // account. We manage a single deterministic contribution debit per account
+    // and settle it to the target amount, so administrator edits (up OR down)
+    // are idempotent and refund the difference on a decrease. Any portion the
+    // client already self-funded (TRYDEP- deposits) is NOT re-charged.
+    const ledgerOwnerId = await resolveDataOwnerIdFor(userId)
+    const ledgerEntries = await readLedgerEntries(ledgerOwnerId)
+    const adminDepositId = `TRYADMDEP-${userId}`
+    const prevAdminEntry = ledgerEntries.find((e) => e.id === adminDepositId && e.direction === "debit")
+    const selfFunded = round2(
+      ledgerEntries
+        .filter((e) => e.direction === "debit" && e.category === "Treasury Deposit" && e.id !== adminDepositId)
+        .reduce((sum, e) => sum + e.amount, 0),
+    )
+    const targetAdminDebit = round2(Math.max(0, contribution - selfFunded))
+
+    rollbackContribution = async () => {
+      try {
+        if (prevAdminEntry) await upsertLedgerEntry(ledgerOwnerId, prevAdminEntry)
+        else await query(`DELETE FROM ledger_entries WHERE user_id = $1 AND entry_id = $2`, [ledgerOwnerId, adminDepositId])
+      } catch {
+        /* best-effort rollback */
+      }
+    }
+
+    try {
+      if (targetAdminDebit <= 0.01) {
+        await query(`DELETE FROM ledger_entries WHERE user_id = $1 AND entry_id = $2`, [ledgerOwnerId, adminDepositId])
+      } else {
+        const debit: LedgerEntry = {
+          id: adminDepositId,
+          direction: "debit",
+          amount: targetAdminDebit,
+          currency: "EUR",
+          status: "completed",
+          date: now,
+          counterparty: "MCC Capital — Treasury Security Deposit",
+          reference: adminDepositId,
+          category: "Treasury Deposit",
+          comment: `Security-deposit contribution held from the master account (${
+            leverageEnabled ? `1:${Math.round(ratio)} leverage facility` : "no leverage"
+          }).`,
+        }
+        await upsertLedgerEntry(ledgerOwnerId, debit)
+      }
+      await assertOwnerSolvent(ledgerOwnerId)
+    } catch (err) {
+      await rollbackContribution()
+      rollbackContribution = null
+      const msg = (err as Error).message
+      if (msg.startsWith("INSUFFICIENT_FUNDS")) {
+        return {
+          ok: false,
+          error: `The client's master balance can't cover this contribution. ${target.fullName} does not have enough available EUR to move to the security deposit. Nothing was changed.`,
+        }
+      }
+      console.log("[v0] saveTreasuryRecordAdmin contribution debit failed:", msg)
+      return { ok: false, error: "The contribution could not be moved from the client's balance. Please try again." }
+    }
 
     const { rows } = await query(
       `INSERT INTO treasury_accounts
@@ -398,6 +466,9 @@ export async function saveTreasuryRecordAdmin(
 
     return { ok: true, account: rowToAccount(rows[0]) }
   } catch (err) {
+    // The record write failed after the contribution debit was applied — undo
+    // the money movement so the balance and the saved record stay consistent.
+    if (rollbackContribution) await rollbackContribution()
     console.log("[v0] saveTreasuryRecordAdmin failed:", (err as Error).message)
     return { ok: false, error: "The treasury record could not be saved. Please try again." }
   }
