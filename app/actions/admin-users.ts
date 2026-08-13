@@ -29,6 +29,7 @@ import {
 } from "@/lib/admin-users-db"
 import type { SerializableUserProfile, SerializableProfileItem, AccountRelationship } from "@/lib/profile-types"
 import { effectiveRelationship } from "@/lib/account-hierarchy"
+import { validateIban, validateBic } from "@/lib/iban-swift"
 import type { KycDocument, KycPassportMeta } from "@/lib/kyc-types"
 
 // A client-safe view of a dynamic user (never includes nothing it shouldn't —
@@ -674,6 +675,211 @@ export async function changeMasterAccount(input: ChangeMasterInput): Promise<Mas
     })
 
     return { ok: true, user: toView(rec), previousMaster, newMaster, createdMasterCredentials }
+  } catch (err) {
+    return { ok: false, error: friendlyError(err) }
+  }
+}
+
+// --- Master bank-account details: EDIT IN PLACE ----------------------------
+//
+// Pick a client and edit HIS master account's bank details in place — login
+// email + IBAN / SWIFT / bank name / account currency. No new account is
+// created and no re-linking happens. For an account linked under a Master (a
+// sub/joint), the details of the resolved MASTER are shown and edited, because
+// that is the bank account the customer actually operates under.
+
+export interface MasterBankProfile {
+  /** The account the admin selected. */
+  selectedId: string
+  selectedName: string
+  /** The resolved master account whose details are shown/edited. */
+  masterId: string
+  masterName: string
+  masterCompany: string
+  masterEmail: string
+  /** True when the selected account IS its own master. */
+  isSelf: boolean
+  relationship: AccountRelationship
+  bankName?: string
+  iban?: string
+  swift?: string
+  accountCurrency?: string
+}
+
+/** Resolve the master account record for a given account id: the account itself
+ *  when it is a standalone Master, otherwise the account referenced by
+ *  `masterId`. Falls back to the account itself if the link is dangling. */
+async function resolveMasterRecord(userId: string): Promise<{ selected: DynamicUserRecord; master: DynamicUserRecord } | null> {
+  const selected = await getDynamicUserById(userId)
+  if (!selected) return null
+  const rel = effectiveRelationship(selected.profile.relationship)
+  const masterId = rel !== "master" && selected.profile.masterId ? selected.profile.masterId : userId
+  if (masterId === userId) return { selected, master: selected }
+  const master = (await getDynamicUserById(masterId)) ?? selected
+  return { selected, master }
+}
+
+export type MasterBankProfileResult =
+  | { ok: true; profile: MasterBankProfile }
+  | { ok: false; error: string }
+
+/** Admin: load the resolved master account's current bank details for editing. */
+export async function getMasterBankProfileAdmin(passcode: string, userId: string): Promise<MasterBankProfileResult> {
+  try {
+    await requireAdmin(passcode)
+    const resolved = await resolveMasterRecord(userId)
+    if (!resolved) return { ok: false, error: "The selected customer account was not found." }
+    const { selected, master } = resolved
+    const coords = extractBankingCoordinates(master.profile.banking)
+    return {
+      ok: true,
+      profile: {
+        selectedId: selected.id,
+        selectedName: selected.profile.fullName || selected.email,
+        masterId: master.id,
+        masterName: master.profile.fullName || "—",
+        masterCompany: master.profile.company || "",
+        masterEmail: master.email,
+        isSelf: master.id === selected.id,
+        relationship: effectiveRelationship(selected.profile.relationship),
+        ...coords,
+      },
+    }
+  } catch (err) {
+    return { ok: false, error: friendlyError(err) }
+  }
+}
+
+/** Upsert a labelled banking row in place: replace the matched row's value,
+ *  append a canonical row when none exists, or drop it when cleared. */
+function upsertBankingRow(
+  rows: SerializableProfileItem[],
+  match: (label: string) => boolean,
+  canonicalLabel: string,
+  value: string,
+): void {
+  const idx = rows.findIndex((r) => match(r.label.toLowerCase()))
+  const v = value.trim()
+  if (v) {
+    if (idx >= 0) rows[idx] = { ...rows[idx], value: v }
+    else rows.push({ label: canonicalLabel, value: v })
+  } else if (idx >= 0) {
+    rows.splice(idx, 1)
+  }
+}
+
+export interface UpdateMasterBankInput {
+  passcode: string
+  userId: string
+  email?: string
+  bankName?: string
+  iban?: string
+  swift?: string
+  accountCurrency?: string
+  adminName?: string
+}
+
+/** Admin: save edited bank details back onto the resolved master account. */
+export async function updateMasterBankProfileAdmin(input: UpdateMasterBankInput): Promise<MasterBankProfileResult> {
+  try {
+    await requireAdmin(input.passcode)
+    const resolved = await resolveMasterRecord(input.userId)
+    if (!resolved) return { ok: false, error: "The selected customer account was not found." }
+    const { master } = resolved
+
+    const before = extractBankingCoordinates(master.profile.banking)
+    const rows: SerializableProfileItem[] = [...(master.profile.banking ?? [])]
+
+    // Validate + normalise IBAN.
+    if (input.iban !== undefined) {
+      const raw = input.iban.trim()
+      if (raw) {
+        const c = validateIban(raw)
+        if (!c.valid) return { ok: false, error: `IBAN is not valid: ${c.error}` }
+        upsertBankingRow(rows, (l) => l.includes("iban"), "IBAN", c.formatted)
+      } else {
+        upsertBankingRow(rows, (l) => l.includes("iban"), "IBAN", "")
+      }
+    }
+
+    // Validate + normalise SWIFT / BIC.
+    if (input.swift !== undefined) {
+      const raw = input.swift.trim()
+      if (raw) {
+        const c = validateBic(raw)
+        if (!c.valid) return { ok: false, error: `SWIFT / BIC is not valid: ${c.error}` }
+        upsertBankingRow(rows, (l) => l.includes("swift") || l.includes("bic"), "SWIFT / BIC", c.normalized)
+      } else {
+        upsertBankingRow(rows, (l) => l.includes("swift") || l.includes("bic"), "SWIFT / BIC", "")
+      }
+    }
+
+    if (input.bankName !== undefined) {
+      upsertBankingRow(
+        rows,
+        (l) => l.includes("bank") && !l.includes("iban") && !l.includes("swift") && !l.includes("bic"),
+        "Bank",
+        input.bankName,
+      )
+    }
+
+    if (input.accountCurrency !== undefined) {
+      upsertBankingRow(rows, (l) => l.includes("currency"), "Account Currency", input.accountCurrency.toUpperCase())
+    }
+
+    // Optional login-email change — guarded against collisions with any OTHER account.
+    let nextEmail = master.email
+    if (input.email !== undefined) {
+      const raw = input.email.trim().toLowerCase()
+      if (raw && raw !== master.email.toLowerCase()) {
+        const clash = await getDynamicUserByEmail(raw)
+        if (clash && clash.id !== master.id) {
+          return { ok: false, error: "That login email is already used by another account." }
+        }
+        nextEmail = raw
+      }
+    }
+
+    const nextProfile: SerializableUserProfile = { ...master.profile, banking: rows }
+    const rec = await updateDynamicUserProfile(master.id, { email: nextEmail, profile: nextProfile })
+    if (!rec) return { ok: false, error: "Unable to save the bank details. Please try again." }
+
+    const after = extractBankingCoordinates(rec.profile.banking)
+    const changed: string[] = []
+    if (before.iban !== after.iban) changed.push(`IBAN: “${before.iban ?? "—"}” → “${after.iban ?? "—"}”`)
+    if (before.swift !== after.swift) changed.push(`SWIFT/BIC: “${before.swift ?? "—"}” → “${after.swift ?? "—"}”`)
+    if (before.bankName !== after.bankName) changed.push(`Bank: “${before.bankName ?? "—"}” → “${after.bankName ?? "—"}”`)
+    if (before.accountCurrency !== after.accountCurrency)
+      changed.push(`Currency: “${before.accountCurrency ?? "—"}” → “${after.accountCurrency ?? "—"}”`)
+    if (nextEmail !== master.email) changed.push(`Login email: “${master.email}” → “${nextEmail}”`)
+
+    await logActivity({
+      action: "Administrator updated a master account's bank details",
+      category: "Administration / Master Account",
+      user: input.adminName || "Administrator",
+      details: {
+        summary: `Bank details for ${rec.profile.fullName} (${rec.profile.company}) updated. ${
+          changed.length ? changed.join("; ") : "No effective change."
+        }`,
+        account: `${rec.profile.fullName} — ${rec.email}`,
+        changes: changed.join("; ") || "none",
+      },
+    })
+
+    return {
+      ok: true,
+      profile: {
+        selectedId: input.userId,
+        selectedName: resolved.selected.profile.fullName || resolved.selected.email,
+        masterId: rec.id,
+        masterName: rec.profile.fullName || "—",
+        masterCompany: rec.profile.company || "",
+        masterEmail: rec.email,
+        isSelf: rec.id === input.userId,
+        relationship: effectiveRelationship(resolved.selected.profile.relationship),
+        ...after,
+      },
+    }
   } catch (err) {
     return { ok: false, error: friendlyError(err) }
   }
