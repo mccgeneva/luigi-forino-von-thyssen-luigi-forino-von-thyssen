@@ -12,6 +12,9 @@
 import { useLedger } from "@/lib/ledger-store"
 import { useServerRequestList } from "@/lib/use-server-request-list"
 import { mapApprovalStatus, type ApprovalRecord } from "@/lib/approval-sync"
+import { useCurrentUser } from "@/lib/use-current-user"
+import { validateIban } from "@/lib/iban-swift"
+import type { ProfileItem } from "@/lib/users"
 
 export type BankAccount = {
   id: string
@@ -215,6 +218,31 @@ export function getFlagEmoji(countryCode: string): string {
   return flags[countryCode] || "🏳️"
 }
 
+/**
+ * Pull the master account's banking coordinates out of the signed-in user's
+ * free-form `profile.banking` rows. This is the SAME record the administrator
+ * edits in the Master Accounts panel, so surfacing it here is what makes an
+ * admin change to the master account's IBAN / SWIFT / bank name actually show
+ * up on the client's master account card. Label matching mirrors the admin-side
+ * extractor and is tolerant of the various labels used across the platform.
+ */
+function extractMasterBanking(banking: ProfileItem[] | undefined): {
+  bankName?: string
+  iban?: string
+  swift?: string
+} {
+  const rows = banking ?? []
+  const find = (test: (label: string) => boolean) => rows.find((r) => test(r.label.toLowerCase()))?.value?.trim()
+  const iban = find((l) => l.includes("iban"))
+  const swift = find((l) => l.includes("swift") || l.includes("bic"))
+  const bankName = find((l) => l.includes("bank") && !l.includes("iban") && !l.includes("swift") && !l.includes("bic"))
+  return {
+    ...(bankName ? { bankName } : {}),
+    ...(iban ? { iban } : {}),
+    ...(swift ? { swift } : {}),
+  }
+}
+
 /** Two-letter monogram from a bank name, e.g. "Banking Circle" → "BC". */
 function bankMonogram(name: string): string {
   const words = name.trim().split(/\s+/).filter(Boolean)
@@ -302,6 +330,11 @@ export function normalizeAccountRef(value: string | undefined | null): string {
 
 export function useBankAccounts(): BankAccount[] {
   const { balanceFor, reservedFor, currencies, entries } = useLedger()
+  // The signed-in account holder's own banking record — the SAME rows the
+  // administrator edits in the Master Accounts panel. Overlaid onto the master
+  // account below so an admin change to the master IBAN/SWIFT/bank appears here.
+  const currentUser = useCurrentUser()
+  const masterBanking = extractMasterBanking(currentUser.banking)
 
   // Per-registered-account tracked balance: sum the ledger entries whose
   // counterparty `account` (IBAN) matches the registered account. Completed
@@ -341,8 +374,26 @@ export function useBankAccounts(): BankAccount[] {
     // and the reserved hold (e.g. a commodity-deal block) is reflected here.
     const available = balanceFor(account.currency)
     const reserved = reservedFor(account.currency)
+
+    // Overlay the admin-configured banking coordinates. Only the display
+    // coordinates are overridden — the currency and live ledger balances are
+    // left untouched, so the master settlement balance model is unaffected.
+    const iban = masterBanking.iban || account.iban
+    const swift = masterBanking.swift || account.swift
+    const bankName = masterBanking.bankName || account.bankName
+    // Keep the country/flag consistent with an admin-set IBAN.
+    const ibanCheck = masterBanking.iban ? validateIban(masterBanking.iban) : null
+    const country = (ibanCheck?.valid ? ibanCheck.countryName : account.country) || account.country
+    const countryCode = (ibanCheck?.valid ? ibanCheck.countryCode : account.countryCode) || account.countryCode
+
     return {
       ...account,
+      iban,
+      swift,
+      bankName,
+      bankLogo: masterBanking.bankName ? bankMonogram(masterBanking.bankName) : account.bankLogo,
+      country,
+      countryCode,
       balance: available + reserved,
       availableBalance: available,
       reservedBalance: reserved,
