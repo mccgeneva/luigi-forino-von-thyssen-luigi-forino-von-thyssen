@@ -1,7 +1,7 @@
 "use client"
 
 import { useEffect, useMemo, useState } from "react"
-import { Network, Loader2, Search, Building2, Landmark, Save, Mail, User2 } from "lucide-react"
+import { Network, Loader2, Search, Building2, Landmark, Save, Mail, User2, AlertTriangle } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -157,6 +157,54 @@ export function MasterAccountManager() {
     }
   }, [validIban])
 
+  // Integrity check: a valid IBAN and a valid BIC must be from the SAME country
+  // (a German IBAN cannot live at a Swiss bank). This catches a stale BIC/bank
+  // left over from a previous IBAN of a different country.
+  const countryMismatch = !!(
+    ibanCheck?.valid &&
+    bicCheck?.valid &&
+    ibanCheck.countryCode !== bicCheck.countryCode
+  )
+
+  // Force-apply the bank that the current IBAN actually resolves to, overwriting
+  // a stale SWIFT/BIC, bank name and currency from a different country.
+  const fixFromIban = async () => {
+    if (!validIban) return
+    setBankLookingUp(true)
+    try {
+      let info = await lookupBankByIban(validIban)
+      if (isGenericBankInfo(info)) {
+        try {
+          const ext = await resolveIbanExternal(validIban)
+          if (ext && (ext.name || ext.bic)) {
+            info = {
+              name: ext.name || info?.name || "",
+              bic: ext.bic || info?.bic,
+              city: ext.city,
+              country: info?.country || "",
+              countryCode: info?.countryCode || validIban.slice(0, 2),
+            }
+          }
+        } catch {
+          /* best-effort */
+        }
+      }
+      const ccy = currencyForIbanCountry(validIban.slice(0, 2))
+      if (ccy) setCurrency(ccy)
+      if (info?.bic) setSwift(info.bic)
+      const cleanName =
+        info?.name && !/^Bank code /.test(info.name) && info.name !== "Registered institution" ? info.name : ""
+      if (cleanName) setBankName(cleanName)
+      if (!info?.bic) {
+        toast.info("Couldn't resolve a bank for this IBAN", {
+          description: "Clear the SWIFT/BIC and bank name, then enter the correct ones manually.",
+        })
+      }
+    } finally {
+      setBankLookingUp(false)
+    }
+  }
+
   const dirty = useMemo(() => {
     if (!profile) return false
     return (
@@ -168,7 +216,7 @@ export function MasterAccountManager() {
     )
   }, [profile, email, iban, swift, bankName, currency])
 
-  const canSave = !!profile && dirty && !ibanInvalid && !bicInvalid && !saving
+  const canSave = !!profile && dirty && !ibanInvalid && !bicInvalid && !countryMismatch && !saving
 
   const handleSave = async () => {
     if (!profile || !selectedId) return
@@ -380,6 +428,33 @@ export function MasterAccountManager() {
                       />
                     </div>
                   </div>
+                  {countryMismatch && (
+                    <div className="flex flex-wrap items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 p-3">
+                      <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-400" />
+                      <div className="min-w-0 flex-1 space-y-1">
+                        <p className="text-[12px] font-medium text-amber-300">
+                          IBAN and SWIFT/BIC are from different countries
+                        </p>
+                        <p className="text-[11px] text-amber-200/80">
+                          This IBAN is {ibanCheck?.countryName ?? ibanCheck?.countryCode} ({ibanCheck?.countryCode}) but
+                          the SWIFT/BIC is {bicCheck?.countryName ?? bicCheck?.countryCode} ({bicCheck?.countryCode}). A{" "}
+                          {ibanCheck?.countryCode} IBAN can&apos;t be held at a {bicCheck?.countryCode} bank. Saving is
+                          blocked until they match.
+                        </p>
+                      </div>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        onClick={fixFromIban}
+                        disabled={bankLookingUp}
+                        className="shrink-0 border-amber-500/50 text-amber-200 hover:bg-amber-500/15"
+                      >
+                        {bankLookingUp ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : null}
+                        Use the IBAN&apos;s bank
+                      </Button>
+                    </div>
+                  )}
                   <p className="text-[11px] text-muted-foreground">
                     Fields are pre-filled with the account&apos;s current details. Enter an IBAN to auto-fill any empty
                     SWIFT/BIC, bank name and currency; anything you type yourself is kept. Clearing a field removes it.
