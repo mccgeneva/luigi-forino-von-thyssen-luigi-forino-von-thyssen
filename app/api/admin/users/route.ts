@@ -6,6 +6,7 @@ import { listDynamicUsers, type DynamicUserRecord } from "@/lib/admin-users-db"
 import {
   createUser,
   editUser,
+  changeMasterAccount,
   resetUserPassword,
   updateUserStatus,
   removeUser,
@@ -100,6 +101,8 @@ export async function POST(req: NextRequest) {
         return NextResponse.json(await createUser({ ...(body.input as object), passcode } as never))
       case "edit":
         return NextResponse.json(await editUser({ ...(body.input as object), passcode } as never))
+      case "changeMaster":
+        return NextResponse.json(await changeMasterAccount({ ...(body.input as object), passcode } as never))
       case "resetPassword":
         return NextResponse.json(
           await resetUserPassword(passcode, String(body.id), (body.newPassword as string) || undefined, "Administrator"),
