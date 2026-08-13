@@ -1004,6 +1004,33 @@ export async function getMyIdentity(): Promise<MyIdentity | null> {
   }
 }
 
+/** Banking coordinates of the signed-in session's MASTER account (its data
+ *  owner). For a joint/sub account this resolves to the Master, so every member
+ *  of a shared environment sees the SAME bank details — the ones the
+ *  administrator edits on the Master account. */
+export interface MyMasterBanking {
+  bankName?: string
+  iban?: string
+  swift?: string
+  accountCurrency?: string
+}
+
+export async function getMyMasterBanking(): Promise<MyMasterBanking> {
+  try {
+    const { resolveCurrentSession } = await import("@/lib/session-user")
+    const session = await resolveCurrentSession()
+    if (!session) return {}
+    // dataOwnerId is the Master for a linked (joint/sub) account, or the account
+    // itself otherwise — the exact record the admin bank editor writes to.
+    const ownerId = session.dataOwnerId || session.id
+    const rec = await getDynamicUserById(ownerId)
+    if (!rec) return {}
+    return extractBankingCoordinates(rec.profile.banking)
+  } catch {
+    return {}
+  }
+}
+
 // --- Shared client picker --------------------------------------------------
 
 export interface SelectableClient {
