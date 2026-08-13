@@ -9,7 +9,6 @@ import {
   Building2,
   Check,
   Copy,
-  Edit2,
   Shield,
   ArrowUpRight,
   Download,
@@ -139,21 +138,6 @@ export default function AccountDetailPage() {
     window.location.href = `mailto:admin@mccgva.ch?subject=${subject}&body=${body}`
     toast.success("Request routed to MCC", {
       description: "Your enquiry is handled by MCC and sent to admin@mccgva.ch.",
-    })
-  }
-
-  const handleEditAccount = () => {
-    logActivity({
-      action: `Requested edits to ${account.accountName ?? account.bankName}`,
-      category: "Bank Accounts",
-      details: {
-        summary: `Client requested changes to the account "${account.accountName ?? account.bankName}".`,
-        account: account.accountName ?? account.bankName ?? "—",
-        requestedAt: new Date().toLocaleString("en-GB"),
-      },
-    })
-    toast.info("Edit request submitted", {
-      description: "Account changes require verification by your relationship manager.",
     })
   }
 
@@ -507,10 +491,6 @@ export default function AccountDetailPage() {
             <Button variant="outline" className="gap-2" onClick={handleSendPayment}>
               <ArrowUpRight className="h-4 w-4" />
               Send Payment
-            </Button>
-            <Button className="bg-amber-500 hover:bg-amber-600 text-zinc-900 gap-2" onClick={handleEditAccount}>
-              <Edit2 className="h-4 w-4" />
-              Edit Account
             </Button>
           </div>
         </CardContent>
