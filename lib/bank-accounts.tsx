@@ -9,10 +9,12 @@
 // useBankAccounts() hook.
 // ---------------------------------------------------------------------------
 
+import { useEffect, useState } from "react"
 import { useLedger } from "@/lib/ledger-store"
 import { useServerRequestList } from "@/lib/use-server-request-list"
 import { mapApprovalStatus, type ApprovalRecord } from "@/lib/approval-sync"
 import { useCurrentUser } from "@/lib/use-current-user"
+import { getMyMasterBanking, type MyMasterBanking } from "@/app/actions/admin-users"
 import { validateIban } from "@/lib/iban-swift"
 import type { ProfileItem } from "@/lib/users"
 
@@ -330,11 +332,31 @@ export function normalizeAccountRef(value: string | undefined | null): string {
 
 export function useBankAccounts(): BankAccount[] {
   const { balanceFor, reservedFor, currencies, entries } = useLedger()
-  // The signed-in account holder's own banking record — the SAME rows the
-  // administrator edits in the Master Accounts panel. Overlaid onto the master
-  // account below so an admin change to the master IBAN/SWIFT/bank appears here.
+  // Banking coordinates overlaid onto the master account (ACC-001). These MUST
+  // come from the session's data owner — i.e. the MASTER account — not the
+  // signed-in user's own profile. For a joint/sub account the administrator
+  // edits only the Master's banking rows, so reading the master (via the
+  // server action) is what makes the change appear for EVERY member of the
+  // shared environment (e.g. both members of a joint account), not just the
+  // account that happens to be the master.
   const currentUser = useCurrentUser()
-  const masterBanking = extractMasterBanking(currentUser.banking)
+  const [resolvedMaster, setResolvedMaster] = useState<MyMasterBanking | null>(null)
+  useEffect(() => {
+    let cancelled = false
+    getMyMasterBanking()
+      .then((b) => {
+        if (!cancelled) setResolvedMaster(b)
+      })
+      .catch(() => {
+        // Transient failure — keep the own-profile fallback below.
+      })
+  }, [currentUser.id])
+  // Use the resolved master once available; until then fall back to the user's
+  // own banking rows so the card is never blank on first paint.
+  const masterBanking: { bankName?: string; iban?: string; swift?: string } =
+    resolvedMaster && (resolvedMaster.iban || resolvedMaster.swift || resolvedMaster.bankName)
+      ? resolvedMaster
+      : extractMasterBanking(currentUser.banking)
 
   // Per-registered-account tracked balance: sum the ledger entries whose
   // counterparty `account` (IBAN) matches the registered account. Completed
