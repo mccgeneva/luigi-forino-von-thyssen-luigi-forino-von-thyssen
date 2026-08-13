@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { Network, Loader2, Search, Building2, Landmark, Save, Mail, User2, AlertTriangle } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -118,86 +118,105 @@ export function MasterAccountManager() {
   const ibanInvalid = !!ibanCheck && !ibanCheck.valid
   const bicInvalid = !!bicCheck && !bicCheck.valid
 
-  // When a valid IBAN is entered and a field is still empty, auto-fill the
-  // SWIFT/BIC, bank name and account currency from the directory (external
-  // resolver as fallback). Values already present are never overwritten.
   const validIban = ibanCheck?.valid ? ibanCheck.formatted.replace(/\s/g, "") : ""
+
+  // Keep the latest SWIFT readable inside the async resolver without making it
+  // a dependency (which would re-run the resolver on every keystroke).
+  const swiftRef = useRef("")
+  swiftRef.current = swift
+
+  // Resolve the bank a given IBAN actually belongs to: the curated directory
+  // first, then the external resolver as a fallback. Returns a clean bank name
+  // (structural placeholders stripped) and the BIC.
+  const resolveBankForIban = async (ibanClean: string): Promise<{ bic?: string; name?: string }> => {
+    let info = await lookupBankByIban(ibanClean)
+    if (isGenericBankInfo(info)) {
+      try {
+        const ext = await resolveIbanExternal(ibanClean)
+        if (ext && (ext.name || ext.bic)) {
+          info = {
+            name: ext.name || info?.name || "",
+            bic: ext.bic || info?.bic,
+            city: ext.city,
+            country: info?.country || "",
+            countryCode: info?.countryCode || ibanClean.slice(0, 2),
+          }
+        }
+      } catch {
+        /* best-effort — keep the structural fallback */
+      }
+    }
+    const cleanName =
+      info?.name && !/^Bank code /.test(info.name) && info.name !== "Registered institution" ? info.name : undefined
+    return { bic: info?.bic, name: cleanName }
+  }
+
+  // Whenever a VALID IBAN is present, reconcile the SWIFT/BIC, bank name and
+  // currency to it. The IBAN is the source of truth: if the current SWIFT/BIC
+  // belongs to a DIFFERENT country (a stale value left over from a previous
+  // IBAN), it is OVERWRITTEN with the bank this IBAN really belongs to; empty
+  // fields are simply filled. This runs on load and on every IBAN edit.
   useEffect(() => {
     if (!validIban) return
     let active = true
-    const ccy = currencyForIbanCountry(validIban.slice(0, 2))
-    if (ccy) setCurrency((prev) => prev.trim() || ccy)
+    const ibanCountry = validIban.slice(0, 2)
+    const curSwift = swiftRef.current.trim()
+    const curSwiftCheck = curSwift ? validateBic(curSwift) : null
+    // Overwrite when the existing SWIFT is a valid BIC from another country.
+    const overwrite = !!(curSwiftCheck?.valid && curSwiftCheck.countryCode !== ibanCountry)
+
+    const ccy = currencyForIbanCountry(ibanCountry)
+    if (ccy) setCurrency((prev) => (overwrite ? ccy : prev.trim() || ccy))
+
     setBankLookingUp(true)
     ;(async () => {
-      let info = await lookupBankByIban(validIban)
-      if (isGenericBankInfo(info)) {
-        try {
-          const ext = await resolveIbanExternal(validIban)
-          if (ext && (ext.name || ext.bic)) {
-            info = {
-              name: ext.name || info?.name || "",
-              bic: ext.bic || info?.bic,
-              city: ext.city,
-              country: info?.country || "",
-              countryCode: info?.countryCode || validIban.slice(0, 2),
-            }
-          }
-        } catch {
-          /* best-effort */
-        }
+      const bank = await resolveBankForIban(validIban)
+      if (!active) return
+      if (bank.bic) {
+        setSwift((prev) => (overwrite ? bank.bic! : prev.trim() || bank.bic!))
+        if (bank.name) setBankName((prev) => (overwrite ? bank.name! : prev.trim() || bank.name!))
+        else if (overwrite) setBankName("")
+      } else if (overwrite) {
+        // Could not resolve a bank in the IBAN's country — clear the stale
+        // wrong-country SWIFT/bank so no impossible pair is ever saved.
+        setSwift("")
+        setBankName("")
+        toast.info("Enter the SWIFT/BIC for this IBAN", {
+          description: `The previous SWIFT/BIC was from another country and was cleared. Add the correct ${ibanCountry} bank details.`,
+        })
+      } else if (bank.name) {
+        setBankName((prev) => prev.trim() || bank.name!)
       }
-      if (!active || !info) return
-      if (info.name && !/^Bank code /.test(info.name) && info.name !== "Registered institution") {
-        setBankName((prev) => prev.trim() || info!.name)
-      }
-      if (info.bic) setSwift((prev) => prev.trim() || info!.bic!)
     })().finally(() => active && setBankLookingUp(false))
     return () => {
       active = false
     }
   }, [validIban])
 
-  // Integrity check: a valid IBAN and a valid BIC must be from the SAME country
-  // (a German IBAN cannot live at a Swiss bank). This catches a stale BIC/bank
-  // left over from a previous IBAN of a different country.
+  // Safety net for a manually mistyped SWIFT (same IBAN, wrong-country BIC): the
+  // resolver above only runs when the IBAN changes, so still flag a live
+  // cross-country pair and let the admin snap it back to the IBAN's bank.
   const countryMismatch = !!(
     ibanCheck?.valid &&
     bicCheck?.valid &&
     ibanCheck.countryCode !== bicCheck.countryCode
   )
 
-  // Force-apply the bank that the current IBAN actually resolves to, overwriting
-  // a stale SWIFT/BIC, bank name and currency from a different country.
   const fixFromIban = async () => {
     if (!validIban) return
     setBankLookingUp(true)
     try {
-      let info = await lookupBankByIban(validIban)
-      if (isGenericBankInfo(info)) {
-        try {
-          const ext = await resolveIbanExternal(validIban)
-          if (ext && (ext.name || ext.bic)) {
-            info = {
-              name: ext.name || info?.name || "",
-              bic: ext.bic || info?.bic,
-              city: ext.city,
-              country: info?.country || "",
-              countryCode: info?.countryCode || validIban.slice(0, 2),
-            }
-          }
-        } catch {
-          /* best-effort */
-        }
-      }
+      const bank = await resolveBankForIban(validIban)
       const ccy = currencyForIbanCountry(validIban.slice(0, 2))
       if (ccy) setCurrency(ccy)
-      if (info?.bic) setSwift(info.bic)
-      const cleanName =
-        info?.name && !/^Bank code /.test(info.name) && info.name !== "Registered institution" ? info.name : ""
-      if (cleanName) setBankName(cleanName)
-      if (!info?.bic) {
+      if (bank.bic) {
+        setSwift(bank.bic)
+        setBankName(bank.name ?? "")
+      } else {
+        setSwift("")
+        setBankName("")
         toast.info("Couldn't resolve a bank for this IBAN", {
-          description: "Clear the SWIFT/BIC and bank name, then enter the correct ones manually.",
+          description: "Enter the correct SWIFT/BIC and bank name manually.",
         })
       }
     } finally {
