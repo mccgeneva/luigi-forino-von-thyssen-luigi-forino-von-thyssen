@@ -14,6 +14,7 @@ import {
   Copy,
   Check,
   AlertTriangle,
+  Landmark,
 } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -35,6 +36,7 @@ import { ADMIN_PASSCODE } from "@/lib/admin-config"
 import { useActivityLog } from "@/components/activity-tracker"
 import type { AdminUserView, AdminUsersResult, SelectableClient, MasterChangeResult } from "@/app/actions/admin-users"
 import { relationshipLabel, relationshipCode } from "@/lib/account-hierarchy"
+import { validateIban, validateBic, lookupBankByBic } from "@/lib/iban-swift"
 
 type Mode = "existing" | "new" | "detach"
 type LinkType = "sub" | "joint"
@@ -104,6 +106,13 @@ export function MasterAccountManager() {
   const [nmCompany, setNmCompany] = useState("")
   const [nmEmail, setNmEmail] = useState("")
 
+  // Banking coordinates for the new Master (IBAN / SWIFT / bank details).
+  const [nmBankName, setNmBankName] = useState("")
+  const [nmIban, setNmIban] = useState("")
+  const [nmSwift, setNmSwift] = useState("")
+  const [nmAccountCurrency, setNmAccountCurrency] = useState("")
+  const [bankLookingUp, setBankLookingUp] = useState(false)
+
   const [confirmOpen, setConfirmOpen] = useState(false)
   const [submitting, setSubmitting] = useState(false)
 
@@ -144,6 +153,10 @@ export function MasterAccountManager() {
     setNmName("")
     setNmCompany("")
     setNmEmail("")
+    setNmBankName("")
+    setNmIban("")
+    setNmSwift("")
+    setNmAccountCurrency("")
   }
 
   const filtered = useMemo(() => {
@@ -160,10 +173,47 @@ export function MasterAccountManager() {
   // The chosen new Master, for the summary preview.
   const chosenMaster = useMemo(() => masters.find((m) => m.id === newMasterId) ?? null, [masters, newMasterId])
 
+  // Live IBAN / SWIFT validation (only when a value is entered). We format the
+  // IBAN and normalise the BIC as the admin types.
+  const ibanCheck = useMemo(() => (nmIban.trim() ? validateIban(nmIban) : null), [nmIban])
+  const bicCheck = useMemo(() => (nmSwift.trim() ? validateBic(nmSwift) : null), [nmSwift])
+  const ibanInvalid = !!ibanCheck && !ibanCheck.valid
+  const bicInvalid = !!bicCheck && !bicCheck.valid
+
+  // Auto-resolve the bank name from a valid SWIFT/BIC (or IBAN) when the admin
+  // has not typed one, so the record stays consistent with the directory.
+  useEffect(() => {
+    if (mode !== "new") return
+    const bic = bicCheck?.valid ? bicCheck.normalized : ""
+    if (!bic) return
+    let active = true
+    setBankLookingUp(true)
+    lookupBankByBic(bic)
+      .then((info) => {
+        if (!active || !info) return
+        setNmBankName((prev) => prev.trim() || info.name)
+      })
+      .finally(() => active && setBankLookingUp(false))
+    return () => {
+      active = false
+    }
+  }, [mode, bicCheck?.valid, bicCheck?.normalized])
+
+  // Assemble the banking profile rows for the new Master from the filled,
+  // valid fields. Empty / invalid values are simply omitted.
+  const buildBankingExtra = (): { label: string; value: string }[] => {
+    const rows: { label: string; value: string }[] = []
+    if (nmBankName.trim()) rows.push({ label: "Bank", value: nmBankName.trim() })
+    if (ibanCheck?.valid) rows.push({ label: "IBAN", value: ibanCheck.formatted })
+    if (bicCheck?.valid) rows.push({ label: "SWIFT / BIC", value: bicCheck.normalized })
+    if (nmAccountCurrency.trim()) rows.push({ label: "Account Currency", value: nmAccountCurrency.trim().toUpperCase() })
+    return rows
+  }
+
   const canSubmit = (() => {
     if (!selected) return false
     if (mode === "existing") return !!newMasterId
-    if (mode === "new") return !!(nmName.trim() || nmCompany.trim())
+    if (mode === "new") return !!(nmName.trim() || nmCompany.trim()) && !ibanInvalid && !bicInvalid
     return true // detach
   })()
 
@@ -177,7 +227,13 @@ export function MasterAccountManager() {
       adminName: "Administrator",
     }
     if (mode === "existing") input.newMasterId = newMasterId
-    if (mode === "new") input.newMaster = { fullName: nmName.trim(), company: nmCompany.trim(), email: nmEmail.trim() || undefined }
+    if (mode === "new")
+      input.newMaster = {
+        fullName: nmName.trim(),
+        company: nmCompany.trim(),
+        email: nmEmail.trim() || undefined,
+        bankingExtra: buildBankingExtra(),
+      }
 
     const res = await postChangeMaster(input)
     setSubmitting(false)
@@ -387,18 +443,109 @@ export function MasterAccountManager() {
             )}
 
             {mode === "new" && (
-              <div className="grid gap-3 sm:grid-cols-2">
-                <div className="space-y-1.5">
-                  <Label htmlFor="ma-nm-name">Full name</Label>
-                  <Input id="ma-nm-name" value={nmName} onChange={(e) => setNmName(e.target.value)} placeholder="e.g. Khalil Ahmed" />
+              <div className="space-y-4">
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <div className="space-y-1.5">
+                    <Label htmlFor="ma-nm-name">Full name</Label>
+                    <Input id="ma-nm-name" value={nmName} onChange={(e) => setNmName(e.target.value)} placeholder="e.g. Khalil Ahmed" />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label htmlFor="ma-nm-company">Company</Label>
+                    <Input id="ma-nm-company" value={nmCompany} onChange={(e) => setNmCompany(e.target.value)} placeholder="e.g. Platinum House Global" />
+                  </div>
+                  <div className="space-y-1.5 sm:col-span-2">
+                    <Label htmlFor="ma-nm-email">Login email (optional — auto-generated if blank)</Label>
+                    <Input id="ma-nm-email" type="email" value={nmEmail} onChange={(e) => setNmEmail(e.target.value)} placeholder="name@mccgva.ch" />
+                  </div>
                 </div>
-                <div className="space-y-1.5">
-                  <Label htmlFor="ma-nm-company">Company</Label>
-                  <Input id="ma-nm-company" value={nmCompany} onChange={(e) => setNmCompany(e.target.value)} placeholder="e.g. Platinum House Global" />
-                </div>
-                <div className="space-y-1.5 sm:col-span-2">
-                  <Label htmlFor="ma-nm-email">Login email (optional — auto-generated if blank)</Label>
-                  <Input id="ma-nm-email" type="email" value={nmEmail} onChange={(e) => setNmEmail(e.target.value)} placeholder="name@mccgva.ch" />
+
+                {/* Banking coordinates — IBAN / SWIFT / bank details */}
+                <div className="space-y-3 rounded-lg border border-border bg-secondary/20 p-3">
+                  <div className="flex items-center gap-2">
+                    <Landmark className="h-4 w-4 text-primary" />
+                    <p className="text-sm font-medium text-foreground">Bank account details</p>
+                    <Badge variant="outline" className="ml-auto text-[10px] text-muted-foreground">
+                      Optional · validated
+                    </Badge>
+                  </div>
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <div className="space-y-1.5">
+                      <Label htmlFor="ma-nm-iban">IBAN</Label>
+                      <Input
+                        id="ma-nm-iban"
+                        value={nmIban}
+                        onChange={(e) => setNmIban(e.target.value.toUpperCase())}
+                        placeholder="CH93 0076 2011 6238 5295 7"
+                        autoComplete="off"
+                        spellCheck={false}
+                        aria-invalid={ibanInvalid}
+                        className={cn(
+                          "font-mono",
+                          ibanInvalid && "border-red-500/60 focus-visible:ring-red-500/30",
+                          ibanCheck?.valid && "border-emerald-500/50",
+                        )}
+                      />
+                      {ibanCheck && (
+                        <p className={cn("text-[11px]", ibanCheck.valid ? "text-emerald-400" : "text-red-400")}>
+                          {ibanCheck.valid
+                            ? `Valid ${ibanCheck.countryName ?? ibanCheck.countryCode} IBAN`
+                            : ibanCheck.error}
+                        </p>
+                      )}
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label htmlFor="ma-nm-swift">SWIFT / BIC</Label>
+                      <Input
+                        id="ma-nm-swift"
+                        value={nmSwift}
+                        onChange={(e) => setNmSwift(e.target.value.toUpperCase())}
+                        placeholder="MCCBCHGG"
+                        autoComplete="off"
+                        spellCheck={false}
+                        aria-invalid={bicInvalid}
+                        className={cn(
+                          "font-mono",
+                          bicInvalid && "border-red-500/60 focus-visible:ring-red-500/30",
+                          bicCheck?.valid && "border-emerald-500/50",
+                        )}
+                      />
+                      {bicCheck && (
+                        <p className={cn("text-[11px]", bicCheck.valid ? "text-emerald-400" : "text-red-400")}>
+                          {bicCheck.valid
+                            ? `Valid BIC · ${bicCheck.countryName ?? bicCheck.countryCode}`
+                            : bicCheck.error}
+                        </p>
+                      )}
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label htmlFor="ma-nm-bank">Bank name</Label>
+                      <div className="relative">
+                        <Input
+                          id="ma-nm-bank"
+                          value={nmBankName}
+                          onChange={(e) => setNmBankName(e.target.value)}
+                          placeholder="e.g. MCC Capital Bank"
+                        />
+                        {bankLookingUp && (
+                          <Loader2 className="absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 animate-spin text-muted-foreground" />
+                        )}
+                      </div>
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label htmlFor="ma-nm-ccy">Account currency</Label>
+                      <Input
+                        id="ma-nm-ccy"
+                        value={nmAccountCurrency}
+                        onChange={(e) => setNmAccountCurrency(e.target.value.toUpperCase().slice(0, 3))}
+                        placeholder="EUR"
+                        className="font-mono uppercase"
+                      />
+                    </div>
+                  </div>
+                  <p className="text-[11px] text-muted-foreground">
+                    Enter the new Master&apos;s IBAN and SWIFT/BIC — both are checksum/format validated, and the bank name
+                    auto-fills from the directory when recognised. These are saved to the account&apos;s banking profile.
+                  </p>
                 </div>
               </div>
             )}
