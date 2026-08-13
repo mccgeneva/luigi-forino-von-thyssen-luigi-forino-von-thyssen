@@ -148,15 +148,19 @@ export function MasterAccountManager() {
     // Sensible defaults: keep the existing link type when the account already
     // shares a Master; otherwise default to Sub-account.
     setLinkType(u.relationship === "joint" ? "joint" : "sub")
-    setMode(u.relationship === "master" ? "existing" : "existing")
+    setMode("existing")
     setNewMasterId("")
-    setNmName("")
-    setNmCompany("")
+    // Pre-fill the "Create new Master" fields from the selected client's own
+    // data so the admin never re-types details already on file. The login email
+    // is intentionally left blank (auto-generated) so the new Master doesn't
+    // collide with the client's existing unique email.
+    setNmName(u.fullName || "")
+    setNmCompany(u.company || "")
     setNmEmail("")
-    setNmBankName("")
-    setNmIban("")
-    setNmSwift("")
-    setNmAccountCurrency("")
+    setNmBankName(u.bankName || "")
+    setNmIban(u.iban || "")
+    setNmSwift(u.swift || "")
+    setNmAccountCurrency(u.accountCurrency || "")
   }
 
   const filtered = useMemo(() => {
@@ -444,6 +448,12 @@ export function MasterAccountManager() {
 
             {mode === "new" && (
               <div className="space-y-4">
+                {selected && (nmName || nmCompany || nmIban || nmSwift || nmBankName) && (
+                  <p className="rounded-md border border-border bg-secondary/30 px-3 py-2 text-[11px] text-muted-foreground">
+                    Pre-filled from {selected.fullName || selected.company}&apos;s account — review and edit before
+                    creating. The login email is left blank so a fresh, unique one is generated.
+                  </p>
+                )}
                 <div className="grid gap-3 sm:grid-cols-2">
                   <div className="space-y-1.5">
                     <Label htmlFor="ma-nm-name">Full name</Label>

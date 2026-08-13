@@ -51,6 +51,36 @@ export interface AdminUserView {
   masterId?: string
   masterName?: string
   masterEmail?: string
+  // Existing banking coordinates (extracted from the profile's banking rows),
+  // surfaced so admin flows can pre-fill them without re-typing.
+  bankName?: string
+  iban?: string
+  swift?: string
+  accountCurrency?: string
+}
+
+/** Pull the common banking coordinates out of a profile's free-form banking
+ *  rows so admin views can pre-fill them. Matching is label-keyword based and
+ *  tolerant of the various labels used across the platform. */
+function extractBankingCoordinates(banking: SerializableProfileItem[] | undefined): {
+  bankName?: string
+  iban?: string
+  swift?: string
+  accountCurrency?: string
+} {
+  const rows = banking ?? []
+  const find = (test: (label: string) => boolean) => rows.find((r) => test(r.label.toLowerCase()))?.value?.trim()
+  const iban = find((l) => l.includes("iban"))
+  const swift = find((l) => l.includes("swift") || l.includes("bic"))
+  const accountCurrency = find((l) => l.includes("currency"))
+  // "Bank name" / "Bank" but never the IBAN/SWIFT rows.
+  const bankName = find((l) => l.includes("bank") && !l.includes("iban") && !l.includes("swift") && !l.includes("bic"))
+  return {
+    ...(bankName ? { bankName } : {}),
+    ...(iban ? { iban } : {}),
+    ...(swift ? { swift } : {}),
+    ...(accountCurrency ? { accountCurrency } : {}),
+  }
 }
 
 export type AdminUsersResult =
@@ -84,6 +114,7 @@ function toView(rec: DynamicUserRecord): AdminUserView {
     masterId: rec.profile.masterId,
     masterName: rec.profile.masterName,
     masterEmail: rec.profile.masterEmail,
+    ...extractBankingCoordinates(rec.profile.banking),
   }
 }
 
