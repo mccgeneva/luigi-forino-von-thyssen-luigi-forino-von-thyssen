@@ -46,6 +46,7 @@ import {
   Undo2,
   PackageCheck,
   KeyRound,
+  Network,
 } from "lucide-react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -123,6 +124,7 @@ import { SwiftRoutingQueue } from "@/components/admin/swift-routing-queue"
 import { AdminReconciliationSection } from "@/components/dashboard/admin-reconciliation-section"
 import { TreasuryManager } from "@/components/admin/treasury-manager"
 import { UserManager } from "@/components/admin/user-manager"
+import { MasterAccountManager } from "@/components/admin/master-account-manager"
 import { MembershipManager } from "@/components/admin/membership-manager"
 import { BeneficiaryManager } from "@/components/admin/beneficiary-manager"
 import { PendingApprovals } from "@/components/admin/pending-approvals"
@@ -2149,6 +2151,7 @@ export default function AdminPage() {
       title: "Administration",
       items: [
         { id: "users", label: "Client Accounts", description: "Create, edit, suspend and reset users.", icon: Users, count: 0 },
+        { id: "masteraccounts", label: "Master Accounts", description: "Update, replace or re-link the Master Account any customer operates under.", icon: Network, count: 0 },
         { id: "membership", label: "Membership Upgrades", description: "Approve tiers and validate deposits.", icon: Award, count: 0 },
         { id: "balances", label: "Balances & Transactions", description: "Credit, debit, adjust and reverse.", icon: Wallet, count: 0 },
         { id: "fundblocks", label: "Fund Blocking Controls", description: "Block funds from a client's Master Account; release or permanently withdraw.", icon: Lock, count: 0 },
@@ -5078,6 +5081,13 @@ export default function AdminPage() {
       {activeView === "users" && (
       <div className="space-y-6">
         <UserManager />
+      </div>
+      )}
+
+      {/* Master Account management: update / replace / re-link a customer's Master */}
+      {activeView === "masteraccounts" && (
+      <div className="space-y-6">
+        <MasterAccountManager />
       </div>
       )}
 

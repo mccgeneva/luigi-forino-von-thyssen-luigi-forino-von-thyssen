@@ -472,6 +472,172 @@ export async function editUser(input: EditUserInput): Promise<AdminUserMutation>
   }
 }
 
+// --- Master Account management --------------------------------------------
+//
+// Dedicated flow for fully updating / replacing the Master Account a customer
+// operates under. Re-linking repoints the customer's `dataOwnerId` (via the
+// sub/joint relationship) at the new Master, so ALL of their balances, bank
+// instruments and transactions resolve to the new Master — both existing and
+// future — while the previous Master account is left active but simply unlinked
+// from this customer (it disappears from the customer's active view because
+// their data no longer resolves to it). Every change is written to the audit
+// trail with the OLD vs NEW master details, the acting administrator and time.
+
+export interface MasterRef {
+  id: string
+  name: string
+  email: string
+}
+
+export interface ChangeMasterInput {
+  passcode: string
+  userId: string
+  /**
+   *  - "existing": link the customer under an existing Master (newMasterId).
+   *  - "new": create a brand-new Master account inline, then link under it.
+   *  - "detach": make the customer its own standalone Master (unlink).
+   */
+  mode: "existing" | "new" | "detach"
+  /** How the customer relates to the new Master. Only "sub" | "joint" share the
+   *  Master's balance/instruments; anything else is coerced to "sub". Ignored
+   *  for "detach". */
+  linkType?: AccountRelationship
+  /** Required for mode "existing". */
+  newMasterId?: string
+  /** Required for mode "new" — minimal identity for the account to create. */
+  newMaster?: { fullName?: string; company?: string; email?: string; accountBadge?: string }
+  adminName?: string
+}
+
+export type MasterChangeResult =
+  | {
+      ok: true
+      user: AdminUserView
+      previousMaster: MasterRef | null
+      newMaster: MasterRef | null
+      /** Present only when a brand-new Master account was created inline. */
+      createdMasterCredentials?: { email: string; password: string }
+    }
+  | { ok: false; error: string }
+
+/** Coerce a requested link type to one that actually shares the Master's
+ *  financial pool. The whole point of a Master change is balance/instrument
+ *  continuity, so we only allow the two relationships that share them. */
+function coerceLinkType(rel: AccountRelationship | undefined): "sub" | "joint" {
+  return effectiveRelationship(rel) === "joint" ? "joint" : "sub"
+}
+
+export async function changeMasterAccount(input: ChangeMasterInput): Promise<MasterChangeResult> {
+  try {
+    await requireAdmin(input.passcode)
+
+    const existing = await getDynamicUserById(input.userId)
+    if (!existing) return { ok: false, error: "The selected customer account was not found." }
+
+    // Capture the CURRENT (previous) master linkage for the audit trail before
+    // anything changes. A standalone master has no previous master link.
+    const prevRel = effectiveRelationship(existing.profile.relationship)
+    const previousMaster: MasterRef | null =
+      prevRel !== "master" && existing.profile.masterId
+        ? {
+            id: existing.profile.masterId,
+            name: existing.profile.masterName || "—",
+            email: existing.profile.masterEmail || "—",
+          }
+        : null
+
+    // Detaching (making the account its own standalone Master) is only a
+    // re-placement; guarded below like every other transition.
+    const targetLinkType = coerceLinkType(input.linkType)
+
+    // Guard: if this customer is itself a Master that still has dependants,
+    // turning it into a sub/joint would orphan those linked accounts.
+    if (input.mode !== "detach" && prevRel === "master") {
+      const dependants = (await listDynamicUsers()).filter((u) => u.profile.masterId === input.userId)
+      if (dependants.length > 0) {
+        return {
+          ok: false,
+          error: `This account is itself a Master for ${dependants.length} linked account(s). Re-link or remove them before placing it under another Master.`,
+        }
+      }
+    }
+
+    let createdMasterCredentials: { email: string; password: string } | undefined
+    let resolvedMasterId: string | undefined
+    let nextRelationship: AccountRelationship
+    let masterName: string | undefined
+    let masterEmail: string | undefined
+
+    if (input.mode === "detach") {
+      nextRelationship = "master"
+    } else if (input.mode === "new") {
+      const fullName = input.newMaster?.fullName?.trim() || ""
+      const company = input.newMaster?.company?.trim() || ""
+      if (!fullName && !company) {
+        return { ok: false, error: "Enter a name or company for the new Master account." }
+      }
+      // Create the new Master as a standalone account, then link under it.
+      const created = await createUser({
+        passcode: input.passcode,
+        fullName,
+        company,
+        email: input.newMaster?.email?.trim() || undefined,
+        accountBadge: input.newMaster?.accountBadge?.trim() || undefined,
+        relationship: "master",
+        adminName: input.adminName,
+      })
+      if (!created.ok) return { ok: false, error: created.error }
+      resolvedMasterId = created.user.id
+      nextRelationship = targetLinkType
+      createdMasterCredentials = { email: created.user.email, password: created.tempPassword ?? created.user.password }
+    } else {
+      if (!input.newMasterId) return { ok: false, error: "Select a Master account to link the customer under." }
+      resolvedMasterId = input.newMasterId
+      nextRelationship = targetLinkType
+    }
+
+    // Validate the placement (master must be top-level, no self-link) and
+    // resolve the denormalised master fields to stamp onto the profile.
+    const hierarchy = await resolveHierarchy(nextRelationship, resolvedMasterId, input.userId)
+    if (!hierarchy.ok) return { ok: false, error: hierarchy.error }
+
+    const profile = { ...existing.profile, ...hierarchy.fields }
+    masterName = hierarchy.fields.masterName
+    masterEmail = hierarchy.fields.masterEmail
+
+    const rec = await updateDynamicUserProfile(input.userId, { profile })
+    if (!rec) return { ok: false, error: "Unable to update the customer's Master Account. Please try again." }
+
+    const newMaster: MasterRef | null =
+      effectiveRelationship(rec.profile.relationship) !== "master" && rec.profile.masterId
+        ? { id: rec.profile.masterId, name: masterName || "—", email: masterEmail || "—" }
+        : null
+
+    // Full audit trail: who, when (logActivity stamps the time), old vs new.
+    const describe = (m: MasterRef | null) => (m ? `${m.name} <${m.email}> (${m.id})` : "Standalone (own Master)")
+    await logActivity({
+      action: "Administrator changed a customer's Master Account",
+      category: "Administration / Master Account",
+      user: input.adminName || "Administrator",
+      details: {
+        summary: `Master Account for ${rec.profile.fullName} (${rec.profile.company}) changed from “${describe(
+          previousMaster,
+        )}” to “${describe(newMaster)}”${input.mode === "new" ? " (new Master account created)" : ""}.`,
+        account: `${rec.profile.fullName} — ${rec.email}`,
+        previousMaster: describe(previousMaster),
+        newMaster: describe(newMaster),
+        linkType: input.mode === "detach" ? "detached (standalone)" : nextRelationship,
+        mode: input.mode,
+        result: "master account changed",
+      },
+    })
+
+    return { ok: true, user: toView(rec), previousMaster, newMaster, createdMasterCredentials }
+  } catch (err) {
+    return { ok: false, error: friendlyError(err) }
+  }
+}
+
 export async function removeUser(passcode: string, id: string, adminName?: string): Promise<AdminUsersResult> {
   try {
     await requireAdmin(passcode)
