@@ -36,7 +36,8 @@ import { ADMIN_PASSCODE } from "@/lib/admin-config"
 import { useActivityLog } from "@/components/activity-tracker"
 import type { AdminUserView, AdminUsersResult, SelectableClient, MasterChangeResult } from "@/app/actions/admin-users"
 import { relationshipLabel, relationshipCode } from "@/lib/account-hierarchy"
-import { validateIban, validateBic, lookupBankByBic } from "@/lib/iban-swift"
+import { validateIban, validateBic, lookupBankByBic, lookupBankByIban, isGenericBankInfo } from "@/lib/iban-swift"
+import { resolveIbanExternal } from "@/app/actions/bank-resolve"
 
 type Mode = "existing" | "new" | "detach"
 type LinkType = "sub" | "joint"
@@ -44,6 +45,22 @@ type LinkType = "sub" | "joint"
 const fmtDate = (iso: string) => {
   const d = new Date(iso)
   return Number.isNaN(d.getTime()) ? iso : d.toLocaleDateString("en-GB")
+}
+
+// Default account currency for an IBAN's country code (ISO 3166 → ISO 4217).
+// Eurozone members all map to EUR; non-euro markets map to their own currency.
+const IBAN_COUNTRY_CURRENCY: Record<string, string> = {
+  AD: "EUR", AT: "EUR", BE: "EUR", CY: "EUR", DE: "EUR", EE: "EUR", ES: "EUR",
+  FI: "EUR", FR: "EUR", GR: "EUR", HR: "EUR", IE: "EUR", IT: "EUR", LT: "EUR",
+  LU: "EUR", LV: "EUR", MC: "EUR", MT: "EUR", NL: "EUR", PT: "EUR", SI: "EUR",
+  SK: "EUR", CH: "CHF", LI: "CHF", GB: "GBP", US: "USD", DK: "DKK", NO: "NOK",
+  SE: "SEK", PL: "PLN", CZ: "CZK", HU: "HUF", RO: "RON", BG: "BGN", HK: "HKD",
+  SG: "SGD", JP: "JPY", CN: "CNY", AU: "AUD", IL: "ILS", AE: "AED", SA: "SAR",
+  QA: "QAR", KW: "KWD", BH: "BHD",
+}
+
+function currencyForIbanCountry(countryCode: string): string | undefined {
+  return IBAN_COUNTRY_CURRENCY[countryCode?.toUpperCase()]
 }
 
 async function fetchUsers(): Promise<AdminUserView[]> {
@@ -184,20 +201,64 @@ export function MasterAccountManager() {
   const ibanInvalid = !!ibanCheck && !ibanCheck.valid
   const bicInvalid = !!bicCheck && !bicCheck.valid
 
-  // Auto-resolve the bank name from a valid SWIFT/BIC (or IBAN) when the admin
-  // has not typed one, so the record stays consistent with the directory.
+  // Once the IBAN passes its checksum, resolve the FULL bank record from it and
+  // auto-fill every remaining field the admin hasn't already typed: SWIFT/BIC,
+  // bank name and account currency. The curated directory answers instantly;
+  // for IBANs it doesn't cover we enrich (name/BIC) via the external resolver.
+  const validIban = ibanCheck?.valid ? ibanCheck.formatted.replace(/\s/g, "") : ""
+  useEffect(() => {
+    if (mode !== "new" || !validIban) return
+    let active = true
+    setBankLookingUp(true)
+    // Derive the account currency from the IBAN country immediately — this
+    // never needs a directory and covers the common case (EUR SEPA, CHF, etc.).
+    const ccy = currencyForIbanCountry(validIban.slice(0, 2))
+    if (ccy) setNmAccountCurrency((prev) => prev.trim() || ccy)
+    ;(async () => {
+      let info = await lookupBankByIban(validIban)
+      // Not in the curated list → enrich name/BIC from the external directory.
+      if (isGenericBankInfo(info)) {
+        try {
+          const ext = await resolveIbanExternal(validIban)
+          if (ext && (ext.name || ext.bic)) {
+            info = {
+              name: ext.name || info?.name || "",
+              bic: ext.bic || info?.bic,
+              city: ext.city,
+              country: info?.country || "",
+              countryCode: info?.countryCode || validIban.slice(0, 2),
+              address: ext.address,
+              postalCode: ext.postalCode,
+            }
+          }
+        } catch {
+          /* best-effort — keep the structural fallback */
+        }
+      }
+      if (!active || !info) return
+      if (info.name && !/^Bank code /.test(info.name) && info.name !== "Registered institution") {
+        setNmBankName((prev) => prev.trim() || info!.name)
+      }
+      if (info.bic) setNmSwift((prev) => prev.trim() || info!.bic!)
+    })().finally(() => active && setBankLookingUp(false))
+    return () => {
+      active = false
+    }
+  }, [mode, validIban])
+
+  // Secondary path: if the admin types a valid SWIFT/BIC without an IBAN, still
+  // resolve the bank name from it so the record stays consistent.
   useEffect(() => {
     if (mode !== "new") return
     const bic = bicCheck?.valid ? bicCheck.normalized : ""
     if (!bic) return
     let active = true
-    setBankLookingUp(true)
     lookupBankByBic(bic)
       .then((info) => {
         if (!active || !info) return
         setNmBankName((prev) => prev.trim() || info.name)
       })
-      .finally(() => active && setBankLookingUp(false))
+      .catch(() => {})
     return () => {
       active = false
     }
@@ -553,8 +614,9 @@ export function MasterAccountManager() {
                     </div>
                   </div>
                   <p className="text-[11px] text-muted-foreground">
-                    Enter the new Master&apos;s IBAN and SWIFT/BIC — both are checksum/format validated, and the bank name
-                    auto-fills from the directory when recognised. These are saved to the account&apos;s banking profile.
+                    Enter the new Master&apos;s IBAN — once it passes its checksum, the SWIFT/BIC, bank name and account
+                    currency auto-fill from the bank directory (any field you type yourself is kept). All values are
+                    checksum/format validated and saved to the account&apos;s banking profile.
                   </p>
                 </div>
               </div>
