@@ -29,6 +29,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { useActivityLog } from "@/components/activity-tracker"
+import { useCurrentUser } from "@/lib/use-current-user"
 import { usePdfViewer } from "@/lib/pdf-viewer"
 import { generateAccountDetailsPdf } from "@/lib/account-details-pdf"
 import { useLedger, type LedgerEntry } from "@/lib/ledger-store"
@@ -45,6 +46,7 @@ export default function AccountDetailPage() {
   const params = useParams<{ id: string }>()
   const router = useRouter()
   const logActivity = useActivityLog()
+  const currentUser = useCurrentUser()
   const { show: showPdf } = usePdfViewer()
   const bankAccounts = useBankAccounts()
   const { entries } = useLedger()
@@ -145,8 +147,21 @@ export default function AccountDetailPage() {
     // Payment-instructions sheet: discloses ONLY the beneficiary and the banking
     // coordinates needed to remit funds into this account — no balances, limits,
     // volume, activity or other internal information.
+    //
+    // The beneficiary of the client's OWN master account (ACC-001) is the client
+    // themselves — the entity/person that receives funds — NOT "MCC Capital"
+    // (the platform label baked into the account record). We therefore use the
+    // signed-in holder's own legal entity name (company) or full name. External
+    // funding accounts keep their own beneficiary as-is.
+    const isOwnAccount = account.id === "ACC-001"
+    const holderCompany = currentUser.company?.trim()
+    const holderName =
+      isOwnAccount
+        ? (holderCompany && holderCompany !== "—" ? holderCompany : currentUser.fullName) || account.accountName
+        : account.accountName
+
     const generated = generateAccountDetailsPdf({
-      accountName: account.accountName,
+      accountName: holderName,
       bankName: account.bankName,
       country: account.country,
       currency: account.currency,
@@ -162,11 +177,11 @@ export default function AccountDetailPage() {
     showPdf(generated)
 
     logActivity({
-      action: `Exported payment instructions for ${account.bankName ?? account.accountName ?? "account"}`,
+      action: `Exported payment instructions for ${account.bankName ?? holderName ?? "account"}`,
       category: "Bank Accounts",
       details: {
-        summary: `Client exported payment instructions (beneficiary and banking coordinates only) for "${account.accountName ?? account.bankName}".`,
-        account: account.accountName ?? account.bankName ?? "—",
+        summary: `Client exported payment instructions (beneficiary and banking coordinates only) — beneficiary "${holderName}".`,
+        account: holderName ?? account.bankName ?? "—",
         currency: account.currency,
       },
     })
