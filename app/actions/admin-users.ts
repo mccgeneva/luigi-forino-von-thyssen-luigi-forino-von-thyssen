@@ -827,6 +827,26 @@ export async function updateMasterBankProfileAdmin(input: UpdateMasterBankInput)
       upsertBankingRow(rows, (l) => l.includes("currency"), "Account Currency", input.accountCurrency.toUpperCase())
     }
 
+    // Integrity guard: the IBAN and SWIFT/BIC must belong to the SAME country.
+    // A German IBAN can never be serviced by a Swiss BIC (and vice versa), so a
+    // cross-country pair is a corrupt record — reject it authoritatively rather
+    // than persist an impossible bank account.
+    const finalIban = rows.find((r) => r.label.toLowerCase().includes("iban"))?.value
+    const finalSwift = rows.find((r) => {
+      const l = r.label.toLowerCase()
+      return l.includes("swift") || l.includes("bic")
+    })?.value
+    if (finalIban && finalSwift) {
+      const ic = validateIban(finalIban)
+      const bc = validateBic(finalSwift)
+      if (ic.valid && bc.valid && ic.countryCode !== bc.countryCode) {
+        return {
+          ok: false,
+          error: `The IBAN country (${ic.countryCode}) and the SWIFT/BIC country (${bc.countryCode}) don't match. A ${ic.countryCode} IBAN cannot be held at a ${bc.countryCode} bank — correct one of them before saving.`,
+        }
+      }
+    }
+
     // Optional login-email change — guarded against collisions with any OTHER account.
     let nextEmail = master.email
     if (input.email !== undefined) {
