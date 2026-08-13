@@ -504,8 +504,16 @@ export interface ChangeMasterInput {
   linkType?: AccountRelationship
   /** Required for mode "existing". */
   newMasterId?: string
-  /** Required for mode "new" — minimal identity for the account to create. */
-  newMaster?: { fullName?: string; company?: string; email?: string; accountBadge?: string }
+  /** Required for mode "new" — minimal identity for the account to create,
+   *  plus optional banking rows (IBAN / SWIFT / bank name) stamped onto the new
+   *  Master's profile. */
+  newMaster?: {
+    fullName?: string
+    company?: string
+    email?: string
+    accountBadge?: string
+    bankingExtra?: SerializableProfileItem[]
+  }
   adminName?: string
 }
 
@@ -583,6 +591,8 @@ export async function changeMasterAccount(input: ChangeMasterInput): Promise<Mas
         company,
         email: input.newMaster?.email?.trim() || undefined,
         accountBadge: input.newMaster?.accountBadge?.trim() || undefined,
+        // Banking coordinates (IBAN / SWIFT / bank name) captured on the form.
+        bankingExtra: input.newMaster?.bankingExtra?.length ? input.newMaster.bankingExtra : undefined,
         relationship: "master",
         adminName: input.adminName,
       })
