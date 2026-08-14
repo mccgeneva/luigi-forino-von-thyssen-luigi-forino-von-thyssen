@@ -155,6 +155,7 @@ import { SkrOverview } from "@/components/admin/skr-overview"
 import { InstrumentIssuer } from "@/components/admin/instrument-issuer"
 import { MarketplaceInstrumentManager } from "@/components/admin/marketplace-instrument-manager"
 import { CardManager } from "@/components/admin/card-manager"
+import { IssuedCardsManager } from "@/components/admin/issued-cards-manager"
 import { CertificateManager } from "@/components/admin/certificate-manager"
 import { BankekaBroadcastManager } from "@/components/admin/bankeka-broadcast-manager"
  import { SpotDealManager } from "@/components/admin/spot-deal-manager"
@@ -2165,7 +2166,7 @@ export default function AdminPage() {
         { id: "fiduciary", label: "Fiduciary & Assets", description: "Process fiduciary service jobs.", icon: Landmark, count: pendingFiduciary.length },
         { id: "dof", label: "Download of Funds", description: "Authorize download-of-funds requests.", icon: Banknote, count: pendingDOF.length },
         { id: "monetization", label: "Monetization", description: "Review instrument monetization requests.", icon: Layers, count: pendingMonetization.length },
-        { id: "cards", label: "Payment Cards", description: "Review, customize and issue client payment cards.", icon: CreditCard, count: dbPending.card ?? 0 },
+        { id: "cards", label: "Payment Cards", description: "Issue, review, edit and delete client payment cards.", icon: CreditCard, count: dbPending.card ?? 0 },
       ],
     },
     {
@@ -2713,6 +2714,7 @@ export default function AdminPage() {
       {activeView === "cards" && (
       <div className="space-y-6">
         <CardManager />
+        <IssuedCardsManager />
       </div>
       )}
 
