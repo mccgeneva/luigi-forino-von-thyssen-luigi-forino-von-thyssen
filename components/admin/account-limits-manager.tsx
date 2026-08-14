@@ -15,13 +15,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import {
-  fetchAccountLimitsForTarget,
-  updateAccountLimitsAdmin,
-  clearAccountLimitsAdmin,
-  type AccountLimits,
-} from "@/app/actions/account-limits"
-import { listSelectableClients, type SelectableClient } from "@/app/actions/admin-users"
+import { type AccountLimits } from "@/app/actions/account-limits"
+import { type SelectableClient } from "@/app/actions/admin-users"
 
 const CURRENCIES = ["EUR", "USD", "GBP", "CHF"]
 const GLOBAL_TARGET = "global"
@@ -63,30 +58,46 @@ export function AccountLimitsManager({ passcode }: { passcode: string }) {
     setCurrency(l.currency || "EUR")
   }
 
-  // Load the selectable clients once.
-  useEffect(() => {
-    let active = true
-    listSelectableClients(passcode)
-      .then((list) => active && setClients(list))
-      .catch(() => {})
-    return () => {
-      active = false
-    }
-  }, [passcode])
+  const [loadError, setLoadError] = useState<string | null>(null)
 
-  // Load the chosen target's limits whenever the target changes.
+  // Load the selectable clients + the chosen target's limits in one round-trip,
+  // via the /api/admin/account-limits route. We deliberately do NOT call the
+  // Server Actions directly: those POST to /dashboard/* and are intercepted by
+  // the session proxy, which 401s them whenever it judges the signed session
+  // meta cookie stale/idle (very common in the embedded preview) even though
+  // the admin identity is still valid — which silently left the client picker
+  // empty. The API route is not behind that proxy and returns real JSON.
   useEffect(() => {
     let active = true
     setLoading(true)
-    fetchAccountLimitsForTarget(passcode, target)
-      .then((res) => {
+    setLoadError(null)
+    ;(async () => {
+      try {
+        const resp = await fetch("/api/admin/account-limits", {
+          method: "POST",
+          credentials: "include",
+          cache: "no-store",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ op: "load", pin: passcode, targetId: target }),
+        })
+        const data = await resp.json()
         if (!active) return
-        if (res.ok) {
-          applyLimits(res.limits)
-          setHasOverride(res.hasOverride)
+        if (data.ok) {
+          if (Array.isArray(data.clients) && data.clients.length) setClients(data.clients)
+          applyLimits(data.limits)
+          setHasOverride(!!data.hasOverride)
+        } else if (data.reason === "unauthorized") {
+          setLoadError("Administrator session not recognized. Re-open the panel with your passcode.")
+          if (Array.isArray(data.clients)) setClients(data.clients)
+        } else {
+          setLoadError(data.error || "Could not load account limits.")
         }
-      })
-      .finally(() => active && setLoading(false))
+      } catch {
+        if (active) setLoadError("Could not reach the server. Please try again.")
+      } finally {
+        if (active) setLoading(false)
+      }
+    })()
     return () => {
       active = false
     }
@@ -94,16 +105,29 @@ export function AccountLimitsManager({ passcode }: { passcode: string }) {
 
   const save = async () => {
     setSaving(true)
-    const res = await updateAccountLimitsAdmin({
-      passcode,
-      targetId: target,
-      targetName: isGlobal ? undefined : targetName,
-      dailyLimitAmount: Number(dailyAmount) || 0,
-      dailyLimitUnlimited: dailyUnlimited,
-      monthlyVolumeAmount: Number(monthlyAmount) || 0,
-      monthlyVolumeUnlimited: monthlyUnlimited,
-      currency,
-    })
+    let res: { ok: true; limits: AccountLimits } | { ok: false; error?: string }
+    try {
+      const resp = await fetch("/api/admin/account-limits", {
+        method: "POST",
+        credentials: "include",
+        cache: "no-store",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          op: "save",
+          pin: passcode,
+          targetId: target,
+          targetName: isGlobal ? undefined : targetName,
+          dailyLimitAmount: Number(dailyAmount) || 0,
+          dailyLimitUnlimited: dailyUnlimited,
+          monthlyVolumeAmount: Number(monthlyAmount) || 0,
+          monthlyVolumeUnlimited: monthlyUnlimited,
+          currency,
+        }),
+      })
+      res = await resp.json()
+    } catch {
+      res = { ok: false, error: "Could not reach the server. Please try again." }
+    }
     setSaving(false)
     if (!res.ok) {
       toast.error("Couldn't save limits", { description: res.error })
@@ -121,7 +145,19 @@ export function AccountLimitsManager({ passcode }: { passcode: string }) {
   const resetOverride = async () => {
     if (isGlobal) return
     setResetting(true)
-    const res = await clearAccountLimitsAdmin(passcode, target, targetName)
+    let res: { ok: true; limits: AccountLimits } | { ok: false; error?: string }
+    try {
+      const resp = await fetch("/api/admin/account-limits", {
+        method: "POST",
+        credentials: "include",
+        cache: "no-store",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ op: "clear", pin: passcode, targetId: target, targetName }),
+      })
+      res = await resp.json()
+    } catch {
+      res = { ok: false, error: "Could not reach the server. Please try again." }
+    }
     setResetting(false)
     if (!res.ok) {
       toast.error("Couldn't reset limits", { description: res.error })
@@ -180,6 +216,7 @@ export function AccountLimitsManager({ passcode }: { passcode: string }) {
                   : `${targetName} currently inherits the platform default. Saving will create a custom override for them.`}
               </p>
             )}
+            {loadError && <p className="text-[11px] text-destructive">{loadError}</p>}
           </div>
 
           {loading ? (
