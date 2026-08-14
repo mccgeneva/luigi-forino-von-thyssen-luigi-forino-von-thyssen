@@ -77,13 +77,47 @@ type CardPayload = {
   currency?: string
   monthlyLimit?: number
   requestedLimit?: number
+  number?: string
   last4?: string
   expiry?: string
+  cvv?: string
   purpose?: string
 }
 
 function readCard(req: ApprovalRequest): CardPayload {
   return ((req.payload as { card?: CardPayload })?.card ?? {}) as CardPayload
+}
+
+/** Digits only. */
+function cardDigits(value: string): string {
+  return value.replace(/\D/g, "")
+}
+
+/** Format a PAN as space-separated groups of 4 (max 19 digits). */
+function formatPan(value: string): string {
+  return cardDigits(value).slice(0, 19).replace(/(.{4})/g, "$1 ").trim()
+}
+
+/** Format expiry input progressively as MM/YY. */
+function formatExpiryInput(value: string): string {
+  const d = cardDigits(value).slice(0, 4)
+  return d.length <= 2 ? d : `${d.slice(0, 2)}/${d.slice(2)}`
+}
+
+/**
+ * Validate manually-entered card credentials. Returns an error string, or null
+ * when valid. The PAN must be 12–19 digits, expiry a real MM/YY, CVV 3–4 digits.
+ */
+function validateCardCredentials(number: string, expiry: string, cvv: string): string | null {
+  const digits = cardDigits(number)
+  if (digits.length < 12 || digits.length > 19) return "Enter a valid card number (12–19 digits)."
+  const m = expiry.match(/^(\d{2})\/(\d{2})$/)
+  if (!m) return "Enter the expiry date as MM/YY."
+  const month = Number(m[1])
+  if (month < 1 || month > 12) return "The expiry month must be between 01 and 12."
+  const code = cardDigits(cvv)
+  if (code.length < 3 || code.length > 4) return "Enter a valid CVV (3 or 4 digits)."
+  return null
 }
 
 function formatDate(iso: string): string {
@@ -102,6 +136,9 @@ interface CustomizeState {
   currency: string
   limit: string
   features: string[]
+  number: string
+  expiry: string
+  cvv: string
 }
 
 export function CardManager() {
@@ -122,6 +159,10 @@ export function CardManager() {
   const [issueFormat, setIssueFormat] = useState<CardFormat>("physical")
   const [issueCurrency, setIssueCurrency] = useState("EUR")
   const [issueLimit, setIssueLimit] = useState("100000")
+  // Administrator-entered card credentials.
+  const [issueNumber, setIssueNumber] = useState("")
+  const [issueExpiry, setIssueExpiry] = useState("")
+  const [issueCvv, setIssueCvv] = useState("")
   const [issueFeatures, setIssueFeatures] = useState<string[]>([
     "Airport lounge access",
     "24/7 concierge service",
@@ -166,6 +207,10 @@ export function CardManager() {
       features: tier === "platinum" || tier === "signature" || tier === "world_elite"
         ? ["Airport lounge access", "24/7 concierge service"]
         : [],
+      // Administrator types the real credentials; prefill any that already exist.
+      number: c.number ? formatPan(c.number) : "",
+      expiry: c.expiry ?? "",
+      cvv: c.cvv ?? "",
     })
   }
 
@@ -189,6 +234,12 @@ export function CardManager() {
       toast.error("Enter a valid monthly limit greater than 0.")
       return
     }
+    const credError = validateCardCredentials(customize.number, customize.expiry, customize.cvv)
+    if (credError) {
+      toast.error(credError)
+      return
+    }
+    const fullNumber = cardDigits(customize.number)
     const original = readCard(customize.req)
     const finalCard = {
       id: original.id || genCardId(),
@@ -199,8 +250,10 @@ export function CardManager() {
       currency: customize.currency,
       monthlyLimit: numericLimit,
       monthlySpent: 0,
-      last4: original.last4 || genLast4(),
-      expiry: original.expiry || genExpiry(),
+      number: fullNumber,
+      last4: fullNumber.slice(-4),
+      expiry: customize.expiry,
+      cvv: cardDigits(customize.cvv),
       features: customize.features,
       label: `${customize.network} ${TIER_LABELS[customize.tier]}`,
       variant: tierVariant(customize.tier),
@@ -283,6 +336,12 @@ export function CardManager() {
       toast.error("Enter a valid monthly limit greater than 0.")
       return
     }
+    const credError = validateCardCredentials(issueNumber, issueExpiry, issueCvv)
+    if (credError) {
+      toast.error(credError)
+      return
+    }
+    const fullNumber = cardDigits(issueNumber)
     const card = {
       id: genCardId(),
       holder: client.fullName,
@@ -292,8 +351,10 @@ export function CardManager() {
       currency: issueCurrency,
       monthlyLimit: numericLimit,
       monthlySpent: 0,
-      last4: genLast4(),
-      expiry: genExpiry(),
+      number: fullNumber,
+      last4: fullNumber.slice(-4),
+      expiry: issueExpiry,
+      cvv: cardDigits(issueCvv),
       features: issueFeatures,
       label: `${issueNetwork} ${TIER_LABELS[issueTier]}`,
       variant: tierVariant(issueTier),
@@ -324,6 +385,9 @@ export function CardManager() {
     })
     setIssueClient("")
     setIssueLimit("100000")
+    setIssueNumber("")
+    setIssueExpiry("")
+    setIssueCvv("")
   }
 
   return (
@@ -544,6 +608,54 @@ export function CardManager() {
             </div>
           </div>
 
+          <div className="space-y-3 rounded-lg border border-border bg-secondary/20 p-3">
+            <div className="flex items-center gap-2">
+              <CreditCard className="h-4 w-4 text-primary" />
+              <p className="text-sm font-medium">Card credentials</p>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Enter the real card number, expiry and CVV — these are delivered to the client exactly as typed.
+            </p>
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div className="grid gap-2 sm:col-span-2">
+                <Label htmlFor="issue-card-number">Card number</Label>
+                <Input
+                  id="issue-card-number"
+                  inputMode="numeric"
+                  autoComplete="off"
+                  placeholder="1234 5678 9012 3456"
+                  value={issueNumber}
+                  onChange={(e) => setIssueNumber(formatPan(e.target.value))}
+                  className="font-mono"
+                />
+              </div>
+              <div className="grid gap-2">
+                <Label htmlFor="issue-card-expiry">Expiry (MM/YY)</Label>
+                <Input
+                  id="issue-card-expiry"
+                  inputMode="numeric"
+                  autoComplete="off"
+                  placeholder="MM/YY"
+                  value={issueExpiry}
+                  onChange={(e) => setIssueExpiry(formatExpiryInput(e.target.value))}
+                  className="font-mono"
+                />
+              </div>
+              <div className="grid gap-2">
+                <Label htmlFor="issue-card-cvv">CVV</Label>
+                <Input
+                  id="issue-card-cvv"
+                  inputMode="numeric"
+                  autoComplete="off"
+                  placeholder="123"
+                  value={issueCvv}
+                  onChange={(e) => setIssueCvv(cardDigits(e.target.value).slice(0, 4))}
+                  className="font-mono"
+                />
+              </div>
+            </div>
+          </div>
+
           <div className="space-y-2">
             <Label>Premium features</Label>
             <div className="grid gap-2 sm:grid-cols-2">
@@ -658,6 +770,45 @@ export function CardManager() {
                     step="1000"
                     value={customize.limit}
                     onChange={(e) => setCustomize((p) => (p ? { ...p, limit: e.target.value } : p))}
+                  />
+                </div>
+                <div className="grid gap-2 sm:col-span-2">
+                  <Label>Card number</Label>
+                  <Input
+                    inputMode="numeric"
+                    autoComplete="off"
+                    placeholder="1234 5678 9012 3456"
+                    value={customize.number}
+                    onChange={(e) =>
+                      setCustomize((p) => (p ? { ...p, number: formatPan(e.target.value) } : p))
+                    }
+                    className="font-mono"
+                  />
+                </div>
+                <div className="grid gap-2">
+                  <Label>Expiry (MM/YY)</Label>
+                  <Input
+                    inputMode="numeric"
+                    autoComplete="off"
+                    placeholder="MM/YY"
+                    value={customize.expiry}
+                    onChange={(e) =>
+                      setCustomize((p) => (p ? { ...p, expiry: formatExpiryInput(e.target.value) } : p))
+                    }
+                    className="font-mono"
+                  />
+                </div>
+                <div className="grid gap-2">
+                  <Label>CVV</Label>
+                  <Input
+                    inputMode="numeric"
+                    autoComplete="off"
+                    placeholder="123"
+                    value={customize.cvv}
+                    onChange={(e) =>
+                      setCustomize((p) => (p ? { ...p, cvv: cardDigits(e.target.value).slice(0, 4) } : p))
+                    }
+                    className="font-mono"
                   />
                 </div>
               </div>

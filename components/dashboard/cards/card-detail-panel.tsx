@@ -198,7 +198,11 @@ export function CardDetailPanel({ card }: { card: ClientCard }) {
           <div className="grid grid-cols-2 gap-3 rounded-lg border border-border bg-secondary/30 p-4 sm:grid-cols-3">
             <div className="col-span-2 sm:col-span-3">
               <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Card Number</p>
-              <p className="font-mono text-sm text-foreground">{`4929 8841 0073 ${card.last4}`}</p>
+              <p className="font-mono text-sm text-foreground">
+                {card.number
+                  ? card.number.replace(/\D/g, "").replace(/(.{4})/g, "$1 ").trim()
+                  : `•••• •••• •••• ${card.last4}`}
+              </p>
             </div>
             <Detail mono label="Expires" value={card.expiry} />
             <Detail mono label="CVV" value={card.cvv} />
