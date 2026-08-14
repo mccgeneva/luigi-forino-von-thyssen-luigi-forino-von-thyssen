@@ -2,16 +2,21 @@ import "server-only"
 import { query } from "@/lib/db"
 
 /**
- * Global account limits store.
+ * Account limits store.
  *
- * The Daily Limit and Monthly Volume shown on every customer's account card are
- * a single PLATFORM-WIDE setting configured by an administrator — not a
- * per-account value. They are persisted here as one canonical row (id =
- * 'global') in Neon so the same figures apply to all users on every device, and
- * an admin change is durable and immediately visible to everyone.
+ * The Daily Limit and Monthly Volume shown on a customer's account card are
+ * configured by an administrator and persisted in Neon so they are durable and
+ * consistent across devices.
  *
- * Each figure can be marked UNLIMITED independently; when unlimited the numeric
- * amount is ignored and the card displays "Unlimited".
+ * There are two levels:
+ *  - a PLATFORM-WIDE default row (id = 'global') that applies to every user, and
+ *  - optional PER-USER override rows (id = the user's account id) that take
+ *    precedence for that specific user.
+ *
+ * Effective limits for a user = their own override if one exists, otherwise the
+ * global default, otherwise the built-in default. Each figure can be marked
+ * UNLIMITED independently; when unlimited the numeric amount is ignored and the
+ * card displays "Unlimited".
  */
 
 export interface AccountLimits {
@@ -33,7 +38,10 @@ export const DEFAULT_ACCOUNT_LIMITS: AccountLimits = {
   updatedAt: null,
 }
 
-const GLOBAL_ID = "global"
+/** Row id of the platform-wide default that applies to every user. Per-user
+ *  override rows use the user's own account id as their row id. */
+export const GLOBAL_ACCOUNT_LIMITS_ID = "global"
+const GLOBAL_ID = GLOBAL_ACCOUNT_LIMITS_ID
 
 let ensured = false
 async function ensureTable(): Promise<void> {
@@ -63,21 +71,48 @@ function rowToLimits(row: Record<string, unknown>): AccountLimits {
   }
 }
 
-/** Read the single global limits row, or the default when none is set yet. */
-export async function getAccountLimits(): Promise<AccountLimits> {
+/** Read a single limits row by id (global or a user id). Null when unset. */
+export async function readAccountLimitsRow(id: string): Promise<AccountLimits | null> {
   await ensureTable()
-  const { rows } = await query(`SELECT * FROM account_limits WHERE id = $1`, [GLOBAL_ID])
-  return rows[0] ? rowToLimits(rows[0]) : { ...DEFAULT_ACCOUNT_LIMITS }
+  const { rows } = await query(`SELECT * FROM account_limits WHERE id = $1`, [id])
+  return rows[0] ? rowToLimits(rows[0]) : null
 }
 
-/** Upsert the single global limits row. */
-export async function saveAccountLimits(input: {
-  dailyLimitAmount: number
-  dailyLimitUnlimited: boolean
-  monthlyVolumeAmount: number
-  monthlyVolumeUnlimited: boolean
-  currency: string
-}): Promise<AccountLimits> {
+/**
+ * Effective limits for a user: their own per-user override if one exists,
+ * otherwise the platform-wide global default, otherwise the built-in default.
+ * Pass no `userId` (or the global id) to read the global default directly.
+ */
+export async function getAccountLimits(userId?: string | null): Promise<AccountLimits> {
+  await ensureTable()
+  if (userId && userId !== GLOBAL_ID) {
+    const own = await readAccountLimitsRow(userId)
+    if (own) return own
+  }
+  const global = await readAccountLimitsRow(GLOBAL_ID)
+  return global ?? { ...DEFAULT_ACCOUNT_LIMITS }
+}
+
+/** True when a specific per-user override row exists for this user. */
+export async function hasAccountLimitsOverride(userId: string): Promise<boolean> {
+  if (!userId || userId === GLOBAL_ID) return false
+  return (await readAccountLimitsRow(userId)) != null
+}
+
+/**
+ * Upsert a limits row. `targetId` is the platform-wide global id to set the
+ * default for everyone, or a user's account id to set a per-user override.
+ */
+export async function saveAccountLimits(
+  targetId: string,
+  input: {
+    dailyLimitAmount: number
+    dailyLimitUnlimited: boolean
+    monthlyVolumeAmount: number
+    monthlyVolumeUnlimited: boolean
+    currency: string
+  },
+): Promise<AccountLimits> {
   await ensureTable()
   const { rows } = await query(
     `INSERT INTO account_limits
@@ -92,7 +127,7 @@ export async function saveAccountLimits(input: {
        updated_at               = now()
      RETURNING *`,
     [
-      GLOBAL_ID,
+      targetId || GLOBAL_ID,
       input.dailyLimitUnlimited ? 0 : Math.max(0, input.dailyLimitAmount),
       input.dailyLimitUnlimited,
       input.monthlyVolumeUnlimited ? 0 : Math.max(0, input.monthlyVolumeAmount),
@@ -101,4 +136,14 @@ export async function saveAccountLimits(input: {
     ],
   )
   return rowToLimits(rows[0])
+}
+
+/**
+ * Remove a per-user override so the user reverts to the platform-wide default.
+ * The global row is never deleted through this path.
+ */
+export async function clearAccountLimits(targetId: string): Promise<void> {
+  if (!targetId || targetId === GLOBAL_ID) return
+  await ensureTable()
+  await query(`DELETE FROM account_limits WHERE id = $1`, [targetId])
 }
