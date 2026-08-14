@@ -15,7 +15,7 @@ import { useServerRequestList } from "@/lib/use-server-request-list"
 import { mapApprovalStatus, type ApprovalRecord } from "@/lib/approval-sync"
 import { useCurrentUser } from "@/lib/use-current-user"
 import { getMyMasterBanking, type MyMasterBanking } from "@/app/actions/admin-users"
-import { fetchAccountLimits, type AccountLimits } from "@/app/actions/account-limits"
+  import { type AccountLimits } from "@/app/actions/account-limits"
 import { validateIban } from "@/lib/iban-swift"
 import type { ProfileItem } from "@/lib/users"
 
@@ -369,9 +369,18 @@ export function useBankAccounts(): BankAccount[] {
   const [accountLimits, setAccountLimits] = useState<AccountLimits | null>(null)
   useEffect(() => {
     let cancelled = false
-    fetchAccountLimits(currentUser.id)
-      .then((l) => {
-        if (!cancelled) setAccountLimits(l)
+    // Read via the /api/account-limits route (NOT the fetchAccountLimits Server
+    // Action). The action POSTs to /dashboard/* and is intercepted by the
+    // session proxy, which 401s it whenever the signed meta cookie looks
+    // stale/idle (common in the preview and on a resumed PWA); that failure was
+    // silently swallowed, leaving the card showing a bare 0 even when the admin
+    // had set Unlimited. The API route bypasses the proxy and always returns
+    // real JSON, so the effective limits (per-user override or global default)
+    // reliably reach the account card.
+    fetch("/api/account-limits", { credentials: "include", cache: "no-store" })
+      .then((r) => r.json())
+      .then((data) => {
+        if (!cancelled && data?.ok && data.limits) setAccountLimits(data.limits as AccountLimits)
       })
       .catch(() => {
         /* keep the account's own default until the fetch succeeds */
