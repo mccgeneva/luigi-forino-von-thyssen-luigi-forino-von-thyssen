@@ -55,6 +55,22 @@ export async function proxy(request: NextRequest) {
   if (pathname.startsWith("/dashboard")) {
     if (!isAuthed) {
       const reason = !token ? "tab-close" : validity === "idle" ? "inactivity" : "expiry"
+      // A Server Action / mutating POST must NEVER be answered with a 307
+      // redirect to the HTML /login page: the action client (fetch) follows the
+      // redirect, receives HTML, fails to deserialize it as an action result,
+      // and the calling code sees an opaque thrown error — e.g. the admin gate
+      // rendering "Could not verify administrator access" on a page that still
+      // looks logged in. Return a clean 401 instead so the caller can detect the
+      // lost session and route the user to re-authenticate. (Cookies are still
+      // cleared so the stale session can't linger.)
+      if (isActionRequest) {
+        const res = new NextResponse(null, {
+          status: 401,
+          headers: { "x-session-expired": reason },
+        })
+        clearSessionCookies(res)
+        return res
+      }
       const loginUrl = new URL(`/login?expired=${reason}`, request.url)
       const res = NextResponse.redirect(loginUrl)
       clearSessionCookies(res)

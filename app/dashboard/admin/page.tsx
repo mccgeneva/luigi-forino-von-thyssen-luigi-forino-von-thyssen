@@ -495,32 +495,58 @@ export default function AdminPage() {
   )
 
   const [gateChecking, setGateChecking] = useState(false)
+
+  // Apply a settled gate result. Returns true when the panel was unlocked.
+  const applyGateResult = (res: { ok: true } | { ok: false; reason: "forbidden" | "pin" }): boolean => {
+    if (res.ok) {
+      setUnlocked(true)
+      setGateError(null)
+      setPasscode("")
+      try {
+        window.sessionStorage.setItem(ADMIN_SESSION_KEY, "true")
+      } catch {
+        // ignore
+      }
+      return true
+    }
+    if (res.reason === "forbidden") {
+      setGateError("This account is not authorized to access the Administrator Panel.")
+    } else {
+      setGateError("Incorrect administrator passcode. Please try again.")
+    }
+    return false
+  }
+
   const handleUnlock = async () => {
     if (gateChecking) return
     setGateChecking(true)
     setGateError(null)
+    // Authorization is decided on the SERVER: the caller must be an admin
+    // account AND present the correct PIN. The browser never compares the
+    // secret, so it cannot be bypassed by reading the bundle or setting a
+    // client flag.
     try {
-      // Authorization is decided on the SERVER: the caller must be an admin
-      // account AND present the correct PIN. The browser never compares the
-      // secret, so it cannot be bypassed by reading the bundle or setting a
-      // client flag.
-      const res = await verifyAdminGate(passcode.trim())
-      if (res.ok) {
-        setUnlocked(true)
-        setGateError(null)
-        setPasscode("")
-        try {
-          window.sessionStorage.setItem(ADMIN_SESSION_KEY, "true")
-        } catch {
-          // ignore
-        }
-      } else if (res.reason === "forbidden") {
-        setGateError("This account is not authorized to access the Administrator Panel.")
-      } else {
-        setGateError("Incorrect administrator passcode. Please try again.")
-      }
+      applyGateResult(await verifyAdminGate(passcode.trim()))
     } catch {
-      setGateError("Could not verify administrator access. Please try again.")
+      // The verifyAdminGate server action never throws on its own — a rejected
+      // RPC here means the request was refused BEFORE reaching it, which is
+      // essentially always an expired/lost session (the /dashboard proxy now
+      // answers unauthenticated action POSTs with a 401). This commonly happens
+      // when the panel has been open a while, since Server Actions don't slide
+      // the idle window, or when a cached PWA shell is shown over a dead
+      // session. Retry once in case it was a transient blip; if it still fails,
+      // the session is gone — send the user to re-authenticate rather than
+      // blaming the (correct) passcode with an opaque error.
+      try {
+        applyGateResult(await verifyAdminGate(passcode.trim()))
+      } catch {
+        setGateError("Your session has expired. Redirecting you to sign in again…")
+        setTimeout(() => {
+          // Full reload (not router.push) so any cached PWA shell is discarded
+          // and the login page is fetched fresh.
+          window.location.href = "/login?expired=inactivity"
+        }, 1400)
+      }
     } finally {
       setGateChecking(false)
     }
