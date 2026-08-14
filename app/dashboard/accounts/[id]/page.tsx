@@ -433,13 +433,17 @@ export default function AccountDetailPage() {
                     <div className="p-4 rounded-lg bg-secondary">
                       <p className="text-xs text-muted-foreground mb-1">Daily Limit</p>
                       <p className="text-xl font-bold text-foreground">
-                        {formatCurrency(account.dailyLimit, account.currency)}
+                        {account.dailyLimitUnlimited
+                          ? "Unlimited"
+                          : formatCurrency(account.dailyLimit, account.currency)}
                       </p>
                     </div>
                     <div className="p-4 rounded-lg bg-secondary">
                       <p className="text-xs text-muted-foreground mb-1">Monthly Volume</p>
                       <p className="text-xl font-bold text-foreground">
-                        {formatCurrency(account.monthlyVolume, account.currency)}
+                        {account.monthlyVolumeUnlimited
+                          ? "Unlimited"
+                          : formatCurrency(account.monthlyVolume, account.currency)}
                       </p>
                     </div>
                   </div>

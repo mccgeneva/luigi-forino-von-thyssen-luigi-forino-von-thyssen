@@ -15,6 +15,7 @@ import { useServerRequestList } from "@/lib/use-server-request-list"
 import { mapApprovalStatus, type ApprovalRecord } from "@/lib/approval-sync"
 import { useCurrentUser } from "@/lib/use-current-user"
 import { getMyMasterBanking, type MyMasterBanking } from "@/app/actions/admin-users"
+import { fetchAccountLimits, type AccountLimits } from "@/app/actions/account-limits"
 import { validateIban } from "@/lib/iban-swift"
 import type { ProfileItem } from "@/lib/users"
 
@@ -39,6 +40,9 @@ export type BankAccount = {
   lastActivity: string
   dailyLimit: number
   monthlyVolume: number
+  /** When true the corresponding figure is uncapped and displays "Unlimited". */
+  dailyLimitUnlimited?: boolean
+  monthlyVolumeUnlimited?: boolean
   relationship: string
   contactPerson: string
   contactEmail: string
@@ -358,6 +362,21 @@ export function useBankAccounts(): BankAccount[] {
       ? resolvedMaster
       : extractMasterBanking(currentUser.banking)
 
+  // Platform-wide account limits (Daily Limit / Monthly Volume) set by the
+  // administrator — a single global setting applied to every user's settlement
+  // account below, with independent "Unlimited" flags.
+  const [accountLimits, setAccountLimits] = useState<AccountLimits | null>(null)
+  useEffect(() => {
+    let cancelled = false
+    fetchAccountLimits()
+      .then((l) => {
+        if (!cancelled) setAccountLimits(l)
+      })
+      .catch(() => {
+        /* keep the account's own default until the fetch succeeds */
+      })
+  }, [])
+
   // Per-registered-account tracked balance: sum the ledger entries whose
   // counterparty `account` (IBAN) matches the registered account. Completed
   // credits add, completed debits subtract, held debits reserve. This is the
@@ -481,5 +500,23 @@ export function useBankAccounts(): BankAccount[] {
       }
     })
 
-  return [...liveBaseAccounts, ...extraCurrencyAccounts, ...registered]
+  // Apply the global admin-configured limits to the platform SETTLEMENT
+  // accounts (the master account ACC-001 and each per-currency account). These
+  // are the "MCC Capital" accounts every user operates under, so the same
+  // platform-wide Daily Limit / Monthly Volume shows for all users. Registered
+  // external accounts keep their own values. Skipped until the limits load.
+  const withLimits = (account: BankAccount): BankAccount => {
+    if (!accountLimits) return account
+    const isSettlement = account.id === "ACC-001" || account.id.startsWith("ACC-")
+    if (!isSettlement) return account
+    return {
+      ...account,
+      dailyLimit: accountLimits.dailyLimitUnlimited ? 0 : accountLimits.dailyLimitAmount,
+      dailyLimitUnlimited: accountLimits.dailyLimitUnlimited,
+      monthlyVolume: accountLimits.monthlyVolumeUnlimited ? 0 : accountLimits.monthlyVolumeAmount,
+      monthlyVolumeUnlimited: accountLimits.monthlyVolumeUnlimited,
+    }
+  }
+
+  return [...liveBaseAccounts.map(withLimits), ...extraCurrencyAccounts.map(withLimits), ...registered]
 }
