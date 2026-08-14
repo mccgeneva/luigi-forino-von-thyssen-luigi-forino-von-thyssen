@@ -28,6 +28,16 @@ const HEARTBEAT = "mcc_heartbeat"
 const INACTIVITY_LIMIT = 15 * 60 * 1000 // 15 minutes
 const WARNING_BEFORE = 60 * 1000 // warn 60s before inactivity logout
 const TICK = 1000
+
+// Server-session keepalive. The server slides its idle window only on GET
+// navigations, but single-page areas (e.g. the admin panel) interact via
+// Server Action POSTs that never slide it — so an actively-used session would
+// idle-expire server-side and lock the user out mid-task. While the user is
+// active we periodically GET /dashboard/keepalive, which the proxy answers by
+// re-issuing the session cookies with a fresh idle window. We throttle to well
+// inside the 15-minute window.
+const KEEPALIVE_URL = "/dashboard/keepalive"
+const KEEPALIVE_MIN_INTERVAL = 4 * 60 * 1000 // ping at most every 4 minutes
 // How long the heartbeat may lapse before we treat the gap as a browser
 // close/reopen. This tolerates brief app-switches (answering a call, copying a
 // code from another app) while still forcing re-login after a real close.
@@ -93,9 +103,35 @@ export function SessionGuard() {
   const router = useRouter()
   const endedRef = useRef(false)
   const warnedRef = useRef(false)
+  const lastKeepaliveRef = useRef(0)
 
   useEffect(() => {
     const now = Date.now()
+
+    // Ping the server keepalive so it slides the session's idle window forward.
+    // Throttled unless `force` is set (used on mount / resume). Best-effort:
+    // failures are ignored — the SessionGuard's own logic handles real expiry.
+    function pingKeepalive(force = false) {
+      if (endedRef.current) return
+      if (isEmbeddedPreview()) return // preview iframe: cookies are unreliable
+      const t = Date.now()
+      if (!force && t - lastKeepaliveRef.current < KEEPALIVE_MIN_INTERVAL) return
+      lastKeepaliveRef.current = t
+      try {
+        void fetch(KEEPALIVE_URL, { method: "GET", credentials: "include", cache: "no-store" }).catch(
+          () => {
+            // ignore — network blip or expired session (handled elsewhere)
+          },
+        )
+      } catch {
+        // ignore
+      }
+    }
+
+    // Refresh the server session as soon as the authenticated area mounts, so
+    // simply opening a page (e.g. the admin gate) re-arms the full idle window
+    // even if the shell was restored from a cached PWA/bfcache state.
+    pingKeepalive(true)
 
     function endSession(reason: ExpireReason) {
       if (endedRef.current) return
@@ -207,6 +243,10 @@ export function SessionGuard() {
       } catch {
         // ignore
       }
+      // Keep the SERVER session alive too (throttled). Client activity alone
+      // does not slide the server idle window; this bridges the two so an
+      // actively-used SPA session never idle-expires server-side.
+      pingKeepalive()
       toast.dismiss("inactivity-warning")
     }
 
@@ -283,6 +323,9 @@ export function SessionGuard() {
       } catch {
         // ignore
       }
+      // Returning to the foreground: re-arm the server idle window right away so
+      // the next Server Action (e.g. unlocking the admin panel) isn't rejected.
+      pingKeepalive(true)
     }
     document.addEventListener("visibilitychange", onResume)
     window.addEventListener("pageshow", onResume)

@@ -521,6 +521,18 @@ export default function AdminPage() {
     if (gateChecking) return
     setGateChecking(true)
     setGateError(null)
+    // Slide the server session's idle window immediately BEFORE verifying. The
+    // server only refreshes the idle window on GET requests, not on the Server
+    // Action POST used to verify — so a valid session that has merely been
+    // sitting on this gate (e.g. while typing the passcode) is re-armed here
+    // first, preventing a spurious "expired" rejection. If the session is truly
+    // gone this GET is redirected and does not revive it, so the honest
+    // re-login path below still fires.
+    try {
+      await fetch("/dashboard/keepalive", { method: "GET", credentials: "include", cache: "no-store" })
+    } catch {
+      // ignore — best effort
+    }
     // Authorization is decided on the SERVER: the caller must be an admin
     // account AND present the correct PIN. The browser never compares the
     // secret, so it cannot be bypassed by reading the bundle or setting a
