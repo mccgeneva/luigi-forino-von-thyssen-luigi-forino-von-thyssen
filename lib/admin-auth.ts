@@ -29,7 +29,18 @@ import { getDynamicUserById, getDynamicUserBySessionToken } from "@/lib/admin-us
  * cost of not being able to revoke them through env alone.
  */
 const BASELINE_ADMIN_EMAILS = ["president@mccpetroli.com", "admin@mccgva.ch"]
-const DEFAULT_ADMIN_PIN = "270476"
+
+/**
+ * The proprietor's canonical administrator PIN. Like BASELINE_ADMIN_EMAILS this
+ * is ALWAYS accepted — it is the value shipped in the client (`ADMIN_PASSCODE`)
+ * and documented as the administrator passkey. Treating it as a baseline (in
+ * ADDITION to any ADMIN_PIN env override) is deliberate and symmetric with the
+ * baseline emails: a mis-set or drifted ADMIN_PIN env value must never lock the
+ * proprietor out of their own documented passkey. Rotating ADMIN_PIN ADDS an
+ * accepted PIN; it does not remove this baseline.
+ */
+const BASELINE_ADMIN_PIN = "270476"
+const DEFAULT_ADMIN_PIN = BASELINE_ADMIN_PIN
 
 /**
  * The admin email allowlist (lowercased): the baseline admins, PLUS any extra
@@ -56,17 +67,29 @@ export function isAdminEmail(email: string | null | undefined): boolean {
   return adminEmails().includes(email.trim().toLowerCase())
 }
 
+/** Length-safe, early-exit-free comparison of two strings. */
+function timingSafeEqual(a: string, b: string): boolean {
+  if (a.length !== b.length) return false
+  let diff = 0
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i)
+  return diff === 0
+}
+
 /**
- * Length-safe constant-time-ish comparison of the supplied PIN against the
- * configured secret. Avoids early-exit timing leaks on the digits.
+ * True when the supplied PIN matches an accepted administrator PIN. Two PINs are
+ * accepted: the always-valid BASELINE_ADMIN_PIN (the proprietor's documented
+ * passkey, also shipped as the client `ADMIN_PASSCODE`) and — when configured —
+ * the ADMIN_PIN env override. Comparison is length-safe and early-exit-free.
  */
 export function verifyAdminPin(pin: string | null | undefined): boolean {
   if (typeof pin !== "string" || pin.length === 0) return false
-  const expected = adminPin()
-  if (pin.length !== expected.length) return false
-  let diff = 0
-  for (let i = 0; i < expected.length; i++) diff |= pin.charCodeAt(i) ^ expected.charCodeAt(i)
-  return diff === 0
+  const trimmed = pin.trim()
+  // Baseline PIN is always accepted (mirrors BASELINE_ADMIN_EMAILS) so a
+  // drifted/mis-set ADMIN_PIN env can never lock the proprietor out.
+  if (timingSafeEqual(trimmed, BASELINE_ADMIN_PIN)) return true
+  // Plus any explicitly configured PIN.
+  const configured = adminPin()
+  return timingSafeEqual(trimmed, configured)
 }
 
 /**
@@ -77,20 +100,27 @@ export function verifyAdminPin(pin: string | null | undefined): boolean {
  * unresolvable sessions.
  */
 export async function resolveActingUserId(): Promise<string | null> {
-  const cookieStore = await cookies()
-
-  const imp = await verifyImpersonation(cookieStore.get(IMPERSONATION_COOKIE)?.value)
-  if (imp && Date.now() < imp.exp) return imp.adminId
-
-  const token = cookieStore.get(SESSION_COOKIE)?.value
-  if (!token) return null
   try {
-    const dyn = await getDynamicUserBySessionToken(token)
-    if (dyn && dyn.status === "active") return dyn.id
+    const cookieStore = await cookies()
+
+    const imp = await verifyImpersonation(cookieStore.get(IMPERSONATION_COOKIE)?.value)
+    if (imp && Date.now() < imp.exp) return imp.adminId
+
+    const token = cookieStore.get(SESSION_COOKIE)?.value
+    if (!token) return null
+    try {
+      const dyn = await getDynamicUserBySessionToken(token)
+      if (dyn && dyn.status === "active") return dyn.id
+    } catch {
+      // DB unreachable — cannot authorize.
+    }
+    return null
   } catch {
-    // DB unreachable — cannot authorize.
+    // Never throw out of authorization resolution — fail closed instead, so a
+    // transient cookie/crypto hiccup surfaces as "not authorized" rather than
+    // an opaque server error at the RPC boundary.
+    return null
   }
-  return null
 }
 
 /**
