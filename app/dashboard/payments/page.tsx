@@ -1,7 +1,13 @@
 "use client"
 
-import { useState, useMemo } from "react"
+import { useState, useMemo, useEffect } from "react"
 import { useActivityLog } from "@/components/activity-tracker"
+import { convertCurrency } from "@/lib/fx"
+import {
+  assessPaymentAgainstLimits,
+  limitBlockMessage,
+  type LimitFigures,
+} from "@/lib/account-limits-eval"
 import {
   Send,
   Download,
@@ -166,6 +172,27 @@ export default function PaymentsPage() {
   const { holderName, holderCompany, holderAddress, holderRepresentative } = useHolderIdentity()
   const { balanceFor, entries } = useLedger()
   const { requests, addRequest } = usePaymentRequests()
+
+  // The signed-in user's EFFECTIVE account limits (per-user override or the
+  // platform default). Read via the non-proxied /api/account-limits route so a
+  // stale session cookie can't 401 it (the same route the account card uses).
+  // Used only for a friendly client-side pre-check — the authoritative hard
+  // block lives server-side in submitApproval.
+  const [accountLimits, setAccountLimits] = useState<LimitFigures | null>(null)
+  useEffect(() => {
+    let cancelled = false
+    fetch("/api/account-limits", { credentials: "include", cache: "no-store" })
+      .then((r) => r.json())
+      .then((data) => {
+        if (!cancelled && data?.ok && data.limits) setAccountLimits(data.limits as LimitFigures)
+      })
+      .catch(() => {
+        /* pre-check simply won't run; the server gate still enforces */
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   // Live available balance from recorded incoming payments.
   const masterBalance = balanceFor(MASTER_ACCOUNT_CURRENCY)
@@ -479,6 +506,39 @@ export default function PaymentsPage() {
         )}.`,
       )
       return
+    }
+
+    // Account-limit pre-check (friendly): block a payment that would push the
+    // user over their administrator-set Daily Limit or Monthly Volume before it
+    // is even submitted. The value counted is the PRINCIPAL (not the fee),
+    // converted into the limit currency, and prior non-rejected payments in the
+    // current UTC day / month are summed. This mirrors the authoritative server
+    // gate in submitApproval, which is the real backstop if this is bypassed.
+    if (accountLimits) {
+      const now = new Date()
+      const dayStart = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())
+      const monthStart = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)
+      let priorDaily = 0
+      let priorMonthly = 0
+      for (const r of requests) {
+        if (r.status === "rejected") continue
+        const t = Date.parse(r.submittedAt)
+        if (Number.isNaN(t)) continue
+        const value = convertCurrency(r.amount, r.currency || "EUR", accountLimits.currency)
+        if (t >= monthStart) priorMonthly += value
+        if (t >= dayStart) priorDaily += value
+      }
+      const attempted = convertCurrency(amountValue, payCurrency, accountLimits.currency)
+      const assessment = assessPaymentAgainstLimits({
+        limits: accountLimits,
+        priorDailyTotal: priorDaily,
+        priorMonthlyTotal: priorMonthly,
+        amount: attempted,
+      })
+      if (!assessment.ok) {
+        setFormError(limitBlockMessage(assessment))
+        return
+      }
     }
 
     const beneficiary = payBeneficiary.trim()
