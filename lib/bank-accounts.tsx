@@ -362,20 +362,24 @@ export function useBankAccounts(): BankAccount[] {
       ? resolvedMaster
       : extractMasterBanking(currentUser.banking)
 
-  // Platform-wide account limits (Daily Limit / Monthly Volume) set by the
-  // administrator — a single global setting applied to every user's settlement
-  // account below, with independent "Unlimited" flags.
+  // Account limits (Daily Limit / Monthly Volume) set by the administrator.
+  // Resolved server-side to this user's EFFECTIVE limits: their per-user
+  // override if the admin set one, otherwise the platform-wide default. Each
+  // figure carries an independent "Unlimited" flag.
   const [accountLimits, setAccountLimits] = useState<AccountLimits | null>(null)
   useEffect(() => {
     let cancelled = false
-    fetchAccountLimits()
+    fetchAccountLimits(currentUser.id)
       .then((l) => {
         if (!cancelled) setAccountLimits(l)
       })
       .catch(() => {
         /* keep the account's own default until the fetch succeeds */
       })
-  }, [])
+    return () => {
+      cancelled = true
+    }
+  }, [currentUser.id])
 
   // Per-registered-account tracked balance: sum the ledger entries whose
   // counterparty `account` (IBAN) matches the registered account. Completed
