@@ -114,7 +114,7 @@ import {
 import { postedLeverageInterest } from "@/lib/leverage-financing"
 import { round2 } from "@/lib/interest-accrual"
 import { ADMIN_PASSCODE, ADMIN_SESSION_KEY } from "@/lib/admin-config"
-import { verifyAdminGate, confirmAdminSession } from "@/app/actions/admin-session"
+  import { confirmAdminSession } from "@/app/actions/admin-session"
 import { ApiKeysManager } from "@/components/admin/api-keys-manager"
 import { TreuhandPositions } from "@/components/admin/treuhand-positions"
 import { AccountLimitsManager } from "@/components/admin/account-limits-manager"
@@ -496,69 +496,67 @@ export default function AdminPage() {
 
   const [gateChecking, setGateChecking] = useState(false)
 
-  // Apply a settled gate result. Returns true when the panel was unlocked.
-  const applyGateResult = (res: { ok: true } | { ok: false; reason: "forbidden" | "pin" }): boolean => {
-    if (res.ok) {
-      setUnlocked(true)
-      setGateError(null)
-      setPasscode("")
-      try {
-        window.sessionStorage.setItem(ADMIN_SESSION_KEY, "true")
-      } catch {
-        // ignore
-      }
-      return true
-    }
-    if (res.reason === "forbidden") {
-      setGateError("This account is not authorized to access the Administrator Panel.")
-    } else {
-      setGateError("Incorrect administrator passcode. Please try again.")
-    }
-    return false
-  }
-
   const handleUnlock = async () => {
     if (gateChecking) return
     setGateChecking(true)
     setGateError(null)
-    // Slide the server session's idle window immediately BEFORE verifying. The
-    // server only refreshes the idle window on GET requests, not on the Server
-    // Action POST used to verify — so a valid session that has merely been
-    // sitting on this gate (e.g. while typing the passcode) is re-armed here
-    // first, preventing a spurious "expired" rejection. If the session is truly
-    // gone this GET is redirected and does not revive it, so the honest
-    // re-login path below still fires.
+
+    // Verify via the /api/admin/gate route (NOT the verifyAdminGate Server
+    // Action). The API route is not behind the /dashboard proxy, so it always
+    // returns a deterministic JSON body with a real HTTP status instead of a
+    // 307 redirect that a Server Action fetch would follow and then fail to
+    // parse — which was surfacing as the misleading "session expired" /
+    // "could not verify" errors even with the correct passcode. Authorization
+    // is still decided entirely on the SERVER (admin account + PIN).
     try {
-      await fetch("/dashboard/keepalive", { method: "GET", credentials: "include", cache: "no-store" })
-    } catch {
-      // ignore — best effort
-    }
-    // Authorization is decided on the SERVER: the caller must be an admin
-    // account AND present the correct PIN. The browser never compares the
-    // secret, so it cannot be bypassed by reading the bundle or setting a
-    // client flag.
-    try {
-      applyGateResult(await verifyAdminGate(passcode.trim()))
-    } catch {
-      // The verifyAdminGate server action never throws on its own — a rejected
-      // RPC here means the request was refused BEFORE reaching it, which is
-      // essentially always an expired/lost session (the /dashboard proxy now
-      // answers unauthenticated action POSTs with a 401). This commonly happens
-      // when the panel has been open a while, since Server Actions don't slide
-      // the idle window, or when a cached PWA shell is shown over a dead
-      // session. Retry once in case it was a transient blip; if it still fails,
-      // the session is gone — send the user to re-authenticate rather than
-      // blaming the (correct) passcode with an opaque error.
-      try {
-        applyGateResult(await verifyAdminGate(passcode.trim()))
-      } catch {
-        setGateError("Your session has expired. Redirecting you to sign in again…")
+      const resp = await fetch("/api/admin/gate", {
+        method: "POST",
+        credentials: "include",
+        cache: "no-store",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ pin: passcode.trim() }),
+      })
+
+      // A non-OK HTTP status means the request never reached the handler
+      // (network / edge). Surface a retryable message, do NOT force a logout.
+      if (!resp.ok) {
+        setGateError("Could not reach the server. Please check your connection and try again.")
+        return
+      }
+
+      const data = (await resp.json()) as
+        | { ok: true }
+        | { ok: false; reason: "unauthenticated" | "pin" | "error" }
+
+      if (data.ok) {
+        setUnlocked(true)
+        setGateError(null)
+        setPasscode("")
+        try {
+          window.sessionStorage.setItem(ADMIN_SESSION_KEY, "true")
+        } catch {
+          // ignore
+        }
+        return
+      }
+
+      if (data.reason === "unauthenticated") {
+        // The server did not recognize the session (expired or the cookie was
+        // not delivered). This is the ONLY case that warrants re-login — and
+        // because the server genuinely didn't see a valid admin session, it is
+        // accurate rather than a guess.
+        setGateError("Your session was not recognized. Redirecting you to sign in again…")
         setTimeout(() => {
-          // Full reload (not router.push) so any cached PWA shell is discarded
-          // and the login page is fetched fresh.
           window.location.href = "/login?expired=inactivity"
         }, 1400)
+      } else if (data.reason === "pin") {
+        setGateError("Incorrect administrator passcode. Please try again.")
+      } else {
+        setGateError("Could not verify administrator access. Please try again.")
       }
+    } catch {
+      // Network/parse failure — retryable, never a forced logout.
+      setGateError("Could not reach the server. Please check your connection and try again.")
     } finally {
       setGateChecking(false)
     }
