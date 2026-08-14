@@ -11,9 +11,17 @@ import { isCurrentSessionAdmin, adminActionAuthorized } from "@/lib/admin-auth"
 export async function verifyAdminGate(
   pin: string,
 ): Promise<{ ok: true } | { ok: false; reason: "forbidden" | "pin" }> {
-  if (!(await isCurrentSessionAdmin())) return { ok: false, reason: "forbidden" }
-  if (!(await adminActionAuthorized(pin))) return { ok: false, reason: "pin" }
-  return { ok: true }
+  try {
+    if (!(await isCurrentSessionAdmin())) return { ok: false, reason: "forbidden" }
+    if (!(await adminActionAuthorized(pin))) return { ok: false, reason: "pin" }
+    return { ok: true }
+  } catch {
+    // Never reject the RPC: a thrown server error would surface on the client
+    // as the opaque "Could not verify administrator access" message with no
+    // actionable reason. Treat an unexpected failure as a (retryable) PIN
+    // rejection so the admin gets a clear message and can try again.
+    return { ok: false, reason: "pin" }
+  }
 }
 
 /**
