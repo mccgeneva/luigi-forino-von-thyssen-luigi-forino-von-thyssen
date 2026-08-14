@@ -667,7 +667,10 @@ export default function BankAccountsPage() {
                   {account.status}
                 </Badge>
                 <span className="text-[10px] text-muted-foreground">
-                  Daily Limit: {formatCurrency(account.dailyLimit, account.currency)}
+                  Daily Limit:{" "}
+                  {account.dailyLimitUnlimited
+                    ? "Unlimited"
+                    : formatCurrency(account.dailyLimit, account.currency)}
                 </span>
               </div>
             </CardContent>
