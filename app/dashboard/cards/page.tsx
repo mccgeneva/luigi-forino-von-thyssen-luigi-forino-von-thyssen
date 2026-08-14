@@ -2,9 +2,21 @@
 
 import { useMemo, useState, useEffect } from "react"
 import { toast } from "sonner"
-import { CreditCard as CreditCardIcon, CheckCircle2, Clock, Ban } from "lucide-react"
+import { CreditCard as CreditCardIcon, CheckCircle2, Clock, Ban, Trash2 } from "lucide-react"
 import { Card, CardContent } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
+import { Button } from "@/components/ui/button"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog"
 import { CardVisual, type BankCard } from "@/components/dashboard/bank-cards"
 import { useActivityLog } from "@/components/activity-tracker"
 import { useCurrentUser } from "@/lib/use-current-user"
@@ -42,9 +54,24 @@ function toBankCard(c: ClientCard): BankCard {
 export default function CardsPage() {
   const log = useActivityLog()
   const user = useCurrentUser()
-  const { cards, requestCard } = useCardRequests()
+  const { cards, requestCard, deleteCard } = useCardRequests()
 
   const [activeId, setActiveId] = useState<string | null>(null)
+
+  const handleRemove = (card: ClientCard) => {
+    deleteCard(card.id)
+    if (activeId === card.id) setActiveId(null)
+    log({
+      action: `Removed a declined ${card.network} ${TIER_LABELS[card.tier]} card`,
+      category: "Cards",
+      details: {
+        summary: `Client removed the declined ${card.network} ${TIER_LABELS[card.tier]} card (ending ${card.last4}) from their wallet view.`,
+      },
+    })
+    toast.success("Card removed", {
+      description: "The declined card has been removed from your wallet.",
+    })
+  }
 
   // Keep a valid selection as the list changes (new request, activation, etc.).
   useEffect(() => {
@@ -129,23 +156,55 @@ export default function CardsPage() {
           <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
             {cards.map((card) => {
               const badge = STATUS_BADGE[card.status]
+              const removable = card.status === "rejected" || card.status === "cancelled"
               return (
-                <button
-                  key={card.id}
-                  onClick={() => setActiveId(card.id)}
-                  className="group relative text-left focus:outline-none"
-                  aria-label={`Select ${card.network} ${TIER_LABELS[card.tier]} card`}
-                >
-                  <CardVisual
-                    card={toBankCard(card)}
-                    className={
-                      activeId === card.id ? "ring-2 ring-primary ring-offset-2 ring-offset-background" : ""
-                    }
-                  />
-                  <Badge variant={badge.variant} className="absolute right-3 top-3 text-[10px]">
-                    {badge.label}
-                  </Badge>
-                </button>
+                <div key={card.id} className="group relative text-left">
+                  <button
+                    onClick={() => setActiveId(card.id)}
+                    className="block w-full rounded-2xl focus:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+                    aria-label={`Select ${card.network} ${TIER_LABELS[card.tier]} card`}
+                  >
+                    <CardVisual
+                      card={toBankCard(card)}
+                      className={
+                        activeId === card.id ? "ring-2 ring-primary ring-offset-2 ring-offset-background" : ""
+                      }
+                    />
+                  </button>
+                  <div className="absolute right-3 top-3 z-10 flex items-center gap-2">
+                    <Badge variant={badge.variant} className="text-[10px]">
+                      {badge.label}
+                    </Badge>
+                    {removable && (
+                      <AlertDialog>
+                        <AlertDialogTrigger asChild>
+                          <Button
+                            variant="destructive"
+                            size="icon"
+                            className="h-7 w-7 rounded-full shadow-md"
+                            aria-label={`Remove declined ${card.network} ${TIER_LABELS[card.tier]} card`}
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </Button>
+                        </AlertDialogTrigger>
+                        <AlertDialogContent>
+                          <AlertDialogHeader>
+                            <AlertDialogTitle>Remove this card?</AlertDialogTitle>
+                            <AlertDialogDescription>
+                              This removes the declined {card.network} {TIER_LABELS[card.tier]} card
+                              (ending {card.last4}) from your wallet. This only affects your view — it
+                              does not reverse the administrator&apos;s decision.
+                            </AlertDialogDescription>
+                          </AlertDialogHeader>
+                          <AlertDialogFooter>
+                            <AlertDialogCancel>Keep</AlertDialogCancel>
+                            <AlertDialogAction onClick={() => handleRemove(card)}>Remove</AlertDialogAction>
+                          </AlertDialogFooter>
+                        </AlertDialogContent>
+                      </AlertDialog>
+                    )}
+                  </div>
+                </div>
               )
             })}
           </div>

@@ -62,6 +62,9 @@ export interface ClientCard {
   submittedAt?: string
   decidedAt?: string
   decisionNote?: string
+  /** Client dismissed a declined/cancelled card from their wallet view. Stored
+   *  in `payload.record` so the card stays hidden across devices. */
+  dismissed?: boolean
 }
 
 export const TIER_LABELS: Record<CardTier, string> = {
@@ -129,6 +132,10 @@ function cardFromApproval(rec: ApprovalRecord): ClientCard | null {
   const p = rec.payload as { card?: Partial<ClientCard> & { id: string }; record?: Partial<ClientCard> } | undefined
   const finalized = p?.card
   const clientEdits = p?.record
+  // The client dismissed this (declined/cancelled) card from their wallet.
+  // Hide it everywhere — the flag lives on the server record so it persists
+  // across devices and survives the 30s re-hydrate.
+  if (clientEdits?.dismissed) return null
   // While pending there is no finalized card yet; show the requested card.
   const base = finalized ?? (clientEdits as (Partial<ClientCard> & { id: string }) | undefined)
   if (!base?.id) return null
@@ -310,10 +317,15 @@ export function CardRequestsProvider({ children }: { children: React.ReactNode }
   const deleteCard: CardRequestsContextValue["deleteCard"] = (id) => {
     const target = cards.find((c) => c.id === id)
     setCards(cards.filter((c) => c.id !== id))
-    // Removing a still-pending request cancels it server-side; decided cards are
-    // server-owned and will re-hydrate (a delete is a local view action only).
-    if (target?.approvalId && target.status === "pending") {
+    if (!target?.approvalId) return
+    if (target.status === "pending") {
+      // A still-pending request is cancelled server-side.
       void cancelMyApproval(target.approvalId).then(() => void refresh())
+    } else {
+      // A decided card (declined/cancelled/active) is server-owned and would
+      // re-hydrate on the next refresh, so persist a dismissal flag to keep it
+      // hidden from the wallet across every device.
+      void persistCardEdit(target, { dismissed: true })
     }
   }
 
