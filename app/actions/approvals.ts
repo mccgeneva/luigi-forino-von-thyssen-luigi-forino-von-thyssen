@@ -16,6 +16,12 @@ import {
   assertOwnerSolvent,
 } from "@/lib/ledger-db"
 import { convertCurrency } from "@/lib/fx"
+import { getAccountLimits } from "@/lib/account-limits-db"
+import {
+  limitCap,
+  assessPaymentAgainstLimits,
+  limitBlockMessage,
+} from "@/lib/account-limits-eval"
 import { planReservation, formatMoney, type ReservationPlan } from "@/lib/fund-reservation"
 import { buildTradingFundPosts, TRADING_FUND_MONTHLY_ROI, type TradingFundPauseWindow } from "@/lib/trading-fund"
 import type { LedgerEntry } from "@/lib/ledger-store"
@@ -173,6 +179,69 @@ export async function submitApproval(input: SubmitApprovalInput): Promise<Submit
     } catch (err) {
       console.log("[v0] trading_fund solvency guard failed:", (err as Error).message)
       return { ok: false, error: "Your available balance could not be verified. Please try again." }
+    }
+  }
+
+  // Outgoing payments must respect the administrator-configured account limits
+  // (Daily Limit + Monthly Volume). This is the AUTHORITATIVE hard block — the
+  // Payments page also pre-checks for a friendly message, but a client-only
+  // guard is bypassable (stale state, another device, a direct mirror call), so
+  // enforcement must live here where every submission passes. The value counted
+  // is the payment PRINCIPAL (what is sent to the beneficiary), converted into
+  // the limit's currency; the 2% platform fee is not counted toward the cap.
+  // Unlimited (or an unset 0) figure = no cap, so this never blocks by default.
+  if (input.kind === "payment") {
+    try {
+      const limits = await getAccountLimits(session.id)
+      const dailyCap = limitCap(limits.dailyLimitAmount, limits.dailyLimitUnlimited)
+      const monthlyCap = limitCap(limits.monthlyVolumeAmount, limits.monthlyVolumeUnlimited)
+      // Only do the (slightly costlier) window summation when a cap is actually set.
+      if (dailyCap != null || monthlyCap != null) {
+        const principalOf = (amount: number | null, payload?: Record<string, unknown>): number => {
+          const rec = payload?.record as { amount?: number } | undefined
+          if (typeof rec?.amount === "number" && Number.isFinite(rec.amount)) return rec.amount
+          return Number(amount) || 0
+        }
+        const attempted = convertCurrency(
+          principalOf(input.amount ?? null, input.payload),
+          input.currency || BASE_CURRENCY,
+          limits.currency,
+        )
+        const now = new Date()
+        const dayStart = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())
+        const monthStart = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)
+        const prior = await listApprovalsForUser(session.id, "payment")
+        let priorDaily = 0
+        let priorMonthly = 0
+        for (const r of prior) {
+          // Rejected / cancelled payments never left the account, so they don't count.
+          if (r.status === "rejected" || r.status === "cancelled") continue
+          const t = Date.parse(r.createdAt)
+          if (Number.isNaN(t)) continue
+          const value = convertCurrency(
+            principalOf(r.amount, r.payload),
+            r.currency || BASE_CURRENCY,
+            limits.currency,
+          )
+          if (t >= monthStart) priorMonthly += value
+          if (t >= dayStart) priorDaily += value
+        }
+        const assessment = assessPaymentAgainstLimits({
+          limits,
+          priorDailyTotal: priorDaily,
+          priorMonthlyTotal: priorMonthly,
+          amount: attempted,
+        })
+        if (!assessment.ok) {
+          return { ok: false, error: limitBlockMessage(assessment) }
+        }
+      }
+    } catch (err) {
+      // Fail OPEN on an unexpected error: the account limit is a policy control,
+      // not the solvency guard (balance is separately enforced by
+      // assertOwnerSolvent at approval), so a transient DB blip must not block
+      // all payments. The failure is logged for investigation.
+      console.log("[v0] payment limit guard failed:", (err as Error).message)
     }
   }
 
