@@ -8,7 +8,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { ADMIN_SESSION_KEY } from "@/lib/admin-config"
-import { verifyAdminGate, confirmAdminSession } from "@/app/actions/admin-session"
+  import { confirmAdminSession } from "@/app/actions/admin-session"
 import { AdminSwiftInspector } from "@/components/dashboard/admin-swift-inspector"
 import { SwiftRoutingQueue } from "@/components/admin/swift-routing-queue"
 
@@ -55,9 +55,28 @@ export default function AdminSwiftPage() {
     if (gateChecking) return
     setGateChecking(true)
     setGateError(null)
+    // Verify via the /api/admin/gate route (NOT the verifyAdminGate Server
+    // Action): the API route is not behind the /dashboard proxy, so it returns
+    // a deterministic JSON body with a real HTTP status rather than a redirect
+    // that a Server Action fetch would follow and fail to parse — which was
+    // surfacing as a misleading "session expired" / "could not verify" error
+    // even with the correct passcode. Authorization is still fully server-side.
     try {
-      const res = await verifyAdminGate(passcode.trim())
-      if (res.ok) {
+      const resp = await fetch("/api/admin/gate", {
+        method: "POST",
+        credentials: "include",
+        cache: "no-store",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ pin: passcode.trim() }),
+      })
+      if (!resp.ok) {
+        setGateError("Could not reach the server. Please check your connection and try again.")
+        return
+      }
+      const data = (await resp.json()) as
+        | { ok: true }
+        | { ok: false; reason: "unauthenticated" | "pin" | "error" }
+      if (data.ok) {
         setUnlocked(true)
         setGateError(null)
         setPasscode("")
@@ -66,13 +85,20 @@ export default function AdminSwiftPage() {
         } catch {
           // ignore
         }
-      } else if (res.reason === "forbidden") {
-        setGateError("This account is not authorized to access the Administrator Panel.")
-      } else {
+        return
+      }
+      if (data.reason === "unauthenticated") {
+        setGateError("Your session was not recognized. Redirecting you to sign in again…")
+        setTimeout(() => {
+          window.location.href = "/login?expired=inactivity"
+        }, 1400)
+      } else if (data.reason === "pin") {
         setGateError("Incorrect administrator passcode. Please try again.")
+      } else {
+        setGateError("Could not verify administrator access. Please try again.")
       }
     } catch {
-      setGateError("Could not verify administrator access. Please try again.")
+      setGateError("Could not reach the server. Please check your connection and try again.")
     } finally {
       setGateChecking(false)
     }
