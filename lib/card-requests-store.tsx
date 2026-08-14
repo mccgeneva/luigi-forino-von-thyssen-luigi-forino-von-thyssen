@@ -41,9 +41,13 @@ export interface ClientCard {
   network: CardNetwork
   tier: CardTier
   format: CardFormat
+  /** Full card number (PAN), entered by the administrator at issuance. When
+   *  present it is the real number shown to the client; `last4` is derived
+   *  from it. Optional for legacy cards issued before manual entry existed. */
+  number?: string
   last4: string
   expiry: string
-  /** 3-digit card security code (CVV/CVC), generated at issuance. */
+  /** 3-digit card security code (CVV/CVC), entered by the administrator. */
   cvv: string
   currency: string
   monthlyLimit: number
@@ -157,7 +161,13 @@ function hydrateCard(raw: Partial<ClientCard> & { id: string }): ClientCard {
     network: (raw.network as CardNetwork) ?? "Visa",
     tier,
     format: (raw.format as CardFormat) ?? "physical",
-    last4: raw.last4 ?? genLast4(),
+    number: typeof raw.number === "string" && raw.number.trim() ? raw.number : undefined,
+    // Prefer a last4 derived from the admin-entered full number so the two
+    // never disagree; fall back to a stored last4, then a generated one.
+    last4:
+      (typeof raw.number === "string" && raw.number.replace(/\D/g, "").slice(-4)) ||
+      raw.last4 ||
+      genLast4(),
     expiry: raw.expiry ?? genExpiry(),
     cvv: raw.cvv ?? genCvv(),
     currency: raw.currency ?? "EUR",

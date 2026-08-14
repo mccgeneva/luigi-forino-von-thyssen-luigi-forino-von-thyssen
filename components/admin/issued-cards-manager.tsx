@@ -61,8 +61,10 @@ interface IssuedCard {
     format?: CardFormat
     currency?: string
     monthlyLimit?: number
+    number?: string
     last4?: string
     expiry?: string
+    cvv?: string
     features?: string[]
     status?: string
   }
@@ -80,6 +82,35 @@ interface EditState {
   limit: string
   features: string[]
   status: "active" | "blocked"
+  number: string
+  expiry: string
+  cvv: string
+}
+
+/** Digits only. */
+function cardDigits(value: string): string {
+  return value.replace(/\D/g, "")
+}
+/** Format a PAN as space-separated groups of 4 (max 19 digits). */
+function formatPan(value: string): string {
+  return cardDigits(value).slice(0, 19).replace(/(.{4})/g, "$1 ").trim()
+}
+/** Format expiry input progressively as MM/YY. */
+function formatExpiryInput(value: string): string {
+  const d = cardDigits(value).slice(0, 4)
+  return d.length <= 2 ? d : `${d.slice(0, 2)}/${d.slice(2)}`
+}
+/** Validate manually-entered card credentials; returns an error string or null. */
+function validateCardCredentials(number: string, expiry: string, cvv: string): string | null {
+  const digits = cardDigits(number)
+  if (digits.length < 12 || digits.length > 19) return "Enter a valid card number (12–19 digits)."
+  const m = expiry.match(/^(\d{2})\/(\d{2})$/)
+  if (!m) return "Enter the expiry date as MM/YY."
+  const month = Number(m[1])
+  if (month < 1 || month > 12) return "The expiry month must be between 01 and 12."
+  const code = cardDigits(cvv)
+  if (code.length < 3 || code.length > 4) return "Enter a valid CVV (3 or 4 digits)."
+  return null
 }
 
 function formatDate(iso: string | null): string {
@@ -168,6 +199,9 @@ export function IssuedCardsManager() {
       limit: String(target.card.monthlyLimit ?? 0),
       features: Array.isArray(target.card.features) ? target.card.features : [],
       status: target.status === "blocked" ? "blocked" : "active",
+      number: target.card.number ? formatPan(target.card.number) : "",
+      expiry: target.card.expiry ?? "",
+      cvv: target.card.cvv ?? "",
     })
   }
 
@@ -200,6 +234,22 @@ export function IssuedCardsManager() {
       toast.error("Enter a valid monthly limit greater than 0.")
       return
     }
+    // Credentials are optional on EDIT: only validate + update them when the
+    // administrator has actually entered a full number here (so editing just the
+    // limit on a card never forces re-typing the PAN). Any entry is validated.
+    const enteredDigits = cardDigits(edit.number)
+    const credentialFields: Record<string, unknown> = {}
+    if (enteredDigits.length > 0 || edit.expiry.trim() || edit.cvv.trim()) {
+      const credError = validateCardCredentials(edit.number, edit.expiry, edit.cvv)
+      if (credError) {
+        toast.error(credError)
+        return
+      }
+      credentialFields.number = enteredDigits
+      credentialFields.last4 = enteredDigits.slice(-4)
+      credentialFields.expiry = edit.expiry
+      credentialFields.cvv = cardDigits(edit.cvv)
+    }
     setSaving(true)
     let res: { ok: boolean; error?: string }
     try {
@@ -213,6 +263,7 @@ export function IssuedCardsManager() {
         monthlyLimit: numericLimit,
         features: edit.features,
         status: edit.status,
+        ...credentialFields,
       })
     } catch {
       res = { ok: false, error: "Could not reach the server." }
@@ -454,6 +505,54 @@ export function IssuedCardsManager() {
                       <SelectItem value="blocked">Frozen</SelectItem>
                     </SelectContent>
                   </Select>
+                </div>
+              </div>
+              <div className="space-y-3 rounded-lg border border-border bg-secondary/20 p-3">
+                <div className="flex items-center gap-2">
+                  <CreditCard className="h-4 w-4 text-primary" />
+                  <p className="text-sm font-medium">Card credentials</p>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  {edit.target.card.number
+                    ? "Update the card number, expiry or CVV. These are shown to the client exactly as typed."
+                    : "This card has no stored number yet. Enter the real number, expiry and CVV to set them, or leave blank to keep the current values."}
+                </p>
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <div className="grid gap-2 sm:col-span-2">
+                    <Label>Card number</Label>
+                    <Input
+                      inputMode="numeric"
+                      autoComplete="off"
+                      placeholder="1234 5678 9012 3456"
+                      value={edit.number}
+                      onChange={(e) => setEdit((p) => (p ? { ...p, number: formatPan(e.target.value) } : p))}
+                      className="font-mono"
+                    />
+                  </div>
+                  <div className="grid gap-2">
+                    <Label>Expiry (MM/YY)</Label>
+                    <Input
+                      inputMode="numeric"
+                      autoComplete="off"
+                      placeholder="MM/YY"
+                      value={edit.expiry}
+                      onChange={(e) =>
+                        setEdit((p) => (p ? { ...p, expiry: formatExpiryInput(e.target.value) } : p))
+                      }
+                      className="font-mono"
+                    />
+                  </div>
+                  <div className="grid gap-2">
+                    <Label>CVV</Label>
+                    <Input
+                      inputMode="numeric"
+                      autoComplete="off"
+                      placeholder="123"
+                      value={edit.cvv}
+                      onChange={(e) => setEdit((p) => (p ? { ...p, cvv: cardDigits(e.target.value).slice(0, 4) } : p))}
+                      className="font-mono"
+                    />
+                  </div>
                 </div>
               </div>
               <div className="space-y-2">

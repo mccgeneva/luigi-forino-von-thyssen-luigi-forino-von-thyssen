@@ -56,8 +56,10 @@ type CardPayload = {
   currency?: string
   monthlyLimit?: number
   monthlySpent?: number
+  number?: string
   last4?: string
   expiry?: string
+  cvv?: string
   features?: string[]
   label?: string
   variant?: CardVariant
@@ -155,6 +157,18 @@ export async function POST(req: Request) {
       const statusIn = String(body.status ?? prev.status ?? "active")
       const status = statusIn === "blocked" ? "blocked" : "active"
 
+      // Optional credential update: the administrator can set/correct the real
+      // card number, expiry and CVV. Only apply when a number is supplied;
+      // otherwise the existing values are preserved via the `...prev` spread.
+      const credentials: Partial<CardPayload> = {}
+      const suppliedNumber = typeof body.number === "string" ? body.number.replace(/\D/g, "") : ""
+      if (suppliedNumber.length >= 12) {
+        credentials.number = suppliedNumber
+        credentials.last4 = suppliedNumber.slice(-4)
+        if (typeof body.expiry === "string" && body.expiry.trim()) credentials.expiry = body.expiry.trim()
+        if (typeof body.cvv === "string" && body.cvv.trim()) credentials.cvv = body.cvv.replace(/\D/g, "")
+      }
+
       // Write the authoritative values into BOTH `card` (the finalized base) and
       // `record` (the client-overlay that WINS in the wallet's materializer), so
       // the customer always sees exactly what the administrator set here.
@@ -167,6 +181,7 @@ export async function POST(req: Request) {
         monthlyLimit,
         features,
         status,
+        ...credentials,
         label: `${network} ${TIER_LABELS[tier]}`,
         variant: tierVariant(tier),
       }
