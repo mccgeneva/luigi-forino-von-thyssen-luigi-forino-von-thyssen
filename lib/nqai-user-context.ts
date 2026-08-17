@@ -7,6 +7,7 @@ import { listCertificateRequestsForUser } from "@/lib/certificates-db"
 import { listSkrRecordsForUser, listSkrRequestsForUser } from "@/lib/skr-db"
 import { listBeneficiariesForUser } from "@/lib/beneficiaries-db"
 import { listNotificationsForUser, countUnreadForUser } from "@/lib/notifications-db"
+import { buildBankingPayload, type BankingPayload } from "@/lib/banking-coordinates"
 
 /**
  * Structured, server-only snapshot of the signed-in user used both to (a) inject
@@ -29,6 +30,9 @@ export interface NqaiUserSnapshot {
   relationship: string
   kycOnFile: number
   kycComplete: boolean
+  /** Bank-account coordinates (resolved from the Master account) shared with
+   *  NQAi.cloud so it can present IBAN/BIC and per-currency settlement details. */
+  banking: BankingPayload
   balances: Record<string, number>
   recentTransactions: {
     date: string
@@ -62,6 +66,7 @@ type SnapshotProfile = {
   accountBadge?: string
   kycDocuments?: unknown[]
   passportMeta?: unknown
+  banking?: { label: string; value: string }[]
 }
 
 /** Best-effort: returns null when there is no authenticated session. */
@@ -109,6 +114,16 @@ async function buildSnapshotForAccount(
   const balances = availableByCurrency(ledger)
   const kycDocs = profile.kycDocuments ?? []
 
+  // Banking coordinates belong to the MASTER account (a Sub/Joint shares its
+  // Master's settlement details). When this account is itself the data owner
+  // the passed profile already carries them; otherwise read the Master's rows.
+  let bankingRows: { label: string; value: string }[] = profile.banking ?? []
+  if (dataOwnerId && dataOwnerId !== ownId) {
+    const ownerRec = await getDynamicUserById(dataOwnerId).catch(() => null)
+    if (ownerRec) bankingRows = ownerRec.profile.banking ?? []
+  }
+  const banking = buildBankingPayload(bankingRows)
+
   const allSkr = [...skrRecords, ...skrRequests]
   const skrPending = allSkr.filter((s) => /pending|review|submitted/i.test(s.status)).length
 
@@ -122,6 +137,7 @@ async function buildSnapshotForAccount(
     relationship,
     kycOnFile: kycDocs.length,
     kycComplete: kycDocs.length > 0 || Boolean(profile.passportMeta),
+    banking,
     balances,
     recentTransactions: ledger.slice(0, 6).map((e) => ({
       date: e.date.slice(0, 10),

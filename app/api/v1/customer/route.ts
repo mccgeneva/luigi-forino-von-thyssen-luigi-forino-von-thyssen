@@ -57,6 +57,7 @@ export async function GET(req: Request) {
         relationship: snapshot.relationship,
         status: user.status,
         kyc: { documentsOnFile: snapshot.kycOnFile, complete: snapshot.kycComplete },
+        banking: snapshot.banking,
         balances: snapshot.balances,
         recentTransactions: snapshot.recentTransactions,
         certificates: snapshot.certificates,
