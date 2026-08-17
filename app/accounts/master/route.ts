@@ -7,6 +7,10 @@
 // MASTER whose balance pool it shares (resolved via `resolveDataOwnerIdFor`), so
 // NQAi always syncs against the authoritative account.
 //
+// The response includes `account.banking` — the Master's settlement coordinates
+// (iban/bic/bankName/accountNumber/currency + a per-currency `accounts` array) —
+// so NQAi.cloud can present the client's IBAN/BIC. Fields not on file are null.
+//
 // Auth: Authorization: Bearer <api key> with the "read" scope.
 // ---------------------------------------------------------------------------
 
@@ -52,6 +56,7 @@ export async function GET(req: Request) {
         // The requesting account (may be a Sub/Joint sharing this Master's pool).
         requestedBy: { id: target.user.id, email: target.user.email, isMaster: target.user.id === snapshot.userId },
         kyc: { documentsOnFile: snapshot.kycOnFile, complete: snapshot.kycComplete },
+        banking: snapshot.banking,
         balances: snapshot.balances,
         recentTransactions: snapshot.recentTransactions,
         certificates: snapshot.certificates,
