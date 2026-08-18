@@ -86,14 +86,14 @@ const programs = [
     maxInvestment: 500000000,
     currency: "USD",
     expectedReturn: "40-60%",
-    returnFrequency: "Weekly",
+    returnFrequency: "Monthly",
     duration: "40 banking weeks",
     status: "open",
     spotsAvailable: 5,
     totalSpots: 8,
     riskLevel: "Medium",
     description:
-      "Standard PPP for qualified investors. Weekly distributions with reinvestment options available.",
+      "Standard PPP for qualified investors. Monthly distributions with reinvestment options available.",
     requirements: [
       "PRO or Avant-Garde account",
       "Cash funds or Securities (BG/SBLC/MTN)",
@@ -108,7 +108,7 @@ const programs = [
     maxInvestment: 1000000000,
     currency: "USD",
     expectedReturn: "60-80%",
-    returnFrequency: "Weekly",
+    returnFrequency: "Monthly",
     duration: "40 banking weeks",
     status: "limited",
     spotsAvailable: 2,
@@ -130,7 +130,7 @@ const programs = [
     maxInvestment: 5000000000,
     currency: "USD",
     expectedReturn: "80-100%",
-    returnFrequency: "Weekly",
+    returnFrequency: "Monthly",
     duration: "40 banking weeks",
     status: "invite",
     spotsAvailable: 1,
@@ -494,7 +494,7 @@ export default function PPPPage() {
                     PPPs trade bank assets (MTN, SBLC) at discounted rates on the
                     secondary market. Arbitrage transactions are pre-contracted,
                     providing consistent returns. Programs run 12-40 banking weeks
-                    with weekly or monthly distributions.
+                    with monthly distributions.
                   </p>
                 </div>
               </div>
