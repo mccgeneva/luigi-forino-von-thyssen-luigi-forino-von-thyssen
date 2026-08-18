@@ -141,7 +141,6 @@ const programs = [
     requirements: [
       "Avant-Garde account",
       "Direct relationship with trading desk",
-      "In-person verification meeting",
     ],
   },
 ]
