@@ -74,7 +74,7 @@ export function paymentRequests() {
 export function pppRequests() {
   return [
     { id: "PPP-DEMO-0001", programId: "mcc-platinum-40", programName: "MCC Platinum Yield Programme", expectedReturn: "40% per annum", returnFrequency: "Monthly", duration: "12 months", currency: "USD", amount: 150_000_000, sourceOfFunds: "Institutional capital settlement", payoutAccount: "Master Account (USD)", status: "approved", submittedAt: daysAgo(80), decidedAt: daysAgo(78) },
-    { id: "PPP-DEMO-0002", programId: "mcc-managed-buysell", programName: "Managed Buy/Sell Trade Programme", expectedReturn: "6.5% per month", returnFrequency: "Weekly", duration: "40 weeks", currency: "EUR", amount: 200_000_000, sourceOfFunds: "Mandate funding", payoutAccount: "Master Account (EUR)", status: "approved", submittedAt: daysAgo(60), decidedAt: daysAgo(58) },
+    { id: "PPP-DEMO-0002", programId: "mcc-managed-buysell", programName: "Managed Buy/Sell Trade Programme", expectedReturn: "6.5% per month", returnFrequency: "Monthly", duration: "40 weeks", currency: "EUR", amount: 200_000_000, sourceOfFunds: "Mandate funding", payoutAccount: "Master Account (EUR)", status: "approved", submittedAt: daysAgo(60), decidedAt: daysAgo(58) },
     { id: "PPP-DEMO-0003", programId: "mcc-private-placement", programName: "Private Placement Programme (PPP)", expectedReturn: "100% per annum", returnFrequency: "Quarterly", duration: "10 months", currency: "CHF", amount: 80_000_000, sourceOfFunds: "Yield programme distribution", payoutAccount: "Master Account (CHF)", status: "pending", submittedAt: daysAgo(3) },
   ]
 }
