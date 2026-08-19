@@ -23,6 +23,7 @@ import {
   limitBlockMessage,
 } from "@/lib/account-limits-eval"
 import { planReservation, formatMoney, type ReservationPlan } from "@/lib/fund-reservation"
+import { cardFeeFor, formatCardFee, CARD_FEE_CURRENCY } from "@/lib/card-fees"
 import { buildTradingFundPosts, TRADING_FUND_MONTHLY_ROI, type TradingFundPauseWindow } from "@/lib/trading-fund"
 import type { LedgerEntry } from "@/lib/ledger-store"
 import { insertNotification } from "@/lib/notifications-db"
@@ -182,6 +183,39 @@ export async function submitApproval(input: SubmitApprovalInput): Promise<Submit
     }
   }
 
+  // Requesting a new card carries a one-time issuance fee charged to the Master
+  // Account (virtual €300 / physical €1,000). This gate REJECTS the request in
+  // real time if the balance can't cover the fee, so no card and no charge are
+  // created. Authoritative (a client-only check is bypassable). The actual debit
+  // is posted after the approval row is inserted (see below).
+  if (input.kind === "card") {
+    const format = (input.payload?.card as { format?: string } | undefined)?.format
+    const fee = cardFeeFor(format)
+    try {
+      const ownerId = await resolveDataOwnerIdFor(session.id)
+      const available = availableByCurrency(await readLedgerEntries(ownerId))
+      const availableEur = Object.entries(available).reduce(
+        (sum, [cur, amt]) => sum + convertCurrency(amt, cur, CARD_FEE_CURRENCY),
+        0,
+      )
+      if (fee > availableEur + 0.01) {
+        return {
+          ok: false,
+          error: `Requesting a ${
+            format === "virtual" ? "virtual" : "physical"
+          } card carries a one-time ${formatCardFee(
+            fee,
+          )} issuance fee, but your Master Account has only ${formatCardFee(
+            Math.max(0, availableEur),
+          )} available. Please fund your account and try again.`,
+        }
+      }
+    } catch (err) {
+      console.log("[v0] card fee solvency guard failed:", (err as Error).message)
+      return { ok: false, error: "Your available balance could not be verified. Please try again." }
+    }
+  }
+
   // Outgoing payments must respect the administrator-configured account limits
   // (Daily Limit + Monthly Volume). This is the AUTHORITATIVE hard block — the
   // Payments page also pre-checks for a friendly message, but a client-only
@@ -268,6 +302,47 @@ export async function submitApproval(input: SubmitApprovalInput): Promise<Submit
       initiatedById: requiresMasterApproval ? session.id : null,
       initiatedByName: requiresMasterApproval ? session.profile.fullName : null,
     })
+
+    // Charge the one-time card issuance fee to the Master Account. The solvency
+    // gate above already verified affordability; here we post the debit with a
+    // DETERMINISTIC id (`CARD-FEE-<approvalId>`) so a retry can never double-
+    // charge. If the debit fails we roll back the just-created request so the
+    // client is never left with a card they weren't charged for.
+    if (input.kind === "card") {
+      const format = (input.payload?.card as { format?: string } | undefined)?.format ?? "physical"
+      const fee = cardFeeFor(format)
+      try {
+        const ownerId = await resolveDataOwnerIdFor(session.id)
+        await upsertLedgerEntry(ownerId, {
+          id: `CARD-FEE-${request.id}`,
+          direction: "debit",
+          amount: fee,
+          currency: CARD_FEE_CURRENCY,
+          status: "completed",
+          date: new Date().toISOString(),
+          counterparty: "MCC Capital — Card Issuance",
+          bank: "MCC Capital",
+          reference: request.id,
+          comment: `One-time issuance fee for the requested ${format} card (${request.id}).`,
+          category: "Card Issuance Fee",
+        })
+        try {
+          await insertNotification({
+            userId: ownerId,
+            tone: "info",
+            title: "Card issuance fee charged",
+            body: `A one-time ${formatCardFee(fee)} fee was charged for your new ${format} card request (${request.id}), now pending approval.`,
+            href: "/dashboard/cards",
+          })
+        } catch {
+          // notification is non-critical
+        }
+      } catch (feeErr) {
+        await deleteApprovalForUser(request.id, session.id).catch(() => {})
+        console.log("[v0] card issuance fee charge failed:", (feeErr as Error).message)
+        return { ok: false, error: "The card issuance fee could not be processed. Please try again." }
+      }
+    }
 
     // Let the Master know one of their Sub-accounts needs their consent.
     if (requiresMasterApproval && session.masterId) {

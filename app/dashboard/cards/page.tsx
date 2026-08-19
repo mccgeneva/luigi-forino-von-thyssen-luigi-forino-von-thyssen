@@ -25,7 +25,9 @@ import {
   TIER_LABELS,
   type ClientCard,
   type NewCardRequest,
+  type RequestCardResult,
 } from "@/lib/card-requests-store"
+import { cardFeeFor, formatCardFee } from "@/lib/card-fees"
 import { RequestCardDialog } from "@/components/dashboard/cards/request-card-dialog"
 import { CardDetailPanel } from "@/components/dashboard/cards/card-detail-panel"
 
@@ -94,23 +96,33 @@ export default function CardsPage() {
     }
   }, [cards])
 
-  const handleRequest = (req: NewCardRequest) => {
-    const card = requestCard(req)
-    setActiveId(card.id)
+  const handleRequest = async (req: NewCardRequest): Promise<RequestCardResult> => {
+    const feeLabel = formatCardFee(cardFeeFor(req.format))
+    // The server charges the one-time issuance fee and rejects in real time if
+    // the Master balance can't cover it — surface that reason immediately.
+    const result = await requestCard(req)
+    if (!result.ok) {
+      toast.error("Request declined", { description: result.error })
+      return result
+    }
+    setActiveId(result.card.id)
     log({
-      action: `Requested a new ${req.network} ${TIER_LABELS[req.tier]} card`,
+      action: `Requested a new ${req.network} ${TIER_LABELS[req.tier]} card — ${feeLabel} fee charged`,
       category: "Cards",
       details: {
-        summary: `Client requested a new ${req.network} ${TIER_LABELS[req.tier]} ${req.format} card with a ${req.currency} ${req.requestedLimit.toLocaleString("en-US")} monthly limit${req.purpose ? ` for ${req.purpose}` : ""}. Awaiting administrator approval.`,
+        summary: `Client requested a new ${req.network} ${TIER_LABELS[req.tier]} ${req.format} card with a ${req.currency} ${req.requestedLimit.toLocaleString("en-US")} monthly limit${req.purpose ? ` for ${req.purpose}` : ""}. A one-time ${feeLabel} issuance fee was debited from the Master Account. Awaiting administrator approval.`,
         network: req.network,
         tier: TIER_LABELS[req.tier],
+        format: req.format,
         requestedLimit: `${req.currency} ${req.requestedLimit.toLocaleString("en-US")}`,
+        issuanceFee: feeLabel,
         purpose: req.purpose ?? "(not specified)",
       },
     })
     toast.success("Card request submitted", {
-      description: "MCC Capital will review and activate your card shortly.",
+      description: `${feeLabel} issuance fee charged. MCC Capital will review and activate your card shortly.`,
     })
+    return result
   }
 
   const holder = user.cardHolderPerson || user.cardHolderCompany || ""
