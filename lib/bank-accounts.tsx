@@ -17,6 +17,8 @@ import { useCurrentUser } from "@/lib/use-current-user"
 import { getMyMasterBanking, type MyMasterBanking } from "@/app/actions/admin-users"
   import { type AccountLimits } from "@/app/actions/account-limits"
 import { validateIban } from "@/lib/iban-swift"
+import { useGateway, reconciledTotal, type GatewayAccount } from "@/lib/gateway-store"
+import { ACCOUNT_TYPES } from "@/lib/gateway-catalog"
 import type { ProfileItem } from "@/lib/users"
 
 export type BankAccount = {
@@ -322,6 +324,67 @@ function bankAccountFromApproval(rec: ApprovalRecord): BankAccount | null {
 }
 
 /**
+ * Rebuild a BankAccount from an APPROVED Payment Gateway account.
+ *
+ * When a client adds an account through the Payment Gateway and the
+ * administrator approves it, partner-bank coordinates (IBAN / BIC / remittance
+ * reference) are assigned. That approved account must then surface on the
+ * client's Bank Accounts page automatically — this mapper folds it in alongside
+ * the master settlement accounts and any "Add Bank Account" registrations.
+ *
+ * Only ACTIVE (approved) gateway accounts are mapped; pending / rejected /
+ * closed ones stay in the Payment Gateway view until they are approved. Inbound
+ * funds collected at the gateway are reconciled into the Master Account ledger,
+ * so the per-account "received" figure is surfaced on the `tracked*` fields and
+ * kept OUT of the currency totals (balance stays 0) to avoid double-counting the
+ * master balance — the same rule used for registered external accounts.
+ */
+function bankAccountFromGateway(gw: GatewayAccount): BankAccount | null {
+  if (gw.status !== "active") return null
+  const c = gw.coordinates
+  const bankName = c?.partnerBankName || "Payment Gateway Partner Bank"
+  const iban = c?.iban || ""
+  const ibanCheck = iban ? validateIban(iban) : null
+  const country = (ibanCheck?.valid ? ibanCheck.countryName : "") || "—"
+  const countryCode = (ibanCheck?.valid ? ibanCheck.countryCode : "") || ""
+  const received = reconciledTotal(gw)
+  const typeLabel = ACCOUNT_TYPES[gw.type]?.label ?? "Payment Gateway Account"
+  const decided = gw.decidedAt ?? gw.submittedAt ?? new Date().toISOString()
+
+  return {
+    id: gw.id,
+    bankName,
+    bankLogo: bankMonogram(bankName),
+    country,
+    countryCode,
+    rating: "NR",
+    accountName: gw.company || gw.accountHolder || "—",
+    accountNumber: c?.accountNumber || c?.routingNumber || c?.reference || "—",
+    iban: iban || "—",
+    swift: c?.bic || "—",
+    currency: gw.currency,
+    balance: 0,
+    availableBalance: 0,
+    reservedBalance: 0,
+    accountType: typeLabel,
+    status: "active",
+    openDate: decided.slice(0, 10),
+    lastActivity: decided,
+    dailyLimit: 0,
+    monthlyVolume: 0,
+    relationship: "Payment Gateway",
+    contactPerson: "MCC Client Services",
+    contactEmail: "admin@mccgva.ch",
+    branchAddress: country,
+    beneficiaryAddress: "Rue du Rhone 14, 1204 Geneva, Switzerland",
+    escrowDetails: c?.reference ? `Inbound remittance reference: ${c.reference}` : undefined,
+    trackedBalance: received,
+    trackedAvailable: received,
+    trackedReserved: 0,
+  }
+}
+
+/**
  * Build the client's full account list with live ledger balances overlaid.
  * The master EUR account reflects the live ledger balance; every additional
  * currency the client holds surfaces a dedicated settlement account. Accounts
@@ -336,6 +399,13 @@ export function normalizeAccountRef(value: string | undefined | null): string {
 
 export function useBankAccounts(): BankAccount[] {
   const { balanceFor, reservedFor, currencies, entries } = useLedger()
+  // The client's Payment Gateway accounts. Once the administrator APPROVES a
+  // gateway request it becomes "active" with assigned bank coordinates, and it
+  // is folded into the list below so it appears here automatically — no manual
+  // re-entry needed. Read from the shared gateway store (GatewayProvider wraps
+  // the dashboard), which polls/refreshes on focus so an approval in another
+  // session shows up without a reload.
+  const { accounts: gatewayAccounts } = useGateway()
   // Banking coordinates overlaid onto the master account (ACC-001). These MUST
   // come from the session's data owner — i.e. the MASTER account — not the
   // signed-in user's own profile. For a joint/sub account the administrator
@@ -531,5 +601,18 @@ export function useBankAccounts(): BankAccount[] {
     }
   }
 
-  return [...liveBaseAccounts.map(withLimits), ...extraCurrencyAccounts.map(withLimits), ...registered]
+  // Approved Payment Gateway accounts, mapped into BankAccount cards and
+  // de-duped against everything already assembled (settlement + registered).
+  const priorIds = new Set([...existingIds, ...registered.map((a) => a.id)])
+  const gatewayBankAccounts = gatewayAccounts
+    .map(bankAccountFromGateway)
+    .filter((a): a is BankAccount => a !== null)
+    .filter((a) => !priorIds.has(a.id))
+
+  return [
+    ...liveBaseAccounts.map(withLimits),
+    ...extraCurrencyAccounts.map(withLimits),
+    ...registered,
+    ...gatewayBankAccounts,
+  ]
 }
