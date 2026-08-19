@@ -1,0 +1,517 @@
+"use server"
+
+/**
+ * Internal Lending — a plain internal loan a customer can request for ANY
+ * amount, that the administrator evaluates (risk + repayment) and approves.
+ *
+ * This is DISTINCT from:
+ *   - Treasury "Capital Lending" (which finances the security DEPOSIT), and
+ *   - the AES / Treuhand private-investment scenario.
+ *
+ * On administrator approval the principal is credited IMMEDIATELY to the
+ * borrower's Master Account. The loan carries 3% p.a. debit interest by default
+ * (the administrator can override the rate) plus an optional one-time
+ * arrangement fee set by the administrator. The borrower repays, partially or
+ * in full, from their Master balance via `repayInternalLoan` (self-service).
+ *
+ * Design mirrors the self-contained `trading_fund` product: the loan lives in
+ * `approval_requests`, and ALL money movement is posted to the ledger with
+ * DETERMINISTIC, idempotent entry ids so retries / concurrent reads can never
+ * double-post:
+ *   - `ILOAN-<id>`            principal credit to the Master (on approval)
+ *   - `ILOAN-FEE-<id>`        one-time arrangement fee debit (on approval)
+ *   - `ILOAN-INT-<id>-M<n>`   monthly interest debit (reconciled server-side)
+ *   - `ILOAN-REPAY-<id>-<k>`  a repayment debit (self-service)
+ */
+
+import {
+  resolveCurrentSession,
+  resolveDataOwnerIdFor,
+  resolveEnvironmentMemberIds,
+  resolveAccountProfileById,
+} from "@/lib/session-user"
+import { adminActionAuthorized } from "@/lib/admin-auth"
+import {
+  getApprovalById,
+  insertApproval,
+  listAllApprovals,
+  listApprovalsForUser,
+  recordAdminDecision,
+  updateApprovalPayload,
+} from "@/lib/approvals-db"
+import {
+  readLedgerEntries,
+  upsertLedgerEntry,
+  availableByCurrency,
+} from "@/lib/ledger-db"
+import { convertCurrency } from "@/lib/fx"
+import { insertNotification } from "@/lib/notifications-db"
+import { logActivity } from "@/app/actions/log-activity"
+import {
+  readInternalLoanTerms,
+  outstandingInternalLoan,
+  internalLoanCreditId,
+  internalLoanFeeId,
+  internalLoanRepayId,
+  formatLoanMoney,
+  INTERNAL_LOAN_DEFAULT_RATE,
+  INTERNAL_LOAN_DEFAULT_CURRENCY,
+  type InternalLoanTerms,
+} from "@/lib/internal-loan"
+
+/** An internal-loan approval as the administrator panel needs it. */
+export interface AdminInternalLoan {
+  approvalId: string
+  userId: string
+  holder: string
+  company: string
+  email: string
+  status: string
+  requestedAmount: number
+  currency: string
+  purpose: string
+  repaymentPlan: string
+  collateralNote: string
+  createdAt: string
+  decidedAt: string | null
+  /** Effective terms once approved (rate/fee/activation). */
+  terms: InternalLoanTerms | null
+  outstanding: number
+}
+
+// ---------------------------------------------------------------------------
+// Client: apply for an internal loan
+// ---------------------------------------------------------------------------
+
+export type ApplyLoanResult =
+  | { ok: true; approvalId: string }
+  | { ok: false; error: string }
+
+export async function applyForInternalLoan(input: {
+  amount: number
+  currency?: string
+  purpose?: string
+  repaymentPlan?: string
+  collateralNote?: string
+}): Promise<ApplyLoanResult> {
+  const session = await resolveCurrentSession()
+  if (!session?.id) return { ok: false, error: "Your session has expired. Please sign in again." }
+  const holder = session.profile?.fullName ?? "Account holder"
+  const companyName = session.profile?.company ?? "—"
+
+  const amount = Number(input.amount)
+  if (!Number.isFinite(amount) || amount <= 0) {
+    return { ok: false, error: "Enter a valid loan amount greater than 0." }
+  }
+  const currency = (input.currency || INTERNAL_LOAN_DEFAULT_CURRENCY).toUpperCase()
+  const purpose = (input.purpose || "").trim()
+  const repaymentPlan = (input.repaymentPlan || "").trim()
+  const collateralNote = (input.collateralNote || "").trim()
+
+  try {
+    // Persist the request through the shared approvals backbone. Note we do NOT
+    // attach a ledgerEffect and internal_loan is NOT a CREDIT_KIND — the
+    // principal is credited by THIS module on approval (via ILOAN-<id>), so
+    // there is exactly one crediting path and no double-credit.
+    const id = `ILOAN-${Date.now().toString(36).toUpperCase()}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`
+    const record = {
+      id,
+      holder,
+      amount,
+      currency,
+      annualRate: INTERNAL_LOAN_DEFAULT_RATE, // proposed default; admin may override on approval
+      arrangementFee: 0,
+      purpose,
+      repaymentPlan,
+      collateralNote,
+    }
+    await insertApproval({
+      id,
+      userId: session.id,
+      kind: "internal_loan",
+      title: `Internal loan — ${formatLoanMoney(amount, currency)}`,
+      summary: `${holder} (${companyName}) requested an internal loan of ${formatLoanMoney(
+        amount,
+        currency,
+      )}${purpose ? ` for ${purpose}` : ""}. Awaiting administrator risk evaluation and approval.`,
+      amount,
+      currency,
+      payload: { record },
+      requiresMasterApproval: false,
+    })
+
+    await logActivity({
+      action: `Requested an internal loan of ${formatLoanMoney(amount, currency)}`,
+      category: "Treasury",
+      details: {
+        summary: `Internal loan request ${id} for ${formatLoanMoney(amount, currency)}${
+          purpose ? ` (${purpose})` : ""
+        }. Pending administrator evaluation of risk and repayment guarantee.`,
+        referenceId: id,
+        amount: formatLoanMoney(amount, currency),
+        purpose: purpose || "(not specified)",
+      },
+    })
+
+    return { ok: true, approvalId: id }
+  } catch (err) {
+    console.log("[v0] applyForInternalLoan failed:", (err as Error).message)
+    return { ok: false, error: "Your loan request could not be submitted. Please try again." }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Admin: list / approve / reject (passcode verified server-side)
+// ---------------------------------------------------------------------------
+
+async function adminOk(passcode: string): Promise<boolean> {
+  return adminActionAuthorized(passcode)
+}
+
+export async function listInternalLoansAdmin(passcode: string): Promise<AdminInternalLoan[]> {
+  if (!(await adminOk(passcode))) return []
+  try {
+    const rows = await listAllApprovals({ kind: "internal_loan" })
+    const out: AdminInternalLoan[] = []
+    for (const req of rows) {
+      const record = (req.payload as { record?: Record<string, unknown> } | undefined)?.record ?? {}
+      const profile = await resolveAccountProfileById(req.userId).catch(() => null)
+      const terms = readInternalLoanTerms(req)
+      let outstanding = 0
+      if (req.status === "approved" && terms) {
+        const ownerId = await resolveDataOwnerIdFor(req.userId).catch(() => req.userId)
+        outstanding = outstandingInternalLoan(req, await readLedgerEntries(ownerId))
+      }
+      out.push({
+        approvalId: req.id,
+        userId: req.userId,
+        holder: profile?.fullName ?? (record.holder as string) ?? "—",
+        company: profile?.company ?? "—",
+        email: profile?.email ?? "—",
+        status: req.status,
+        requestedAmount: Number(record.amount ?? req.amount ?? 0),
+        currency: (record.currency as string) ?? req.currency ?? INTERNAL_LOAN_DEFAULT_CURRENCY,
+        purpose: (record.purpose as string) ?? "",
+        repaymentPlan: (record.repaymentPlan as string) ?? "",
+        collateralNote: (record.collateralNote as string) ?? "",
+        createdAt: req.createdAt,
+        decidedAt: req.decidedAt ?? null,
+        terms,
+        outstanding,
+      })
+    }
+    return out
+  } catch (err) {
+    console.log("[v0] listInternalLoansAdmin failed:", (err as Error).message)
+    return []
+  }
+}
+
+export type AdminLoanResult = { ok: true } | { ok: false; error: string }
+
+/**
+ * Approve an internal loan: stamp the effective terms (rate + optional fee),
+ * mark the approval approved, and IMMEDIATELY credit the principal to the
+ * borrower's Master Account (plus post the one-time fee debit if any). All
+ * ledger posts are idempotent by deterministic id.
+ */
+export async function approveInternalLoanAdmin(input: {
+  passcode: string
+  approvalId: string
+  annualRatePct?: number // e.g. 3 for 3% p.a.
+  arrangementFee?: number // one-time, in the loan currency
+  note?: string
+}): Promise<AdminLoanResult> {
+  if (!(await adminOk(input.passcode))) return { ok: false, error: "Administrator authorization failed." }
+  try {
+    const req = await getApprovalById(input.approvalId)
+    if (!req || req.kind !== "internal_loan") return { ok: false, error: "Loan request not found." }
+    if (req.status === "approved") return { ok: true } // already funded — idempotent
+
+    const record = (req.payload as { record?: Record<string, unknown> } | undefined)?.record ?? {}
+    const amount = Number(record.amount ?? req.amount ?? 0)
+    if (!(amount > 0)) return { ok: false, error: "This request has no valid amount." }
+    const currency = ((record.currency as string) ?? req.currency ?? INTERNAL_LOAN_DEFAULT_CURRENCY).toUpperCase()
+
+    const ratePct = Number(input.annualRatePct)
+    const annualRate = Number.isFinite(ratePct) && ratePct >= 0 ? ratePct / 100 : INTERNAL_LOAN_DEFAULT_RATE
+    const arrangementFee = Math.max(0, Number(input.arrangementFee ?? 0)) || 0
+    const activatedAt = new Date().toISOString()
+
+    const ownerId = await resolveDataOwnerIdFor(req.userId).catch(() => req.userId)
+
+    // 1) Credit the principal to the Master (idempotent).
+    await upsertLedgerEntry(ownerId, {
+      id: internalLoanCreditId(req.id),
+      direction: "credit",
+      amount,
+      currency,
+      status: "completed",
+      date: activatedAt,
+      counterparty: "MCC Capital — Internal Lending",
+      bank: "MCC Capital",
+      reference: req.id,
+      comment: `Internal loan drawdown (${req.id}) at ${(annualRate * 100).toFixed(2)}% p.a.`,
+      category: "Internal Loan Drawdown",
+    })
+
+    // 2) One-time arrangement fee debit, if the admin set one (idempotent).
+    if (arrangementFee > 0) {
+      await upsertLedgerEntry(ownerId, {
+        id: internalLoanFeeId(req.id),
+        direction: "debit",
+        amount: arrangementFee,
+        currency,
+        status: "completed",
+        date: activatedAt,
+        counterparty: "MCC Capital — Internal Lending",
+        bank: "MCC Capital",
+        reference: req.id,
+        comment: `One-time arrangement fee for internal loan ${req.id}.`,
+        category: "Internal Loan Fee",
+      })
+    }
+
+    // 3) Persist the effective terms + mark approved.
+    const nextRecord = {
+      ...record,
+      amount,
+      currency,
+      annualRate,
+      arrangementFee,
+      activatedAt,
+    }
+    await updateApprovalPayload(req.id, { ...(req.payload ?? {}), record: nextRecord })
+    await recordAdminDecision(req.id, "approved", "administrator", input.note ?? undefined)
+
+    // Best-effort notify + audit.
+    try {
+      await insertNotification({
+        userId: ownerId,
+        tone: "success",
+        title: "Internal loan approved & funded",
+        body: `Your internal loan of ${formatLoanMoney(amount, currency)} has been approved and credited to your Master Account at ${(annualRate * 100).toFixed(2)}% p.a.${
+          arrangementFee > 0 ? ` A one-time ${formatLoanMoney(arrangementFee, currency)} arrangement fee was applied.` : ""
+        }`,
+        href: "/dashboard/treasury",
+      })
+    } catch {
+      // non-critical
+    }
+    await logActivity({
+      action: `Approved internal loan ${req.id} — ${formatLoanMoney(amount, currency)} funded`,
+      category: "Treasury",
+      details: {
+        summary: `Administrator approved internal loan ${req.id} for ${formatLoanMoney(
+          amount,
+          currency,
+        )} at ${(annualRate * 100).toFixed(2)}% p.a.${
+          arrangementFee > 0 ? ` One-time arrangement fee ${formatLoanMoney(arrangementFee, currency)}.` : ""
+        } Principal credited to the Master Account.`,
+        referenceId: req.id,
+        annualRate: `${(annualRate * 100).toFixed(2)}%`,
+        arrangementFee: arrangementFee > 0 ? formatLoanMoney(arrangementFee, currency) : "none",
+      },
+    })
+
+    return { ok: true }
+  } catch (err) {
+    console.log("[v0] approveInternalLoanAdmin failed:", (err as Error).message)
+    return { ok: false, error: "The loan could not be approved. Please try again." }
+  }
+}
+
+export async function rejectInternalLoanAdmin(input: {
+  passcode: string
+  approvalId: string
+  reason?: string
+}): Promise<AdminLoanResult> {
+  if (!(await adminOk(input.passcode))) return { ok: false, error: "Administrator authorization failed." }
+  try {
+    const req = await getApprovalById(input.approvalId)
+    if (!req || req.kind !== "internal_loan") return { ok: false, error: "Loan request not found." }
+    if (req.status === "approved") {
+      return { ok: false, error: "This loan is already funded and cannot be rejected here — use repayment/settlement instead." }
+    }
+    await recordAdminDecision(req.id, "rejected", "administrator", input.reason ?? undefined)
+    try {
+      await insertNotification({
+        userId: req.userId,
+        tone: "warning",
+        title: "Internal loan declined",
+        body: `Your internal loan request was not approved.${input.reason ? ` Reason: ${input.reason}` : ""}`,
+        href: "/dashboard/treasury",
+      })
+    } catch {
+      // non-critical
+    }
+    await logActivity({
+      action: `Rejected internal loan ${req.id}`,
+      category: "Treasury",
+      details: { summary: `Administrator declined internal loan ${req.id}.${input.reason ? ` Reason: ${input.reason}` : ""}`, referenceId: req.id },
+    })
+    return { ok: true }
+  } catch (err) {
+    console.log("[v0] rejectInternalLoanAdmin failed:", (err as Error).message)
+    return { ok: false, error: "The loan could not be rejected. Please try again." }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Client: self-service repayment from the Master balance
+// ---------------------------------------------------------------------------
+
+export type RepayResult =
+  | { ok: true; repaid: number; outstanding: number }
+  | { ok: false; error: string }
+
+/**
+ * Repay part or all of an internal loan from the borrower's Master balance.
+ * Server-authoritative: the amount is clamped to the current outstanding, and
+ * the repayment can only proceed if the Master balance covers it. The debit is
+ * posted with a unique deterministic id per repayment so it shows in
+ * statements and is idempotent-safe under retries within the same second.
+ */
+export async function repayInternalLoan(input: {
+  approvalId: string
+  amount: number
+}): Promise<RepayResult> {
+  const session = await resolveCurrentSession()
+  if (!session?.id) return { ok: false, error: "Your session has expired. Please sign in again." }
+
+  const pay = Number(input.amount)
+  if (!Number.isFinite(pay) || pay <= 0) return { ok: false, error: "Enter a valid repayment amount." }
+
+  try {
+    const req = await getApprovalById(input.approvalId)
+    if (!req || req.kind !== "internal_loan") return { ok: false, error: "Loan not found." }
+
+    // Ownership: the loan must belong to the caller's environment (self, or a
+    // sub/master in the same account family).
+    const memberIds = await resolveEnvironmentMemberIds(session.id)
+    if (!memberIds.includes(req.userId)) return { ok: false, error: "You cannot repay this loan." }
+    if (req.status !== "approved") return { ok: false, error: "Only a funded loan can be repaid." }
+
+    const terms = readInternalLoanTerms(req)
+    if (!terms) return { ok: false, error: "Loan terms are unavailable." }
+
+    const ownerId = await resolveDataOwnerIdFor(req.userId).catch(() => req.userId)
+    const entries = await readLedgerEntries(ownerId)
+    const outstanding = outstandingInternalLoan(req, entries)
+    if (outstanding <= 0.01) return { ok: false, error: "This loan is already fully repaid." }
+
+    const repay = Math.min(pay, outstanding)
+
+    // Solvency: convert available balances into the loan currency (mirrors the
+    // approvals payment gate) and require coverage.
+    const available = availableByCurrency(entries)
+    const availableInCur = Object.entries(available).reduce(
+      (sum, [cur, amt]) => sum + convertCurrency(amt, cur, terms.currency),
+      0,
+    )
+    if (repay > availableInCur + 0.01) {
+      return {
+        ok: false,
+        error: `Your Master Account has only ${formatLoanMoney(
+          Math.max(0, availableInCur),
+          terms.currency,
+        )} available — not enough to repay ${formatLoanMoney(repay, terms.currency)}.`,
+      }
+    }
+
+    // Count existing repayment legs to make a fresh unique id.
+    const legCount = entries.filter((e) => e.id.startsWith(`ILOAN-REPAY-${req.id}-`)).length
+    await upsertLedgerEntry(ownerId, {
+      id: internalLoanRepayId(req.id, legCount + 1),
+      direction: "debit",
+      amount: repay,
+      currency: terms.currency,
+      status: "completed",
+      date: new Date().toISOString(),
+      counterparty: "MCC Capital — Internal Lending",
+      bank: "MCC Capital",
+      reference: req.id,
+      comment: `Repayment toward internal loan ${req.id}.`,
+      category: "Internal Loan Repayment",
+    })
+
+    const nowOutstanding = Math.max(0, outstanding - repay)
+
+    // If fully repaid, stamp the settlement so interest stops accruing.
+    if (nowOutstanding <= 0.01) {
+      const record = (req.payload as { record?: Record<string, unknown> } | undefined)?.record ?? {}
+      await updateApprovalPayload(req.id, {
+        ...(req.payload ?? {}),
+        record: { ...record, settledAt: new Date().toISOString() },
+      })
+    }
+
+    await logActivity({
+      action: `Repaid ${formatLoanMoney(repay, terms.currency)} on internal loan ${req.id}`,
+      category: "Treasury",
+      details: {
+        summary: `Repayment of ${formatLoanMoney(repay, terms.currency)} on internal loan ${req.id}. Outstanding now ${formatLoanMoney(
+          nowOutstanding,
+          terms.currency,
+        )}.`,
+        referenceId: req.id,
+      },
+    })
+
+    return { ok: true, repaid: repay, outstanding: nowOutstanding }
+  } catch (err) {
+    console.log("[v0] repayInternalLoan failed:", (err as Error).message)
+    return { ok: false, error: "The repayment could not be processed. Please try again." }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Client read: my loans (used by the store's server-list hook is separate; this
+// helper backs any direct server read if needed)
+// ---------------------------------------------------------------------------
+
+export async function myInternalLoanOutstanding(): Promise<{ total: number; currency: string }> {
+  const session = await resolveCurrentSession()
+  if (!session?.id) return { total: 0, currency: INTERNAL_LOAN_DEFAULT_CURRENCY }
+  try {
+    const mine = await listApprovalsForUser(session.id, "internal_loan")
+    const ownerId = await resolveDataOwnerIdFor(session.id).catch(() => session.id)
+    const entries = await readLedgerEntries(ownerId)
+    let total = 0
+    let currency = INTERNAL_LOAN_DEFAULT_CURRENCY
+    for (const req of mine) {
+      if (req.status !== "approved") continue
+      const terms = readInternalLoanTerms(req)
+      if (!terms) continue
+      currency = terms.currency
+      total += outstandingInternalLoan(req, entries)
+    }
+    return { total, currency }
+  } catch {
+    return { total: 0, currency: INTERNAL_LOAN_DEFAULT_CURRENCY }
+  }
+}
+
+/**
+ * Per-loan outstanding balances for the signed-in environment, keyed by the
+ * approval id. The client store merges these onto each loan record so the card
+ * can show a live "still owed" figure without persisting it in the approval.
+ */
+export async function listMyInternalLoanOutstanding(): Promise<Record<string, number>> {
+  const session = await resolveCurrentSession()
+  if (!session?.id) return {}
+  try {
+    const mine = await listApprovalsForUser(session.id, "internal_loan")
+    const ownerId = await resolveDataOwnerIdFor(session.id).catch(() => session.id)
+    const entries = await readLedgerEntries(ownerId)
+    const out: Record<string, number> = {}
+    for (const req of mine) {
+      if (req.status !== "approved") continue
+      if (!readInternalLoanTerms(req)) continue
+      out[req.id] = outstandingInternalLoan(req, entries)
+    }
+    return out
+  } catch {
+    return {}
+  }
+}

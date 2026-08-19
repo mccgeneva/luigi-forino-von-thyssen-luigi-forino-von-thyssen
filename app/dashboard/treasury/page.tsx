@@ -45,6 +45,7 @@ import {
 } from "@/lib/treasury-financing"
 import { useLedger } from "@/lib/ledger-store"
 import { CapitalLendingCard } from "@/components/dashboard/treasury/capital-lending-card"
+import { InternalLoanCard } from "@/components/dashboard/treasury/internal-loan-card"
 import { FundDepositCard } from "@/components/dashboard/treasury/fund-deposit-card"
 import { DebitFacilityActions } from "@/components/dashboard/debits/debit-facility-actions"
 import type { DebitFacility } from "@/lib/debit-schedule"
@@ -526,6 +527,11 @@ export default function TreasuryPage() {
               void refreshTreasury()
             }}
           />
+
+          {/* Internal lending — a standalone loan (any amount, admin-approved),
+              credited to the master account. Independent of the security-deposit
+              financing above and of AES/Treuhand investment. */}
+          <InternalLoanCard />
 
           {/* Transaction history */}
           <Card className="bg-card border-border">
