@@ -47,6 +47,7 @@ import {
   PackageCheck,
   KeyRound,
   Network,
+  HandCoins,
 } from "lucide-react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -117,6 +118,7 @@ import { ADMIN_PASSCODE, ADMIN_SESSION_KEY } from "@/lib/admin-config"
   import { confirmAdminSession } from "@/app/actions/admin-session"
 import { ApiKeysManager } from "@/components/admin/api-keys-manager"
 import { TreuhandPositions } from "@/components/admin/treuhand-positions"
+import { InternalLoanManager } from "@/components/admin/internal-loan-manager"
 import { AccountLimitsManager } from "@/components/admin/account-limits-manager"
 import { resetServerAccountDataForUser } from "@/app/actions/reset-account"
 import { listUsers, type AdminUserView } from "@/app/actions/admin-users"
@@ -2127,6 +2129,7 @@ export default function AdminPage() {
     { id: "section-ppp", view: "approvals", kind: "ppp", label: "Yield / PPP", count: dbPending.ppp ?? 0, icon: TrendingUp },
     { id: "section-trading-fund", view: "approvals", kind: "trading_fund", label: "Treuhand Trading Fund", count: dbPending.trading_fund ?? 0, icon: Coins },
     { id: "section-treasury-lending", view: "approvals", kind: "treasury_lending", label: "Treasury Capital Lending", count: dbPending.treasury_lending ?? 0, icon: Landmark },
+    { id: "section-internal-loan", view: "internal-lending", label: "Internal Lending", count: dbPending.internal_loan ?? 0, icon: HandCoins },
     { id: "section-funding", view: "approvals", kind: "project_funding", label: "Project Funding", count: dbPending.project_funding ?? 0, icon: Building2 },
     { id: "section-fiduciary", view: "approvals", kind: "fiduciary", label: "Fiduciary & Assets", count: dbPending.fiduciary ?? 0, icon: Landmark },
     { id: "section-leverage", view: "approvals", kind: "leverage", label: "Leverage Lines", count: dbPending.leverage ?? 0, icon: Gauge },
@@ -2176,6 +2179,7 @@ export default function AdminPage() {
         { id: "commodity", label: "Commodity Deals", description: "POP/POF review and trade execution.", icon: Ship, count: pendingDeals.length },
         { id: "spotdeals", label: "Spot Deals & Vessels", description: "Manage tankers and publish limited-time spot offers.", icon: Tag, count: 0 },
         { id: "treuhand", label: "Treuhand Fund Positions", description: "Pause, reactivate or close any client's hedge-fund position.", icon: Coins, count: 0 },
+        { id: "internal-lending", label: "Internal Lending", description: "Evaluate client loan requests, set the rate & fee, then fund to the master account or decline.", icon: HandCoins, count: dbPending.internal_loan ?? 0 },
       ],
     },
     {
@@ -5225,6 +5229,7 @@ export default function AdminPage() {
 
       {/* Treuhand fund: pause / reactivate / close any customer position */}
         {activeView === "treuhand" && <TreuhandPositions passcode={ADMIN_PASSCODE} />}
+        {activeView === "internal-lending" && <InternalLoanManager passcode={ADMIN_PASSCODE} />}
         {activeView === "accountlimits" && <AccountLimitsManager passcode={ADMIN_PASSCODE} />}
 
       {activeView === "traceability" && (

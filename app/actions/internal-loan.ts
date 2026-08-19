@@ -491,3 +491,27 @@ export async function myInternalLoanOutstanding(): Promise<{ total: number; curr
     return { total: 0, currency: INTERNAL_LOAN_DEFAULT_CURRENCY }
   }
 }
+
+/**
+ * Per-loan outstanding balances for the signed-in environment, keyed by the
+ * approval id. The client store merges these onto each loan record so the card
+ * can show a live "still owed" figure without persisting it in the approval.
+ */
+export async function listMyInternalLoanOutstanding(): Promise<Record<string, number>> {
+  const session = await resolveCurrentSession()
+  if (!session?.id) return {}
+  try {
+    const mine = await listApprovalsForUser(session.id, "internal_loan")
+    const ownerId = await resolveDataOwnerIdFor(session.id).catch(() => session.id)
+    const entries = await readLedgerEntries(ownerId)
+    const out: Record<string, number> = {}
+    for (const req of mine) {
+      if (req.status !== "approved") continue
+      if (!readInternalLoanTerms(req)) continue
+      out[req.id] = outstandingInternalLoan(req, entries)
+    }
+    return out
+  } catch {
+    return {}
+  }
+}

@@ -34,6 +34,7 @@ import { CommodityDealsProvider } from "@/lib/commodity-deals-store"
 import { LeverageRequestsProvider } from "@/lib/leverage-requests-store"
 import { CertificateRequestsProvider } from "@/lib/certificates-store"
 import { TreasuryProvider } from "@/lib/treasury-store"
+import { InternalLoanProvider } from "@/lib/internal-loan-store"
 import { GatewayProvider } from "@/lib/gateway-store"
 
 // Identity depends on the per-request session cookie, so this layout must never
@@ -71,6 +72,7 @@ export default async function DashboardLayout({ children }: { children: React.Re
       <LeverageRequestsProvider>
       <CertificateRequestsProvider>
       <TreasuryProvider>
+      <InternalLoanProvider>
       <GatewayProvider>
       <SessionGuard />
       <PointerEventsGuard />
@@ -113,6 +115,7 @@ export default async function DashboardLayout({ children }: { children: React.Re
         </div>
       </div>
       </GatewayProvider>
+      </InternalLoanProvider>
       </TreasuryProvider>
       </CertificateRequestsProvider>
       </LeverageRequestsProvider>

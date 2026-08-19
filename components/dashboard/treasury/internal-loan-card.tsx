@@ -90,8 +90,8 @@ export function InternalLoanCard() {
     const res = await requestLoan({
       amount: value,
       currency,
-      purpose: purpose.trim() || undefined,
-      repaymentPlan: repaymentPlan.trim() || undefined,
+      purpose: purpose.trim(),
+      repaymentPlan: repaymentPlan.trim(),
       collateralNote: collateralNote.trim() || undefined,
     })
     setSubmitting(false)
@@ -184,26 +184,31 @@ export function InternalLoanCard() {
                       <StatusBadge status={loan.status} />
                     </div>
                     <p className="mt-1 text-xs text-muted-foreground">
-                      Outstanding{" "}
-                      <span className="font-medium text-foreground">
-                        {formatLoanMoney(loan.outstanding, loan.currency)}
-                      </span>{" "}
-                      · {(loan.annualRate * 100).toFixed(2)}% p.a.
-                      {loan.arrangementFee > 0
-                        ? ` · fee ${formatLoanMoney(loan.arrangementFee, loan.currency)}`
+                      {loan.status === "approved" ? (
+                        <>
+                          Outstanding{" "}
+                          <span className="font-medium text-foreground">
+                            {formatLoanMoney(loan.outstanding ?? loan.amount, loan.currency)}
+                          </span>{" "}
+                          ·{" "}
+                        </>
+                      ) : null}
+                      {(loan.interestRate * 100).toFixed(2)}% p.a.
+                      {(loan.arrangementFee ?? 0) > 0
+                        ? ` · fee ${formatLoanMoney(loan.arrangementFee ?? 0, loan.currency)}`
                         : ""}
                     </p>
                     {loan.purpose && (
                       <p className="mt-0.5 text-xs text-muted-foreground">Purpose: {loan.purpose}</p>
                     )}
                   </div>
-                  {loan.outstanding > 0.01 && (
+                  {loan.status === "approved" && (loan.outstanding ?? loan.amount) > 0.01 && (
                     <Button
                       size="sm"
                       variant="outline"
                       onClick={() => {
                         setRepayFor(repayFor === loan.id ? null : loan.id)
-                        setRepayAmount(loan.outstanding.toFixed(2))
+                        setRepayAmount((loan.outstanding ?? loan.amount).toFixed(2))
                       }}
                     >
                       <Wallet className="mr-1.5 h-3.5 w-3.5" /> Repay
@@ -211,7 +216,7 @@ export function InternalLoanCard() {
                   )}
                 </div>
 
-                {repayFor === loan.id && loan.outstanding > 0.01 && (
+                {loan.status === "approved" && repayFor === loan.id && (loan.outstanding ?? loan.amount) > 0.01 && (
                   <div className="mt-3 flex flex-wrap items-end gap-3 border-t border-border pt-3">
                     <div className="flex-1 min-w-[160px]">
                       <Label htmlFor={`repay-${loan.id}`} className="text-xs">
