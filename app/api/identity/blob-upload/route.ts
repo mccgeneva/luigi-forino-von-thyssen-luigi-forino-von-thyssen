@@ -33,7 +33,17 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
           throw new Error("Invalid upload path")
         }
         return {
-          allowedContentTypes: ["image/jpeg", "image/png"],
+          // Accept the formats phones actually produce — iPhones commonly send
+          // HEIC/HEIF, and some in-app webviews send WebP — otherwise the token
+          // request is rejected and the browser shows the opaque
+          // "Failed to retrieve the client token" error.
+          allowedContentTypes: [
+            "image/jpeg",
+            "image/png",
+            "image/heic",
+            "image/heif",
+            "image/webp",
+          ],
           maximumSizeInBytes: 15 * 1024 * 1024,
           addRandomSuffix: true,
         }

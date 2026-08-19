@@ -67,8 +67,17 @@ export const FACE_MAX_FAILS = 5
  */
 export const FACE_LOCK_COOLDOWN_MS = 30 * 60 * 1000 // 30 minutes
 
-/** Login challenge validity — long enough to scan, short enough to be safe. */
-const CHALLENGE_TTL_MS = 2 * 60 * 1000
+/**
+ * Login challenge validity — must comfortably outlast the WHOLE hand-off from
+ * the password step through the passport upload AND the live selfie capture.
+ * The old 2-minute window routinely expired mid-flow for first-time users (and
+ * in slow in-app webviews), which surfaced as an opaque "Vercel Blob: Failed to
+ * retrieve the client token" error at the passport upload and left them unable
+ * to log in until they re-entered their password. 15 minutes removes that
+ * friction while staying short-lived — the real security boundary is the
+ * password check plus the face match, not this token's lifetime.
+ */
+const CHALLENGE_TTL_MS = 15 * 60 * 1000
 
 const FALLBACK_SECRET = "mcc-naftahub-dev-secret-do-not-use-in-prod"
 function secret(): string {

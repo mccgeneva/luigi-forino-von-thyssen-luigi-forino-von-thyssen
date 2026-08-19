@@ -125,7 +125,19 @@ export function PassportVerify({
       }
       return { ok: false, error: "Verification failed. Please try again." }
     } catch (err) {
-      const message = err instanceof Error ? err.message : "Upload failed. Please try again."
+      const raw = err instanceof Error ? err.message : ""
+      // The Vercel Blob client throws this opaque error whenever our token route
+      // rejects the upload — most often because the short-lived secure session
+      // (login challenge) expired during the passport/selfie capture. Show an
+      // actionable message and send the user back to sign in again so they get a
+      // fresh session, instead of leaving them stuck on a dead token.
+      if (/client token/i.test(raw)) {
+        const message = "Your secure sign-in session expired. Please enter your password again to restart verification."
+        setError(message)
+        setTimeout(onBack, 2600)
+        return { ok: false, error: message }
+      }
+      const message = raw || "Upload failed. Please try again."
       setError(message)
       return { ok: false, error: message }
     }
