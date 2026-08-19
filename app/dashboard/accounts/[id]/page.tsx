@@ -273,45 +273,52 @@ export default function AccountDetailPage() {
                     const reserved = isRegistered ? (account.trackedReserved ?? 0) : account.reservedBalance
                     return (
                       <div className="border-t border-border pt-4">
-                        <div className="grid grid-cols-3 gap-3">
-                          <div className="min-w-0 text-center p-3 rounded-lg bg-secondary">
-                            <p className="text-xs text-muted-foreground mb-1">
-                              {isRegistered ? "Received Here" : "Total Balance"}
-                            </p>
-                            <p className="text-sm sm:text-base lg:text-lg font-bold text-foreground leading-tight break-words tabular-nums">
-                              {formatCurrency(total, account.currency)}
-                            </p>
-                          </div>
-                          <div className="min-w-0 text-center p-3 rounded-lg bg-secondary">
-                            <p className="text-xs text-muted-foreground mb-1">Available</p>
-                            <p className="text-sm sm:text-base lg:text-lg font-bold text-emerald-400 leading-tight break-words tabular-nums">
+                        {/* Total balance — the headline figure, given full width so
+                            large amounts never wrap mid-number. */}
+                        <div className="rounded-lg bg-secondary p-4">
+                          <p className="text-xs text-muted-foreground mb-1">
+                            {isRegistered ? "Received Here" : "Total Balance"}
+                          </p>
+                          <p className="text-2xl sm:text-3xl font-bold text-foreground tabular-nums whitespace-nowrap overflow-x-auto">
+                            {formatCurrency(total, account.currency)}
+                          </p>
+                        </div>
+
+                        {/* Available / Reserved breakdown as full-width statement
+                            rows: label on the left, amount right-aligned on one line. */}
+                        <div className="mt-3 rounded-lg bg-secondary divide-y divide-border/60">
+                          <div className="flex items-center justify-between gap-4 px-4 py-3">
+                            <span className="text-sm text-muted-foreground">Available</span>
+                            <span className="text-base sm:text-lg font-bold text-emerald-400 tabular-nums whitespace-nowrap">
                               {formatCurrency(available, account.currency)}
-                            </p>
+                            </span>
                           </div>
                           {reserved > 0 ? (
                             <button
                               type="button"
                               onClick={() => setReservedOpen(true)}
                               aria-label={`See why ${formatCurrency(reserved, account.currency)} is reserved`}
-                              className="group/reserved min-w-0 text-center p-3 rounded-lg bg-secondary transition-colors hover:bg-amber-500/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                              className="group/reserved flex w-full items-center justify-between gap-4 px-4 py-3 text-left transition-colors hover:bg-amber-500/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-b-lg"
                             >
-                              <p className="flex items-center justify-center gap-1 text-xs text-muted-foreground mb-1">
-                                Reserved
-                                <ChevronRight className="h-3 w-3 text-amber-400/70 transition-transform group-hover/reserved:translate-x-0.5" />
-                              </p>
-                              <p className="text-sm sm:text-base lg:text-lg font-bold text-amber-400 leading-tight break-words tabular-nums">
-                                {formatCurrency(reserved, account.currency)}
-                              </p>
-                              <span className="mt-0.5 inline-block text-[10px] font-medium text-amber-400/80 underline underline-offset-2">
-                                View details
+                              <span className="flex flex-col">
+                                <span className="text-sm text-muted-foreground">Reserved</span>
+                                <span className="text-[11px] font-medium text-amber-400/80 underline underline-offset-2">
+                                  View details
+                                </span>
+                              </span>
+                              <span className="flex items-center gap-1.5">
+                                <span className="text-base sm:text-lg font-bold text-amber-400 tabular-nums whitespace-nowrap">
+                                  {formatCurrency(reserved, account.currency)}
+                                </span>
+                                <ChevronRight className="h-4 w-4 shrink-0 text-amber-400/70 transition-transform group-hover/reserved:translate-x-0.5" />
                               </span>
                             </button>
                           ) : (
-                            <div className="min-w-0 text-center p-3 rounded-lg bg-secondary">
-                              <p className="text-xs text-muted-foreground mb-1">Reserved</p>
-                              <p className="text-sm sm:text-base lg:text-lg font-bold text-amber-400 leading-tight break-words tabular-nums">
+                            <div className="flex items-center justify-between gap-4 px-4 py-3">
+                              <span className="text-sm text-muted-foreground">Reserved</span>
+                              <span className="text-base sm:text-lg font-bold text-amber-400 tabular-nums whitespace-nowrap">
                                 {formatCurrency(reserved, account.currency)}
-                              </p>
+                              </span>
                             </div>
                           )}
                         </div>
