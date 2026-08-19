@@ -19,6 +19,7 @@ export type ApprovalKind =
   | "fiduciary"
   | "trading_fund"
   | "treasury_lending"
+  | "internal_loan"
   | "dof"
   | "dtc"
   | "euroclear"
@@ -39,6 +40,7 @@ export const APPROVAL_KINDS: ApprovalKind[] = [
   "fiduciary",
   "trading_fund",
   "treasury_lending",
+  "internal_loan",
   "dof",
   "dtc",
   "euroclear",
@@ -60,6 +62,7 @@ export const KIND_LABELS: Record<ApprovalKind, string> = {
   fiduciary: "Fiduciary & Assets",
   trading_fund: "Treuhand Trading Fund",
   treasury_lending: "Treasury Capital Lending",
+  internal_loan: "Internal Loan",
   dof: "Download of Funds",
   dtc: "DTC Settlement",
   euroclear: "Euroclear Settlement",
@@ -81,6 +84,7 @@ export const KIND_HREF: Partial<Record<ApprovalKind, string>> = {
   fiduciary: "/dashboard/fiduciary",
   trading_fund: "/dashboard/trading",
   treasury_lending: "/dashboard/treasury",
+  internal_loan: "/dashboard/treasury",
   dof: "/dashboard/download-of-funds",
   commodity: "/dashboard/commodities",
   bank_account: "/dashboard/accounts",
