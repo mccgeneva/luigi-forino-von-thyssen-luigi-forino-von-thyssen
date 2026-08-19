@@ -1,7 +1,7 @@
 "use client"
 
 import { createContext, useContext } from "react"
-import { mirrorSubmission, mapApprovalStatus, type ApprovalRecord } from "@/lib/approval-sync"
+import { mirrorSubmissionDetailed, mapApprovalStatus, type ApprovalRecord } from "@/lib/approval-sync"
 import { useServerRequestList } from "@/lib/use-server-request-list"
 import { cancelMyApproval, updateMyApprovalRecord } from "@/app/actions/approvals"
 
@@ -202,10 +202,18 @@ export interface NewCardRequest {
   purpose?: string
 }
 
+/** Outcome of a card request: the server charges a one-time issuance fee and
+ *  can REJECT the request in real time (e.g. insufficient balance). */
+export type RequestCardResult =
+  | { ok: true; card: ClientCard }
+  | { ok: false; error: string }
+
 interface CardRequestsContextValue {
   cards: ClientCard[]
-  /** Submit a new card request (status = pending) for administrator review. */
-  requestCard: (req: NewCardRequest) => ClientCard
+  /** Submit a new card request (status = pending) for administrator review.
+   *  Resolves once the server has charged the one-time issuance fee, or rejects
+   *  the request in real time when the fee can't be covered. */
+  requestCard: (req: NewCardRequest) => Promise<RequestCardResult>
   /** Update a card's monthly spending limit (active cards only). */
   setLimit: (id: string, limit: number) => void
   /** Block (freeze) or unblock an active card. */
@@ -238,7 +246,7 @@ export function CardRequestsProvider({ children }: { children: React.ReactNode }
     void updateMyApprovalRecord(card.approvalId, patch as Record<string, unknown>)
   }
 
-  const requestCard: CardRequestsContextValue["requestCard"] = (req) => {
+  const requestCard: CardRequestsContextValue["requestCard"] = async (req) => {
     const tier = req.tier
     const card: ClientCard = hydrateCard({
       id: genCardId(),
@@ -255,21 +263,29 @@ export function CardRequestsProvider({ children }: { children: React.ReactNode }
       variant: tierVariant(tier),
       submittedAt: new Date().toISOString(),
     })
-    setCards([card, ...cards])
+    // Optimistically show the pending card while the server processes the fee.
+    setCards((prev) => [card, ...prev])
     // Mirror into the DB so the administrator can review/customize cross-client.
-    // The requested card is stored under BOTH `card` (so a pending request still
-    // renders before the admin finalizes it) and is the basis the admin edits.
-    void mirrorSubmission({
+    // The server charges the one-time issuance fee and can REJECT the request in
+    // real time (e.g. the Master balance can't cover the fee); we use the
+    // detailed result so that reason is surfaced and the optimistic entry rolled
+    // back. The requested card is stored under `card` so a pending request still
+    // renders before the admin finalizes it, and is the basis the admin edits.
+    const res = await mirrorSubmissionDetailed({
       kind: "card",
       title: `${card.label} card`,
       summary: `${card.network} ${TIER_LABELS[tier]} ${card.format} card requested with a ${card.currency} ${card.requestedLimit?.toLocaleString("en-US")} monthly limit${card.purpose ? ` (${card.purpose})` : ""}.`,
       amount: card.requestedLimit ?? null,
       currency: card.currency,
       payload: { card: { ...card } },
-    }).then(() => {
-      void refresh()
     })
-    return card
+    if (!res.ok) {
+      // Roll back the optimistic card — nothing was created or charged.
+      setCards((prev) => prev.filter((c) => c.id !== card.id))
+      return { ok: false, error: res.error ?? "Your card request could not be submitted. Please try again." }
+    }
+    await refresh()
+    return { ok: true, card }
   }
 
   const setLimit: CardRequestsContextValue["setLimit"] = (id, limit) => {

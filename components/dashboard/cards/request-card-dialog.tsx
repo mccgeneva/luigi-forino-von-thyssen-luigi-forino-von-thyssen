@@ -29,7 +29,9 @@ import {
   type CardTier,
   type CardFormat,
   type NewCardRequest,
+  type RequestCardResult,
 } from "@/lib/card-requests-store"
+import { cardFeeFor, formatCardFee } from "@/lib/card-fees"
 
 const CURRENCIES = ["EUR", "USD", "GBP", "CHF"]
 
@@ -51,7 +53,7 @@ export function RequestCardDialog({
   onRequest,
 }: {
   holder: string
-  onRequest: (req: NewCardRequest) => void
+  onRequest: (req: NewCardRequest) => Promise<RequestCardResult>
 }) {
   const [open, setOpen] = useState(false)
   const [submitting, setSubmitting] = useState(false)
@@ -71,6 +73,10 @@ export function RequestCardDialog({
     setPurpose("")
   }
 
+  // One-time issuance fee for the currently-selected format (virtual €300 /
+  // physical €1,000), shown upfront and enforced/charged server-side on submit.
+  const feeLabel = formatCardFee(cardFeeFor(format))
+
   const handleNetworkChange = (value: string) => {
     const next = value as CardNetwork
     setNetwork(next)
@@ -78,14 +84,15 @@ export function RequestCardDialog({
     if (!NETWORK_TIERS[next].includes(tier)) setTier("platinum")
   }
 
-  const submit = () => {
+  const submit = async () => {
+    if (submitting) return
     const numericLimit = Number.parseFloat(limit.replace(/[^0-9.]/g, ""))
     if (!Number.isFinite(numericLimit) || numericLimit <= 0) {
       toast.error("Enter a valid requested monthly limit greater than 0.")
       return
     }
     setSubmitting(true)
-    onRequest({
+    const result = await onRequest({
       holder,
       network,
       tier,
@@ -95,8 +102,13 @@ export function RequestCardDialog({
       purpose: purpose.trim() || undefined,
     })
     setSubmitting(false)
-    setOpen(false)
-    reset()
+    // On a real-time rejection (e.g. insufficient balance for the fee) keep the
+    // dialog open so the user can adjust or fund; the reason is toasted by the
+    // page. Only close and reset on success.
+    if (result.ok) {
+      setOpen(false)
+      reset()
+    }
   }
 
   return (
@@ -228,6 +240,17 @@ export function RequestCardDialog({
           <div className="rounded-lg border border-border bg-secondary/30 p-3 text-xs text-muted-foreground">
             Card holder: <span className="font-medium text-foreground">{holder || "—"}</span>
           </div>
+
+          <div className="flex items-start gap-3 rounded-lg border border-primary/20 bg-primary/5 p-3">
+            <CreditCard className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
+            <p className="text-xs text-muted-foreground">
+              A one-time{" "}
+              <span className="font-semibold text-foreground">{feeLabel} issuance fee</span> (
+              {format === "virtual" ? "virtual" : "physical"} card) is debited from your Master
+              Account when you submit. If your available balance can&apos;t cover it, the request is
+              declined immediately and nothing is charged.
+            </p>
+          </div>
         </div>
 
         <DialogFooter>
@@ -240,7 +263,7 @@ export function RequestCardDialog({
             ) : (
               <CreditCard className="mr-2 h-4 w-4" />
             )}
-            Submit request
+            {submitting ? "Processing…" : `Submit & pay ${feeLabel}`}
           </Button>
         </DialogFooter>
       </DialogContent>
