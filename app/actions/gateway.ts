@@ -6,12 +6,27 @@ import { type UserProfile } from "@/lib/users"
 import { resolveAccountProfileById, resolveCurrentSession, resolveDataOwnerIdFor } from "@/lib/session-user"
 import { logActivity } from "@/app/actions/log-activity"
 import { backfillGatewayDepositsForUser } from "@/app/actions/reconciliation"
+import { readLedgerEntries, availableByCurrency } from "@/lib/ledger-db"
+import { convertCurrency } from "@/lib/fx"
+import { insertNotification } from "@/lib/notifications-db"
+import {
+  ACCOUNT_TYPES,
+  isAccountTypeKey,
+  isGatewayCurrency,
+  GATEWAY_ACCOUNT_FEE,
+  GATEWAY_FEE_CURRENCY,
+} from "@/lib/gateway-catalog"
+import { partnerBankByKey, bankSupportsCurrency } from "@/lib/partner-banks"
 import type {
   GatewayAccount,
   AccountCoordinates,
   FundingEvent,
 } from "@/lib/gateway-store"
 import type { LedgerEntry } from "@/lib/ledger-store"
+
+function genRequestId(prefix: string) {
+  return `${prefix}-${Math.random().toString(36).slice(2, 8).toUpperCase()}${Date.now().toString(36).slice(-4).toUpperCase()}`
+}
 
 async function getSessionUser(): Promise<UserProfile | undefined> {
   const session = await resolveCurrentSession()
@@ -171,6 +186,150 @@ export async function removeGatewayAccount(requestId: string): Promise<{ ok: boo
   } catch (err) {
     console.log("[v0] removeGatewayAccount failed:", (err as Error).message)
     return { ok: false }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Client: add a bank account (charges the one-time gateway fee)
+// ---------------------------------------------------------------------------
+
+export type RequestGatewayResult =
+  | { ok: true; account: GatewayAccount; feeReference: string }
+  | { ok: false; error: string }
+
+const fmtEur = (n: number) =>
+  `€${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+
+/**
+ * Submit a new Payment Gateway account request AND charge the one-time
+ * GATEWAY_ACCOUNT_FEE to the client's Master Account, atomically and
+ * authoritatively on the server:
+ *
+ *   1. Real-time solvency check — the fee is in EUR, so the client's whole
+ *      spendable balance is converted to EUR (mirroring the approvals gate).
+ *      If it can't cover the fee the request is REJECTED immediately and NO
+ *      account is created and NO money moves.
+ *   2. The request row is written (status "pending").
+ *   3. A completed EUR debit is posted to the Master (data-owner) ledger with a
+ *      DETERMINISTIC id (`GW-FEE-<requestId>`) so a retry can never double-charge.
+ *      If the debit fails the pending request is rolled back.
+ *
+ * The client identity (id / holder / company) is taken from the session, never
+ * trusted from the caller.
+ */
+export async function requestGatewayAccountWithFee(input: {
+  type: string
+  currency: string
+  preferredBankKey: string
+  purpose: string
+}): Promise<RequestGatewayResult> {
+  const user = await getSessionUser()
+  if (!user?.id) return { ok: false, error: "Your session has expired. Please sign in again." }
+
+  // Validate the request against the canonical catalogue (never trust the client).
+  const type = input.type
+  if (!isAccountTypeKey(type)) return { ok: false, error: "Choose a valid account type." }
+  const currency = input.currency
+  if (!isGatewayCurrency(currency)) return { ok: false, error: "Choose a valid currency." }
+  const bank = partnerBankByKey(input.preferredBankKey)
+  if (!bank) return { ok: false, error: "Select your preferred banking partner." }
+  if (!bankSupportsCurrency(input.preferredBankKey, currency)) {
+    return { ok: false, error: `${bank.name} cannot issue a ${currency} account.` }
+  }
+  const purpose = input.purpose.trim()
+  if (!purpose) return { ok: false, error: "Describe the purpose of the account." }
+
+  try {
+    // The fee is charged against the client's Master (data-owner) balance — a
+    // Sub-account's spendable funds live under its Master.
+    const ownerId = await resolveDataOwnerIdFor(user.id)
+
+    // 1) Real-time affordability check.
+    const available = availableByCurrency(await readLedgerEntries(ownerId))
+    const availableEur = Object.entries(available).reduce(
+      (sum, [cur, amt]) => sum + convertCurrency(amt, cur, GATEWAY_FEE_CURRENCY),
+      0,
+    )
+    if (GATEWAY_ACCOUNT_FEE > availableEur + 0.01) {
+      return {
+        ok: false,
+        error: `Adding a bank account carries a one-time ${fmtEur(GATEWAY_ACCOUNT_FEE)} setup fee, but your Master Account has only ${fmtEur(
+          Math.max(0, availableEur),
+        )} available. Please fund your account and try again.`,
+      }
+    }
+
+    // 2) Persist the pending request first (identity from the session).
+    const account: GatewayAccount = {
+      id: genRequestId("GW"),
+      userId: user.id,
+      accountHolder: user.fullName,
+      company: user.company,
+      type,
+      currency,
+      purpose,
+      preferredBankKey: input.preferredBankKey,
+      status: "pending",
+      submittedAt: new Date().toISOString(),
+      funding: [],
+    }
+    await writeAccount(user.id, account)
+
+    // 3) Charge the one-time fee to the Master ledger (idempotent id).
+    const feeReference = `GW-FEE-${account.id}`
+    try {
+      await query(
+        `INSERT INTO ledger_entries
+           (user_id, entry_id, direction, amount, currency, status, entry_date,
+            counterparty, account, bank, reference, comment, category)
+         VALUES ($1,$2,'debit',$3,$4,'completed',$5,$6,$7,$8,$9,$10,$11)
+         ON CONFLICT (user_id, entry_id) DO NOTHING`,
+        [
+          ownerId,
+          feeReference,
+          GATEWAY_ACCOUNT_FEE,
+          GATEWAY_FEE_CURRENCY,
+          new Date().toISOString(),
+          "MCC Capital — Payment Gateway",
+          null,
+          bank.name,
+          account.id,
+          `One-time setup fee for Payment Gateway ${ACCOUNT_TYPES[type].label} ${account.id} (${currency}).`,
+          "Payment Gateway Fee",
+        ],
+      )
+    } catch (feeErr) {
+      // Roll back the request so the client is never left with an account they
+      // weren't charged for.
+      await query(`DELETE FROM gateway_accounts WHERE user_id = $1 AND request_id = $2`, [
+        user.id,
+        account.id,
+      ]).catch(() => {})
+      console.log("[v0] requestGatewayAccountWithFee fee post failed:", (feeErr as Error).message)
+      return { ok: false, error: "The setup fee could not be processed. Please try again." }
+    }
+
+    // NOTE: the client (gateway page) writes the user-facing activity-log entry
+    // for this action via /api/log-activity, so we do NOT call logActivity here
+    // — doing both would double-log to the same audit trail.
+
+    // Best-effort bell notification so the charge is visible immediately.
+    try {
+      await insertNotification({
+        userId: ownerId,
+        tone: "info",
+        title: "Payment Gateway fee charged",
+        body: `A one-time ${fmtEur(GATEWAY_ACCOUNT_FEE)} setup fee was charged for your new ${ACCOUNT_TYPES[type].label} request (${account.id}), now pending approval.`,
+        href: "/dashboard/gateway",
+      })
+    } catch {
+      // notification is non-critical
+    }
+
+    return { ok: true, account, feeReference }
+  } catch (err) {
+    console.log("[v0] requestGatewayAccountWithFee failed:", (err as Error).message)
+    return { ok: false, error: "Your available balance could not be verified. Please try again." }
   }
 }
 

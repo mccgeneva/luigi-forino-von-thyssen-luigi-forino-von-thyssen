@@ -64,6 +64,8 @@ import {
 } from "@/lib/gateway-store"
 import { formatIban, countrySupportsIban } from "@/lib/iban"
 import { getGatewayConfig, type GatewayConfig } from "@/app/actions/gateway-config"
+import { requestGatewayAccountWithFee } from "@/app/actions/gateway"
+import { GATEWAY_ACCOUNT_FEE } from "@/lib/gateway-catalog"
 
 const typeIcons: Record<GatewayAccountType, typeof Building2> = {
   virtual_iban: Landmark,
@@ -172,7 +174,7 @@ function StatCard({
 export default function GatewayPage() {
   const log = useActivityLog()
   const user = useCurrentUser()
-  const { accounts, hydrated, requestAccount } = useGateway()
+  const { accounts, hydrated, refresh } = useGateway()
   const [activeTab, setActiveTab] = useState("accounts")
 
   // Request form state
@@ -182,6 +184,10 @@ export default function GatewayPage() {
   const [bankKey, setBankKey] = useState("")
   const [purpose, setPurpose] = useState("")
   const [bankQuery, setBankQuery] = useState("")
+  const [submitting, setSubmitting] = useState(false)
+
+  // The one-time fee charged to the Master Account on each new gateway account.
+  const feeLabel = `€${GATEWAY_ACCOUNT_FEE.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 
   // Global gateway configuration: which account types and currencies an
   // administrator has left enabled platform-wide. Fails open while loading.
@@ -264,7 +270,8 @@ export default function GatewayPage() {
     return [...byCurrency.entries()]
   }, [activeAccounts])
 
-  const submit = () => {
+  const submit = async () => {
+    if (submitting) return
     if (!bankKey) {
       toast.error("Please select your preferred banking partner.")
       return
@@ -277,29 +284,42 @@ export default function GatewayPage() {
       toast.error("Please describe the purpose of the account.")
       return
     }
-    const created = requestAccount({
-      userId: user.id,
-      accountHolder: user.fullName,
-      company: user.company,
+
+    setSubmitting(true)
+    // The server authoritatively re-checks affordability, charges the one-time
+    // fee to the Master Account, and only then creates the pending request. An
+    // insufficient balance is rejected here in real time — no account, no charge.
+    const result = await requestGatewayAccountWithFee({
       type,
       currency,
       preferredBankKey: bankKey,
       purpose: purpose.trim(),
     })
+    setSubmitting(false)
+
+    if (!result.ok) {
+      toast.error("Request declined", { description: result.error })
+      return
+    }
+
+    const created = result.account
+    await refresh()
     log({
-      action: `Requested ${ACCOUNT_TYPES[type].label} (${currency}) via Payment Gateway`,
+      action: `Requested ${ACCOUNT_TYPES[type].label} (${currency}) via Payment Gateway — ${feeLabel} fee charged`,
       category: "Payment Gateway",
       details: {
-        summary: `${user.fullName} (${user.company}) submitted a request for a new ${ACCOUNT_TYPES[type].label} denominated in ${currency} with preferred partner bank ${partnerBankByKey(bankKey)?.name}. Purpose: ${purpose.trim()}. The request ${created.id} is pending Administrator approval and partner-bank assignment.`,
+        summary: `${user.fullName} (${user.company}) submitted a request for a new ${ACCOUNT_TYPES[type].label} denominated in ${currency} with preferred partner bank ${partnerBankByKey(bankKey)?.name}. Purpose: ${purpose.trim()}. A one-time ${feeLabel} setup fee was debited from the Master Account (ref ${result.feeReference}). The request ${created.id} is pending Administrator approval and partner-bank assignment.`,
         referenceId: created.id,
         accountType: ACCOUNT_TYPES[type].label,
         currency,
         preferredBank: partnerBankByKey(bankKey)?.name,
+        fee: feeLabel,
+        ledgerReference: result.feeReference,
         status: "Pending Approval",
       },
     })
     toast.success("Account request submitted", {
-      description: `${created.id} is pending Administrator approval.`,
+      description: `${feeLabel} setup fee charged. ${created.id} is pending Administrator approval.`,
     })
     setPurpose("")
     setBankKey("")
@@ -424,12 +444,23 @@ export default function GatewayPage() {
                   rows={3}
                 />
               </div>
+              <div className="flex items-start gap-3 rounded-lg border border-primary/20 bg-primary/5 p-3">
+                <Info className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
+                <p className="text-xs text-muted-foreground">
+                  A one-time{" "}
+                  <span className="font-semibold text-foreground">{feeLabel} setup fee</span> is
+                  debited from your Master Account when you submit. If your available balance
+                  can&apos;t cover it, the request is declined immediately and nothing is charged.
+                </p>
+              </div>
             </div>
             <DialogFooter className="mt-2 border-t border-border pt-4">
-              <Button variant="outline" onClick={() => setOpen(false)}>
+              <Button variant="outline" onClick={() => setOpen(false)} disabled={submitting}>
                 Cancel
               </Button>
-              <Button onClick={submit}>Submit request</Button>
+              <Button onClick={submit} disabled={submitting}>
+                {submitting ? "Processing…" : `Submit & pay ${feeLabel}`}
+              </Button>
             </DialogFooter>
           </DialogContent>
         </Dialog>
