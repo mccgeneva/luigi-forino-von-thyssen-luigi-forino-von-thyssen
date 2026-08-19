@@ -68,6 +68,54 @@ export const internalLoanInterestChargeId = (id: string, yearMonth: string) =>
 export const internalLoanSettlePrincipalId = (id: string) => `ILOAN-SETTLE-PRIN-${id}`
 /** Deterministic ledger id: interest settled at repayment (final stub). */
 export const internalLoanSettleInterestId = (id: string) => `ILOAN-SETTLE-INT-${id}`
+/** Deterministic ledger id: the k-th self-service partial repayment leg. */
+export const internalLoanRepayId = (id: string, leg: number) => `ILOAN-REPAY-${id}-${leg}`
+
+/** Format money for loan messages, e.g. `EUR 1,000,000.00`. */
+export function formatLoanMoney(amount: number, currency: string = INTERNAL_LOAN_DEFAULT_CURRENCY): string {
+  return `${currency} ${Number(amount || 0).toLocaleString("en-US", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`
+}
+
+/**
+ * Current outstanding balance of an APPROVED loan against a ledger snapshot —
+ * what the borrower still owes right now, never negative.
+ *
+ *   full payoff now (principal + interest accrued-but-not-yet-billed)
+ *     − every repayment/settlement leg already posted for THIS loan
+ *       (`ILOAN-REPAY-<id>-*`, `ILOAN-SETTLE-PRIN-<id>`, `ILOAN-SETTLE-INT-<id>`)
+ *
+ * Monthly interest charges (`ILOAN-INT-*`) are the *billing* of interest to the
+ * master balance and do NOT reduce the loan — `internalLoanPayoff` already nets
+ * them out of `interestRemaining`, so they are intentionally not subtracted
+ * again here.
+ */
+export function outstandingInternalLoan(
+  req: ApprovalRequest,
+  entries: ReadonlyArray<Pick<LedgerEntry, "id" | "amount">>,
+  now: Date = new Date(),
+): number {
+  const terms = readInternalLoanTerms(req)
+  if (!terms || !(terms.amount > 0)) return 0
+
+  const postedInterest = postedInternalLoanInterest(req.id, entries)
+  const payoff = internalLoanPayoff(req, postedInterest, now)
+
+  const repayPrefix = `ILOAN-REPAY-${req.id}-`
+  const settlePrincipal = internalLoanSettlePrincipalId(req.id)
+  const settleInterest = internalLoanSettleInterestId(req.id)
+  let repaid = 0
+  for (const e of entries) {
+    if (typeof e.id !== "string") continue
+    if (e.id.startsWith(repayPrefix) || e.id === settlePrincipal || e.id === settleInterest) {
+      repaid += e.amount
+    }
+  }
+
+  return Math.max(0, round2(payoff.total - repaid))
+}
 
 /**
  * Read (and sanity-check) the loan terms off an approval, or null if absent.

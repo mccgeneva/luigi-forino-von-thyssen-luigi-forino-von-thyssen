@@ -25,6 +25,7 @@ import {
 import { planReservation, formatMoney, type ReservationPlan } from "@/lib/fund-reservation"
 import { cardFeeFor, formatCardFee, CARD_FEE_CURRENCY } from "@/lib/card-fees"
 import { buildTradingFundPosts, TRADING_FUND_MONTHLY_ROI, type TradingFundPauseWindow } from "@/lib/trading-fund"
+import { buildInternalLoanPosts } from "@/lib/internal-loan"
 import type { LedgerEntry } from "@/lib/ledger-store"
 import { insertNotification } from "@/lib/notifications-db"
 import {
@@ -1807,6 +1808,33 @@ export async function reconcileMyApprovedCredits(): Promise<{ ok: boolean; appli
         applied += 1
       }
     }
+
+    // Internal-loan lifecycle on the ledger, driven off the approval status
+    // (self-contained like trading_fund; no scheduler — runs on every ledger
+    // read, self-healing/cross-device). Deterministic ids keep every post
+    // idempotent:
+    //   • APPROVED → CREDIT the principal to the master (`ILOAN-<id>`), DEBIT any
+    //                one-time arrangement fee (`ILOAN-FEE-<id>`), and DEBIT each
+    //                matured monthly interest charge (`ILOAN-INT-<id>-<YYYY-MM>`,
+    //                default 3% p.a., admin-overridable; first month pro-rated).
+    //   • SETTLED  → `settledAt` stops further monthly interest (the repayment
+    //                action posts the final interest stub exactly once).
+    // Nothing posts while PENDING/REJECTED — an internal loan never moves money
+    // until the administrator approves it.
+    const internalLoanReqs = mine.filter((r) => r.kind === "internal_loan" && r.status === "approved")
+    for (const req of internalLoanReqs) {
+      const ownerId = await resolveDataOwnerIdFor(req.userId)
+      const rows = await loadOwnerRows(ownerId)
+      const posts = buildInternalLoanPosts(req, new Set(rows.keys()))
+      for (const post of posts) {
+        const entry: LedgerEntry = { ...post.entry, direction: post.direction }
+        if (rows.has(entry.id)) continue
+        await upsertLedgerEntry(ownerId, entry)
+        rows.set(entry.id, entry)
+        applied += 1
+      }
+    }
+
     return { ok: true, applied }
   } catch (err) {
     console.log("[v0] reconcileMyApprovedCredits failed:", (err as Error).message)
