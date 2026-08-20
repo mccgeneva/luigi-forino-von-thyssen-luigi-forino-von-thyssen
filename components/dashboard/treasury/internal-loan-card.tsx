@@ -24,6 +24,10 @@ import { useInternalLoans, type InternalLoanView } from "@/lib/internal-loan-sto
 import { repayInternalLoan } from "@/app/actions/internal-loan"
 import { INTERNAL_LOAN_DEFAULT_RATE, formatLoanMoney } from "@/lib/internal-loan"
 import Link from "next/link"
+import { Messenger } from "@/components/bankeka/messenger"
+import { listConversations, getThread, sendMessage, deleteMessage } from "@/app/actions/bankeka"
+import { BANKEKA_ADMIN_ID, BANKEKA_ADMIN_LABEL, BANKEKA_ADMIN_INITIALS } from "@/lib/bankeka-shared"
+import { ChevronDown } from "lucide-react"
 
 const CURRENCIES = ["EUR", "USD", "GBP", "CHF"]
 
@@ -72,6 +76,9 @@ export function InternalLoanCard() {
   const [repayFor, setRepayFor] = useState<string | null>(null)
   const [repayAmount, setRepayAmount] = useState("")
   const [repaying, setRepaying] = useState(false)
+
+  // Which pending loan's discussion thread is expanded inline.
+  const [discussFor, setDiscussFor] = useState<string | null>(null)
 
   const activeLoans = useMemo(() => loans.filter((l) => l.status === "approved"), [loans])
   const historyLoans = useMemo(
@@ -358,17 +365,63 @@ export function InternalLoanCard() {
                     </div>
                     <StatusBadge status={loan.status} />
                   </div>
-                  {isPending && (
+                  {isPending && !loan.discussionOpenedAt && (
                     <div className="border-t border-border px-3 py-2.5">
-                      <p className="mb-2 text-xs text-muted-foreground">
-                        While under review, the administrator may message you to discuss the terms or
-                        request supporting documents. Reply and upload files in your Bankeka chat.
+                      <p className="text-xs text-muted-foreground">
+                        Under review. The administrator will open a discussion here to go over the terms
+                        and request any supporting documents before funding.
                       </p>
-                      <Button asChild size="sm" variant="secondary">
-                        <Link href="/dashboard/bankeka">
-                          <MessagesSquare className="mr-1.5 h-3.5 w-3.5" /> Open Bankeka chat
+                    </div>
+                  )}
+                  {isPending && loan.discussionOpenedAt && (
+                    <div className="border-t border-border px-3 py-2.5">
+                      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                        <p className="text-xs text-muted-foreground">
+                          The administrator opened a discussion. Reply and upload any requested documents
+                          below.
+                        </p>
+                        <Button
+                          size="sm"
+                          variant={discussFor === loan.id ? "secondary" : "default"}
+                          onClick={() => setDiscussFor(discussFor === loan.id ? null : loan.id)}
+                        >
+                          <MessagesSquare className="mr-1.5 h-3.5 w-3.5" />
+                          {discussFor === loan.id ? "Hide discussion" : "Discuss with administrator"}
+                          <ChevronDown
+                            className={cn(
+                              "ml-1 h-3.5 w-3.5 transition-transform",
+                              discussFor === loan.id && "rotate-180",
+                            )}
+                          />
+                        </Button>
+                      </div>
+                      {discussFor === loan.id && (
+                        <Messenger
+                          key={loan.id}
+                          scope={`loan-discuss-${loan.id}`}
+                          fetchConversations={listConversations}
+                          fetchThread={getThread}
+                          send={sendMessage}
+                          deleteMessage={deleteMessage}
+                          attachmentsEnabled
+                          hideConversationList
+                          initialThreadId={BANKEKA_ADMIN_ID}
+                          initialParticipant={{
+                            id: BANKEKA_ADMIN_ID,
+                            name: BANKEKA_ADMIN_LABEL,
+                            company: "",
+                            initials: BANKEKA_ADMIN_INITIALS,
+                            isAdmin: true,
+                          }}
+                        />
+                      )}
+                      <p className="mt-2 text-[11px] text-muted-foreground">
+                        This conversation also lives in your{" "}
+                        <Link href="/dashboard/bankeka" className="underline hover:text-foreground">
+                          Bankeka chat
                         </Link>
-                      </Button>
+                        .
+                      </p>
                     </div>
                   )}
                 </div>
