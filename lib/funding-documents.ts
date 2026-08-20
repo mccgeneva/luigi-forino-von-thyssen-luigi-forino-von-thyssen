@@ -69,7 +69,7 @@ export const SUPPORTING_DOCUMENTS: FundingDocument[] = [
 
 // Upfront fee required where no bank statement is provided.
 export const BANK_STATEMENT_WAIVER_FEE = 20_000
-export const BANK_STATEMENT_WAIVER_CURRENCY = "USD"
+export const BANK_STATEMENT_WAIVER_CURRENCY = "EUR"
 
 export const COMPLIANCE_NOTICES = {
   bankStatement:
