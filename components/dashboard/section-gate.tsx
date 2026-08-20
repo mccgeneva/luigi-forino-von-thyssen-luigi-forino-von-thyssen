@@ -38,7 +38,11 @@ export function SectionGate({ children }: { children: React.ReactNode }) {
     return <>{children}</>
   }
 
-  if (access === "admin-locked") {
+  // A Visitor NEVER sees the "restricted by an administrator" card — for them
+  // any blocked section (tier-locked OR admin-locked) resolves to the upgrade
+  // prompt, so the ask is always "upgrade to PRO / Avant-Garde". Only PRO /
+  // Avant-Garde accounts see the administrator-restriction message.
+  if (access === "admin-locked" && !isVisitor) {
     return (
       <div className="flex min-h-[60vh] items-center justify-center px-4 py-10">
         <div className="w-full max-w-md rounded-2xl border border-destructive/30 bg-card p-6 text-center shadow-lg sm:p-8">
@@ -64,7 +68,8 @@ export function SectionGate({ children }: { children: React.ReactNode }) {
     )
   }
 
-  // access === "tier-locked" → Visitor tier does not include this section.
+  // Reached when the section is tier-locked, OR when it is admin-locked for a
+  // Visitor (handled above) — in both cases a Visitor is prompted to upgrade.
   return (
     <div className="flex min-h-[60vh] items-center justify-center px-4 py-10">
       <div className="w-full max-w-md rounded-2xl border border-amber-500/30 bg-card p-6 text-center shadow-lg sm:p-8">
