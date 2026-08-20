@@ -40,6 +40,97 @@ export const INTERNAL_LOAN_DEFAULT_RATE = 0.03
 /** Currency an internal loan defaults to when none is given. */
 export const INTERNAL_LOAN_DEFAULT_CURRENCY = "EUR"
 
+// ---------------------------------------------------------------------------
+// Loan negotiation thread
+//
+// Before the administrator finalises (approve/decline), the borrower and the
+// administrator can DISCUSS the request directly in-app: exchange messages,
+// upload supporting documents, and negotiate the terms. The whole conversation
+// lives inside the approval's `payload.negotiation` array so it travels with the
+// loan, is visible to both sides, and needs no extra table.
+// ---------------------------------------------------------------------------
+
+/** A file attached to a negotiation message (stored on Vercel Blob). */
+export interface LoanAttachment {
+  name: string
+  url: string
+  pathname?: string
+  size?: number
+  contentType?: string
+}
+
+/** One message in a loan's negotiation thread. */
+export interface LoanNegotiationMessage {
+  id: string
+  /** Which party wrote it — drives bubble alignment + attribution. */
+  from: "admin" | "client"
+  /** Display name of the author (e.g. "Administrator" or the holder's name). */
+  author: string
+  /** Plain-text message body (may be empty when only files are attached). */
+  body: string
+  attachments: LoanAttachment[]
+  /** ISO timestamp the message was posted. */
+  at: string
+}
+
+/** Caps that keep a thread bounded and safe. */
+export const LOAN_MESSAGE_MAX_CHARS = 4000
+export const LOAN_MAX_ATTACHMENTS_PER_MESSAGE = 6
+export const LOAN_THREAD_MAX_MESSAGES = 400
+/** Allowed upload types + per-file cap for supporting documents. */
+export const LOAN_UPLOAD_CONTENT_TYPES = [
+  "application/pdf",
+  "image/jpeg",
+  "image/png",
+  "image/webp",
+  "application/msword",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "application/vnd.ms-excel",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+]
+export const LOAN_UPLOAD_MAX_BYTES = 25 * 1024 * 1024
+
+/**
+ * Read the negotiation thread off an approval, sanitised and chronologically
+ * ordered. Tolerant of a missing/legacy payload — always returns an array.
+ */
+export function readNegotiation(req: ApprovalRequest | null | undefined): LoanNegotiationMessage[] {
+  if (!req) return []
+  const raw = (req.payload as { negotiation?: unknown } | undefined)?.negotiation
+  if (!Array.isArray(raw)) return []
+  const out: LoanNegotiationMessage[] = []
+  for (const m of raw) {
+    if (!m || typeof m !== "object") continue
+    const msg = m as Record<string, unknown>
+    const from = msg.from === "admin" ? "admin" : "client"
+    const attachments = Array.isArray(msg.attachments)
+      ? (msg.attachments as unknown[])
+          .map((a) => {
+            const at = a as Record<string, unknown>
+            const url = typeof at?.url === "string" ? at.url : ""
+            if (!url) return null
+            return {
+              name: typeof at.name === "string" && at.name ? at.name : "document",
+              url,
+              pathname: typeof at.pathname === "string" ? at.pathname : undefined,
+              size: Number.isFinite(Number(at.size)) ? Number(at.size) : undefined,
+              contentType: typeof at.contentType === "string" ? at.contentType : undefined,
+            } as LoanAttachment
+          })
+          .filter((a): a is LoanAttachment => a !== null)
+      : []
+    out.push({
+      id: typeof msg.id === "string" ? msg.id : `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      from,
+      author: typeof msg.author === "string" && msg.author ? msg.author : from === "admin" ? "Administrator" : "Client",
+      body: typeof msg.body === "string" ? msg.body : "",
+      attachments,
+      at: typeof msg.at === "string" ? msg.at : new Date().toISOString(),
+    })
+  }
+  return out.sort((a, b) => new Date(a.at).getTime() - new Date(b.at).getTime())
+}
+
 /** The loan terms carried in an `internal_loan` approval's payload. */
 export interface InternalLoanTerms {
   amount: number

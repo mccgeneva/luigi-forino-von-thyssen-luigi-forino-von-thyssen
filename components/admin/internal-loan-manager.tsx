@@ -10,6 +10,7 @@ import {
   Loader2,
   Percent,
   ShieldCheck,
+  MessagesSquare,
 } from "lucide-react"
 import { toast } from "sonner"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -34,6 +35,7 @@ import {
   type AdminInternalLoan,
 } from "@/app/actions/internal-loan"
 import { INTERNAL_LOAN_DEFAULT_RATE, formatLoanMoney } from "@/lib/internal-loan"
+import { LoanNegotiationThread } from "@/components/dashboard/treasury/loan-negotiation-thread"
 
 function formatDate(iso: string | null): string {
   if (!iso) return "—"
@@ -86,6 +88,9 @@ export function InternalLoanManager({ passcode }: { passcode: string }) {
   const [rejectTarget, setRejectTarget] = useState<AdminInternalLoan | null>(null)
   const [rejectReason, setRejectReason] = useState("")
   const [rejecting, setRejecting] = useState(false)
+
+  // Discussion (negotiation thread) dialog state
+  const [discussTarget, setDiscussTarget] = useState<AdminInternalLoan | null>(null)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -216,7 +221,10 @@ export function InternalLoanManager({ passcode }: { passcode: string }) {
                       </p>
                       <p className="text-xs text-muted-foreground">{loan.email}</p>
                     </div>
-                    <div className="flex shrink-0 gap-2">
+                    <div className="flex shrink-0 flex-wrap gap-2">
+                      <Button size="sm" variant="secondary" onClick={() => setDiscussTarget(loan)}>
+                        <MessagesSquare className="mr-1.5 h-3.5 w-3.5" /> Discuss
+                      </Button>
                       <Button size="sm" onClick={() => openApprove(loan)}>
                         <ShieldCheck className="mr-1.5 h-3.5 w-3.5" /> Evaluate & fund
                       </Button>
@@ -281,22 +289,33 @@ export function InternalLoanManager({ passcode }: { passcode: string }) {
                       {loan.holder} · funded {formatDate(loan.decidedAt)}
                     </p>
                   </div>
-                  <div className="text-right text-xs">
-                    <p className="text-muted-foreground">
-                      Outstanding{" "}
-                      <span className="font-medium text-foreground">
-                        {formatLoanMoney(loan.outstanding, loan.currency)}
-                      </span>
-                    </p>
-                    {loan.terms && (
-                      <p className="flex items-center justify-end gap-1 text-orange-500">
-                        <Percent className="h-3 w-3" />
-                        {(loan.terms.annualRate * 100).toFixed(2)}% p.a.
-                        {loan.terms.arrangementFee
-                          ? ` · fee ${formatLoanMoney(loan.terms.arrangementFee, loan.currency)}`
-                          : ""}
+                  <div className="flex items-center gap-3">
+                    <div className="text-right text-xs">
+                      <p className="text-muted-foreground">
+                        Outstanding{" "}
+                        <span className="font-medium text-foreground">
+                          {formatLoanMoney(loan.outstanding, loan.currency)}
+                        </span>
                       </p>
-                    )}
+                      {loan.terms && (
+                        <p className="flex items-center justify-end gap-1 text-orange-500">
+                          <Percent className="h-3 w-3" />
+                          {(loan.terms.annualRate * 100).toFixed(2)}% p.a.
+                          {loan.terms.arrangementFee
+                            ? ` · fee ${formatLoanMoney(loan.terms.arrangementFee, loan.currency)}`
+                            : ""}
+                        </p>
+                      )}
+                    </div>
+                    <Button
+                      size="icon"
+                      variant="ghost"
+                      className="h-8 w-8 shrink-0"
+                      onClick={() => setDiscussTarget(loan)}
+                      aria-label="View loan discussion"
+                    >
+                      <MessagesSquare className="h-4 w-4" />
+                    </Button>
                   </div>
                 </div>
               ))}
@@ -439,6 +458,57 @@ export function InternalLoanManager({ passcode }: { passcode: string }) {
               {rejecting ? "Declining…" : "Decline request"}
             </Button>
           </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Discussion / negotiation dialog */}
+      <Dialog open={!!discussTarget} onOpenChange={(o) => !o && setDiscussTarget(null)}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <MessagesSquare className="h-5 w-5 text-primary" /> Loan discussion
+            </DialogTitle>
+            <DialogDescription>
+              {discussTarget
+                ? `Message ${discussTarget.holder} directly, share or request supporting documents, and negotiate the terms of the ${formatLoanMoney(
+                    discussTarget.requestedAmount,
+                    discussTarget.currency,
+                  )} request before you finalise the decision.`
+                : ""}
+            </DialogDescription>
+          </DialogHeader>
+          {discussTarget && (
+            <LoanNegotiationThread
+              key={discussTarget.approvalId}
+              approvalId={discussTarget.approvalId}
+              role="admin"
+              passcode={passcode}
+              readOnly={discussTarget.status !== "pending"}
+            />
+          )}
+          {discussTarget && discussTarget.status === "pending" && (
+            <DialogFooter className="gap-2 sm:justify-between">
+              <Button
+                variant="destructive"
+                onClick={() => {
+                  const t = discussTarget
+                  setDiscussTarget(null)
+                  setRejectTarget(t)
+                }}
+              >
+                <XCircle className="mr-2 h-4 w-4" /> Decline
+              </Button>
+              <Button
+                onClick={() => {
+                  const t = discussTarget
+                  setDiscussTarget(null)
+                  openApprove(t)
+                }}
+              >
+                <ShieldCheck className="mr-2 h-4 w-4" /> Evaluate &amp; fund
+              </Button>
+            </DialogFooter>
+          )}
         </DialogContent>
       </Dialog>
     </Card>
