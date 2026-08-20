@@ -1159,8 +1159,8 @@ export function PendingApprovals({ initialKind }: { initialKind?: ApprovalKind }
 
       {/* AES funding discussion — review documents + negotiate on Bankeka */}
       <Dialog open={!!discussFunding} onOpenChange={(o) => !o && setDiscussFunding(null)}>
-        <DialogContent className="max-h-[92dvh] max-w-3xl overflow-y-auto">
-          <DialogHeader>
+        <DialogContent className="flex h-[92dvh] max-w-3xl flex-col gap-0 overflow-hidden p-0">
+          <DialogHeader className="shrink-0 space-y-1 border-b border-border p-4 pr-12">
             <DialogTitle className="flex items-center gap-2">
               <MessagesSquare className="h-5 w-5 text-primary" /> Funding discussion
             </DialogTitle>
@@ -1173,10 +1173,37 @@ export function PendingApprovals({ initialKind }: { initialKind?: ApprovalKind }
             </DialogDescription>
           </DialogHeader>
           {discussFunding && (
-            <div className="space-y-4">
-              <FundingDocuments docs={discussFunding.record.uploadedDocuments} />
-              {discussFunding.req.userId ? (
-                <div className="rounded-lg border border-border">
+            <>
+              {/* Decision actions live at the TOP so they never collide with the
+                  Messenger composer / on-screen keyboard at the bottom. */}
+              {discussFunding.req.status === "pending" && (
+                <div className="flex shrink-0 items-center gap-2 border-b border-border p-3">
+                  <Button
+                    variant="outline"
+                    className="flex-1 text-destructive"
+                    onClick={() => {
+                      const id = discussFunding.req.id
+                      setDiscussFunding(null)
+                      openReject(id)
+                    }}
+                  >
+                    <X className="mr-2 h-4 w-4" /> Reject
+                  </Button>
+                  <Button
+                    className="flex-1"
+                    onClick={() => {
+                      const id = discussFunding.req.id
+                      setDiscussFunding(null)
+                      approveOne(id)
+                    }}
+                  >
+                    <Check className="mr-2 h-4 w-4" /> Approve &amp; activate
+                  </Button>
+                </div>
+              )}
+              <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-4">
+                <FundingDocuments docs={discussFunding.record.uploadedDocuments} />
+                {discussFunding.req.userId ? (
                   <Messenger
                     key={discussFunding.req.id}
                     scope={`admin-funding-${discussFunding.req.id}`}
@@ -1205,37 +1232,13 @@ export function PendingApprovals({ initialKind }: { initialKind?: ApprovalKind }
                       discussFunding.req,
                     )}: `}
                   />
-                </div>
-              ) : (
-                <p className="text-sm text-muted-foreground">
-                  This application has no linked applicant account, so a discussion cannot be opened.
-                </p>
-              )}
-            </div>
-          )}
-          {discussFunding && discussFunding.req.status === "pending" && (
-            <DialogFooter className="gap-2 sm:justify-between">
-              <Button
-                variant="outline"
-                className="text-destructive"
-                onClick={() => {
-                  const id = discussFunding.req.id
-                  setDiscussFunding(null)
-                  openReject(id)
-                }}
-              >
-                <X className="mr-2 h-4 w-4" /> Reject
-              </Button>
-              <Button
-                onClick={() => {
-                  const id = discussFunding.req.id
-                  setDiscussFunding(null)
-                  approveOne(id)
-                }}
-              >
-                <Check className="mr-2 h-4 w-4" /> Approve &amp; activate
-              </Button>
-            </DialogFooter>
+                ) : (
+                  <p className="text-sm text-muted-foreground">
+                    This application has no linked applicant account, so a discussion cannot be opened.
+                  </p>
+                )}
+              </div>
+            </>
           )}
         </DialogContent>
       </Dialog>
