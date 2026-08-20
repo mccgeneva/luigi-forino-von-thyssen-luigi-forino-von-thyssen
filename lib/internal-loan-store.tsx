@@ -38,6 +38,8 @@ export interface InternalLoanRequest {
   arrangementFee?: number
   status: InternalLoanStatus
   submittedAt: string
+  /** Set by the administrator when negotiations are opened (pending loans). */
+  discussionOpenedAt?: string
   decidedAt?: string
   decisionNote?: string
   /** When the loan was approved/funded — interest accrual start. */

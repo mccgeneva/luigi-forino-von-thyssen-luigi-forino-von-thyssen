@@ -32,6 +32,7 @@ import {
   listInternalLoansAdmin,
   approveInternalLoanAdmin,
   rejectInternalLoanAdmin,
+  openInternalLoanDiscussionAdmin,
   type AdminInternalLoan,
 } from "@/app/actions/internal-loan"
 import { INTERNAL_LOAN_DEFAULT_RATE, formatLoanMoney } from "@/lib/internal-loan"
@@ -137,6 +138,29 @@ export function InternalLoanManager({ passcode }: { passcode: string }) {
     setApproveNote("")
   }
 
+  /**
+   * Open the discussion with the borrower. For a pending loan that hasn't been
+   * discussed yet, this also stamps `discussionOpenedAt` server-side (which
+   * unlocks funding) and notifies the borrower. The chat itself opens inline.
+   */
+  const openDiscuss = async (loan: AdminInternalLoan) => {
+    setDiscussTarget(loan)
+    if (loan.status === "pending" && !loan.discussionOpenedAt) {
+      const res = await openInternalLoanDiscussionAdmin({ passcode, approvalId: loan.approvalId })
+      if (res.ok) {
+        // Reflect "In discussion" immediately, then refresh from the server.
+        setDiscussTarget((prev) =>
+          prev && prev.approvalId === loan.approvalId
+            ? { ...prev, discussionOpenedAt: new Date().toISOString() }
+            : prev,
+        )
+        void load()
+      } else {
+        toast.error("Could not open the discussion", { description: res.error })
+      }
+    }
+  }
+
   const confirmApprove = async () => {
     if (!approveTarget || approving) return
     const rateNum = Number.parseFloat(ratePct.replace(/[^0-9.]/g, ""))
@@ -224,11 +248,25 @@ export function InternalLoanManager({ passcode }: { passcode: string }) {
                 <div key={loan.approvalId} className="rounded-lg border border-border bg-secondary/30 p-4">
                   <div className="flex flex-wrap items-start justify-between gap-3">
                     <div className="min-w-0">
-                      <div className="flex items-center gap-2">
+                      <div className="flex flex-wrap items-center gap-2">
                         <span className="text-base font-semibold text-foreground">
                           {formatLoanMoney(loan.requestedAmount, loan.currency)}
                         </span>
-                        <StatusBadge status={loan.status} />
+                        {loan.discussionOpenedAt ? (
+                          <Badge
+                            variant="outline"
+                            className="gap-1 border-sky-500/40 bg-sky-500/10 text-sky-600 dark:text-sky-400"
+                          >
+                            <MessagesSquare className="h-3 w-3" /> In discussion
+                          </Badge>
+                        ) : (
+                          <Badge
+                            variant="outline"
+                            className="gap-1 border-amber-500/40 bg-amber-500/10 text-amber-600 dark:text-amber-400"
+                          >
+                            <Clock className="h-3 w-3" /> Awaiting review
+                          </Badge>
+                        )}
                       </div>
                       <p className="mt-1 text-sm text-foreground">
                         {loan.holder}
@@ -237,10 +275,22 @@ export function InternalLoanManager({ passcode }: { passcode: string }) {
                       <p className="text-xs text-muted-foreground">{loan.email}</p>
                     </div>
                     <div className="flex w-full flex-wrap gap-2 sm:w-auto sm:shrink-0">
-                      <Button size="sm" variant="secondary" className="whitespace-nowrap" onClick={() => setDiscussTarget(loan)}>
-                        <MessagesSquare className="mr-1.5 h-3.5 w-3.5" /> Discuss
+                      <Button size="sm" className="whitespace-nowrap" onClick={() => openDiscuss(loan)}>
+                        <MessagesSquare className="mr-1.5 h-3.5 w-3.5" />
+                        {loan.discussionOpenedAt ? "Continue discussion" : "Discuss"}
                       </Button>
-                      <Button size="sm" className="whitespace-nowrap" onClick={() => openApprove(loan)}>
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        className="whitespace-nowrap"
+                        onClick={() => openApprove(loan)}
+                        disabled={!loan.discussionOpenedAt}
+                        title={
+                          loan.discussionOpenedAt
+                            ? undefined
+                            : "Open the discussion with the borrower before funding."
+                        }
+                      >
                         <ShieldCheck className="mr-1.5 h-3.5 w-3.5" /> Evaluate & fund
                       </Button>
                       <Button size="sm" variant="outline" className="whitespace-nowrap" onClick={() => setRejectTarget(loan)}>
@@ -248,6 +298,12 @@ export function InternalLoanManager({ passcode }: { passcode: string }) {
                       </Button>
                     </div>
                   </div>
+                  {!loan.discussionOpenedAt && (
+                    <p className="mt-2 text-xs text-amber-600 dark:text-amber-400">
+                      Discussion required — open the conversation with the borrower before you can fund this
+                      loan.
+                    </p>
+                  )}
                   <dl className="mt-3 grid grid-cols-1 gap-2 border-t border-border pt-3 text-xs sm:grid-cols-2">
                     <div>
                       <dt className="text-muted-foreground">Requested</dt>

@@ -74,6 +74,11 @@ export interface AdminInternalLoan {
   collateralNote: string
   createdAt: string
   decidedAt: string | null
+  /**
+   * When the administrator first opened the discussion with the borrower.
+   * Funding is BLOCKED until this is set — negotiation is mandatory.
+   */
+  discussionOpenedAt: string | null
   /** Effective terms once approved (rate/fee/activation). */
   terms: InternalLoanTerms | null
   outstanding: number
@@ -196,6 +201,7 @@ export async function listInternalLoansAdmin(passcode: string): Promise<AdminInt
         collateralNote: (record.collateralNote as string) ?? "",
         createdAt: req.createdAt,
         decidedAt: req.decidedAt ?? null,
+        discussionOpenedAt: (record.discussionOpenedAt as string) ?? null,
         terms,
         outstanding,
       })
@@ -229,6 +235,15 @@ export async function approveInternalLoanAdmin(input: {
     if (req.status === "approved") return { ok: true } // already funded — idempotent
 
     const record = (req.payload as { record?: Record<string, unknown> } | undefined)?.record ?? {}
+
+    // Negotiation is MANDATORY: you cannot fund a loan you never discussed.
+    if (!record.discussionOpenedAt) {
+      return {
+        ok: false,
+        error: "Open the discussion with the borrower before funding this loan.",
+      }
+    }
+
     const amount = Number(record.amount ?? req.amount ?? 0)
     if (!(amount > 0)) return { ok: false, error: "This request has no valid amount." }
     const currency = ((record.currency as string) ?? req.currency ?? INTERNAL_LOAN_DEFAULT_CURRENCY).toUpperCase()
@@ -318,6 +333,63 @@ export async function approveInternalLoanAdmin(input: {
   } catch (err) {
     console.log("[v0] approveInternalLoanAdmin failed:", (err as Error).message)
     return { ok: false, error: "The loan could not be approved. Please try again." }
+  }
+}
+
+/**
+ * Mark a loan as "in discussion". This is the mandatory gate before funding:
+ * it stamps `discussionOpenedAt` on the request (idempotent — first open wins)
+ * and notifies the borrower that the administrator has opened negotiations, so
+ * they can reply and upload documents in their Bankeka chat. Actual messages
+ * flow through Bankeka; this only records that the conversation has begun.
+ */
+export async function openInternalLoanDiscussionAdmin(input: {
+  passcode: string
+  approvalId: string
+}): Promise<AdminLoanResult> {
+  if (!(await adminOk(input.passcode))) return { ok: false, error: "Administrator authorization failed." }
+  try {
+    const req = await getApprovalById(input.approvalId)
+    if (!req || req.kind !== "internal_loan") return { ok: false, error: "Loan request not found." }
+    if (req.status !== "pending") return { ok: true } // decided already — nothing to open
+
+    const record = (req.payload as { record?: Record<string, unknown> } | undefined)?.record ?? {}
+    if (record.discussionOpenedAt) return { ok: true } // already open — idempotent
+
+    const openedAt = new Date().toISOString()
+    await updateApprovalPayload(req.id, {
+      ...(req.payload ?? {}),
+      record: { ...record, discussionOpenedAt: openedAt },
+    })
+
+    const amount = Number(record.amount ?? req.amount ?? 0)
+    const currency = ((record.currency as string) ?? req.currency ?? INTERNAL_LOAN_DEFAULT_CURRENCY).toUpperCase()
+    try {
+      await insertNotification({
+        userId: req.userId,
+        tone: "info",
+        title: "Loan under discussion",
+        body: `The administrator has opened a discussion about your ${formatLoanMoney(
+          amount,
+          currency,
+        )} loan request. Reply and share any requested documents in your Bankeka chat.`,
+        href: "/dashboard/bankeka",
+      })
+    } catch {
+      // non-critical
+    }
+    await logActivity({
+      action: `Opened discussion on internal loan ${req.id}`,
+      category: "Treasury",
+      details: {
+        summary: `Administrator opened negotiations on internal loan ${req.id} for ${formatLoanMoney(amount, currency)}.`,
+        referenceId: req.id,
+      },
+    })
+    return { ok: true }
+  } catch (err) {
+    console.log("[v0] openInternalLoanDiscussionAdmin failed:", (err as Error).message)
+    return { ok: false, error: "Could not open the discussion. Please try again." }
   }
 }
 
