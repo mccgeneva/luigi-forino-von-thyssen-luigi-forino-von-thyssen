@@ -285,6 +285,13 @@ export default function ProjectFundingPage() {
   )
   const pendingCount = myApplications.filter((r) => r.status === "pending").length
   const approved = useMemo(() => myApplications.filter((r) => r.status === "approved"), [myApplications])
+  // "Live" applications are those still in play — pending review or approved.
+  // Rejected (and any future terminated) applications are not counted in the
+  // tab badge / summary stat, so the number only reflects active files.
+  const liveApplications = useMemo(
+    () => myApplications.filter((r) => r.status === "pending" || r.status === "approved"),
+    [myApplications],
+  )
 
   // Summary stats derive only from approved applications, so the figures reflect
   // real Administrator-approved funding — never demo numbers.
@@ -519,7 +526,7 @@ export default function ProjectFundingPage() {
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-xs text-muted-foreground">Applications</p>
-                <p className="mt-1 text-2xl font-bold text-foreground">{myApplications.length}</p>
+                <p className="mt-1 text-2xl font-bold text-foreground">{liveApplications.length}</p>
                 <p className="mt-1 text-xs text-muted-foreground">
                   {pendingCount} pending review
                 </p>
@@ -550,7 +557,7 @@ export default function ProjectFundingPage() {
           </TabsTrigger>
           <TabsTrigger value="applications" className="w-full">
             My Applications
-            {myApplications.length > 0 && (
+            {liveApplications.length > 0 && (
               <Badge
                 variant="outline"
                 className={cn(
@@ -560,7 +567,7 @@ export default function ProjectFundingPage() {
                     : "border-primary/20 bg-primary/10 text-primary",
                 )}
               >
-                {myApplications.length}
+                {liveApplications.length}
               </Badge>
             )}
           </TabsTrigger>
