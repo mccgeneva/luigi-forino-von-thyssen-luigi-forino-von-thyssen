@@ -1,11 +1,12 @@
 "use client"
 
 import { useEffect, useMemo, useState } from "react"
-import { Lock, LockOpen, RotateCcw, Loader2, ShieldHalf, User } from "lucide-react"
+import { Lock, LockOpen, RotateCcw, Loader2, ShieldHalf, User, Search } from "lucide-react"
 import { toast } from "sonner"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
+import { Input } from "@/components/ui/input"
 import {
   Select,
   SelectContent,
@@ -57,6 +58,7 @@ export function SectionAccessManager({ passcode }: { passcode: string }) {
   const [clients, setClients] = useState<SelectableClient[]>([])
   const [target, setTarget] = useState<string>("")
   const [access, setAccess] = useState<SectionAccessMap>({})
+  const [query, setQuery] = useState("")
 
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState<string | null>(null)
@@ -64,6 +66,21 @@ export function SectionAccessManager({ passcode }: { passcode: string }) {
   const [resetting, setResetting] = useState(false)
 
   const targetClient = useMemo(() => clients.find((c) => c.id === target), [clients, target])
+
+  // Filter the picker list by name / company / email so a long roster stays easy
+  // to navigate. The currently-selected user is always kept in the list so the
+  // Select can still render its value even when it doesn't match the query.
+  const filteredClients = useMemo(() => {
+    const q = query.trim().toLowerCase()
+    if (!q) return clients
+    return clients.filter(
+      (c) =>
+        c.id === target ||
+        c.fullName?.toLowerCase().includes(q) ||
+        c.company?.toLowerCase().includes(q) ||
+        c.email?.toLowerCase().includes(q),
+    )
+  }, [clients, query, target])
   const targetIsVisitor = targetClient ? isVisitorBadge(targetClient.accountBadge) : false
   const targetName = targetClient
     ? targetClient.company?.trim() || targetClient.fullName?.trim() || targetClient.email
@@ -201,26 +218,49 @@ export function SectionAccessManager({ passcode }: { passcode: string }) {
         {/* Target picker */}
         <div className="space-y-2">
           <label className="text-xs font-medium text-muted-foreground">Apply to user</label>
+          <div className="relative w-full sm:max-w-md">
+            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              type="search"
+              inputMode="search"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Search by name, company or email…"
+              className="pl-9"
+              aria-label="Search users"
+            />
+          </div>
           <Select value={target} onValueChange={setTarget}>
             <SelectTrigger className="w-full sm:max-w-md">
               <SelectValue placeholder={loading ? "Loading users…" : "Select a user…"} />
             </SelectTrigger>
             <SelectContent>
-              {clients.map((c) => (
-                <SelectItem key={c.id} value={c.id}>
-                  <span className="flex items-center gap-2">
-                    <User className="h-3.5 w-3.5 text-muted-foreground" />
-                    {(c.company?.trim() || c.fullName?.trim() || c.email)}
-                    {isVisitorBadge(c.accountBadge) && (
-                      <Badge variant="outline" className="ml-1 h-4 px-1 text-[10px]">
-                        Visitor
-                      </Badge>
-                    )}
-                  </span>
-                </SelectItem>
-              ))}
+              {filteredClients.length === 0 ? (
+                <div className="px-2 py-4 text-center text-sm text-muted-foreground">
+                  {loading ? "Loading users…" : "No users match your search."}
+                </div>
+              ) : (
+                filteredClients.map((c) => (
+                  <SelectItem key={c.id} value={c.id}>
+                    <span className="flex items-center gap-2">
+                      <User className="h-3.5 w-3.5 text-muted-foreground" />
+                      {(c.company?.trim() || c.fullName?.trim() || c.email)}
+                      {isVisitorBadge(c.accountBadge) && (
+                        <Badge variant="outline" className="ml-1 h-4 px-1 text-[10px]">
+                          Visitor
+                        </Badge>
+                      )}
+                    </span>
+                  </SelectItem>
+                ))
+              )}
             </SelectContent>
           </Select>
+          {query.trim() && !loading && (
+            <p className="text-[11px] text-muted-foreground">
+              {filteredClients.length} match{filteredClients.length === 1 ? "" : "es"} of {clients.length}
+            </p>
+          )}
         </div>
 
         {loadError && <p className="text-sm text-destructive">{loadError}</p>}
