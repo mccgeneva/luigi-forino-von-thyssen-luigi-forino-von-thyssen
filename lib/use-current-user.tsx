@@ -6,6 +6,7 @@ import { hydrateProfile } from "@/lib/profile-types"
 import { getMyIdentity, type MyIdentity } from "@/app/actions/admin-users"
 import { USER_COOKIE } from "@/lib/user-scope"
 import { SESSION_IDLE_MAX_AGE } from "@/lib/auth"
+import type { SectionAccessMap } from "@/lib/dashboard-sections"
 
 /**
  * Identity is resolved ONCE per session from the authoritative httpOnly session
@@ -34,6 +35,11 @@ const CurrentUserContext = createContext<UserProfile | null>(null)
  *  server (allowlist + impersonation-aware) and used purely to decide whether to
  *  SHOW admin navigation. Defaults to false so non-admins never see admin UI. */
 const IsAdminContext = createContext<boolean>(false)
+
+/** Per-user administrator section-access overrides for the signed-in account,
+ *  resolved server-side with the identity. Consumed by the dashboard section
+ *  gate. Defaults to an empty map (no overrides → tier defaults apply). */
+const SectionAccessContext = createContext<SectionAccessMap>({})
 
 /** Imperative actions that let UI update the shared identity in place. Kept in a
  *  separate context so the many read-only `useCurrentUser()` consumers don't
@@ -100,6 +106,12 @@ export function CurrentUserProvider({
   // shown on first paint (no admin-link flash for non-admins).
   const [isAdmin, setIsAdmin] = useState<boolean>(() => initialIdentity?.isAdmin ?? false)
 
+  // Seed the per-user section-access overrides from the server-resolved identity
+  // so the gate enforces admin locks/unlocks from the very first render.
+  const [sectionAccess, setSectionAccess] = useState<SectionAccessMap>(
+    () => initialIdentity?.sectionAccess ?? {},
+  )
+
   const initialId = initialIdentity?.id
 
   const refreshIdentity = useCallback(() => {
@@ -109,6 +121,7 @@ export function CurrentUserProvider({
         reconcileUserCookie(profile.id !== UNKNOWN_USER_ID ? profile.id : undefined)
         setUser(profile)
         setIsAdmin(identity?.isAdmin ?? false)
+        setSectionAccess(identity?.sectionAccess ?? {})
       })
       .catch(() => {
         // ignore — keep the current identity on a transient failure.
@@ -132,6 +145,7 @@ export function CurrentUserProvider({
         reconcileUserCookie(profile.id !== UNKNOWN_USER_ID ? profile.id : undefined)
         setUser(profile)
         setIsAdmin(identity?.isAdmin ?? false)
+        setSectionAccess(identity?.sectionAccess ?? {})
       })
       .catch(() => {
         // Network/transient error — keep the server-seeded identity rather than
@@ -151,7 +165,9 @@ export function CurrentUserProvider({
   return (
     <CurrentUserContext.Provider value={user}>
       <IsAdminContext.Provider value={isAdmin}>
-        <CurrentUserActionsContext.Provider value={actions}>{children}</CurrentUserActionsContext.Provider>
+        <SectionAccessContext.Provider value={sectionAccess}>
+          <CurrentUserActionsContext.Provider value={actions}>{children}</CurrentUserActionsContext.Provider>
+        </SectionAccessContext.Provider>
       </IsAdminContext.Provider>
     </CurrentUserContext.Provider>
   )
@@ -186,4 +202,13 @@ export function useCurrentUserActions(): CurrentUserActions {
  */
 export function useIsAdmin(): boolean {
   return useContext(IsAdminContext)
+}
+
+/**
+ * Per-user administrator section-access overrides for the signed-in account.
+ * Consumed by the dashboard section gate to enforce admin locks/unlocks on top
+ * of the tier defaults. Empty map outside a provider (no overrides).
+ */
+export function useSectionAccess(): SectionAccessMap {
+  return useContext(SectionAccessContext)
 }

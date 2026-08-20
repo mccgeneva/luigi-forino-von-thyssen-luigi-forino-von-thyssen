@@ -5,7 +5,7 @@ import { DashboardHeader } from "@/components/dashboard/header"
 import { MarketTicker } from "@/components/dashboard/market-ticker"
 import { BackToTop } from "@/components/dashboard/back-to-top"
 import { VisitorReadOnlyBanner } from "@/components/dashboard/visitor-readonly-banner"
-import { VisitorSectionGate } from "@/components/dashboard/visitor-section-gate"
+import { SectionGate } from "@/components/dashboard/section-gate"
 import { PinchZoom } from "@/components/pinch-zoom"
 import { ActivityTracker } from "@/components/activity-tracker"
 import { CurrentUserProvider } from "@/lib/use-current-user"
@@ -107,7 +107,7 @@ export default async function DashboardLayout({ children }: { children: React.Re
               <PinchZoom>
                 <div className="p-4 pb-24 md:p-6 md:pb-24">
                   <VisitorReadOnlyBanner />
-                  <VisitorSectionGate>{children}</VisitorSectionGate>
+                  <SectionGate>{children}</SectionGate>
                 </div>
               </PinchZoom>
             </main>
