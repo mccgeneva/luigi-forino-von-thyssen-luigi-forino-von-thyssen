@@ -16,6 +16,11 @@ import { resolvePlatformTier, type PlatformTierId } from "@/lib/platform-tier"
 import { effectivePlatformTier, type MembershipRecord } from "@/lib/membership"
 
 export interface TierCapabilities {
+  /** Whether the effective tier is Visitor (pre-subscription). Visitors may only
+   *  use a small allowed set of sections (payments in/out, the NQAi console and
+   *  Bankeka Messenger); every other dashboard section is locked behind an
+   *  upgrade prompt. Membership-aware: an upgraded Visitor resolves to false. */
+  isVisitor: boolean
   /** Whether the account is restricted to read-only (no money movement at all). */
   readOnly: boolean
   /** Send outgoing money (P2P, SWIFT, wires, standing orders). */
@@ -31,6 +36,7 @@ export interface TierCapabilities {
 }
 
 const FULL_ACCESS: TierCapabilities = {
+  isVisitor: false,
   readOnly: false,
   canSendMoney: true,
   canTrade: true,
@@ -42,6 +48,7 @@ const FULL_ACCESS: TierCapabilities = {
 const VISITOR_ACCESS: TierCapabilities = {
   // Visitor is no longer read-only: it can move money in and out. It still
   // cannot trade, issue instruments, or request a treasury payout.
+  isVisitor: true,
   readOnly: false,
   canSendMoney: true,
   canTrade: false,
