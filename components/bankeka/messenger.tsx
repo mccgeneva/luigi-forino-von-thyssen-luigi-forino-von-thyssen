@@ -492,59 +492,92 @@ export function Messenger({
             </div>
           ) : (
             <ul className="divide-y divide-border">
-              {filteredConversations.map((c) => (
-                <li key={c.participant.id}>
-                  <button
-                    type="button"
-                    onClick={() => openThread(c.participant)}
-                    className={cn(
-                      "flex w-full items-center gap-3 px-3 py-3 text-left transition-colors hover:bg-secondary",
-                      activeId === c.participant.id && "bg-secondary",
-                    )}
-                  >
-                    <Avatar className="h-10 w-10 shrink-0">
-                      <AvatarFallback
-                        className={cn(
-                          "text-xs",
-                          c.participant.isAdmin
-                            ? "bg-primary text-primary-foreground"
-                            : "bg-secondary text-foreground",
+              {filteredConversations.map((c) => {
+                const hasUnread = c.unread > 0
+                return (
+                  <li key={c.participant.id}>
+                    <button
+                      type="button"
+                      onClick={() => openThread(c.participant)}
+                      className={cn(
+                        "relative flex w-full items-center gap-3 px-3 py-3 text-left transition-colors hover:bg-secondary",
+                        activeId === c.participant.id && "bg-secondary",
+                        // A received-but-unread conversation gets a clear accent
+                        // tint so it's obvious at a glance WHICH chat has a new
+                        // message.
+                        hasUnread && "bg-primary/5",
+                      )}
+                    >
+                      {/* Accent bar down the left edge of an unread conversation. */}
+                      {hasUnread && (
+                        <span aria-hidden className="absolute inset-y-0 left-0 w-1 rounded-r-sm bg-primary" />
+                      )}
+                      <div className="relative shrink-0">
+                        <Avatar className="h-10 w-10">
+                          <AvatarFallback
+                            className={cn(
+                              "text-xs",
+                              c.participant.isAdmin
+                                ? "bg-primary text-primary-foreground"
+                                : "bg-secondary text-foreground",
+                            )}
+                          >
+                            {c.participant.isAdmin ? <ShieldCheck className="h-5 w-5" /> : c.participant.initials}
+                          </AvatarFallback>
+                        </Avatar>
+                        {/* Glanceable unread dot on the avatar. */}
+                        {hasUnread && (
+                          <span
+                            aria-hidden
+                            className="absolute -right-0.5 -top-0.5 h-3 w-3 rounded-full border-2 border-background bg-primary"
+                          />
                         )}
-                      >
-                        {c.participant.isAdmin ? <ShieldCheck className="h-5 w-5" /> : c.participant.initials}
-                      </AvatarFallback>
-                    </Avatar>
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center justify-between gap-2">
-                        <p className="truncate text-sm font-semibold text-foreground">
-                          {c.participant.name}
-                        </p>
-                        <span className="shrink-0 text-[10px] text-muted-foreground">
-                          {relativeTime(c.lastMessageAt)}
-                        </span>
                       </div>
-                      <div className="mt-0.5 flex items-center gap-1">
-                        {c.lastOutgoing && (
-                          <MessageStatusIcon status={c.lastStatus} className="text-muted-foreground" />
-                        )}
-                        <p
-                          className={cn(
-                            "truncate text-xs",
-                            c.unread > 0 ? "font-medium text-foreground" : "text-muted-foreground",
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center justify-between gap-2">
+                          <p
+                            className={cn(
+                              "truncate text-sm text-foreground",
+                              hasUnread ? "font-bold" : "font-semibold",
+                            )}
+                          >
+                            {c.participant.name}
+                          </p>
+                          <span
+                            className={cn(
+                              "shrink-0 text-[10px]",
+                              hasUnread ? "font-semibold text-primary" : "text-muted-foreground",
+                            )}
+                          >
+                            {relativeTime(c.lastMessageAt)}
+                          </span>
+                        </div>
+                        <div className="mt-0.5 flex items-center gap-1">
+                          {c.lastOutgoing && (
+                            <MessageStatusIcon status={c.lastStatus} className="shrink-0 text-muted-foreground" />
                           )}
-                        >
-                          {c.lastMessage}
-                        </p>
-                        {c.unread > 0 && (
-                          <Badge className="ml-auto h-5 min-w-5 shrink-0 justify-center rounded-full px-1.5 text-[10px]">
-                            {c.unread}
-                          </Badge>
-                        )}
+                          {/* min-w-0 + flex-1 so a long preview truncates instead
+                              of pushing the unread badge off the right edge. */}
+                          <p
+                            className={cn(
+                              "min-w-0 flex-1 truncate text-xs",
+                              hasUnread ? "font-medium text-foreground" : "text-muted-foreground",
+                            )}
+                          >
+                            {c.lastMessage}
+                          </p>
+                          {hasUnread && (
+                            <Badge className="ml-1 h-5 min-w-5 shrink-0 justify-center rounded-full px-1.5 text-[10px]">
+                              {c.unread}
+                              <span className="sr-only"> unread messages</span>
+                            </Badge>
+                          )}
+                        </div>
                       </div>
-                    </div>
-                  </button>
-                </li>
-              ))}
+                    </button>
+                  </li>
+                )
+              })}
             </ul>
           )}
         </ScrollArea>
