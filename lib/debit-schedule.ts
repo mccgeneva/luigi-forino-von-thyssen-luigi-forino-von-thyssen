@@ -14,6 +14,13 @@ import {
   monthlyTreasuryInterest,
   TREASURY_FINANCING_ANNUAL_RATE,
 } from "@/lib/treasury-financing"
+import {
+  buildInternalLoanPosts,
+  monthlyInternalLoanInterest,
+  internalLoanApprovalShim,
+  readInternalLoanTerms,
+  type InternalLoanRecordLike,
+} from "@/lib/internal-loan"
 import { endOfMonth, round2 } from "@/lib/interest-accrual"
 import type { LedgerEntry } from "@/lib/ledger-store"
 import type { ProjectFundingRequest } from "@/lib/project-funding-store"
@@ -39,7 +46,7 @@ import type { TreasuryAccount } from "@/lib/treasury-store"
  * page, and splits charges into already-posted vs. upcoming (projected).
  */
 
-export type DebitKind = "funding" | "monetization" | "leverage" | "treasury"
+export type DebitKind = "funding" | "monetization" | "leverage" | "treasury" | "internal_loan"
 
 /** One financing arrangement that generates debits (a loan, leverage line, etc). */
 export interface DebitFacility {
@@ -123,6 +130,7 @@ export interface BuildDebitScheduleInput {
   monetization?: MonetizationRequest[] | null
   leverage?: LeverageRequest[] | null
   treasury?: TreasuryAccount | null
+  internalLoans?: InternalLoanRecordLike[] | null
   /** Ledger entry ids already posted — used to flag charges as posted. */
   postedIds: Set<string>
   /** Evaluation instant (defaults to now). */
@@ -256,6 +264,44 @@ export function buildDebitSchedule(input: BuildDebitScheduleInput): DebitSchedul
     }
   }
 
+  // --- 5. Internal loans — 3% p.a. (admin-overridable) on the drawn principal --
+  // A funded internal loan is a debit facility exactly like the other four:
+  // the principal is credited to the master account and monthly debit interest
+  // accrues from the funding date. Show approved (live) AND closed loans.
+  const internalLoans = (input.internalLoans ?? []).filter((l) => {
+    const st = l.status ?? ""
+    return (st === "approved" || st === "closed") && Number(l.amount) > 0 && !!l.activatedAt
+  })
+  for (const loan of internalLoans) {
+    const shim = internalLoanApprovalShim(loan)
+    const terms = readInternalLoanTerms(shim)
+    if (!terms) continue
+    const closed = loan.status === "closed" || !!terms.settledAt
+    facilities.push({
+      id: shim.id,
+      kind: "internal_loan",
+      title: loan.purpose?.trim() ? `Internal loan · ${loan.purpose.trim()}` : "Internal loan",
+      principal: terms.amount,
+      currency: terms.currency,
+      startDate: terms.activatedAt ?? shim.createdAt,
+      annualRate: terms.annualRate,
+      rateLabel: fmtPct(terms.annualRate),
+      monthlyAmount: monthlyInternalLoanInterest(terms),
+      status: closed ? "closed" : "approved",
+      closed,
+      approvalId: shim.id,
+      settleable: !closed && !!loan.approvalId,
+    })
+    // Reuse the audited engine for the interest charges (skip the one-time
+    // principal credit + arrangement fee — only interest debits are schedule
+    // charges).
+    for (const post of buildInternalLoanPosts(shim, new Set(), horizon)) {
+      if (post.direction !== "debit") continue
+      if (!post.entry.id.startsWith("ILOAN-INT-")) continue
+      pushCharge(post.entry, "internal_loan")
+    }
+  }
+
   // Sort charges chronologically for the timeline/list.
   charges.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
 
@@ -357,6 +403,19 @@ export const DEBIT_SCENARIOS: Record<DebitKind, DebitScenarioExplainer> = {
       "Interest is charged monthly at 3% ÷ 12 on the financed principal.",
       "The first month is pro-rated to the active days from the drawdown date.",
       "Each drawdown accrues independently from its own credit date.",
+    ],
+  },
+  internal_loan: {
+    kind: "internal_loan",
+    title: "Internal Loan — Debit Interest",
+    rate: "3.00% per annum by default (the administrator may set a different rate at approval), charged as 1/12 each month.",
+    whenCharged: "At the end of every calendar month while the loan is outstanding.",
+    accrualStart: "The day the loan principal is credited to your master account on administrator approval.",
+    conditions: [
+      "Applies to approved internal loans. The full principal is credited to your master account at approval; a one-time arrangement fee may be debited if the administrator set one.",
+      "Interest is charged monthly on the outstanding principal at the loan's annual rate ÷ 12.",
+      "The first month is pro-rated to the active days from the funding date.",
+      "You can repay/terminate at any time from this page: the principal plus any interest accrued since the last monthly charge is settled from your master balance, and interest stops accruing at repayment. Interest already charged month-by-month is not refunded.",
     ],
   },
 }

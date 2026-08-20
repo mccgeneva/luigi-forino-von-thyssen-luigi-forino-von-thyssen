@@ -8,6 +8,7 @@ import { useProjectFunding } from "@/lib/project-funding-store"
 import { useMonetizationRequests } from "@/lib/monetization-requests-store"
 import { useLeverageRequests } from "@/lib/leverage-requests-store"
 import { useTreasury } from "@/lib/treasury-store"
+import { useInternalLoans } from "@/lib/internal-loan-store"
 import { useLedger } from "@/lib/ledger-store"
 import { buildDebitSchedule, type DebitKind } from "@/lib/debit-schedule"
 import { formatMoney } from "@/lib/fund-reservation"
@@ -21,9 +22,10 @@ export default function DebitsPage() {
   const { requests: monetization, hydrated: mHydrated, refresh: refreshMonetization } = useMonetizationRequests()
   const { requests: leverage, hydrated: lHydrated, refresh: refreshLeverage } = useLeverageRequests()
   const { account: treasury, hydrated: tHydrated, refresh: refreshTreasury } = useTreasury()
+  const { loans: internalLoans, hydrated: ilHydrated, refresh: refreshInternalLoans } = useInternalLoans()
   const { entries, hydrated: ledgerHydrated, refresh: refreshLedger } = useLedger()
 
-  const hydrated = fHydrated && mHydrated && lHydrated && tHydrated && ledgerHydrated
+  const hydrated = fHydrated && mHydrated && lHydrated && tHydrated && ilHydrated && ledgerHydrated
 
   // After a client termination / reconciliation, re-hydrate every source so the
   // ledger balance, posted charges, facility state and calendar all update at
@@ -34,7 +36,8 @@ export default function DebitsPage() {
     void refreshMonetization()
     void refreshLeverage()
     void refreshTreasury()
-  }, [refreshLedger, refreshFunding, refreshMonetization, refreshLeverage, refreshTreasury])
+    void refreshInternalLoans()
+  }, [refreshLedger, refreshFunding, refreshMonetization, refreshLeverage, refreshTreasury, refreshInternalLoans])
 
   const schedule = useMemo(() => {
     const postedIds = new Set(entries.map((e) => e.id))
@@ -43,10 +46,11 @@ export default function DebitsPage() {
       monetization,
       leverage,
       treasury,
+      internalLoans,
       postedIds,
       horizonMonths: 12,
     })
-  }, [funding, monetization, leverage, treasury, entries])
+  }, [funding, monetization, leverage, treasury, internalLoans, entries])
 
   const nextCharge = useMemo(
     () => schedule.charges.find((c) => c.upcoming) ?? null,
