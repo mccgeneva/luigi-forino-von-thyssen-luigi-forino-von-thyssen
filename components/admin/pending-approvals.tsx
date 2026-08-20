@@ -57,7 +57,6 @@ import {
   FileText,
   Download,
   ArrowLeft,
-  ExternalLink,
 } from "lucide-react"
 import { ADMIN_PASSCODE } from "@/lib/admin-config"
 import { blobFileUrl } from "@/lib/kyc-types"
@@ -265,12 +264,6 @@ function FundingDocViewer({ doc, onClose }: { doc: UploadedFundingDoc; onClose: 
           <p className="truncate text-xs text-muted-foreground">{doc.fileName}</p>
         </div>
         <div className="flex items-center gap-1">
-          <Button asChild variant="ghost" size="icon" className="min-h-11 min-w-11" title="Open in browser">
-            <a href={url} target="_blank" rel="noopener noreferrer">
-              <ExternalLink className="h-5 w-5" />
-              <span className="sr-only">Open in browser</span>
-            </a>
-          </Button>
           <Button
             variant="ghost"
             size="icon"
