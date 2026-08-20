@@ -52,6 +52,8 @@ import {
   PlayCircle,
   Lock,
   LockOpen,
+  MessagesSquare,
+  FileText,
 } from "lucide-react"
 import { ADMIN_PASSCODE } from "@/lib/admin-config"
 import { listSelectableClients, type SelectableClient } from "@/app/actions/admin-users"
@@ -79,6 +81,15 @@ import {
 } from "@/lib/payment-status"
 import type { ApprovalRequest, ApprovalStatus } from "@/lib/approvals-db"
 import { DealDocsVesselDialog } from "@/components/admin/deal-docs-vessel-dialog"
+import { openProjectFinanceDiscussionAdmin } from "@/app/actions/funding"
+import {
+  adminListConversations,
+  adminGetThread,
+  adminReply,
+  adminDeleteMessage,
+} from "@/app/actions/bankeka"
+import { Messenger } from "@/components/bankeka/messenger"
+import type { ProjectFundingRequest, UploadedFundingDoc } from "@/lib/project-funding-store"
 
 const STATUS_OPTIONS: { value: ApprovalStatus | "all"; label: string }[] = [
   { value: "pending", label: "Pending" },
@@ -99,6 +110,49 @@ function formatDate(iso: string): string {
   } catch {
     return iso
   }
+}
+
+/** Pull the AES project-funding record out of an approval payload (null for
+ *  any other approval kind). */
+function fundingRecord(req: ApprovalRequest): ProjectFundingRequest | null {
+  if (req.kind !== "project_funding") return null
+  const rec = (req.payload as { record?: ProjectFundingRequest } | undefined)?.record
+  return rec && typeof rec === "object" && rec.id ? rec : null
+}
+
+/** The documentation package the applicant submitted with an AES funding
+ *  application. Consistent with the rest of the platform, only metadata (title +
+ *  file name + upload time) is persisted — there is no file blob to download —
+ *  so this presents a verifiable checklist of what the client provided. */
+function FundingDocuments({ docs }: { docs?: UploadedFundingDoc[] }) {
+  const list = docs ?? []
+  return (
+    <div className="mt-1.5 rounded-md border border-border bg-muted/30 p-2.5">
+      <div className="mb-1.5 flex items-center gap-1.5 text-[11px] font-medium text-foreground">
+        <FileText className="h-3.5 w-3.5 text-primary" />
+        Client documents ({list.length})
+      </div>
+      {list.length === 0 ? (
+        <p className="text-[11px] text-muted-foreground">
+          No documents were uploaded with this application.
+        </p>
+      ) : (
+        <ul className="space-y-1">
+          {list.map((d) => (
+            <li key={d.docId} className="flex items-start gap-1.5 text-[11px]">
+              <FileText className="mt-0.5 h-3 w-3 shrink-0 text-muted-foreground" />
+              <span className="min-w-0">
+                <span className="font-medium text-foreground">{d.title}</span>
+                <span className="block truncate text-muted-foreground">
+                  {d.fileName} · {formatDate(d.uploadedAt)}
+                </span>
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  )
 }
 
 interface AmendmentTerms {
@@ -229,6 +283,14 @@ export function PendingApprovals({ initialKind }: { initialKind?: ApprovalKind }
   // releases any reserved funds back to the owner's available balance.
   const [deleteTarget, setDeleteTarget] = useState<{ id: string; label: string } | null>(null)
 
+  // AES funding negotiation: opens the applicant's Bankeka thread inline so the
+  // administrator can review documents and negotiate terms BEFORE activating the
+  // facility — mirroring the internal-loan discussion gate.
+  const [discussFunding, setDiscussFunding] = useState<{
+    req: ApprovalRequest
+    record: ProjectFundingRequest
+  } | null>(null)
+
   // Client financial-snapshot dialog (due-diligence before approving).
   const [clientView, setClientView] = useState<{
     open: boolean
@@ -337,6 +399,26 @@ export function PendingApprovals({ initialKind }: { initialKind?: ApprovalKind }
   const openReject = (id: string) => {
     setRejectReason("")
     setRejectTarget({ id, bulk: false })
+  }
+
+  // Open (or continue) the negotiation with the AES applicant. For a pending
+  // application not yet discussed, this stamps discussionOpenedAt server-side and
+  // notifies the applicant, then opens the inline Bankeka thread.
+  const openFundingDiscuss = async (req: ApprovalRequest, record: ProjectFundingRequest) => {
+    setDiscussFunding({ req, record })
+    if (req.status === "pending" && !record.discussionOpenedAt) {
+      const res = await openProjectFinanceDiscussionAdmin({ passcode: ADMIN_PASSCODE, approvalId: req.id })
+      if (res.ok) {
+        setDiscussFunding((prev) =>
+          prev && prev.req.id === req.id
+            ? { ...prev, record: { ...prev.record, discussionOpenedAt: new Date().toISOString() } }
+            : prev,
+        )
+        mutate()
+      } else {
+        toast.error("Could not open the discussion", { description: res.error })
+      }
+    }
   }
 
   const markDelivered = async (id: string) => {
@@ -642,6 +724,10 @@ export function PendingApprovals({ initialKind }: { initialKind?: ApprovalKind }
             {filtered.map((req) => {
               const isPending = req.status === "pending"
               const isDelivered = req.payload?.delivered === true
+              // AES project funding: negotiate + review documents before
+              // activation. Approve is gated until a discussion is opened.
+              const funding = fundingRecord(req)
+              const fundingNeedsDiscussion = !!funding && !funding.discussionOpenedAt
               // A shared read-only copy is a recipient-owned mirror of another
               // client's deal. It must never expose admin management actions —
               // documents, vessel, sharing and delivery are managed on the
@@ -722,6 +808,7 @@ export function PendingApprovals({ initialKind }: { initialKind?: ApprovalKind }
                       <p className="truncate text-sm font-medium text-foreground">{req.title}</p>
                       {req.summary && <p className="text-xs text-muted-foreground text-pretty">{req.summary}</p>}
                       {req.kind === "commodity_amendment" && <AmendmentDiff payload={req.payload} />}
+                      {funding && <FundingDocuments docs={funding.uploadedDocuments} />}
                       <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1 text-[11px] text-muted-foreground">
                         <span>
                           {clientLabel(req.userId)} · submitted {formatDate(req.createdAt)}
@@ -744,13 +831,31 @@ export function PendingApprovals({ initialKind }: { initialKind?: ApprovalKind }
                     </div>
                   </div>
                   {isPending && (
-                    <div className="flex shrink-0 items-center gap-1.5">
+                    <div className="flex shrink-0 flex-wrap items-center justify-end gap-1.5">
+                      {funding && (
+                        <Button
+                          size="sm"
+                          variant={fundingNeedsDiscussion ? "default" : "outline"}
+                          className="h-8 gap-1"
+                          disabled={acting}
+                          onClick={() => openFundingDiscuss(req, funding)}
+                          title="Review the client's documents and negotiate the terms on Bankeka before activating."
+                        >
+                          <MessagesSquare className="h-3.5 w-3.5" />
+                          {funding.discussionOpenedAt ? "Continue discussion" : "Discuss"}
+                        </Button>
+                      )}
                       <Button
                         size="sm"
                         variant="outline"
                         className="h-8 gap-1 text-emerald-600"
-                        disabled={acting}
+                        disabled={acting || fundingNeedsDiscussion}
                         onClick={() => approveOne(req.id)}
+                        title={
+                          fundingNeedsDiscussion
+                            ? "Open the discussion with the applicant before activating this facility."
+                            : undefined
+                        }
                       >
                         <Check className="h-3.5 w-3.5" /> Approve
                       </Button>
@@ -910,6 +1015,89 @@ export function PendingApprovals({ initialKind }: { initialKind?: ApprovalKind }
           </ul>
         )}
       </CardContent>
+
+      {/* AES funding discussion — review documents + negotiate on Bankeka */}
+      <Dialog open={!!discussFunding} onOpenChange={(o) => !o && setDiscussFunding(null)}>
+        <DialogContent className="max-h-[92dvh] max-w-3xl overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <MessagesSquare className="h-5 w-5 text-primary" /> Funding discussion
+            </DialogTitle>
+            <DialogDescription className="text-pretty">
+              {discussFunding
+                ? `Review the documents ${clientLabel(discussFunding.req.userId)} submitted and negotiate the terms of the ${formatAmount(
+                    discussFunding.req,
+                  )} facility for "${discussFunding.record.projectName}" on Bankeka. They reply from their own Bankeka Messenger.`
+                : ""}
+            </DialogDescription>
+          </DialogHeader>
+          {discussFunding && (
+            <div className="space-y-4">
+              <FundingDocuments docs={discussFunding.record.uploadedDocuments} />
+              {discussFunding.req.userId ? (
+                <div className="rounded-lg border border-border">
+                  <Messenger
+                    key={discussFunding.req.id}
+                    scope={`admin-funding-${discussFunding.req.id}`}
+                    fetchConversations={() => adminListConversations(ADMIN_PASSCODE)}
+                    fetchThread={(id) => adminGetThread(ADMIN_PASSCODE, id)}
+                    send={(id, body, atts) => adminReply(ADMIN_PASSCODE, id, body, atts)}
+                    deleteMessage={(m) => adminDeleteMessage(ADMIN_PASSCODE, m)}
+                    attachmentsEnabled
+                    uploadPayload={JSON.stringify({ passcode: ADMIN_PASSCODE })}
+                    hideConversationList
+                    initialThreadId={discussFunding.req.userId}
+                    initialParticipant={{
+                      id: discussFunding.req.userId,
+                      name: discussFunding.record.ownerName ?? clientLabel(discussFunding.req.userId),
+                      company: discussFunding.record.ownerCompany ?? "",
+                      initials: (discussFunding.record.ownerName ?? clientLabel(discussFunding.req.userId))
+                        .split(/\s+/)
+                        .map((w) => w[0])
+                        .filter(Boolean)
+                        .slice(0, 2)
+                        .join("")
+                        .toUpperCase(),
+                      isAdmin: false,
+                    }}
+                    initialDraft={`Regarding your AES project funding application ${discussFunding.req.id} — "${discussFunding.record.projectName}", ${formatAmount(
+                      discussFunding.req,
+                    )}: `}
+                  />
+                </div>
+              ) : (
+                <p className="text-sm text-muted-foreground">
+                  This application has no linked applicant account, so a discussion cannot be opened.
+                </p>
+              )}
+            </div>
+          )}
+          {discussFunding && discussFunding.req.status === "pending" && (
+            <DialogFooter className="gap-2 sm:justify-between">
+              <Button
+                variant="outline"
+                className="text-destructive"
+                onClick={() => {
+                  const id = discussFunding.req.id
+                  setDiscussFunding(null)
+                  openReject(id)
+                }}
+              >
+                <X className="mr-2 h-4 w-4" /> Reject
+              </Button>
+              <Button
+                onClick={() => {
+                  const id = discussFunding.req.id
+                  setDiscussFunding(null)
+                  approveOne(id)
+                }}
+              >
+                <Check className="mr-2 h-4 w-4" /> Approve &amp; activate
+              </Button>
+            </DialogFooter>
+          )}
+        </DialogContent>
+      </Dialog>
 
       {/* Delete commodity deal dialog */}
       <Dialog open={deleteTarget !== null} onOpenChange={(o) => !o && !acting && setDeleteTarget(null)}>
