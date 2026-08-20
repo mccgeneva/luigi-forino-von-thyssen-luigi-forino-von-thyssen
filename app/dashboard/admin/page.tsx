@@ -160,6 +160,7 @@ import { CardManager } from "@/components/admin/card-manager"
 import { IssuedCardsManager } from "@/components/admin/issued-cards-manager"
 import { CertificateManager } from "@/components/admin/certificate-manager"
 import { BankekaBroadcastManager } from "@/components/admin/bankeka-broadcast-manager"
+import { adminUnreadCount } from "@/app/actions/bankeka"
  import { SpotDealManager } from "@/components/admin/spot-deal-manager"
 import { DocumentTraceability } from "@/components/admin/document-traceability"
 import { SecurityAudit } from "@/components/admin/security-audit"
@@ -457,6 +458,31 @@ export default function AdminPage() {
     })()
     return () => {
       cancelled = true
+    }
+  }, [unlocked, activeView])
+
+  // Unread Bankeka messages waiting in the administration inbox (client replies
+  // to broadcasts and loan discussions). Without a live badge here the admin has
+  // NO signal that a client answered — so negotiations stall and the client
+  // perceives Bankeka as broken ("I replied and nothing happens"). Polled on an
+  // interval because a client can reply at any moment while the panel is open.
+  const [bankekaUnreadCount, setBankekaUnreadCount] = useState(0)
+  useEffect(() => {
+    if (!unlocked) return
+    let cancelled = false
+    const load = async () => {
+      try {
+        const n = await adminUnreadCount(ADMIN_PASSCODE)
+        if (!cancelled) setBankekaUnreadCount(n)
+      } catch {
+        // Non-fatal: the Bankeka tile just shows no badge if the count can't load.
+      }
+    }
+    load()
+    const timer = setInterval(load, 15000)
+    return () => {
+      cancelled = true
+      clearInterval(timer)
     }
   }, [unlocked, activeView])
 
@@ -2204,7 +2230,7 @@ export default function AdminPage() {
         { id: "reconciliation", label: "Reconciliation", description: "Automated payment reconciliation engine.", icon: Repeat, count: 0 },
         { id: "treasury", label: "Treasury Services", description: "Security deposits and 1:10 leverage.", icon: Landmark, count: 0 },
         { id: "certificates", label: "Certificates", description: "Issue and re-issue official certificates.", icon: ScrollText, count: pendingCertificateCount },
-        { id: "bankeka", label: "Bankeka Messenger", description: "Broadcast secure messages and reply to clients.", icon: MessageSquareText, count: 0 },
+        { id: "bankeka", label: "Bankeka Messenger", description: "Broadcast secure messages and reply to clients.", icon: MessageSquareText, count: bankekaUnreadCount },
       ],
     },
     {
