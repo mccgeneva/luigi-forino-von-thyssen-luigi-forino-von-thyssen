@@ -31,6 +31,7 @@ import {
   Repeat,
   ScrollText,
   MessageSquareText,
+  MessagesSquare,
   Settings,
   ChevronRight,
   ArrowLeft,
@@ -147,6 +148,7 @@ import {
   adminListProjectFinance,
   adminExecuteFundingClosure,
   adminDeclineFundingClosure,
+  openProjectFinanceDiscussionAdmin,
 } from "@/app/actions/funding"
 import { KIND_LABELS, type ApprovalKind } from "@/lib/approval-kinds"
 import { adminListPendingKyc } from "@/app/actions/beneficiaries"
@@ -160,7 +162,14 @@ import { CardManager } from "@/components/admin/card-manager"
 import { IssuedCardsManager } from "@/components/admin/issued-cards-manager"
 import { CertificateManager } from "@/components/admin/certificate-manager"
 import { BankekaBroadcastManager } from "@/components/admin/bankeka-broadcast-manager"
-import { adminUnreadCount } from "@/app/actions/bankeka"
+import {
+  adminUnreadCount,
+  adminListConversations,
+  adminGetThread,
+  adminReply,
+  adminDeleteMessage,
+} from "@/app/actions/bankeka"
+import { Messenger } from "@/components/bankeka/messenger"
  import { SpotDealManager } from "@/components/admin/spot-deal-manager"
 import { DocumentTraceability } from "@/components/admin/document-traceability"
 import { SecurityAudit } from "@/components/admin/security-audit"
@@ -277,6 +286,9 @@ export default function AdminPage() {
   const [rejectFundingReason, setRejectFundingReason] = useState("")
   const [approveFundingTarget, setApproveFundingTarget] = useState<ProjectFundingRequest | null>(null)
   const [approveFundingScore, setApproveFundingScore] = useState("5")
+  // Negotiation thread with the applicant, mirroring the internal-loan flow: the
+  // administrator must open a discussion before an AES facility can be activated.
+  const [discussFundingTarget, setDiscussFundingTarget] = useState<ProjectFundingRequest | null>(null)
   // Recall / terminate / liquidate a facility (clawback), or approve a client's
   // early-closure request. `kind` records which flow opened the dialog.
   const [closeFundingTarget, setCloseFundingTarget] = useState<{
@@ -797,6 +809,32 @@ export default function AdminPage() {
 
   const formatMoney = (currency: string, n: number) =>
     `${currency} ${Math.round(n).toLocaleString("en-US")}`
+
+  /**
+   * Open (or continue) the Bankeka negotiation with the applicant. For a pending
+   * application not yet discussed, this stamps `discussionOpenedAt` server-side
+   * and notifies the applicant, then opens the inline messenger dialog.
+   */
+  const openFundingDiscuss = async (request: ProjectFundingRequest) => {
+    setDiscussFundingTarget(request)
+    if (request.status === "pending" && !request.discussionOpenedAt && request.approvalId) {
+      const res = await openProjectFinanceDiscussionAdmin({
+        passcode: ADMIN_PASSCODE,
+        approvalId: request.approvalId,
+      })
+      if (res.ok) {
+        // Reflect "In discussion" immediately, then refresh from the server.
+        setDiscussFundingTarget((prev) =>
+          prev && prev.approvalId === request.approvalId
+            ? { ...prev, discussionOpenedAt: new Date().toISOString() }
+            : prev,
+        )
+        void loadAdminFunding()
+      } else {
+        toast.error("Could not open the discussion", { description: res.error })
+      }
+    }
+  }
 
   const confirmApproveFunding = async () => {
     if (!approveFundingTarget) return
@@ -3177,30 +3215,56 @@ export default function AdminPage() {
                         </span>
                       </div>
                     </div>
-                    <div className="flex gap-2">
+                    <div className="flex flex-col gap-2">
                       <Button
-                        className="flex-1"
+                        variant={r.discussionOpenedAt ? "outline" : "default"}
                         size="sm"
-                        onClick={() => {
-                          setApproveFundingScore("5")
-                          setApproveFundingTarget(r)
-                        }}
+                        className="w-full"
+                        onClick={() => void openFundingDiscuss(r)}
                       >
-                        <Check className="mr-1 h-4 w-4" />
-                        Approve
+                        <MessagesSquare className="mr-1 h-4 w-4" />
+                        {r.discussionOpenedAt ? "Continue discussion" : "Discuss"}
                       </Button>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        className="flex-1 border-destructive/30 text-destructive hover:bg-destructive/10 hover:text-destructive"
-                        onClick={() => {
-                          setRejectFundingReason("")
-                          setRejectFundingTarget(r)
-                        }}
-                      >
-                        <X className="mr-1 h-4 w-4" />
-                        Reject
-                      </Button>
+                      <div className="flex gap-2">
+                        <Button
+                          className="flex-1"
+                          size="sm"
+                          disabled={!r.discussionOpenedAt}
+                          title={
+                            r.discussionOpenedAt
+                              ? undefined
+                              : "Open the discussion with the applicant before activating this facility."
+                          }
+                          onClick={() => {
+                            setApproveFundingScore("5")
+                            setApproveFundingTarget(r)
+                          }}
+                        >
+                          <Check className="mr-1 h-4 w-4" />
+                          Approve
+                        </Button>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="flex-1 border-destructive/30 text-destructive hover:bg-destructive/10 hover:text-destructive"
+                          onClick={() => {
+                            setRejectFundingReason("")
+                            setRejectFundingTarget(r)
+                          }}
+                        >
+                          <X className="mr-1 h-4 w-4" />
+                          Reject
+                        </Button>
+                      </div>
+                      {r.discussionOpenedAt ? (
+                        <p className="flex items-center gap-1 text-[11px] text-primary">
+                          <MessagesSquare className="h-3 w-3" /> In discussion
+                        </p>
+                      ) : (
+                        <p className="text-[11px] text-amber-600 dark:text-amber-400">
+                          Discussion required before activation.
+                        </p>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -5651,6 +5715,79 @@ export default function AdminPage() {
                 </Button>
               </DialogFooter>
             </>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* AES funding discussion — opens the applicant's Bankeka thread inline */}
+      <Dialog open={!!discussFundingTarget} onOpenChange={(o) => !o && setDiscussFundingTarget(null)}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <MessagesSquare className="h-5 w-5 text-primary" /> Funding discussion
+            </DialogTitle>
+            <DialogDescription>
+              {discussFundingTarget
+                ? `Message ${discussFundingTarget.ownerName ?? "the applicant"} on Bankeka, request or share supporting documents, and negotiate the terms of the ${formatFundingAmount(
+                    discussFundingTarget,
+                  )} facility for "${discussFundingTarget.projectName}". They reply from their own Bankeka Messenger.`
+                : ""}
+            </DialogDescription>
+          </DialogHeader>
+          {discussFundingTarget && discussFundingTarget.ownerUserId && (
+            <Messenger
+              key={discussFundingTarget.approvalId}
+              scope={`admin-funding-${discussFundingTarget.approvalId}`}
+              fetchConversations={() => adminListConversations(ADMIN_PASSCODE)}
+              fetchThread={(id) => adminGetThread(ADMIN_PASSCODE, id)}
+              send={(id, body, atts) => adminReply(ADMIN_PASSCODE, id, body, atts)}
+              deleteMessage={(m) => adminDeleteMessage(ADMIN_PASSCODE, m)}
+              attachmentsEnabled
+              uploadPayload={JSON.stringify({ passcode: ADMIN_PASSCODE })}
+              hideConversationList
+              initialThreadId={discussFundingTarget.ownerUserId}
+              initialParticipant={{
+                id: discussFundingTarget.ownerUserId,
+                name: discussFundingTarget.ownerName ?? discussFundingTarget.ownerEmail ?? "Applicant",
+                company: discussFundingTarget.ownerCompany ?? "",
+                initials: (discussFundingTarget.ownerName ?? discussFundingTarget.ownerEmail ?? "AP")
+                  .split(/\s+/)
+                  .map((w) => w[0])
+                  .filter(Boolean)
+                  .slice(0, 2)
+                  .join("")
+                  .toUpperCase(),
+                isAdmin: false,
+              }}
+              initialDraft={`Regarding your AES project funding application ${discussFundingTarget.approvalId} — "${discussFundingTarget.projectName}", ${formatFundingAmount(
+                discussFundingTarget,
+              )}: `}
+            />
+          )}
+          {discussFundingTarget && discussFundingTarget.status === "pending" && (
+            <DialogFooter className="gap-2 sm:justify-between">
+              <Button
+                variant="destructive"
+                onClick={() => {
+                  const t = discussFundingTarget
+                  setDiscussFundingTarget(null)
+                  setRejectFundingReason("")
+                  setRejectFundingTarget(t)
+                }}
+              >
+                <X className="mr-2 h-4 w-4" /> Reject
+              </Button>
+              <Button
+                onClick={() => {
+                  const t = discussFundingTarget
+                  setDiscussFundingTarget(null)
+                  setApproveFundingScore("5")
+                  setApproveFundingTarget(t)
+                }}
+              >
+                <Check className="mr-2 h-4 w-4" /> Approve &amp; activate
+              </Button>
+            </DialogFooter>
           )}
         </DialogContent>
       </Dialog>

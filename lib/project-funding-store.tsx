@@ -58,6 +58,12 @@ export interface ProjectFundingRequest {
   riskScore?: number
   /** Applicable upfront cash commitment fixed at approval. */
   cashCommitment?: number
+  /**
+   * Set once the administrator opens the Bankeka negotiation with the applicant.
+   * Like internal loans, funding a project is gated behind an opened discussion
+   * so terms are always negotiated with the client before capital is activated.
+   */
+  discussionOpenedAt?: string
 
   // --- Administrator display (populated only when the admin loads the
   //     cross-client facility queue, so a decision card can show WHO the
