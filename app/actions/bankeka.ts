@@ -18,7 +18,7 @@
 
 import { resolveCurrentSession } from "@/lib/session-user"
 import { getDynamicUserById, getDynamicUserByEmail, listDynamicUsers } from "@/lib/admin-users-db"
-import { adminActionAuthorized } from "@/lib/admin-auth"
+import { adminActionAuthorized, resolveActingUserId, isAdminEmail } from "@/lib/admin-auth"
 import { logActivity } from "@/app/actions/log-activity"
 import { insertNotification } from "@/lib/notifications-db"
 import {
@@ -89,6 +89,73 @@ const adminParticipant: BankekaParticipant = {
   isAdmin: true,
 }
 
+// ---------------------------------------------------------------------------
+// The Administrator Console is a ROLE, not a separate platform account. A real,
+// authorized user temporarily activates it (by PIN); when they message a client
+// privately they do so AS THEMSELVES — a real-user ↔ real-user conversation.
+//
+// The synthetic BANKEKA_ADMIN_ID identity is therefore used ONLY for one-to-many
+// broadcasts (official announcements). It is never a participant in a private
+// two-way thread anymore.
+//
+// `BANKEKA_OPERATOR_EMAIL` is the operator OF RECORD: the resting administration
+// account that receives client-initiated support messages and is the target for
+// any legacy synthetic-admin private thread. Whoever unlocks the console SENDS
+// as their own real account (resolveActingUserId); the operator of record is
+// only used when there is no specific sending operator (inbound support).
+// ---------------------------------------------------------------------------
+const BANKEKA_OPERATOR_EMAIL = "admin@mccgva.ch"
+
+type OperatorRec = {
+  id: string
+  email: string
+  status: string
+  profile: { fullName?: string; shortName?: string; company?: string; initials?: string }
+}
+
+/** The real account that backs the administration for INBOUND messages (client
+ *  → support) and as the fallback sender when a specific operator can't be
+ *  resolved. Returns the full record so callers can build its participant. */
+async function getOperatorOfRecord(): Promise<OperatorRec | null> {
+  try {
+    const rec = (await getDynamicUserByEmail(BANKEKA_OPERATOR_EMAIL)) as OperatorRec | null
+    return rec && rec.status === "active" ? rec : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * The REAL account that acts as administration for a given request:
+ *   - the signed-in user who unlocked the console (they message AS themselves),
+ *   - falling back to the operator of record when the session can't be resolved.
+ * Callers are already PIN + admin gated, so the acting user is always an admin.
+ */
+async function resolveAdminAnchorId(): Promise<string | null> {
+  const acting = await resolveActingUserId()
+  if (acting) return acting
+  const rec = await getOperatorOfRecord()
+  return rec?.id ?? null
+}
+
+/** Build a client-facing participant for a real administration operator. The
+ *  client sees the operator's REAL name & company (staff identity is not private
+ *  client data), presented as an ordinary private contact — not the synthetic
+ *  "Administrator" entity. */
+function operatorParticipant(rec: {
+  id: string
+  email: string
+  profile: { fullName?: string; shortName?: string; company?: string; initials?: string }
+}): BankekaParticipant {
+  return {
+    id: rec.id,
+    name: rec.profile.fullName || rec.profile.shortName || rec.email,
+    company: rec.profile.company || "",
+    initials: rec.profile.initials || rec.email.slice(0, 2).toUpperCase(),
+    isAdmin: false,
+  }
+}
+
 /**
  * FULL identity resolver — exposes the real name & company. This is used ONLY
  * for the administrator console and the compliance audit trail, both of which
@@ -128,6 +195,11 @@ async function resolveClientParticipant(id: string): Promise<BankekaParticipant>
   try {
     const rec = await getDynamicUserById(id)
     if (rec) {
+      // Administration operators are staff acting in an official capacity — their
+      // real name/company is NOT private client data, and the client is entitled
+      // to know which real person they are negotiating a loan with. Everyone else
+      // stays email-only so the client base can't be enumerated.
+      if (isAdminEmail(rec.email)) return operatorParticipant(rec)
       return {
         id,
         name: rec.email, // identify by email only — never the real name
@@ -231,10 +303,15 @@ export async function listConversations(): Promise<BankekaConversation[]> {
 export async function getThread(otherId: string): Promise<ThreadResult | null> {
   const me = await requireSessionId()
   if (!me || !otherId || otherId === me) return null
+  // A private conversation is real-user ↔ real-user. If the client targets the
+  // legacy synthetic admin id, resolve it to the real operator of record so the
+  // thread is with an actual account (the synthetic id is broadcast-only now).
+  const resolvedOther = otherId === BANKEKA_ADMIN_ID ? (await getOperatorOfRecord())?.id ?? null : otherId
+  if (!resolvedOther || resolvedOther === me) return null
   try {
-    await markThreadRead(me, otherId)
-    const rows = await getThreadMessages(me, otherId)
-    const participant = await resolveClientParticipant(otherId)
+    await markThreadRead(me, resolvedOther)
+    const rows = await getThreadMessages(me, resolvedOther)
+    const participant = await resolveClientParticipant(resolvedOther)
     return { participant, messages: rows.map((r) => toMessage(r, me)) }
   } catch {
     return null
@@ -257,24 +334,28 @@ export async function sendMessage(
   if (trimmed.length > MAX_BODY) return { ok: false, error: "Message is too long." }
   if (!otherId || otherId === me) return { ok: false, error: "Invalid recipient." }
 
+  // The synthetic admin is broadcast-only; a client contacting "support"
+  // actually messages the real operator of record, so their reply lands in a
+  // genuine two-way thread the administration can answer from.
+  const resolvedOther = otherId === BANKEKA_ADMIN_ID ? (await getOperatorOfRecord())?.id ?? null : otherId
+  if (!resolvedOther || resolvedOther === me) return { ok: false, error: "Invalid recipient." }
+
   try {
-    // Confirm the recipient is reachable: either the reserved admin contact or
-    // an ACTIVE real account. We never message suspended/inactive/unknown ids.
-    if (otherId !== BANKEKA_ADMIN_ID) {
-      const rec = await getDynamicUserById(otherId)
-      if (!rec || rec.status !== "active") {
-        return { ok: false, error: "Recipient not found." }
-      }
+    // Confirm the recipient is an ACTIVE real account. We never message
+    // suspended/inactive/unknown ids.
+    const rec = await getDynamicUserById(resolvedOther)
+    if (!rec || rec.status !== "active") {
+      return { ok: false, error: "Recipient not found." }
     }
     // Real identity is resolved ONLY for the compliance audit trail (admin-only).
-    const recipient = await resolveParticipant(otherId)
-    const row = await insertMessage({ senderId: me, recipientId: otherId, body: trimmed, attachments: files })
+    const recipient = await resolveParticipant(resolvedOther)
+    const row = await insertMessage({ senderId: me, recipientId: resolvedOther, body: trimmed, attachments: files })
     const sender = await resolveParticipant(me)
     await recordAudit({
       actorId: me,
       actorLabel: `${sender.name}${sender.company ? ` (${sender.company})` : ""}`,
-      action: otherId === BANKEKA_ADMIN_ID ? "reply" : "message",
-      recipientId: otherId,
+      action: isAdminEmail(rec.email) ? "reply" : "message",
+      recipientId: resolvedOther,
       recipientLabel: `${recipient.name}${recipient.company ? ` (${recipient.company})` : ""}`,
       messageId: row.id,
       charCount: trimmed.length,
@@ -321,12 +402,16 @@ export async function deleteMessage(messageId: string): Promise<DeleteResult> {
   }
 }
 
-/** The pinned MCC Capital · Administration contact, so support is always
- *  reachable without needing to know an email address. */
+/** The pinned administration contact, so support is always reachable without
+ *  needing to know an email address. This is the REAL operator of record (a
+ *  role-bearing account), not a synthetic entity — messaging it opens a genuine
+ *  two-way thread. Falls back to the broadcast label only if no operator account
+ *  is currently active. */
 export async function getSupportContact(): Promise<BankekaParticipant | null> {
   const me = await requireSessionId()
   if (!me) return null
-  return adminParticipant
+  const rec = await getOperatorOfRecord()
+  return rec ? operatorParticipant(rec) : adminParticipant
 }
 
 export type FindRecipientResult =
@@ -457,12 +542,16 @@ export async function adminBroadcast(
   }
 }
 
-/** Admin inbox: conversations where the administration participant is involved. */
+/** Admin inbox: the real operator's two-way conversations. Anchored on the
+ *  signed-in operator (the person who unlocked the console), so it shows genuine
+ *  real-user ↔ client threads — not a synthetic admin account. */
 export async function adminListConversations(passcode: string): Promise<BankekaConversation[]> {
   if (!(await adminOk(passcode))) return []
+  const anchor = await resolveAdminAnchorId()
+  if (!anchor) return []
   try {
-    await markAllDelivered(BANKEKA_ADMIN_ID)
-    return await buildConversations(BANKEKA_ADMIN_ID, resolveParticipant)
+    await markAllDelivered(anchor)
+    return await buildConversations(anchor, resolveParticipant)
   } catch {
     return []
   }
@@ -471,11 +560,13 @@ export async function adminListConversations(passcode: string): Promise<BankekaC
 /** Admin opens a thread with a specific client; marks incoming as read. */
 export async function adminGetThread(passcode: string, otherId: string): Promise<ThreadResult | null> {
   if (!(await adminOk(passcode)) || !otherId) return null
+  const anchor = await resolveAdminAnchorId()
+  if (!anchor || anchor === otherId) return null
   try {
-    await markThreadRead(BANKEKA_ADMIN_ID, otherId)
-    const rows = await getThreadMessages(BANKEKA_ADMIN_ID, otherId)
+    await markThreadRead(anchor, otherId)
+    const rows = await getThreadMessages(anchor, otherId)
     const participant = await resolveParticipant(otherId)
-    return { participant, messages: rows.map((r) => toMessage(r, BANKEKA_ADMIN_ID)) }
+    return { participant, messages: rows.map((r) => toMessage(r, anchor)) }
   } catch {
     return null
   }
@@ -494,16 +585,27 @@ export async function adminReply(
   if (!trimmed && files.length === 0) return { ok: false, error: "Write a message or attach a document." }
   if (trimmed.length > MAX_BODY) return { ok: false, error: "Message is too long." }
   if (!otherId) return { ok: false, error: "Invalid recipient." }
+
+  // The operator replies AS THEMSELVES (the real signed-in user who unlocked the
+  // console), not as a synthetic "Administrator" account — so the client and the
+  // operator hold one genuine two-way thread.
+  const anchor = await resolveAdminAnchorId()
+  if (!anchor) return { ok: false, error: "Could not resolve the administrator account." }
+  if (anchor === otherId) {
+    return { ok: false, error: "You cannot open an administration thread with your own account." }
+  }
   try {
+    const operator = await resolveParticipant(anchor)
+    const operatorLabel = `${operator.name}${operator.company ? ` (${operator.company})` : ""}`
     const row = await insertMessage({
-      senderId: BANKEKA_ADMIN_ID,
+      senderId: anchor,
       recipientId: otherId,
       body: trimmed,
       attachments: files,
     })
     await recordAudit({
-      actorId: BANKEKA_ADMIN_ID,
-      actorLabel: BANKEKA_ADMIN_LABEL,
+      actorId: anchor,
+      actorLabel: operatorLabel,
       action: "reply",
       recipientId: otherId,
       recipientLabel: (await resolveParticipant(otherId)).name,
@@ -516,14 +618,14 @@ export async function adminReply(
       await insertNotification({
         userId: otherId,
         tone: "info",
-        title: `New message from ${BANKEKA_ADMIN_LABEL}`,
+        title: `New message from ${operator.name}`,
         body: notifyPreview(trimmed, files.length > 0),
         href: "/dashboard/bankeka",
       })
     } catch (err) {
       console.log("[v0] bankeka reply notification failed:", (err as Error).message)
     }
-    return { ok: true, message: toMessage(row, BANKEKA_ADMIN_ID) }
+    return { ok: true, message: toMessage(row, anchor) }
   } catch {
     return { ok: false, error: "Could not send the reply. Please try again." }
   }
@@ -535,8 +637,10 @@ export async function adminReply(
 export async function adminDeleteMessage(passcode: string, messageId: string): Promise<DeleteResult> {
   if (!(await adminOk(passcode))) return { ok: false, error: "Administrator authorization failed." }
   if (!messageId) return { ok: false, error: "Invalid message." }
+  const anchor = await resolveAdminAnchorId()
+  if (!anchor) return { ok: false, error: "Could not resolve the administrator account." }
   try {
-    const ok = await hideMessageForUser(BANKEKA_ADMIN_ID, messageId)
+    const ok = await hideMessageForUser(anchor, messageId)
     if (!ok) return { ok: false, error: "Message not found." }
     return { ok: true }
   } catch {
@@ -547,9 +651,11 @@ export async function adminDeleteMessage(passcode: string, messageId: string): P
 /** Unread count for the administration inbox (admin console badge). */
 export async function adminUnreadCount(passcode: string): Promise<number> {
   if (!(await adminOk(passcode))) return 0
+  const anchor = await resolveAdminAnchorId()
+  if (!anchor) return 0
   try {
-    await markAllDelivered(BANKEKA_ADMIN_ID)
-    return await getUnreadCount(BANKEKA_ADMIN_ID)
+    await markAllDelivered(anchor)
+    return await getUnreadCount(anchor)
   } catch {
     return 0
   }
