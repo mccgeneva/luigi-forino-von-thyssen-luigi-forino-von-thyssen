@@ -48,6 +48,80 @@ function readRecord(existing: {
   return record
 }
 
+// --- Admin: open the negotiation with the applicant ------------------------
+
+export type FundingDiscussionResult = { ok: true } | { ok: false; error: string }
+
+/**
+ * Mark an AES project-funding application as "in discussion". Mirrors the
+ * internal-loan flow: this is the mandatory gate before activation — it stamps
+ * `discussionOpenedAt` on the record (idempotent — first open wins) and notifies
+ * the applicant that the administrator has opened negotiations, so they can
+ * reply and share documents in their Bankeka chat. Actual messages flow through
+ * Bankeka; this only records that the conversation has begun.
+ */
+export async function openProjectFinanceDiscussionAdmin(input: {
+  passcode: string
+  approvalId: string
+}): Promise<FundingDiscussionResult> {
+  if (!(await adminActionAuthorized(input.passcode))) {
+    return { ok: false, error: "Administrator authorization failed." }
+  }
+  try {
+    const existing = await getApprovalById(input.approvalId)
+    if (!existing || existing.kind !== "project_funding") {
+      return { ok: false, error: "Funding application not found." }
+    }
+    if (existing.status !== "pending") return { ok: true } // decided already — nothing to open
+
+    const record = readRecord(existing)
+    if (!record) return { ok: false, error: "Funding application not found." }
+    if (record.discussionOpenedAt) return { ok: true } // already open — idempotent
+
+    const openedAt = new Date().toISOString()
+    const prevPayload = existing.payload ?? {}
+    const prevRecord = (prevPayload.record as Record<string, unknown>) ?? {}
+    await updateApprovalPayload(input.approvalId, {
+      ...prevPayload,
+      record: { ...prevRecord, discussionOpenedAt: openedAt },
+    })
+
+    const facilityLabel = `${record.currency} ${Math.round(record.facility).toLocaleString("en-US")}`
+    try {
+      await insertNotification({
+        userId: existing.userId,
+        tone: "info",
+        title: "Funding under discussion",
+        body: `The administrator has opened a discussion about your ${facilityLabel} AES facility for "${record.projectName}". Reply and share any requested documents in your Bankeka chat.`,
+        href: "/dashboard/bankeka",
+      })
+    } catch {
+      // non-critical
+    }
+
+    const profile = await resolveAccountProfileById(existing.userId).catch(() => null)
+    const applicantLabel = profile
+      ? `${profile.fullName || profile.email || existing.userId}${profile.company ? ` (${profile.company})` : ""}`
+      : existing.userId
+    await logActivity({
+      action: `Opened discussion on AES project funding ${record.id}`,
+      category: "Project Funding",
+      user: applicantLabel,
+      userId: existing.userId,
+      details: {
+        summary: `Administrator opened negotiations on AES project funding ${record.id} ("${record.projectName}") for a facility of ${facilityLabel}.`,
+        referenceId: record.id,
+        applicant: applicantLabel,
+      },
+    })
+
+    return { ok: true }
+  } catch (err) {
+    console.log("[v0] openProjectFinanceDiscussionAdmin failed:", (err as Error).message)
+    return { ok: false, error: "Could not open the discussion. Please try again." }
+  }
+}
+
 // --- Client: request / cancel early closure ---------------------------------
 
 export type FundingClosureRequestResult =
