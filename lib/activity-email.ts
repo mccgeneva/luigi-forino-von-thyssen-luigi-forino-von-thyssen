@@ -128,7 +128,11 @@ function buildRows(details?: ActivityLog["details"]) {
 }
 
 function buildEmailHtml(activity: ActivityLog, ipAddress: string, timestamp: string) {
-  const user = activity.user || "Jesus Santos Alvarez Fernandez (IPOSTRAD Securities SL)"
+  // NEVER fall back to a hardcoded real account name here — doing so mislabels
+  // one customer's operation with a different customer's identity (a cross-
+  // account leak). When the caller doesn't supply the acting party, show a
+  // neutral system label instead.
+  const user = activity.user?.trim() || "System / Administrator"
   const detailRows = buildRows(activity.details)
 
   return `

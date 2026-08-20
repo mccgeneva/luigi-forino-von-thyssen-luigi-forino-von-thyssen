@@ -299,6 +299,16 @@ export async function approveInternalLoanAdmin(input: {
     await updateApprovalPayload(req.id, { ...(req.payload ?? {}), record: nextRecord })
     await recordAdminDecision(req.id, "approved", "administrator", input.note ?? undefined)
 
+    // Resolve WHO this loan belongs to so the audit trail + email name the
+    // borrower — never a hardcoded fallback (which would mislabel this
+    // operation with an unrelated customer's identity).
+    const borrowerProfile = await resolveAccountProfileById(req.userId).catch(() => null)
+    const borrowerLabel = borrowerProfile
+      ? `${borrowerProfile.fullName || borrowerProfile.email || req.userId}${
+          borrowerProfile.company ? ` (${borrowerProfile.company})` : ""
+        }`
+      : req.userId
+
     // Best-effort notify + audit.
     try {
       await insertNotification({
@@ -316,6 +326,8 @@ export async function approveInternalLoanAdmin(input: {
     await logActivity({
       action: `Approved internal loan ${req.id} — ${formatLoanMoney(amount, currency)} funded`,
       category: "Treasury",
+      user: borrowerLabel,
+      userId: req.userId,
       details: {
         summary: `Administrator approved internal loan ${req.id} for ${formatLoanMoney(
           amount,
@@ -324,6 +336,7 @@ export async function approveInternalLoanAdmin(input: {
           arrangementFee > 0 ? ` One-time arrangement fee ${formatLoanMoney(arrangementFee, currency)}.` : ""
         } Principal credited to the Master Account.`,
         referenceId: req.id,
+        borrower: borrowerLabel,
         annualRate: `${(annualRate * 100).toFixed(2)}%`,
         arrangementFee: arrangementFee > 0 ? formatLoanMoney(arrangementFee, currency) : "none",
       },
@@ -378,12 +391,21 @@ export async function openInternalLoanDiscussionAdmin(input: {
     } catch {
       // non-critical
     }
+    const borrowerProfile = await resolveAccountProfileById(req.userId).catch(() => null)
+    const borrowerLabel = borrowerProfile
+      ? `${borrowerProfile.fullName || borrowerProfile.email || req.userId}${
+          borrowerProfile.company ? ` (${borrowerProfile.company})` : ""
+        }`
+      : req.userId
     await logActivity({
       action: `Opened discussion on internal loan ${req.id}`,
       category: "Treasury",
+      user: borrowerLabel,
+      userId: req.userId,
       details: {
         summary: `Administrator opened negotiations on internal loan ${req.id} for ${formatLoanMoney(amount, currency)}.`,
         referenceId: req.id,
+        borrower: borrowerLabel,
       },
     })
     return { ok: true }
@@ -417,10 +439,22 @@ export async function rejectInternalLoanAdmin(input: {
     } catch {
       // non-critical
     }
+    const borrowerProfile = await resolveAccountProfileById(req.userId).catch(() => null)
+    const borrowerLabel = borrowerProfile
+      ? `${borrowerProfile.fullName || borrowerProfile.email || req.userId}${
+          borrowerProfile.company ? ` (${borrowerProfile.company})` : ""
+        }`
+      : req.userId
     await logActivity({
       action: `Rejected internal loan ${req.id}`,
       category: "Treasury",
-      details: { summary: `Administrator declined internal loan ${req.id}.${input.reason ? ` Reason: ${input.reason}` : ""}`, referenceId: req.id },
+      user: borrowerLabel,
+      userId: req.userId,
+      details: {
+        summary: `Administrator declined internal loan ${req.id}.${input.reason ? ` Reason: ${input.reason}` : ""}`,
+        referenceId: req.id,
+        borrower: borrowerLabel,
+      },
     })
     return { ok: true }
   } catch (err) {
@@ -518,15 +552,24 @@ export async function repayInternalLoan(input: {
       })
     }
 
+    const borrowerProfile = await resolveAccountProfileById(req.userId).catch(() => null)
+    const borrowerLabel = borrowerProfile
+      ? `${borrowerProfile.fullName || borrowerProfile.email || req.userId}${
+          borrowerProfile.company ? ` (${borrowerProfile.company})` : ""
+        }`
+      : req.userId
     await logActivity({
       action: `Repaid ${formatLoanMoney(repay, terms.currency)} on internal loan ${req.id}`,
       category: "Treasury",
+      user: borrowerLabel,
+      userId: req.userId,
       details: {
         summary: `Repayment of ${formatLoanMoney(repay, terms.currency)} on internal loan ${req.id}. Outstanding now ${formatLoanMoney(
           nowOutstanding,
           terms.currency,
         )}.`,
         referenceId: req.id,
+        borrower: borrowerLabel,
       },
     })
 
