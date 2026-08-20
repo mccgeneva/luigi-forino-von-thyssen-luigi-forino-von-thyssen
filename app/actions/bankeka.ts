@@ -20,6 +20,7 @@ import { resolveCurrentSession } from "@/lib/session-user"
 import { getDynamicUserById, getDynamicUserByEmail, listDynamicUsers } from "@/lib/admin-users-db"
 import { adminActionAuthorized } from "@/lib/admin-auth"
 import { logActivity } from "@/app/actions/log-activity"
+import { insertNotification } from "@/lib/notifications-db"
 import {
   insertMessage,
   hideMessageForUser,
@@ -46,6 +47,14 @@ import {
 } from "@/lib/bankeka-shared"
 
 const MAX_BODY = 4000
+
+/** A short, single-line preview of a message body for the bell notification. */
+function notifyPreview(body: string, hadAttachment: boolean): string {
+  const clean = body.replace(/\s+/g, " ").trim()
+  if (!clean) return hadAttachment ? "Sent you a document." : "You have a new message."
+  const trimmed = clean.length > 140 ? `${clean.slice(0, 139)}…` : clean
+  return hadAttachment ? `${trimmed} (with attachment)` : trimmed
+}
 
 /**
  * Trust-boundary filter for caller-supplied attachments. Only accepts files
@@ -416,6 +425,19 @@ export async function adminBroadcast(
         messageId: row.id,
         charCount: trimmed.length,
       })
+      // Bell notification per recipient so a broadcast reaches clients who
+      // don't currently have Bankeka open.
+      try {
+        await insertNotification({
+          userId: rid,
+          tone: "info",
+          title: `New message from ${BANKEKA_ADMIN_LABEL}`,
+          body: notifyPreview(trimmed, false),
+          href: "/dashboard/bankeka",
+        })
+      } catch (err) {
+        console.log("[v0] bankeka broadcast notification failed:", (err as Error).message)
+      }
     }
 
     // A single audit-trail email for the whole broadcast (no per-recipient spam).
@@ -488,6 +510,19 @@ export async function adminReply(
       messageId: row.id,
       charCount: trimmed.length,
     })
+    // Persistent bell notification so the client is alerted even when Bankeka
+    // is closed (the chat-icon unread badge only shows once they look).
+    try {
+      await insertNotification({
+        userId: otherId,
+        tone: "info",
+        title: `New message from ${BANKEKA_ADMIN_LABEL}`,
+        body: notifyPreview(trimmed, files.length > 0),
+        href: "/dashboard/bankeka",
+      })
+    } catch (err) {
+      console.log("[v0] bankeka reply notification failed:", (err as Error).message)
+    }
     return { ok: true, message: toMessage(row, BANKEKA_ADMIN_ID) }
   } catch {
     return { ok: false, error: "Could not send the reply. Please try again." }
