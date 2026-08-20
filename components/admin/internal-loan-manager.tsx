@@ -221,14 +221,14 @@ export function InternalLoanManager({ passcode }: { passcode: string }) {
                       </p>
                       <p className="text-xs text-muted-foreground">{loan.email}</p>
                     </div>
-                    <div className="flex shrink-0 flex-wrap gap-2">
-                      <Button size="sm" variant="secondary" onClick={() => setDiscussTarget(loan)}>
+                    <div className="flex w-full flex-wrap gap-2 sm:w-auto sm:shrink-0">
+                      <Button size="sm" variant="secondary" className="whitespace-nowrap" onClick={() => setDiscussTarget(loan)}>
                         <MessagesSquare className="mr-1.5 h-3.5 w-3.5" /> Discuss
                       </Button>
-                      <Button size="sm" onClick={() => openApprove(loan)}>
+                      <Button size="sm" className="whitespace-nowrap" onClick={() => openApprove(loan)}>
                         <ShieldCheck className="mr-1.5 h-3.5 w-3.5" /> Evaluate & fund
                       </Button>
-                      <Button size="sm" variant="outline" onClick={() => setRejectTarget(loan)}>
+                      <Button size="sm" variant="outline" className="whitespace-nowrap" onClick={() => setRejectTarget(loan)}>
                         <XCircle className="mr-1.5 h-3.5 w-3.5" /> Decline
                       </Button>
                     </div>
