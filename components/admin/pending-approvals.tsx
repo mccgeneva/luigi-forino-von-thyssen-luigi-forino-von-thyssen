@@ -54,8 +54,10 @@ import {
   LockOpen,
   MessagesSquare,
   FileText,
+  Download,
 } from "lucide-react"
 import { ADMIN_PASSCODE } from "@/lib/admin-config"
+import { blobFileUrl } from "@/lib/kyc-types"
 import { listSelectableClients, type SelectableClient } from "@/app/actions/admin-users"
 import {
   adminListApprovals,
@@ -120,10 +122,18 @@ function fundingRecord(req: ApprovalRequest): ProjectFundingRequest | null {
   return rec && typeof rec === "object" && rec.id ? rec : null
 }
 
+function formatFileSize(bytes?: number): string {
+  if (!bytes || bytes <= 0) return ""
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+}
+
 /** The documentation package the applicant submitted with an AES funding
- *  application. Consistent with the rest of the platform, only metadata (title +
- *  file name + upload time) is persisted — there is no file blob to download —
- *  so this presents a verifiable checklist of what the client provided. */
+ *  application. Each document the client uploaded is stored in Blob, so it is
+ *  rendered as a download link the administrator can open to study the file on
+ *  their computer before deciding. Legacy documents captured before file
+ *  storage existed show as "not stored" (metadata only, nothing to download). */
 function FundingDocuments({ docs }: { docs?: UploadedFundingDoc[] }) {
   const list = docs ?? []
   return (
@@ -138,17 +148,44 @@ function FundingDocuments({ docs }: { docs?: UploadedFundingDoc[] }) {
         </p>
       ) : (
         <ul className="space-y-1">
-          {list.map((d) => (
-            <li key={d.docId} className="flex items-start gap-1.5 text-[11px]">
-              <FileText className="mt-0.5 h-3 w-3 shrink-0 text-muted-foreground" />
-              <span className="min-w-0">
-                <span className="font-medium text-foreground">{d.title}</span>
-                <span className="block truncate text-muted-foreground">
-                  {d.fileName} · {formatDate(d.uploadedAt)}
-                </span>
-              </span>
-            </li>
-          ))}
+          {list.map((d) => {
+            const meta = [d.fileName, formatFileSize(d.size), formatDate(d.uploadedAt)]
+              .filter(Boolean)
+              .join(" · ")
+            const inner = (
+              <>
+                <span className="font-medium text-foreground group-hover:underline">{d.title}</span>
+                <span className="block truncate text-muted-foreground">{meta}</span>
+              </>
+            )
+            return (
+              <li key={d.docId} className="flex items-start gap-1.5 text-[11px]">
+                {d.pathname ? (
+                  <a
+                    href={blobFileUrl(d.pathname, ADMIN_PASSCODE)}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    download={d.fileName}
+                    className="group flex min-w-0 flex-1 items-start gap-1.5 rounded p-0.5 -m-0.5 hover:bg-muted"
+                    title={`Download ${d.fileName} to study before approving`}
+                  >
+                    <Download className="mt-0.5 h-3 w-3 shrink-0 text-primary" />
+                    <span className="min-w-0">{inner}</span>
+                  </a>
+                ) : (
+                  <>
+                    <FileText className="mt-0.5 h-3 w-3 shrink-0 text-muted-foreground" />
+                    <span className="min-w-0">
+                      <span className="font-medium text-foreground">{d.title}</span>
+                      <span className="block truncate text-muted-foreground">
+                        {meta} · not stored (metadata only)
+                      </span>
+                    </span>
+                  </>
+                )}
+              </li>
+            )
+          })}
         </ul>
       )}
     </div>

@@ -7,14 +7,24 @@ import { useServerRequestList } from "@/lib/use-server-request-list"
 
 export type ProjectFundingStatus = "pending" | "approved" | "rejected"
 
-/** A single uploaded document in the required documentation package. Only
- *  metadata is persisted (file name + timestamp), consistent with the rest of
- *  the platform's document handling. */
+/** A single uploaded document in the required documentation package. Beyond the
+ *  metadata (title + file name + timestamp) the actual file is stored in Blob so
+ *  an administrator can download and study it before deciding. */
 export interface UploadedFundingDoc {
   docId: string
   title: string
   fileName: string
   uploadedAt: string
+  /**
+   * Blob storage coordinates for the actual uploaded file, so an administrator
+   * can download the document. Optional because legacy applications only ever
+   * captured metadata (no file was stored) — such documents render as
+   * "not stored" rather than a broken download link.
+   */
+  pathname?: string
+  url?: string
+  contentType?: string
+  size?: number
 }
 
 export interface ProjectFundingRequest {
