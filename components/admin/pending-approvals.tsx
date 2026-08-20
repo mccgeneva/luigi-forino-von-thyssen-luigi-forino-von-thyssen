@@ -1,6 +1,7 @@
 "use client"
 
 import { useEffect, useMemo, useState } from "react"
+import { createPortal } from "react-dom"
 import useSWR from "swr"
 import { toast } from "sonner"
 import {
@@ -55,6 +56,8 @@ import {
   MessagesSquare,
   FileText,
   Download,
+  ArrowLeft,
+  ExternalLink,
 } from "lucide-react"
 import { ADMIN_PASSCODE } from "@/lib/admin-config"
 import { blobFileUrl } from "@/lib/kyc-types"
@@ -130,12 +133,15 @@ function formatFileSize(bytes?: number): string {
 }
 
 /** The documentation package the applicant submitted with an AES funding
- *  application. Each document the client uploaded is stored in Blob, so it is
- *  rendered as a download link the administrator can open to study the file on
- *  their computer before deciding. Legacy documents captured before file
- *  storage existed show as "not stored" (metadata only, nothing to download). */
+ *  application. Each stored document opens in an IN-APP viewer overlay (with an
+ *  explicit Back / Open-in-browser / Download / Close toolbar) rather than a
+ *  bare `target="_blank"` link — inside the installed PWA / in-app webview a
+ *  raw file link has no browser chrome, so the administrator would otherwise be
+ *  trapped on the file with no way to download or return. Legacy documents
+ *  captured before file storage existed show as "not stored" (metadata only). */
 function FundingDocuments({ docs }: { docs?: UploadedFundingDoc[] }) {
   const list = docs ?? []
+  const [active, setActive] = useState<UploadedFundingDoc | null>(null)
   return (
     <div className="mt-1.5 rounded-md border border-border bg-muted/30 p-2.5">
       <div className="mb-1.5 flex items-center gap-1.5 text-[11px] font-medium text-foreground">
@@ -152,26 +158,21 @@ function FundingDocuments({ docs }: { docs?: UploadedFundingDoc[] }) {
             const meta = [d.fileName, formatFileSize(d.size), formatDate(d.uploadedAt)]
               .filter(Boolean)
               .join(" · ")
-            const inner = (
-              <>
-                <span className="font-medium text-foreground group-hover:underline">{d.title}</span>
-                <span className="block truncate text-muted-foreground">{meta}</span>
-              </>
-            )
             return (
               <li key={d.docId} className="flex items-start gap-1.5 text-[11px]">
                 {d.pathname ? (
-                  <a
-                    href={blobFileUrl(d.pathname, ADMIN_PASSCODE)}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    download={d.fileName}
-                    className="group flex min-w-0 flex-1 items-start gap-1.5 rounded p-0.5 -m-0.5 hover:bg-muted"
-                    title={`Download ${d.fileName} to study before approving`}
+                  <button
+                    type="button"
+                    onClick={() => setActive(d)}
+                    className="group flex min-w-0 flex-1 items-start gap-1.5 rounded p-0.5 -m-0.5 text-left hover:bg-muted"
+                    title={`Open ${d.fileName} to review, then download or go back`}
                   >
                     <Download className="mt-0.5 h-3 w-3 shrink-0 text-primary" />
-                    <span className="min-w-0">{inner}</span>
-                  </a>
+                    <span className="min-w-0">
+                      <span className="font-medium text-foreground group-hover:underline">{d.title}</span>
+                      <span className="block truncate text-muted-foreground">{meta}</span>
+                    </span>
+                  </button>
                 ) : (
                   <>
                     <FileText className="mt-0.5 h-3 w-3 shrink-0 text-muted-foreground" />
@@ -188,7 +189,57 @@ function FundingDocuments({ docs }: { docs?: UploadedFundingDoc[] }) {
           })}
         </ul>
       )}
+      {active && <FundingDocViewer doc={active} onClose={() => setActive(null)} />}
     </div>
+  )
+}
+
+/** Full-screen in-app viewer for a single uploaded funding document. Mirrors the
+ *  KYC document viewer: a toolbar that is always visible with Back, Open-in-
+ *  browser, Download and Close, plus an inline iframe preview (works for PDFs
+ *  and images alike). Guarantees the administrator can always get out and can
+ *  save the file to their computer. */
+function FundingDocViewer({ doc, onClose }: { doc: UploadedFundingDoc; onClose: () => void }) {
+  if (typeof document === "undefined" || !doc.pathname) return null
+  const url = blobFileUrl(doc.pathname, ADMIN_PASSCODE)
+  return createPortal(
+    <div className="fixed inset-0 z-[100] flex flex-col bg-background" role="dialog" aria-modal="true">
+      <div
+        className="flex items-center justify-between gap-2 border-b border-border bg-card px-3 py-2"
+        style={{ paddingTop: "max(0.5rem, env(safe-area-inset-top))" }}
+      >
+        <Button variant="ghost" size="sm" onClick={onClose} className="min-h-11 gap-1.5">
+          <ArrowLeft className="h-5 w-5" />
+          Back
+        </Button>
+        <div className="min-w-0 flex-1 text-center">
+          <p className="truncate text-sm font-medium text-foreground">{doc.title}</p>
+          <p className="truncate text-xs text-muted-foreground">{doc.fileName}</p>
+        </div>
+        <div className="flex items-center gap-1">
+          <Button asChild variant="ghost" size="icon" className="min-h-11 min-w-11" title="Open in browser">
+            <a href={url} target="_blank" rel="noopener noreferrer">
+              <ExternalLink className="h-5 w-5" />
+              <span className="sr-only">Open in browser</span>
+            </a>
+          </Button>
+          <Button asChild variant="ghost" size="icon" className="min-h-11 min-w-11" title="Download">
+            <a href={url} download={doc.fileName}>
+              <Download className="h-5 w-5" />
+              <span className="sr-only">Download</span>
+            </a>
+          </Button>
+          <Button variant="ghost" size="icon" onClick={onClose} className="min-h-11 min-w-11" title="Close">
+            <X className="h-5 w-5" />
+            <span className="sr-only">Close</span>
+          </Button>
+        </div>
+      </div>
+      <div className="min-h-0 flex-1 bg-secondary/30">
+        <iframe src={url} title={`${doc.title} — ${doc.fileName}`} className="h-full w-full" />
+      </div>
+    </div>,
+    document.body,
   )
 }
 
