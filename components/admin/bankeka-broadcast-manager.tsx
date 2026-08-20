@@ -294,8 +294,10 @@ export function BankekaBroadcastManager() {
           scope="admin"
           fetchConversations={() => adminListConversations(ADMIN_PASSCODE)}
           fetchThread={(id) => adminGetThread(ADMIN_PASSCODE, id)}
-          send={(id, body) => adminReply(ADMIN_PASSCODE, id, body)}
+          send={(id, body, attachments) => adminReply(ADMIN_PASSCODE, id, body, attachments)}
           deleteMessage={(messageId) => adminDeleteMessage(ADMIN_PASSCODE, messageId)}
+          attachmentsEnabled
+          uploadPayload={JSON.stringify({ passcode: ADMIN_PASSCODE })}
           emptyHint="Replies from clients to your broadcasts and direct messages appear here."
         />
       </TabsContent>

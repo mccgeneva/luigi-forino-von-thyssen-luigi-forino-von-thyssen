@@ -21,12 +21,43 @@ export const BANKEKA_ADMIN_INITIALS = "MC"
 /** Delivery lifecycle of a single message, BlackBerry-Messenger style. */
 export type MessageStatus = "sent" | "delivered" | "read"
 
+/**
+ * A document / image attached to a message. Files are uploaded directly from
+ * the browser to Vercel Blob (via /api/bankeka/blob-upload) and only their
+ * public URL + metadata are stored on the message — never the bytes.
+ */
+export interface BankekaAttachment {
+  name: string
+  url: string
+  size?: number
+  contentType?: string
+}
+
+/** File types accepted as message attachments, and the per-file size cap. */
+export const BANKEKA_UPLOAD_CONTENT_TYPES = [
+  "application/pdf",
+  "image/jpeg",
+  "image/png",
+  "image/webp",
+  "image/gif",
+  "application/msword",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "application/vnd.ms-excel",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  "text/plain",
+  "text/csv",
+]
+export const BANKEKA_UPLOAD_MAX_BYTES = 25 * 1024 * 1024
+export const BANKEKA_MAX_ATTACHMENTS_PER_MESSAGE = 6
+
 /** A message as exposed to the client (no internal columns, fully serializable). */
 export interface BankekaMessage {
   id: string
   senderId: string
   recipientId: string
   body: string
+  /** Files attached to this message (may be empty). */
+  attachments: BankekaAttachment[]
   /** "direct" = person-to-person, "broadcast" = part of an admin broadcast. */
   kind: "direct" | "broadcast"
   createdAt: string

@@ -35,7 +35,22 @@ import {
   type AdminInternalLoan,
 } from "@/app/actions/internal-loan"
 import { INTERNAL_LOAN_DEFAULT_RATE, formatLoanMoney } from "@/lib/internal-loan"
-import { LoanNegotiationThread } from "@/components/dashboard/treasury/loan-negotiation-thread"
+import { ADMIN_PASSCODE } from "@/lib/admin-config"
+import { Messenger } from "@/components/bankeka/messenger"
+import {
+  adminListConversations,
+  adminGetThread,
+  adminReply,
+  adminDeleteMessage,
+} from "@/app/actions/bankeka"
+
+/** Two-letter initials for the discussion thread avatar. */
+function initialsOf(name: string): string {
+  const parts = (name || "").trim().split(/\s+/).filter(Boolean)
+  if (parts.length === 0) return "??"
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase()
+  return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase()
+}
 
 function formatDate(iso: string | null): string {
   if (!iso) return "—"
@@ -461,29 +476,45 @@ export function InternalLoanManager({ passcode }: { passcode: string }) {
         </DialogContent>
       </Dialog>
 
-      {/* Discussion / negotiation dialog */}
+      {/* Discussion dialog — opens the borrower's Bankeka thread inline */}
       <Dialog open={!!discussTarget} onOpenChange={(o) => !o && setDiscussTarget(null)}>
-        <DialogContent className="max-w-lg">
+        <DialogContent className="max-w-2xl">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <MessagesSquare className="h-5 w-5 text-primary" /> Loan discussion
             </DialogTitle>
             <DialogDescription>
               {discussTarget
-                ? `Message ${discussTarget.holder} directly, share or request supporting documents, and negotiate the terms of the ${formatLoanMoney(
+                ? `Message ${discussTarget.holder} on Bankeka, share or request supporting documents, and negotiate the terms of the ${formatLoanMoney(
                     discussTarget.requestedAmount,
                     discussTarget.currency,
-                  )} request before you finalise the decision.`
+                  )} request. They reply from their own Bankeka Messenger.`
                 : ""}
             </DialogDescription>
           </DialogHeader>
           {discussTarget && (
-            <LoanNegotiationThread
+            <Messenger
               key={discussTarget.approvalId}
-              approvalId={discussTarget.approvalId}
-              role="admin"
-              passcode={passcode}
-              readOnly={discussTarget.status !== "pending"}
+              scope={`admin-loan-${discussTarget.approvalId}`}
+              fetchConversations={() => adminListConversations(ADMIN_PASSCODE)}
+              fetchThread={(id) => adminGetThread(ADMIN_PASSCODE, id)}
+              send={(id, body, atts) => adminReply(ADMIN_PASSCODE, id, body, atts)}
+              deleteMessage={(m) => adminDeleteMessage(ADMIN_PASSCODE, m)}
+              attachmentsEnabled
+              uploadPayload={JSON.stringify({ passcode: ADMIN_PASSCODE })}
+              hideConversationList
+              initialThreadId={discussTarget.userId}
+              initialParticipant={{
+                id: discussTarget.userId,
+                name: discussTarget.holder,
+                company: discussTarget.company ?? "",
+                initials: initialsOf(discussTarget.holder),
+                isAdmin: false,
+              }}
+              initialDraft={`Regarding your internal loan request ${discussTarget.approvalId} — ${formatLoanMoney(
+                discussTarget.requestedAmount,
+                discussTarget.currency,
+              )}: `}
             />
           )}
           {discussTarget && discussTarget.status === "pending" && (

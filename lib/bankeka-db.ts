@@ -13,7 +13,7 @@
 
 import "server-only"
 import { query } from "@/lib/db"
-import { threadKey } from "@/lib/bankeka-shared"
+import { threadKey, type BankekaAttachment } from "@/lib/bankeka-shared"
 
 export interface MessageRow {
   id: string
@@ -21,6 +21,7 @@ export interface MessageRow {
   senderId: string
   recipientId: string
   body: string
+  attachments: BankekaAttachment[]
   kind: "direct" | "broadcast"
   broadcastId: string | null
   createdAt: string
@@ -45,6 +46,9 @@ async function ensureTables(): Promise<void> {
        read_at       timestamptz
      )`,
   )
+  // Attachments (document/image metadata) live on the message as JSONB. Added
+  // via IF NOT EXISTS so existing installs migrate transparently.
+  await query(`ALTER TABLE bankeka_messages ADD COLUMN IF NOT EXISTS attachments jsonb NOT NULL DEFAULT '[]'::jsonb`)
   await query(`CREATE INDEX IF NOT EXISTS bankeka_thread_idx ON bankeka_messages (thread_key, created_at)`)
   await query(`CREATE INDEX IF NOT EXISTS bankeka_recipient_idx ON bankeka_messages (recipient_id)`)
   // Per-user "delete for me" markers. Deleting a message is intentionally NON
@@ -81,6 +85,32 @@ function iso(v: unknown): string | null {
   return (v as Date)?.toISOString?.() ?? String(v)
 }
 
+function parseAttachments(raw: unknown): BankekaAttachment[] {
+  // pg returns jsonb already parsed (object/array); tolerate a string too.
+  let value = raw
+  if (typeof raw === "string") {
+    try {
+      value = JSON.parse(raw)
+    } catch {
+      return []
+    }
+  }
+  if (!Array.isArray(value)) return []
+  const out: BankekaAttachment[] = []
+  for (const a of value) {
+    const at = a as Record<string, unknown>
+    const url = typeof at?.url === "string" ? at.url : ""
+    if (!url) continue
+    out.push({
+      name: typeof at.name === "string" && at.name ? at.name : "document",
+      url,
+      size: Number.isFinite(Number(at.size)) ? Number(at.size) : undefined,
+      contentType: typeof at.contentType === "string" ? at.contentType : undefined,
+    })
+  }
+  return out
+}
+
 function rowToMessage(row: Record<string, unknown>): MessageRow {
   return {
     id: row.id as string,
@@ -88,6 +118,7 @@ function rowToMessage(row: Record<string, unknown>): MessageRow {
     senderId: row.sender_id as string,
     recipientId: row.recipient_id as string,
     body: row.body as string,
+    attachments: parseAttachments(row.attachments),
     kind: ((row.kind as string) === "broadcast" ? "broadcast" : "direct") as "direct" | "broadcast",
     broadcastId: (row.broadcast_id as string) ?? null,
     createdAt: iso(row.created_at) ?? new Date().toISOString(),
@@ -106,6 +137,7 @@ export interface InsertMessageInput {
   senderId: string
   recipientId: string
   body: string
+  attachments?: BankekaAttachment[]
   kind?: "direct" | "broadcast"
   broadcastId?: string | null
 }
@@ -115,10 +147,19 @@ export async function insertMessage(input: InsertMessageInput): Promise<MessageR
   const id = newId("bk")
   const tk = threadKey(input.senderId, input.recipientId)
   const { rows } = await query(
-    `INSERT INTO bankeka_messages (id, thread_key, sender_id, recipient_id, body, kind, broadcast_id)
-     VALUES ($1,$2,$3,$4,$5,$6,$7)
+    `INSERT INTO bankeka_messages (id, thread_key, sender_id, recipient_id, body, attachments, kind, broadcast_id)
+     VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7,$8)
      RETURNING *`,
-    [id, tk, input.senderId, input.recipientId, input.body, input.kind ?? "direct", input.broadcastId ?? null],
+    [
+      id,
+      tk,
+      input.senderId,
+      input.recipientId,
+      input.body,
+      JSON.stringify(input.attachments ?? []),
+      input.kind ?? "direct",
+      input.broadcastId ?? null,
+    ],
   )
   return rowToMessage(rows[0])
 }

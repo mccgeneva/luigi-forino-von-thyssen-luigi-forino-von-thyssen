@@ -6,9 +6,10 @@ import {
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
 } from "react"
-import { MoreVertical, Trash2 } from "lucide-react"
+import { MoreVertical, Trash2, FileText, Download } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { MessageStatusIcon } from "./message-status"
+import type { BankekaAttachment } from "@/lib/bankeka-shared"
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -109,7 +110,14 @@ export function MessageBubble({
         {isBroadcast && (
           <p className="mb-0.5 text-[10px] font-semibold uppercase tracking-wider text-primary">Broadcast</p>
         )}
-        <p className="whitespace-pre-wrap break-words">{message.body}</p>
+        {message.body && <p className="whitespace-pre-wrap break-words">{message.body}</p>}
+        {message.attachments && message.attachments.length > 0 && (
+          <div className={cn("flex flex-col gap-1.5", message.body && "mt-2")}>
+            {message.attachments.map((a, i) => (
+              <AttachmentChip key={`${a.url}-${i}`} attachment={a} outgoing={outgoing} />
+            ))}
+          </div>
+        )}
         <div
           className={cn(
             "mt-1 flex items-center justify-end gap-1",
@@ -154,6 +162,67 @@ export function MessageBubble({
         </AlertDialog>
       )}
     </div>
+  )
+}
+
+function formatBytes(n?: number): string {
+  if (!n || n <= 0) return ""
+  if (n < 1024) return `${n} B`
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(0)} KB`
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`
+}
+
+/** A single attachment rendered inside a bubble: image → tappable preview,
+ *  everything else → a compact file chip. Both open/download in a new tab. */
+function AttachmentChip({ attachment, outgoing }: { attachment: BankekaAttachment; outgoing: boolean }) {
+  const isImage = (attachment.contentType ?? "").startsWith("image/")
+
+  if (isImage) {
+    return (
+      <a
+        href={attachment.url}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="block overflow-hidden rounded-lg border border-black/10"
+      >
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img
+          src={attachment.url || "/placeholder.svg"}
+          alt={attachment.name}
+          className="max-h-52 w-full object-cover"
+          loading="lazy"
+        />
+      </a>
+    )
+  }
+
+  const size = formatBytes(attachment.size)
+  return (
+    <a
+      href={attachment.url}
+      target="_blank"
+      rel="noopener noreferrer"
+      className={cn(
+        "flex items-center gap-2 rounded-lg border px-2.5 py-2 text-xs transition-colors",
+        outgoing
+          ? "border-primary-foreground/25 bg-primary-foreground/10 hover:bg-primary-foreground/20"
+          : "border-border bg-background/60 hover:bg-background",
+      )}
+    >
+      <span
+        className={cn(
+          "flex h-8 w-8 shrink-0 items-center justify-center rounded-md",
+          outgoing ? "bg-primary-foreground/20" : "bg-secondary",
+        )}
+      >
+        <FileText className="h-4 w-4" />
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="block truncate font-medium">{attachment.name}</span>
+        {size && <span className={cn("block", outgoing ? "text-primary-foreground/70" : "text-muted-foreground")}>{size}</span>}
+      </span>
+      <Download className={cn("h-4 w-4 shrink-0", outgoing ? "text-primary-foreground/70" : "text-muted-foreground")} />
+    </a>
   )
 }
 

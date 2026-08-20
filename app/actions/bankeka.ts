@@ -36,14 +36,39 @@ import {
   BANKEKA_ADMIN_ID,
   BANKEKA_ADMIN_LABEL,
   BANKEKA_ADMIN_INITIALS,
+  BANKEKA_MAX_ATTACHMENTS_PER_MESSAGE,
   type BankekaMessage,
   type BankekaParticipant,
   type BankekaConversation,
   type BankekaAuditEntry,
+  type BankekaAttachment,
   type MessageStatus,
 } from "@/lib/bankeka-shared"
 
 const MAX_BODY = 4000
+
+/**
+ * Trust-boundary filter for caller-supplied attachments. Only accepts files
+ * that actually landed on our Blob store (the upload route gates who may write
+ * there), caps the count, and clamps the metadata — so a crafted request can
+ * never inject an arbitrary/off-host link as a "document".
+ */
+function sanitizeAttachments(input: unknown): BankekaAttachment[] {
+  if (!Array.isArray(input)) return []
+  const out: BankekaAttachment[] = []
+  for (const a of input.slice(0, BANKEKA_MAX_ATTACHMENTS_PER_MESSAGE)) {
+    const at = a as Record<string, unknown>
+    const url = typeof at?.url === "string" ? at.url.trim() : ""
+    if (!/^https:\/\/[a-z0-9.-]*\.public\.blob\.vercel-storage\.com\//i.test(url)) continue
+    out.push({
+      name: typeof at.name === "string" && at.name ? at.name.slice(0, 200) : "document",
+      url,
+      size: Number.isFinite(Number(at.size)) ? Number(at.size) : undefined,
+      contentType: typeof at.contentType === "string" ? at.contentType.slice(0, 120) : undefined,
+    })
+  }
+  return out
+}
 
 // --- Identity helpers ------------------------------------------------------
 
@@ -120,6 +145,7 @@ function toMessage(row: MessageRow, viewerId: string): BankekaMessage {
     senderId: row.senderId,
     recipientId: row.recipientId,
     body: row.body,
+    attachments: row.attachments ?? [],
     kind: row.kind,
     createdAt: row.createdAt,
     outgoing: row.senderId === viewerId,
@@ -209,11 +235,16 @@ export async function getThread(otherId: string): Promise<ThreadResult | null> {
 export type SendResult = { ok: true; message: BankekaMessage } | { ok: false; error: string }
 
 /** Send a private message from the signed-in user to `otherId`. */
-export async function sendMessage(otherId: string, body: string): Promise<SendResult> {
+export async function sendMessage(
+  otherId: string,
+  body: string,
+  attachments?: BankekaAttachment[],
+): Promise<SendResult> {
   const me = await requireSessionId()
   if (!me) return { ok: false, error: "Your session has expired. Please sign in again." }
   const trimmed = (body ?? "").trim()
-  if (!trimmed) return { ok: false, error: "Message cannot be empty." }
+  const files = sanitizeAttachments(attachments)
+  if (!trimmed && files.length === 0) return { ok: false, error: "Write a message or attach a document." }
   if (trimmed.length > MAX_BODY) return { ok: false, error: "Message is too long." }
   if (!otherId || otherId === me) return { ok: false, error: "Invalid recipient." }
 
@@ -228,7 +259,7 @@ export async function sendMessage(otherId: string, body: string): Promise<SendRe
     }
     // Real identity is resolved ONLY for the compliance audit trail (admin-only).
     const recipient = await resolveParticipant(otherId)
-    const row = await insertMessage({ senderId: me, recipientId: otherId, body: trimmed })
+    const row = await insertMessage({ senderId: me, recipientId: otherId, body: trimmed, attachments: files })
     const sender = await resolveParticipant(me)
     await recordAudit({
       actorId: me,
@@ -429,14 +460,25 @@ export async function adminGetThread(passcode: string, otherId: string): Promise
 }
 
 /** Admin replies to a client inside an existing admin thread. */
-export async function adminReply(passcode: string, otherId: string, body: string): Promise<SendResult> {
+export async function adminReply(
+  passcode: string,
+  otherId: string,
+  body: string,
+  attachments?: BankekaAttachment[],
+): Promise<SendResult> {
   if (!(await adminOk(passcode))) return { ok: false, error: "Administrator authorization failed." }
   const trimmed = (body ?? "").trim()
-  if (!trimmed) return { ok: false, error: "Message cannot be empty." }
+  const files = sanitizeAttachments(attachments)
+  if (!trimmed && files.length === 0) return { ok: false, error: "Write a message or attach a document." }
   if (trimmed.length > MAX_BODY) return { ok: false, error: "Message is too long." }
   if (!otherId) return { ok: false, error: "Invalid recipient." }
   try {
-    const row = await insertMessage({ senderId: BANKEKA_ADMIN_ID, recipientId: otherId, body: trimmed })
+    const row = await insertMessage({
+      senderId: BANKEKA_ADMIN_ID,
+      recipientId: otherId,
+      body: trimmed,
+      attachments: files,
+    })
     await recordAudit({
       actorId: BANKEKA_ADMIN_ID,
       actorLabel: BANKEKA_ADMIN_LABEL,
