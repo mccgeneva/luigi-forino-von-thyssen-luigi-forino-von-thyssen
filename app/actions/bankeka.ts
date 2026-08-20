@@ -18,7 +18,7 @@
 
 import { resolveCurrentSession } from "@/lib/session-user"
 import { getDynamicUserById, getDynamicUserByEmail, listDynamicUsers } from "@/lib/admin-users-db"
-import { adminActionAuthorized } from "@/lib/admin-auth"
+import { adminActionAuthorized, resolveActingUserId, isAdminEmail } from "@/lib/admin-auth"
 import { logActivity } from "@/app/actions/log-activity"
 import { insertNotification } from "@/lib/notifications-db"
 import {
@@ -87,6 +87,51 @@ const adminParticipant: BankekaParticipant = {
   company: "MCC Capital",
   initials: BANKEKA_ADMIN_INITIALS,
   isAdmin: true,
+}
+
+// ---------------------------------------------------------------------------
+// The Administrator Console is a ROLE, not a separate platform account. A real,
+// authorized user temporarily activates it (by PIN); when they message a client
+// privately they do so AS THEMSELVES — a real-user ↔ real-user conversation.
+//
+// The synthetic BANKEKA_ADMIN_ID identity is therefore used ONLY for one-to-many
+// broadcasts (official announcements). It is never a participant in a private
+// two-way thread anymore.
+//
+// `BANKEKA_OPERATOR_EMAIL` is the operator OF RECORD: the resting administration
+// account that receives client-initiated support messages and is the target for
+// any legacy synthetic-admin private thread. Whoever unlocks the console SENDS
+// as their own real account (resolveActingUserId); the operator of record is
+// only used when there is no specific sending operator (inbound support).
+// ---------------------------------------------------------------------------
+const BANKEKA_OPERATOR_EMAIL = "admin@mccgva.ch"
+
+/** The real account that backs the administration for INBOUND messages. */
+async function resolveOperatorOfRecordId(): Promise<string | null> {
+  try {
+    const rec = await getDynamicUserByEmail(BANKEKA_OPERATOR_EMAIL)
+    return rec && rec.status === "active" ? rec.id : null
+  } catch {
+    return null
+  }
+}
+
+/** Build a client-facing participant for a real administration operator. The
+ *  client sees the operator's REAL name & company (staff identity is not private
+ *  client data), presented as an ordinary private contact — not the synthetic
+ *  "Administrator" entity. */
+function operatorParticipant(rec: {
+  id: string
+  email: string
+  profile: { fullName?: string; shortName?: string; company?: string; initials?: string }
+}): BankekaParticipant {
+  return {
+    id: rec.id,
+    name: rec.profile.fullName || rec.profile.shortName || rec.email,
+    company: rec.profile.company || "",
+    initials: rec.profile.initials || rec.email.slice(0, 2).toUpperCase(),
+    isAdmin: false,
+  }
 }
 
 /**
