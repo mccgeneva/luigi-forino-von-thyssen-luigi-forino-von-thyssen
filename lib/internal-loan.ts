@@ -322,3 +322,74 @@ export function buildInternalLoanPosts(
 
   return posts.sort((a, b) => new Date(a.entry.date).getTime() - new Date(b.entry.date).getTime())
 }
+
+/**
+ * The subset of a funded internal-loan record (the `payload.record` / client
+ * store shape) that the debit-schedule + settlement engines need. Kept here
+ * (server-safe, no `"use client"`) so both the pure schedule and the pure
+ * settlement engine can consume it without importing the client store.
+ */
+export interface InternalLoanRecordLike {
+  id: string
+  /** DB approval id — the canonical ledger key once mirrored. */
+  approvalId?: string
+  amount: number
+  currency: string
+  /** Annual rate; either name is accepted (`readInternalLoanTerms` normalizes). */
+  interestRate?: number
+  annualRate?: number
+  arrangementFee?: number
+  purpose?: string
+  repaymentPlan?: string
+  collateralNote?: string
+  status?: string
+  submittedAt?: string
+  decidedAt?: string
+  /** Funding date — interest accrual start. */
+  activatedAt?: string
+  /** Repaid/closed date — caps accrual (either name is accepted). */
+  closedAt?: string
+  settledAt?: string
+}
+
+/**
+ * Wrap a funded internal-loan record into the minimal `ApprovalRequest` shape
+ * the audited internal-loan engine reads. The engine only touches
+ * `id/kind/status/amount/currency/createdAt/decidedAt/payload.record`, so this
+ * lets `buildInternalLoanPosts`, `internalLoanPayoff`, and
+ * `accruedInternalLoanInterest` be reused from the Debits & Financing schedule
+ * and settlement paths with IDENTICAL math and deterministic ids.
+ *
+ * The id is the DB approval id (`approvalId ?? id`) so every synthetic post
+ * matches the ledger rows the server reconciler already wrote.
+ */
+export function internalLoanApprovalShim(rec: InternalLoanRecordLike): ApprovalRequest {
+  const id = rec.approvalId ?? rec.id
+  const createdAt = rec.submittedAt ?? rec.activatedAt ?? new Date().toISOString()
+  // The audited engine only reads id/kind/status/amount/currency/createdAt/
+  // decidedAt/payload.record, so this minimal object is a faithful adapter.
+  const shim: ApprovalRequest = {
+    id,
+    userId: "",
+    kind: "internal_loan",
+    status: "approved",
+    title: "",
+    summary: "",
+    amount: rec.amount,
+    currency: rec.currency,
+    payload: { record: rec },
+    ledgerEffect: null,
+    decisionNote: null,
+    decidedBy: null,
+    decidedAt: rec.decidedAt ?? rec.activatedAt ?? null,
+    createdAt,
+    requiresMasterApproval: false,
+    masterId: null,
+    masterDecision: "pending",
+    masterDecidedAt: null,
+    adminDecision: "approved",
+    initiatedById: null,
+    initiatedByName: null,
+  }
+  return shim
+}

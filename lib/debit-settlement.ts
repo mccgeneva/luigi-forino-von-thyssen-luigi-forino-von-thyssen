@@ -24,6 +24,16 @@ import {
 } from "@/lib/treasury-financing"
 import type { TreasuryAccount, TreasuryTransaction } from "@/lib/treasury-store"
 
+import {
+  buildInternalLoanPosts,
+  internalLoanApprovalShim,
+  accruedInternalLoanInterest,
+  readInternalLoanTerms,
+  internalLoanSettlePrincipalId,
+  internalLoanSettleInterestId,
+  type InternalLoanRecordLike,
+} from "@/lib/internal-loan"
+
 /**
  * Unified debit-facility SETTLEMENT engine.
  *
@@ -83,6 +93,7 @@ export interface FacilityRecords {
   monetization?: MonetizationRequest[] | null
   leverage?: LeverageRequest[] | null
   treasury?: TreasuryAccount | null
+  internalLoans?: InternalLoanRecordLike[] | null
 }
 
 export interface SettlementInput extends FacilityRecords {
@@ -109,6 +120,7 @@ function findFacility(input: SettlementInput):
   | { kind: "monetization"; record: MonetizationRequest }
   | { kind: "leverage"; record: LeverageRequest }
   | { kind: "treasury"; account: TreasuryAccount; txn: TreasuryTransaction }
+  | { kind: "internal_loan"; record: InternalLoanRecordLike }
   | null {
   const id = input.facilityId
   switch (input.kind) {
@@ -157,6 +169,13 @@ export function buildReconcilePosts(input: SettlementInput): SettlePost[] {
   if (found.kind === "leverage") {
     return buildLeverageInterestPosts([found.record], postedIds, now).map((p) => debit(p.entry))
   }
+  if (found.kind === "internal_loan") {
+    // Only the monthly interest debits are catch-up charges (the one-time
+    // principal credit + arrangement fee are posted at approval, not here).
+    return buildInternalLoanPosts(internalLoanApprovalShim(found.record), postedIds, now)
+      .filter((p) => p.direction === "debit" && p.entry.id.startsWith("ILOAN-INT-"))
+      .map((p) => debit(p.entry))
+  }
   // treasury — scope the builder to this single drawdown.
   const scoped: TreasuryAccount = { ...found.account, transactions: [found.txn] }
   return buildTreasuryFinancingLedgerPosts(scoped, postedIds, now)
@@ -181,6 +200,13 @@ function allDueMonthlyTotal(input: SettlementInput): number {
   }
   if (found.kind === "leverage") {
     return sum(buildLeverageInterestPosts([found.record], new Set(), now).map((p) => debit(p.entry)))
+  }
+  if (found.kind === "internal_loan") {
+    return sum(
+      buildInternalLoanPosts(internalLoanApprovalShim(found.record), new Set(), now)
+        .filter((p) => p.direction === "debit" && p.entry.id.startsWith("ILOAN-INT-"))
+        .map((p) => debit(p.entry)),
+    )
   }
   const scoped: TreasuryAccount = { ...found.account, transactions: [found.txn] }
   return sum(
@@ -391,6 +417,79 @@ export function buildTerminationPlan(input: SettlementInput): TerminationPlan | 
         settledInterest: totalInterest,
         repayEntryId: principal > 0 ? monetizationSettlementPrincipalId(req.id) : undefined,
         interestEntryId: interestTail > 0 ? monetizationSettlementInterestId(req.id) : undefined,
+      },
+    }
+  }
+
+  if (found.kind === "internal_loan") {
+    const rec = found.record
+    const shim = internalLoanApprovalShim(rec)
+    const terms = readInternalLoanTerms(shim)
+    if (!terms) return null
+    if (terms.settledAt) return null
+    const principal = round2(Math.max(0, terms.amount || 0))
+    // interestTail = interest accrued (incl. the in-progress month) beyond every
+    // matured monthly charge; dueNow posts the matured-but-unposted months, so
+    // together they settle exactly the total accrued interest, once.
+    const billed = allDueMonthlyTotal(input)
+    const continuous = accruedInternalLoanInterest(shim, now)
+    const interestTail = round2(Math.max(0, continuous - billed))
+    const currency = terms.currency
+    const title = rec.purpose?.trim() ? `Internal loan · ${rec.purpose.trim()}` : "Internal loan"
+    const settlementPosts: SettlePost[] = []
+    if (interestTail > 0) {
+      settlementPosts.push(
+        debit({
+          id: internalLoanSettleInterestId(shim.id),
+          amount: interestTail,
+          currency,
+          status: "completed",
+          date: dateIso,
+          counterparty: "MCC Capital — Internal Loan Interest",
+          reference: shim.id,
+          category: "Internal Loan Interest",
+          comment: `Outstanding debit interest settled on repayment of internal loan ${shim.id}.`,
+        }),
+      )
+    }
+    if (principal > 0) {
+      settlementPosts.push(
+        debit({
+          id: internalLoanSettlePrincipalId(shim.id),
+          amount: principal,
+          currency,
+          status: "completed",
+          date: dateIso,
+          counterparty: "MCC Capital — Internal Loan Repayment",
+          reference: shim.id,
+          category: "Internal Loan Repayment",
+          comment: `Loan principal returned to MCC on repayment of internal loan ${shim.id}.`,
+        }),
+      )
+    }
+    const quote: SettlementQuote = {
+      kind: "internal_loan",
+      facilityId: shim.id,
+      title,
+      currency,
+      principal,
+      interestTail,
+      fee: 0,
+      dueNow,
+      payoff: round2(principal + interestTail + dueNow),
+      reconcileDue: dueNow,
+    }
+    return {
+      quote,
+      reconcilePosts,
+      settlementPosts,
+      closePatch: {
+        status: "closed",
+        closedAt: dateIso,
+        settledAt: dateIso,
+        settledInterest: round2(billed + interestTail),
+        repayEntryId: principal > 0 ? internalLoanSettlePrincipalId(shim.id) : undefined,
+        interestEntryId: interestTail > 0 ? internalLoanSettleInterestId(shim.id) : undefined,
       },
     }
   }

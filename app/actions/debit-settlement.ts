@@ -30,6 +30,7 @@ import type { MonetizationRequest } from "@/lib/monetization-requests-store"
 import type { LeverageRequest } from "@/lib/leverage-requests-store"
 import type { TreasuryAccount, TreasuryTransaction } from "@/lib/treasury-store"
 import { treasuryFinancingTxns } from "@/lib/treasury-financing"
+import type { InternalLoanRecordLike } from "@/lib/internal-loan"
 
 // ---------------------------------------------------------------------------
 // Client self-service debit-facility settlement (Debits & Financing page).
@@ -55,12 +56,13 @@ import { treasuryFinancingTxns } from "@/lib/treasury-financing"
 
 const DEBITS_HREF = "/dashboard/debits"
 
-/** The four-product record bundle the pure engine needs, read server-side. */
+/** The five-product record bundle the pure engine needs, read server-side. */
 interface OwnerFacilities {
   funding: ProjectFundingRequest[]
   monetization: MonetizationRequest[]
   leverage: LeverageRequest[]
   treasury: TreasuryAccount | null
+  internalLoans: InternalLoanRecordLike[]
 }
 
 interface ResolvedFacility {
@@ -120,7 +122,7 @@ async function resolveFacility(
   const accountId = session.id
   const ledgerOwnerId = session.dataOwnerId || (await resolveDataOwnerIdFor(accountId))
 
-  const empty: OwnerFacilities = { funding: [], monetization: [], leverage: [], treasury: null }
+  const empty: OwnerFacilities = { funding: [], monetization: [], leverage: [], treasury: null, internalLoans: [] }
 
   if (kind === "treasury") {
     const treasury = await readTreasuryAccount(accountId)
@@ -145,6 +147,7 @@ async function resolveFacility(
     funding: "project_funding",
     monetization: "monetization",
     leverage: "leverage",
+    internal_loan: "internal_loan",
   }
   if (approval.kind !== kindToApprovalKind[kind]) {
     return { ok: false, error: "This facility could not be settled here." }
@@ -162,6 +165,13 @@ async function resolveFacility(
     const rec = rebuildRecord<MonetizationRequest>(approval.payload)
     if (!rec) return { ok: false, error: "This facility could not be found." }
     facilities.monetization = [rec]
+  } else if (kind === "internal_loan") {
+    const rec = rebuildRecord<InternalLoanRecordLike>(approval.payload)
+    if (!rec) return { ok: false, error: "This facility could not be found." }
+    // Every internal-loan ledger id is keyed on the DB APPROVAL id (the server
+    // reconciler posts with the real approval id), so stamp it onto the record
+    // before it reaches the engine so the settlement legs net exactly.
+    facilities.internalLoans = [{ ...rec, approvalId: approval.id }]
   } else {
     const rec = rebuildRecord<LeverageRequest>(approval.payload)
     if (!rec) return { ok: false, error: "This facility could not be found." }
@@ -176,6 +186,10 @@ function engineFacilityId(resolved: ResolvedFacility, kind: DebitKind): string {
   if (kind === "funding") return resolved.facilities.funding[0]?.id ?? ""
   if (kind === "monetization") return resolved.facilities.monetization[0]?.id ?? ""
   if (kind === "leverage") return resolved.facilities.leverage[0]?.id ?? ""
+  if (kind === "internal_loan") {
+    const rec = resolved.facilities.internalLoans[0]
+    return rec ? (rec.approvalId ?? rec.id) : ""
+  }
   return "" // treasury sets it explicitly by txn id
 }
 
@@ -435,6 +449,8 @@ function labelForKind(kind: DebitKind): string {
       return "leverage line"
     case "treasury":
       return "treasury financing"
+    case "internal_loan":
+      return "internal loan"
   }
 }
 
