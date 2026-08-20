@@ -31,6 +31,7 @@ import type { SerializableUserProfile, SerializableProfileItem, AccountRelations
 import { effectiveRelationship } from "@/lib/account-hierarchy"
 import { validateIban, validateBic } from "@/lib/iban-swift"
 import type { KycDocument, KycPassportMeta } from "@/lib/kyc-types"
+import type { SectionAccessMap } from "@/lib/dashboard-sections"
 
 // A client-safe view of a dynamic user (never includes nothing it shouldn't —
 // for the admin console the password IS shown, intentionally, so the admin can
@@ -970,13 +971,22 @@ export async function getMyProfile(): Promise<SerializableUserProfile | null> {
  * OWN identity.
  */
 export type MyIdentity =
-  | { kind: "static"; id: string; impersonator?: { id: string; name: string }; isAdmin: boolean }
+  | {
+      kind: "static"
+      id: string
+      impersonator?: { id: string; name: string }
+      isAdmin: boolean
+      /** Per-user administrator section-access overrides for this account. */
+      sectionAccess: SectionAccessMap
+    }
   | {
       kind: "dynamic"
       id: string
       profile: SerializableUserProfile
       impersonator?: { id: string; name: string }
       isAdmin: boolean
+      /** Per-user administrator section-access overrides for this account. */
+      sectionAccess: SectionAccessMap
     }
 
 export async function getMyIdentity(): Promise<MyIdentity | null> {
@@ -991,14 +1001,18 @@ export async function getMyIdentity(): Promise<MyIdentity | null> {
     // nicety, not the security boundary.
     const { isCurrentSessionAdmin } = await import("@/lib/admin-auth")
     const isAdmin = await isCurrentSessionAdmin()
+    // Per-user administrator section-access overrides, resolved once here so the
+    // client gate can enforce them without an extra round-trip. Fails open ({}).
+    const { getUserSectionAccess } = await import("@/lib/section-access-db")
+    const sectionAccess = await getUserSectionAccess(session.id)
     if (session.kind === "static") {
-      return { kind: "static", id: session.id, impersonator: session.impersonator, isAdmin }
+      return { kind: "static", id: session.id, impersonator: session.impersonator, isAdmin, sectionAccess }
     }
     const rec = await getDynamicUserById(session.id)
     if (!rec) return null
     // Coerce the stored badge so legacy/blank tiers resolve to PRO / Avant-garde.
     const profile = { ...rec.profile, accountBadge: normalizeAccountBadge(rec.profile.accountBadge) }
-    return { kind: "dynamic", id: session.id, profile, impersonator: session.impersonator, isAdmin }
+    return { kind: "dynamic", id: session.id, profile, impersonator: session.impersonator, isAdmin, sectionAccess }
   } catch {
     return null
   }

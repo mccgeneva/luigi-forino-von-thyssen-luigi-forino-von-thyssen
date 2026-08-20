@@ -121,6 +121,7 @@ import { ApiKeysManager } from "@/components/admin/api-keys-manager"
 import { TreuhandPositions } from "@/components/admin/treuhand-positions"
 import { InternalLoanManager } from "@/components/admin/internal-loan-manager"
 import { AccountLimitsManager } from "@/components/admin/account-limits-manager"
+import { SectionAccessManager } from "@/components/admin/section-access-manager"
 import { resetServerAccountDataForUser } from "@/app/actions/reset-account"
 import { listUsers, type AdminUserView } from "@/app/actions/admin-users"
 import { AdminGatewaySection } from "@/components/dashboard/admin-gateway-section"
@@ -2259,6 +2260,7 @@ export default function AdminPage() {
         { id: "users", label: "Client Accounts", description: "Create, edit, suspend and reset users.", icon: Users, count: 0 },
         { id: "masteraccounts", label: "Master Accounts", description: "Update, replace or re-link the Master Account any customer operates under.", icon: Network, count: 0 },
         { id: "accountlimits", label: "Account Limits", description: "Set the platform-wide Daily Limit and Monthly Volume shown on every account; toggle Unlimited.", icon: Gauge, count: 0 },
+        { id: "sectionaccess", label: "Section Access", description: "Lock or unlock any dashboard section for an individual user; grant a Visitor full access to a selected section.", icon: Lock, count: 0 },
         { id: "membership", label: "Membership Upgrades", description: "Approve tiers and validate deposits.", icon: Award, count: 0 },
         { id: "balances", label: "Balances & Transactions", description: "Credit, debit, adjust and reverse.", icon: Wallet, count: 0 },
         { id: "fundblocks", label: "Fund Blocking Controls", description: "Block funds from a client's Master Account; release or permanently withdraw.", icon: Lock, count: 0 },
@@ -5320,7 +5322,9 @@ export default function AdminPage() {
       {/* Treuhand fund: pause / reactivate / close any customer position */}
         {activeView === "treuhand" && <TreuhandPositions passcode={ADMIN_PASSCODE} />}
         {activeView === "internal-lending" && <InternalLoanManager passcode={ADMIN_PASSCODE} />}
-        {activeView === "accountlimits" && <AccountLimitsManager passcode={ADMIN_PASSCODE} />}
+            {activeView === "accountlimits" && <AccountLimitsManager passcode={ADMIN_PASSCODE} />}
+
+            {activeView === "sectionaccess" && <SectionAccessManager passcode={ADMIN_PASSCODE} />}
 
       {activeView === "traceability" && (
       <div className="space-y-6">
