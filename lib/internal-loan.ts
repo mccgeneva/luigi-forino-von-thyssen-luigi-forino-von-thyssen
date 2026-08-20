@@ -366,7 +366,9 @@ export interface InternalLoanRecordLike {
 export function internalLoanApprovalShim(rec: InternalLoanRecordLike): ApprovalRequest {
   const id = rec.approvalId ?? rec.id
   const createdAt = rec.submittedAt ?? rec.activatedAt ?? new Date().toISOString()
-  return {
+  // The audited engine only reads id/kind/status/amount/currency/createdAt/
+  // decidedAt/payload.record, so this minimal object is a faithful adapter.
+  const shim: ApprovalRequest = {
     id,
     userId: "",
     kind: "internal_loan",
@@ -383,8 +385,11 @@ export function internalLoanApprovalShim(rec: InternalLoanRecordLike): ApprovalR
     createdAt,
     requiresMasterApproval: false,
     masterId: null,
-    masterDecision: null,
+    masterDecision: "pending",
     masterDecidedAt: null,
-    adminDecision: null,
-  } as ApprovalRequest
+    adminDecision: "approved",
+    initiatedById: null,
+    initiatedByName: null,
+  }
+  return shim
 }
