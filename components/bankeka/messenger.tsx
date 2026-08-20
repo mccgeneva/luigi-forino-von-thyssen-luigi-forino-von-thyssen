@@ -551,10 +551,13 @@ export function Messenger({
       </div>
       )}
 
-      {/* Thread view */}
+      {/* Thread view — min-w-0 is essential: without it this flex column keeps
+          its intrinsic (content) min-width, so long message text / references
+          widen the column past the viewport and push the composer's send button
+          off-screen. */}
       <div
         className={cn(
-          "flex flex-1 flex-col",
+          "flex min-w-0 flex-1 flex-col",
           hideConversationList ? "flex" : activeId ? "flex" : "hidden md:flex",
         )}
       >
@@ -611,8 +614,8 @@ export function Messenger({
                 momentum scrolling works reliably on mobile, even over tall
                 broadcast messages. touch-pan-y + overscroll-contain keep the
                 gesture inside the thread. */}
-            <div className="flex-1 touch-pan-y overflow-y-auto overscroll-contain bg-background/40">
-              <div className="flex flex-col gap-2 p-4">
+            <div className="min-w-0 flex-1 touch-pan-y overflow-y-auto overscroll-contain bg-background/40">
+              <div className="flex min-w-0 flex-col gap-2 p-4">
                 {messages.length === 0 ? (
                   <p className="py-10 text-center text-xs text-muted-foreground">
                     No messages yet. Say hello to start the conversation.
@@ -660,7 +663,7 @@ export function Messenger({
                   )}
                 </div>
               )}
-              <div className="flex items-end gap-2">
+              <div className="flex w-full min-w-0 items-end gap-2">
                 {attachmentsEnabled && (
                   <>
                     <input
@@ -694,7 +697,7 @@ export function Messenger({
                   }}
                   placeholder="Type a message"
                   rows={1}
-                  className="max-h-32 min-h-[44px] resize-none text-base md:text-sm"
+                  className="max-h-32 min-h-[44px] min-w-0 flex-1 resize-none text-base md:text-sm"
                   aria-label="Message"
                 />
                 <Button
