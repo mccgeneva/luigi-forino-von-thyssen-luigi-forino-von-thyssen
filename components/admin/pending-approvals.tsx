@@ -144,7 +144,7 @@ function FundingDocuments({ docs }: { docs?: UploadedFundingDoc[] }) {
   const [active, setActive] = useState<UploadedFundingDoc | null>(null)
   return (
     <div className="mt-1.5 rounded-md border border-border bg-muted/30 p-2.5">
-      <div className="mb-1.5 flex items-center gap-1.5 text-[11px] font-medium text-foreground">
+      <div className="mb-0.5 flex items-center gap-1.5 text-[11px] font-medium text-foreground">
         <FileText className="h-3.5 w-3.5 text-primary" />
         Client documents ({list.length})
       </div>
@@ -153,41 +153,47 @@ function FundingDocuments({ docs }: { docs?: UploadedFundingDoc[] }) {
           No documents were uploaded with this application.
         </p>
       ) : (
-        <ul className="space-y-1">
-          {list.map((d) => {
-            const meta = [d.fileName, formatFileSize(d.size), formatDate(d.uploadedAt)]
-              .filter(Boolean)
-              .join(" · ")
-            return (
-              <li key={d.docId} className="flex items-start gap-1.5 text-[11px]">
-                {d.pathname ? (
-                  <button
-                    type="button"
-                    onClick={() => setActive(d)}
-                    className="group flex min-w-0 flex-1 items-start gap-1.5 rounded p-0.5 -m-0.5 text-left hover:bg-muted"
-                    title={`Open ${d.fileName} to review, then download or go back`}
-                  >
-                    <Download className="mt-0.5 h-3 w-3 shrink-0 text-primary" />
-                    <span className="min-w-0">
-                      <span className="font-medium text-foreground group-hover:underline">{d.title}</span>
-                      <span className="block truncate text-muted-foreground">{meta}</span>
-                    </span>
-                  </button>
-                ) : (
-                  <>
-                    <FileText className="mt-0.5 h-3 w-3 shrink-0 text-muted-foreground" />
-                    <span className="min-w-0">
-                      <span className="font-medium text-foreground">{d.title}</span>
-                      <span className="block truncate text-muted-foreground">
-                        {meta} · not stored (metadata only)
+        <>
+          <p className="mb-1.5 text-[10px] text-muted-foreground">Tap a document to view or download.</p>
+          <ul className="space-y-1.5">
+            {list.map((d) => {
+              const meta = [d.fileName, formatFileSize(d.size), formatDate(d.uploadedAt)]
+                .filter(Boolean)
+                .join(" · ")
+              return (
+                <li key={d.docId}>
+                  {d.pathname ? (
+                    <button
+                      type="button"
+                      onClick={() => setActive(d)}
+                      className="group flex w-full items-center gap-2 rounded-lg border border-border bg-background px-2.5 py-2 text-left transition-colors hover:border-primary/60 hover:bg-muted active:bg-muted"
+                      title={`Open ${d.fileName} to view, then download or go back`}
+                    >
+                      <FileText className="h-4 w-4 shrink-0 text-primary" />
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-[12px] font-medium text-foreground">{d.title}</span>
+                        <span className="block truncate text-[11px] text-muted-foreground">{meta}</span>
                       </span>
-                    </span>
-                  </>
-                )}
-              </li>
-            )
-          })}
-        </ul>
+                      <span className="flex shrink-0 items-center gap-1 rounded-md bg-primary/10 px-2 py-1 text-[11px] font-medium text-primary">
+                        <Eye className="h-3.5 w-3.5" /> View
+                      </span>
+                    </button>
+                  ) : (
+                    <div className="flex items-center gap-2 rounded-lg border border-dashed border-border bg-background/50 px-2.5 py-2">
+                      <FileText className="h-4 w-4 shrink-0 text-muted-foreground" />
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-[12px] font-medium text-foreground">{d.title}</span>
+                        <span className="block truncate text-[11px] text-muted-foreground">
+                          {meta} · not stored (metadata only)
+                        </span>
+                      </span>
+                    </div>
+                  )}
+                </li>
+              )
+            })}
+          </ul>
+        </>
       )}
       {active && <FundingDocViewer doc={active} onClose={() => setActive(null)} />}
     </div>
@@ -200,8 +206,50 @@ function FundingDocuments({ docs }: { docs?: UploadedFundingDoc[] }) {
  *  and images alike). Guarantees the administrator can always get out and can
  *  save the file to their computer. */
 function FundingDocViewer({ doc, onClose }: { doc: UploadedFundingDoc; onClose: () => void }) {
+  const [downloading, setDownloading] = useState(false)
+  const url = doc.pathname ? blobFileUrl(doc.pathname, ADMIN_PASSCODE) : ""
+
+  // A plain `<a download>` does NOT trigger a save inside the installed PWA /
+  // in-app webview — it just navigates the single webview and traps the admin.
+  // Instead fetch the file and hand it to the OS: the native share sheet on
+  // mobile (Save to Files) or an object-URL download on desktop, mirroring the
+  // app's proven `deliverPdf` pattern. Falls back to opening the file if all
+  // else fails.
+  async function handleDownload() {
+    if (downloading || !url) return
+    setDownloading(true)
+    try {
+      const res = await fetch(url, { cache: "no-store", credentials: "include" })
+      if (!res.ok) throw new Error(`status ${res.status}`)
+      const blob = await res.blob()
+      const type = blob.type || doc.contentType || "application/octet-stream"
+      const file = new File([blob], doc.fileName || "document", { type })
+      const nav = navigator as Navigator & { canShare?: (data?: ShareData) => boolean }
+      if (typeof nav.share === "function" && nav.canShare?.({ files: [file] })) {
+        try {
+          await nav.share({ files: [file], title: doc.title })
+          return
+        } catch (err) {
+          if ((err as Error)?.name === "AbortError") return
+          // otherwise fall through to the object-URL download
+        }
+      }
+      const objectUrl = URL.createObjectURL(blob)
+      const a = document.createElement("a")
+      a.href = objectUrl
+      a.download = doc.fileName || "document"
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+      setTimeout(() => URL.revokeObjectURL(objectUrl), 5000)
+    } catch {
+      window.open(url, "_blank", "noopener,noreferrer")
+    } finally {
+      setDownloading(false)
+    }
+  }
+
   if (typeof document === "undefined" || !doc.pathname) return null
-  const url = blobFileUrl(doc.pathname, ADMIN_PASSCODE)
   return createPortal(
     <div className="fixed inset-0 z-[100] flex flex-col bg-background" role="dialog" aria-modal="true">
       <div
@@ -223,11 +271,16 @@ function FundingDocViewer({ doc, onClose }: { doc: UploadedFundingDoc; onClose: 
               <span className="sr-only">Open in browser</span>
             </a>
           </Button>
-          <Button asChild variant="ghost" size="icon" className="min-h-11 min-w-11" title="Download">
-            <a href={url} download={doc.fileName}>
-              <Download className="h-5 w-5" />
-              <span className="sr-only">Download</span>
-            </a>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="min-h-11 min-w-11"
+            title="Download"
+            onClick={handleDownload}
+            disabled={downloading}
+          >
+            {downloading ? <Loader2 className="h-5 w-5 animate-spin" /> : <Download className="h-5 w-5" />}
+            <span className="sr-only">Download</span>
           </Button>
           <Button variant="ghost" size="icon" onClick={onClose} className="min-h-11 min-w-11" title="Close">
             <X className="h-5 w-5" />
