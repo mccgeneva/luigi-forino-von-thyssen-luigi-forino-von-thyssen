@@ -11,7 +11,6 @@ import {
   Percent,
   Wallet,
   MessagesSquare,
-  ChevronDown,
 } from "lucide-react"
 import { toast } from "sonner"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -24,7 +23,7 @@ import { cn } from "@/lib/utils"
 import { useInternalLoans, type InternalLoanView } from "@/lib/internal-loan-store"
 import { repayInternalLoan } from "@/app/actions/internal-loan"
 import { INTERNAL_LOAN_DEFAULT_RATE, formatLoanMoney } from "@/lib/internal-loan"
-import { LoanNegotiationThread } from "@/components/dashboard/treasury/loan-negotiation-thread"
+import Link from "next/link"
 
 const CURRENCIES = ["EUR", "USD", "GBP", "CHF"]
 
@@ -73,9 +72,6 @@ export function InternalLoanCard() {
   const [repayFor, setRepayFor] = useState<string | null>(null)
   const [repayAmount, setRepayAmount] = useState("")
   const [repaying, setRepaying] = useState(false)
-
-  // Which loan's discussion thread is expanded inline.
-  const [threadFor, setThreadFor] = useState<string | null>(null)
 
   const activeLoans = useMemo(() => loans.filter((l) => l.status === "approved"), [loans])
   const historyLoans = useMemo(
@@ -343,12 +339,11 @@ export function InternalLoanCard() {
           </Button>
         </div>
 
-        {/* Request history — with an inline discussion thread per request */}
+        {/* Request history */}
         {historyLoans.length > 0 && (
           <div className="space-y-2">
             <p className="text-sm font-medium text-foreground">Requests</p>
             {historyLoans.map((loan) => {
-              const open = threadFor === loan.id
               const isPending = loan.status === "pending"
               return (
                 <div key={loan.id} className="rounded-lg border border-border bg-card">
@@ -361,32 +356,19 @@ export function InternalLoanCard() {
                         <span className="ml-2 text-xs text-muted-foreground">· {loan.purpose}</span>
                       )}
                     </div>
-                    <div className="flex items-center gap-2">
-                      <StatusBadge status={loan.status} />
-                      <Button
-                        size="sm"
-                        variant={isPending ? "secondary" : "ghost"}
-                        onClick={() => setThreadFor(open ? null : loan.id)}
-                      >
-                        <MessagesSquare className="mr-1.5 h-3.5 w-3.5" />
-                        {isPending ? "Discuss" : "Discussion"}
-                        <ChevronDown className={cn("ml-1 h-3.5 w-3.5 transition-transform", open && "rotate-180")} />
-                      </Button>
-                    </div>
+                    <StatusBadge status={loan.status} />
                   </div>
-                  {isPending && !open && (
-                    <p className="px-3 pb-3 text-xs text-muted-foreground">
-                      While under review you can message the administrator directly, upload supporting
-                      documents, and negotiate the terms.
-                    </p>
-                  )}
-                  {open && (
-                    <div className="border-t border-border p-3">
-                      <LoanNegotiationThread
-                        approvalId={loan.id}
-                        role="client"
-                        readOnly={!isPending}
-                      />
+                  {isPending && (
+                    <div className="border-t border-border px-3 py-2.5">
+                      <p className="mb-2 text-xs text-muted-foreground">
+                        While under review, the administrator may message you to discuss the terms or
+                        request supporting documents. Reply and upload files in your Bankeka chat.
+                      </p>
+                      <Button asChild size="sm" variant="secondary">
+                        <Link href="/dashboard/bankeka">
+                          <MessagesSquare className="mr-1.5 h-3.5 w-3.5" /> Open Bankeka chat
+                        </Link>
+                      </Button>
                     </div>
                   )}
                 </div>

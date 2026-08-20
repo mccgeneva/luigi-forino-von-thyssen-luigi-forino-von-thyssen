@@ -42,6 +42,7 @@ export default function BankekaPage() {
         deleteMessage={deleteMessage}
         findByEmail={findRecipientByEmail}
         fetchSupportContact={getSupportContact}
+        attachmentsEnabled
         emptyHint="Message MCC Capital support, or start a private conversation with someone by entering their email address."
       />
     </div>

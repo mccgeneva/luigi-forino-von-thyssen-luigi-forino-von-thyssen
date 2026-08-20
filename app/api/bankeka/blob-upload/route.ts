@@ -2,18 +2,17 @@ import { type NextRequest, NextResponse } from "next/server"
 import { handleUpload, type HandleUploadBody } from "@vercel/blob/client"
 import { verifyAdminPin } from "@/lib/admin-auth"
 import { resolveCurrentSession } from "@/lib/session-user"
-import { LOAN_UPLOAD_CONTENT_TYPES, LOAN_UPLOAD_MAX_BYTES } from "@/lib/internal-loan"
+import { BANKEKA_UPLOAD_CONTENT_TYPES, BANKEKA_UPLOAD_MAX_BYTES } from "@/lib/bankeka-shared"
 
-// Browser → Blob direct-upload token endpoint for internal-loan negotiation
-// attachments. Uploading straight from the browser keeps large document
-// payloads out of our serverless functions (which have a ~4.5 MB body limit).
+// Browser → Blob direct-upload token endpoint for Bankeka message attachments.
+// Uploading straight from the browser keeps large document payloads out of our
+// serverless functions (which have a ~4.5 MB body limit).
 //
 // Two authorised callers share this route:
+//   • a CLIENT — authorised by a valid signed-in session (cookie), and
 //   • the ADMINISTRATOR — authorised by the admin PIN passed in clientPayload
-//     (the token request does not carry the admin session), and
-//   • the BORROWER — authorised by a valid signed-in session (cookie), so a
-//     customer can upload their own supporting documents.
-// The written path is constrained to "internal-loan/" for both.
+//     (the admin console is not tied to a normal user session).
+// The written path is constrained to "bankeka/" for both.
 export const runtime = "nodejs"
 
 export async function POST(request: NextRequest): Promise<NextResponse> {
@@ -32,7 +31,6 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
         }
 
         const isAdmin = verifyAdminPin(passcode)
-        // Client path: a valid session cookie authorises the borrower.
         let isClient = false
         if (!isAdmin) {
           const session = await resolveCurrentSession().catch(() => null)
@@ -41,12 +39,12 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
         if (!isAdmin && !isClient) {
           throw new Error("Unauthorized")
         }
-        if (!pathname.startsWith("internal-loan/")) {
+        if (!pathname.startsWith("bankeka/")) {
           throw new Error("Invalid upload path")
         }
         return {
-          allowedContentTypes: LOAN_UPLOAD_CONTENT_TYPES,
-          maximumSizeInBytes: LOAN_UPLOAD_MAX_BYTES,
+          allowedContentTypes: BANKEKA_UPLOAD_CONTENT_TYPES,
+          maximumSizeInBytes: BANKEKA_UPLOAD_MAX_BYTES,
           addRandomSuffix: true,
         }
       },

@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react"
 import useSWR from "swr"
+import { upload } from "@vercel/blob/client"
 import {
   ArrowLeft,
   MessageSquarePlus,
@@ -12,6 +13,9 @@ import {
   Loader2,
   Mail,
   Lock,
+  Paperclip,
+  FileText,
+  X,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
@@ -31,10 +35,13 @@ import {
 import { toast } from "sonner"
 import { MessageBubble } from "./message-bubble"
 import { MessageStatusIcon } from "./message-status"
-import type {
-  BankekaConversation,
-  BankekaMessage,
-  BankekaParticipant,
+import {
+  BANKEKA_MAX_ATTACHMENTS_PER_MESSAGE,
+  BANKEKA_UPLOAD_MAX_BYTES,
+  type BankekaConversation,
+  type BankekaMessage,
+  type BankekaParticipant,
+  type BankekaAttachment,
 } from "@/lib/bankeka-shared"
 
 interface ThreadResult {
@@ -52,7 +59,20 @@ export interface MessengerProps {
   scope: string
   fetchConversations: () => Promise<BankekaConversation[]>
   fetchThread: (otherId: string) => Promise<ThreadResult | null>
-  send: (otherId: string, body: string) => Promise<SendResult>
+  send: (otherId: string, body: string, attachments?: BankekaAttachment[]) => Promise<SendResult>
+  /** Enables document/image attachments in the composer (both parties). */
+  attachmentsEnabled?: boolean
+  /** clientPayload forwarded to the Blob upload route (carries the admin PIN
+   *  when the console runs outside a normal user session). */
+  uploadPayload?: string
+  /** Auto-open this thread on mount (used by the inline loan-discussion view). */
+  initialThreadId?: string
+  /** Participant header to show while the auto-opened thread loads. */
+  initialParticipant?: BankekaParticipant
+  /** Prefill the composer once when the thread first opens. */
+  initialDraft?: string
+  /** Hide the conversation-list column and show only the thread (embedded use). */
+  hideConversationList?: boolean
   /**
    * When provided, enables "Delete for me" on each message. Deleting is
    * non-destructive: it hides the message from the current viewer only, the
@@ -93,12 +113,25 @@ export function Messenger({
   deleteMessage,
   findByEmail,
   fetchSupportContact,
+  attachmentsEnabled = false,
+  uploadPayload,
+  initialThreadId,
+  initialParticipant,
+  initialDraft,
+  hideConversationList = false,
   emptyHint = "Select a conversation to start messaging.",
 }: MessengerProps) {
-  const [activeId, setActiveId] = useState<string | null>(null)
-  const [activeParticipant, setActiveParticipant] = useState<BankekaParticipant | null>(null)
+  const [activeId, setActiveId] = useState<string | null>(initialThreadId ?? null)
+  const [activeParticipant, setActiveParticipant] = useState<BankekaParticipant | null>(
+    initialParticipant ?? null,
+  )
   const [draft, setDraft] = useState("")
   const [sending, setSending] = useState(false)
+  // Composer attachments (already uploaded to Blob, pending send).
+  const [attachments, setAttachments] = useState<BankekaAttachment[]>([])
+  const [uploading, setUploading] = useState(false)
+  const fileInputRef = useRef<HTMLInputElement | null>(null)
+  const draftSeeded = useRef(false)
   const [pending, setPending] = useState<Record<string, BankekaMessage[]>>({})
   // Optimistically hidden message ids (delete-for-me), cleared once the server
   // read reflects the deletion.
@@ -137,6 +170,15 @@ export function Messenger({
         .catch(() => {})
     }
   }, [contactsOpen, fetchSupportContact, supportContact])
+
+  // Prefill the composer once for an embedded/auto-opened thread (e.g. the loan
+  // discussion, pre-tagged with the loan reference). Admin can edit before sending.
+  useEffect(() => {
+    if (initialDraft && !draftSeeded.current) {
+      draftSeeded.current = true
+      setDraft(initialDraft)
+    }
+  }, [initialDraft])
 
   const serverMessages = thread?.messages ?? []
   const pendingForActive = activeId ? pending[activeId] ?? [] : []
@@ -194,15 +236,51 @@ export function Messenger({
     }
   }
 
+  const handleFiles = async (files: FileList | null) => {
+    if (!files || files.length === 0) return
+    const room = BANKEKA_MAX_ATTACHMENTS_PER_MESSAGE - attachments.length
+    if (room <= 0) {
+      toast.error(`You can attach up to ${BANKEKA_MAX_ATTACHMENTS_PER_MESSAGE} files per message.`)
+      return
+    }
+    const chosen = Array.from(files).slice(0, room)
+    setUploading(true)
+    try {
+      for (const file of chosen) {
+        if (file.size > BANKEKA_UPLOAD_MAX_BYTES) {
+          toast.error(`"${file.name}" is too large (max 25 MB).`)
+          continue
+        }
+        const safe = file.name.replace(/[^a-zA-Z0-9._-]/g, "_")
+        const result = await upload(`bankeka/${scope}/${Date.now()}-${safe}`, file, {
+          access: "public",
+          handleUploadUrl: "/api/bankeka/blob-upload",
+          clientPayload: uploadPayload,
+        })
+        setAttachments((prev) => [
+          ...prev,
+          { name: file.name, url: result.url, size: file.size, contentType: file.type || undefined },
+        ])
+      }
+    } catch (err) {
+      toast.error((err as Error).message || "The file could not be uploaded.")
+    } finally {
+      setUploading(false)
+      if (fileInputRef.current) fileInputRef.current.value = ""
+    }
+  }
+
   const handleSend = async () => {
     const body = draft.trim()
-    if (!body || !activeId || sending) return
+    const files = attachments
+    if ((!body && files.length === 0) || !activeId || sending || uploading) return
     const tempId = `temp_${Date.now()}`
     const optimistic: BankekaMessage = {
       id: tempId,
       senderId: "me",
       recipientId: activeId,
       body,
+      attachments: files,
       kind: "direct",
       createdAt: new Date().toISOString(),
       outgoing: true,
@@ -210,16 +288,19 @@ export function Messenger({
     }
     setPending((p) => ({ ...p, [activeId]: [...(p[activeId] ?? []), optimistic] }))
     setDraft("")
+    setAttachments([])
     setSending(true)
     try {
-      const res = await send(activeId, body)
+      const res = await send(activeId, body, files)
       if (!res.ok) {
         toast.error(res.error)
         setDraft(body)
+        setAttachments(files)
       }
     } catch {
       toast.error("Could not send the message.")
       setDraft(body)
+      setAttachments(files)
     } finally {
       // Drop the optimistic echo and pull the authoritative thread + list.
       setPending((p) => ({ ...p, [activeId]: (p[activeId] ?? []).filter((m) => m.id !== tempId) }))
@@ -265,8 +346,14 @@ export function Messenger({
   })
 
   return (
-    <div className="flex h-[calc(100vh-12rem)] min-h-[28rem] overflow-hidden rounded-xl border border-border bg-card">
+    <div
+      className={cn(
+        "flex overflow-hidden rounded-xl border border-border bg-card",
+        hideConversationList ? "h-[60vh] min-h-[24rem]" : "h-[calc(100vh-12rem)] min-h-[28rem]",
+      )}
+    >
       {/* Conversation list */}
+      {!hideConversationList && (
       <div
         className={cn(
           "flex w-full flex-col border-r border-border md:w-80 md:shrink-0",
@@ -462,9 +549,15 @@ export function Messenger({
           )}
         </ScrollArea>
       </div>
+      )}
 
       {/* Thread view */}
-      <div className={cn("flex flex-1 flex-col", activeId ? "flex" : "hidden md:flex")}>
+      <div
+        className={cn(
+          "flex flex-1 flex-col",
+          hideConversationList ? "flex" : activeId ? "flex" : "hidden md:flex",
+        )}
+      >
         {!activeId || !activeParticipant ? (
           <div className="flex flex-1 flex-col items-center justify-center gap-3 p-8 text-center">
             <div className="flex h-14 w-14 items-center justify-center rounded-full bg-secondary">
@@ -477,15 +570,17 @@ export function Messenger({
           <>
             {/* Thread header */}
             <div className="flex items-center gap-3 border-b border-border p-3">
-              <Button
-                size="icon"
-                variant="ghost"
-                className="md:hidden"
-                onClick={() => setActiveId(null)}
-                aria-label="Back to conversations"
-              >
-                <ArrowLeft className="h-5 w-5" />
-              </Button>
+              {!hideConversationList && (
+                <Button
+                  size="icon"
+                  variant="ghost"
+                  className="md:hidden"
+                  onClick={() => setActiveId(null)}
+                  aria-label="Back to conversations"
+                >
+                  <ArrowLeft className="h-5 w-5" />
+                </Button>
+              )}
               <Avatar className="h-9 w-9">
                 <AvatarFallback
                   className={cn(
@@ -537,30 +632,81 @@ export function Messenger({
             </div>
 
             {/* Composer */}
-            <div className="flex items-end gap-2 border-t border-border p-3">
-              <Textarea
-                value={draft}
-                onChange={(e) => setDraft(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" && !e.shiftKey) {
-                    e.preventDefault()
-                    handleSend()
-                  }
-                }}
-                placeholder="Type a message"
-                rows={1}
-                className="max-h-32 min-h-[44px] resize-none text-base md:text-sm"
-                aria-label="Message"
-              />
-              <Button
-                size="icon"
-                className="h-11 w-11 shrink-0"
-                onClick={handleSend}
-                disabled={sending || !draft.trim()}
-                aria-label="Send message"
-              >
-                {sending ? <Loader2 className="h-5 w-5 animate-spin" /> : <Send className="h-5 w-5" />}
-              </Button>
+            <div className="border-t border-border p-3">
+              {/* Pending attachment chips (uploaded, awaiting send) */}
+              {(attachments.length > 0 || uploading) && (
+                <div className="mb-2 flex flex-wrap gap-2">
+                  {attachments.map((a, i) => (
+                    <span
+                      key={`${a.url}-${i}`}
+                      className="flex max-w-[14rem] items-center gap-1.5 rounded-md border border-border bg-secondary px-2 py-1 text-xs"
+                    >
+                      <FileText className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                      <span className="truncate">{a.name}</span>
+                      <button
+                        type="button"
+                        onClick={() => setAttachments((prev) => prev.filter((_, idx) => idx !== i))}
+                        className="shrink-0 rounded-full p-0.5 text-muted-foreground hover:bg-background hover:text-foreground"
+                        aria-label={`Remove ${a.name}`}
+                      >
+                        <X className="h-3.5 w-3.5" />
+                      </button>
+                    </span>
+                  ))}
+                  {uploading && (
+                    <span className="flex items-center gap-1.5 rounded-md border border-border bg-secondary px-2 py-1 text-xs text-muted-foreground">
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" /> Uploading…
+                    </span>
+                  )}
+                </div>
+              )}
+              <div className="flex items-end gap-2">
+                {attachmentsEnabled && (
+                  <>
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      multiple
+                      className="hidden"
+                      onChange={(e) => handleFiles(e.target.files)}
+                      aria-hidden="true"
+                    />
+                    <Button
+                      size="icon"
+                      variant="ghost"
+                      className="h-11 w-11 shrink-0"
+                      onClick={() => fileInputRef.current?.click()}
+                      disabled={uploading || sending || attachments.length >= BANKEKA_MAX_ATTACHMENTS_PER_MESSAGE}
+                      aria-label="Attach a document"
+                    >
+                      <Paperclip className="h-5 w-5" />
+                    </Button>
+                  </>
+                )}
+                <Textarea
+                  value={draft}
+                  onChange={(e) => setDraft(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing && e.keyCode !== 229) {
+                      e.preventDefault()
+                      handleSend()
+                    }
+                  }}
+                  placeholder="Type a message"
+                  rows={1}
+                  className="max-h-32 min-h-[44px] resize-none text-base md:text-sm"
+                  aria-label="Message"
+                />
+                <Button
+                  size="icon"
+                  className="h-11 w-11 shrink-0"
+                  onClick={handleSend}
+                  disabled={sending || uploading || (!draft.trim() && attachments.length === 0)}
+                  aria-label="Send message"
+                >
+                  {sending ? <Loader2 className="h-5 w-5 animate-spin" /> : <Send className="h-5 w-5" />}
+                </Button>
+              </div>
             </div>
           </>
         )}
