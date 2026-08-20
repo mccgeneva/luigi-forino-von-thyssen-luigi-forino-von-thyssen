@@ -141,6 +141,12 @@ function findFacility(input: SettlementInput):
       const txn = treasuryFinancingTxns(account).find((t) => t.id === id)
       return account && txn ? { kind: "treasury", account, txn } : null
     }
+    case "internal_loan": {
+      // The facility id is the DB approval id (what engineFacilityId emits), so
+      // match on approvalId first, falling back to the local record id.
+      const record = (input.internalLoans ?? []).find((l) => (l.approvalId ?? l.id) === id)
+      return record ? { kind: "internal_loan", record } : null
+    }
     default:
       return null
   }
