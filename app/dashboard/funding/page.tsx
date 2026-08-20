@@ -49,6 +49,7 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { cn } from "@/lib/utils"
+import { upload } from "@vercel/blob/client"
 import { toast } from "sonner"
 import { useActivityLog } from "@/components/activity-tracker"
 import {
@@ -155,19 +156,57 @@ export default function ProjectFundingPage() {
   // whether a qualifying bank statement will be supplied (drives the waiver fee).
   const [docsAcknowledged, setDocsAcknowledged] = useState(false)
   const [bankStatement, setBankStatement] = useState<"yes" | "no" | "">("")
-  // Uploaded documents (metadata only), keyed by required-document id.
+  // Uploaded documents, keyed by required-document id. The actual file is
+  // stored in Blob so the Administrator can download it during review.
   const [uploads, setUploads] = useState<Record<string, UploadedFundingDoc>>({})
+  // Per-document upload-in-progress flags (disables submit while any is busy).
+  const [uploadingDocs, setUploadingDocs] = useState<Record<string, boolean>>({})
   const [waiverFeeAccepted, setWaiverFeeAccepted] = useState(false)
   const fileInputs = useRef<Record<string, HTMLInputElement | null>>({})
   const [formError, setFormError] = useState<string | null>(null)
 
-  const handleFileSelected = (docId: string, title: string, file: File | undefined) => {
+  const MAX_DOC_BYTES = 25 * 1024 * 1024
+
+  const handleFileSelected = async (docId: string, title: string, file: File | undefined) => {
     if (!file) return
-    setUploads((prev) => ({
-      ...prev,
-      [docId]: { docId, title, fileName: file.name, uploadedAt: new Date().toISOString() },
-    }))
+    if (file.size > MAX_DOC_BYTES) {
+      setFormError(`"${file.name}" is larger than 25 MB. Please upload a smaller file.`)
+      const input = fileInputs.current[docId]
+      if (input) input.value = ""
+      return
+    }
     setFormError(null)
+    setUploadingDocs((prev) => ({ ...prev, [docId]: true }))
+    try {
+      const safe = file.name.replace(/[^a-zA-Z0-9._-]/g, "_")
+      const result = await upload(`funding/${docId}/${Date.now()}-${safe}`, file, {
+        access: "public",
+        handleUploadUrl: "/api/funding/blob-upload",
+      })
+      setUploads((prev) => ({
+        ...prev,
+        [docId]: {
+          docId,
+          title,
+          fileName: file.name,
+          uploadedAt: new Date().toISOString(),
+          pathname: result.pathname,
+          url: result.url,
+          contentType: file.type || "application/octet-stream",
+          size: file.size,
+        },
+      }))
+    } catch {
+      setFormError(`Could not upload "${file.name}". Please try again.`)
+      const input = fileInputs.current[docId]
+      if (input) input.value = ""
+    } finally {
+      setUploadingDocs((prev) => {
+        const next = { ...prev }
+        delete next[docId]
+        return next
+      })
+    }
   }
 
   const removeUpload = (docId: string) => {
@@ -1007,17 +1046,18 @@ export default function ProjectFundingPage() {
                               }}
                               type="file"
                               className="hidden"
-                              accept=".pdf,.jpg,.jpeg,.png,.doc,.docx"
+                              accept=".pdf,.jpg,.jpeg,.png,.webp"
                               onChange={(e) => handleFileSelected(doc.id, doc.title, e.target.files?.[0])}
                             />
                             <Button
                               type="button"
                               variant="outline"
                               size="sm"
+                              disabled={uploadingDocs[doc.id]}
                               onClick={() => fileInputs.current[doc.id]?.click()}
                             >
                               <UploadCloud className="mr-1.5 h-4 w-4" />
-                              {uploaded ? "Replace" : "Upload"}
+                              {uploadingDocs[doc.id] ? "Uploading…" : uploaded ? "Replace" : "Upload"}
                             </Button>
                           </div>
                         </div>
@@ -1086,7 +1126,7 @@ export default function ProjectFundingPage() {
                             }}
                             type="file"
                             className="hidden"
-                            accept=".pdf,.jpg,.jpeg,.png,.doc,.docx"
+                            accept=".pdf,.jpg,.jpeg,.png,.webp"
                             onChange={(e) =>
                               handleFileSelected("bank-statement", "Bank Statement", e.target.files?.[0])
                             }
@@ -1095,10 +1135,15 @@ export default function ProjectFundingPage() {
                             type="button"
                             variant="outline"
                             size="sm"
+                            disabled={uploadingDocs["bank-statement"]}
                             onClick={() => fileInputs.current["bank-statement"]?.click()}
                           >
                             <UploadCloud className="mr-1.5 h-4 w-4" />
-                            {uploads["bank-statement"] ? "Replace" : "Upload"}
+                            {uploadingDocs["bank-statement"]
+                              ? "Uploading…"
+                              : uploads["bank-statement"]
+                                ? "Replace"
+                                : "Upload"}
                           </Button>
                         </div>
                       </div>
@@ -1161,8 +1206,12 @@ export default function ProjectFundingPage() {
                   </div>
                 )}
 
-                <Button className="w-full" onClick={submitApplication}>
-                  Submit for Approval
+                <Button
+                  className="w-full"
+                  onClick={submitApplication}
+                  disabled={Object.values(uploadingDocs).some(Boolean)}
+                >
+                  {Object.values(uploadingDocs).some(Boolean) ? "Uploading documents…" : "Submit for Approval"}
                 </Button>
               </CardContent>
             </Card>
