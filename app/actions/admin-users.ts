@@ -994,22 +994,29 @@ export async function getMyIdentity(): Promise<MyIdentity | null> {
     const { resolveCurrentSession } = await import("@/lib/session-user")
     const session = await resolveCurrentSession()
     if (!session) return null
-    // Authoritative admin flag, resolved server-side from the acting account's
-    // email against the allowlist (impersonation-aware). The UI uses this only
-    // to decide whether to SHOW admin navigation — every admin route/action is
-    // still independently gated on the server, so hiding the link is a UX
-    // nicety, not the security boundary.
-    const { isCurrentSessionAdmin } = await import("@/lib/admin-auth")
-    const isAdmin = await isCurrentSessionAdmin()
+    // Admin-navigation visibility follows the DISPLAYED account — i.e. the
+    // account this identity actually resolves to. We deliberately do NOT use the
+    // impersonation-aware `isCurrentSessionAdmin()` here: during "view as / act
+    // as client" the resolved session is the TARGET client, so computing the
+    // flag from that account means a non-admin client's dashboard NEVER shows
+    // the Administrator link — even to the admin behind the impersonation, who
+    // returns via the "Return to admin" banner and whose real admin routes stay
+    // fully usable. This is purely a UX filter; every admin route/action remains
+    // independently server-gated (isCurrentSessionAdmin + PIN), so hiding the
+    // link is not the security boundary. Fixes: a non-admin ever seeing the
+    // Administrator entry (the impersonation case surfaced it in the client menu).
+    const { isAdminEmail } = await import("@/lib/admin-auth")
     // Per-user administrator section-access overrides, resolved once here so the
     // client gate can enforce them without an extra round-trip. Fails open ({}).
     const { getUserSectionAccess } = await import("@/lib/section-access-db")
     const sectionAccess = await getUserSectionAccess(session.id)
     if (session.kind === "static") {
+      const isAdmin = isAdminEmail(session.profile.email)
       return { kind: "static", id: session.id, impersonator: session.impersonator, isAdmin, sectionAccess }
     }
     const rec = await getDynamicUserById(session.id)
     if (!rec) return null
+    const isAdmin = isAdminEmail(rec.email)
     // Coerce the stored badge so legacy/blank tiers resolve to PRO / Avant-garde.
     const profile = { ...rec.profile, accountBadge: normalizeAccountBadge(rec.profile.accountBadge) }
     return { kind: "dynamic", id: session.id, profile, impersonator: session.impersonator, isAdmin, sectionAccess }
