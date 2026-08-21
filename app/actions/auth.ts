@@ -1,6 +1,6 @@
 "use server"
 
-import { cookies } from "next/headers"
+import { cookies, headers } from "next/headers"
 import { redirect } from "next/navigation"
 import {
   FRESH_LOGIN_COOKIE,
@@ -42,7 +42,8 @@ import {
   registerFailure,
   resetFailCount,
 } from "@/lib/biometric-db"
-import { verifyPassportImage } from "@/lib/kyc-analyze"
+import { verifyPassportImage, analyzeKycDocument } from "@/lib/kyc-analyze"
+import { insertDemoIdSubmission } from "@/lib/demo-id-db"
 
 export type LoginState = {
   error?: string
@@ -611,6 +612,160 @@ export async function verifyIdentityAndLogin(
       challenge,
       name,
       error: "We couldn't verify your identity right now. Please try again in a moment.",
+    }
+  }
+}
+
+/** Payload sent by the demo account after uploading a valid ID document. */
+export interface DemoIdVerificationInput {
+  /** Blob pathname of the uploaded ID image (retained for administrator review). */
+  docPathname: string
+  /** Content type of the uploaded image. */
+  docContentType: string
+  /** Best-effort GPS captured client-side (omitted when the visitor denied it). */
+  gps?: { lat: number; lng: number; accuracy?: number }
+}
+
+/** Extract the client IP from the standard proxy headers. */
+async function readClientIp(): Promise<string | null> {
+  const h = await headers()
+  const forwarded = h.get("x-forwarded-for")
+  const first = forwarded ? forwarded.split(",")[0]?.trim() : ""
+  return first || h.get("x-real-ip") || h.get("x-vercel-forwarded-for") || null
+}
+
+/**
+ * DEMO-ONLY login factor: the shared demo account (demo@mccgva.ch) does NOT use
+ * facial recognition. Instead the visitor uploads a photo/screenshot of a valid
+ * ID document. We OCR it to identify who is testing the platform and RETAIN the
+ * image together with the visitor's IP and GPS (if granted) for administrator
+ * inspection, then grant the demo session. No face match, no descriptor.
+ *
+ * This action is hard-scoped to DEMO_USER_ID — any other account is rejected, so
+ * a real account can never bypass its own strict biometric/identity gate here.
+ */
+export async function verifyDemoDocumentAndLogin(
+  challenge: string,
+  input: DemoIdVerificationInput,
+): Promise<LoginState> {
+  const uid = verifyChallenge(challenge)
+  if (!uid) {
+    return { error: "Your sign-in attempt expired. Please enter your password again." }
+  }
+  if (uid !== DEMO_USER_ID) {
+    // This document-only path is exclusively for the shared demo account.
+    await clearAllSessionCookies()
+    return { error: "Invalid email or password. Access denied." }
+  }
+
+  const rec = await getDynamicUserById(uid)
+  if (!rec || rec.status !== "active") {
+    await clearAllSessionCookies()
+    return { error: "This demonstration account is not available right now." }
+  }
+
+  const name = rec.profile.fullName || rec.profile.company || rec.email
+  const pathname = input?.docPathname || ""
+  if (!pathname) {
+    return { identityRequired: true, demo: true, challenge, name, error: "Please add a photo of your ID document first." }
+  }
+
+  try {
+    // 1) OCR the document. Accept ANY valid government ID (passport, national ID
+    //    card, driver's licence). Reject anything that clearly isn't identity.
+    const analysis = await analyzeKycDocument(pathname, input.docContentType || "image/jpeg")
+    const idPage = analysis.pages?.find(
+      (p) => p.isDocument && ["passport", "id_card", "drivers_license"].includes(p.type),
+    )
+    const isIdentityDoc = !!analysis.passport || !!idPage
+    if (!isIdentityDoc) {
+      // Not an ID — remove the useless upload and ask again.
+      try {
+        await del(pathname)
+      } catch {
+        // best-effort
+      }
+      await logActivity({
+        action: "Demo ID verification rejected — not a valid ID document",
+        category: "Authentication / Security",
+        user: "Demo visitor",
+        details: { result: "denied", reason: "uploaded file is not an identity document" },
+      })
+      return {
+        identityRequired: true,
+        demo: true,
+        challenge,
+        name,
+        error: "That doesn't read as a valid ID document. Upload a clear photo of your passport, national ID, or driver's licence.",
+      }
+    }
+
+    // 2) Build the identity summary from the OCR output.
+    const p = analysis.passport
+    const fullName =
+      (analysis.fields?.fullName || "").trim() ||
+      (p ? `${p.givenNames} ${p.surname}`.trim() : "") ||
+      "Unidentified visitor"
+    const docType = (p?.type || idPage?.label || "ID document").trim()
+    const docNumber = (p?.passportNo || "").trim()
+    const country = (p?.country || analysis.fields?.nationality || "").trim()
+
+    // 3) Capture IP + user agent (server-side) and persist the audit record.
+    const h = await headers()
+    const ip = await readClientIp()
+    const userAgent = h.get("user-agent")
+    const gps = input.gps
+    await insertDemoIdSubmission({
+      id: `DEMOID-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      docPathname: pathname,
+      docContentType: input.docContentType || "image/jpeg",
+      docType,
+      fullName,
+      docNumber,
+      country,
+      ip,
+      userAgent,
+      gpsLat: typeof gps?.lat === "number" && Number.isFinite(gps.lat) ? gps.lat : null,
+      gpsLng: typeof gps?.lng === "number" && Number.isFinite(gps.lng) ? gps.lng : null,
+      gpsAccuracy: typeof gps?.accuracy === "number" && Number.isFinite(gps.accuracy) ? gps.accuracy : null,
+    })
+
+    await logActivity({
+      action: "Demo access — ID captured",
+      category: "Authentication / Security",
+      user: fullName,
+      userId: DEMO_USER_ID,
+      details: {
+        result: "granted",
+        docType,
+        country: country || "",
+        ip: ip || "unknown",
+        gps: gps ? `${gps.lat.toFixed(5)}, ${gps.lng.toFixed(5)}` : "not shared",
+        mode: "demo (ID-verified, no face)",
+      },
+    })
+
+    // 4) Grant the demo session (no face factor).
+    await establishSession(
+      {
+        id: rec.id,
+        password: rec.password,
+        sessionToken: rec.sessionToken,
+        fullName: name,
+        company: rec.profile.company || "",
+        active: true,
+      },
+      rec.email,
+    )
+    return { success: true, redirectTo: POST_LOGIN_PATH }
+  } catch (error) {
+    console.error("[v0] Demo ID verification error:", error instanceof Error ? error.message : error)
+    return {
+      identityRequired: true,
+      demo: true,
+      challenge,
+      name,
+      error: "We couldn't process your ID right now. Please try again in a moment.",
     }
   }
 }
