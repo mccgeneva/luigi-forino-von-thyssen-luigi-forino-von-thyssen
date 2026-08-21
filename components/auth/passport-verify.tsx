@@ -3,7 +3,7 @@
 import { useRef, useState } from "react"
 import { upload } from "@vercel/blob/client"
 import { AlertCircle, ArrowLeft, BadgeCheck, Camera, IdCard, Loader2, ShieldQuestion, Upload } from "lucide-react"
-import { verifyIdentityAndLogin, type LoginState } from "@/app/actions/auth"
+import { verifyIdentityAndLogin, verifyDemoDocumentAndLogin, type LoginState } from "@/app/actions/auth"
 import { descriptorFromImage, loadImageFromFile, FaceModelLoadError } from "@/lib/face-client"
 import { FaceCapture } from "@/components/auth/face-capture"
 import { Button } from "@/components/ui/button"
@@ -57,6 +57,19 @@ export function PassportVerify({
   const handlePassportSelected = async (file: File | undefined) => {
     if (!file) return
     setError("")
+    // Demo account: no facial recognition. We accept ANY valid ID document, so
+    // we don't require a detectable face — just keep the image and let the
+    // server OCR it. This also keeps the demo flow fast and works for ID cards
+    // / licences where the printed photo is small.
+    if (demo) {
+      passportFileRef.current = file
+      passportDescriptorRef.current = null
+      setPreviewUrl((prev) => {
+        if (prev) URL.revokeObjectURL(prev)
+        return URL.createObjectURL(file)
+      })
+      return
+    }
     setBusy(true)
     try {
       const img = await loadImageFromFile(file)
@@ -79,6 +92,63 @@ export function PassportVerify({
         setError("Couldn't load the document scanner. Check your connection and try again.")
       } else {
         setError("We couldn't read that image. Please choose a clear photo of your passport.")
+      }
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  // Best-effort GPS for the demo security record. Resolves undefined if the
+  // visitor denies permission or the device has no geolocation — never blocks.
+  const getGps = (): Promise<{ lat: number; lng: number; accuracy?: number } | undefined> =>
+    new Promise((resolve) => {
+      if (typeof navigator === "undefined" || !("geolocation" in navigator)) return resolve(undefined)
+      navigator.geolocation.getCurrentPosition(
+        (pos) => resolve({ lat: pos.coords.latitude, lng: pos.coords.longitude, accuracy: pos.coords.accuracy }),
+        () => resolve(undefined),
+        { enableHighAccuracy: true, timeout: 8000, maximumAge: 60000 },
+      )
+    })
+
+  // Demo account submit: upload the ID image, capture GPS, and complete login
+  // WITHOUT a face scan. The server OCRs the document and stores it (with IP +
+  // GPS) for administrator inspection.
+  const handleDemoSubmit = async () => {
+    const docFile = passportFileRef.current
+    if (!docFile) {
+      setError("Please add a photo of your ID document first.")
+      return
+    }
+    setError("")
+    setBusy(true)
+    markLoginHandoff()
+    try {
+      const gps = await getGps()
+      const blob = await upload(`identity/demo/${Date.now()}-id.jpg`, docFile, {
+        access: "public",
+        handleUploadUrl: "/api/identity/blob-upload",
+        clientPayload: JSON.stringify({ challenge }),
+      })
+      const res: LoginState = await verifyDemoDocumentAndLogin(challenge, {
+        docPathname: blob.pathname,
+        docContentType: docFile.type || "image/jpeg",
+        gps,
+      })
+      if (res?.success) {
+        window.location.assign(res.redirectTo || "/dashboard?fresh=1")
+        return
+      }
+      if (res?.error) {
+        setError(res.error)
+        if (!res.identityRequired) setTimeout(onBack, 2400)
+      }
+    } catch (err) {
+      const raw = err instanceof Error ? err.message : ""
+      if (/client token/i.test(raw)) {
+        setError("Your secure sign-in session expired. Please enter your password again to restart.")
+        setTimeout(onBack, 2600)
+      } else {
+        setError(raw || "Upload failed. Please try again.")
       }
     } finally {
       setBusy(false)
@@ -144,6 +214,8 @@ export function PassportVerify({
   }
 
   const passportReady = !!passportDescriptorRef.current
+  // For the demo (no face required) readiness is simply "an image was chosen".
+  const docReady = demo ? !!previewUrl : passportReady
 
   return (
     <div className="space-y-5">
@@ -155,20 +227,26 @@ export function PassportVerify({
             <BadgeCheck className="h-5 w-5 text-primary" />
           )}
         </div>
-        <h2 className="text-base font-semibold text-foreground">Verify your identity</h2>
+        <h2 className="text-base font-semibold text-foreground">
+          {demo ? "Verify your ID to enter the demo" : "Verify your identity"}
+        </h2>
         <p className="text-sm text-muted-foreground text-pretty">
           {name ? `${name}, ` : ""}
           {subStep === "passport"
-            ? "Add a photo of your passport bio-data page to continue."
+            ? demo
+              ? "Upload a photo or screenshot of a valid ID document (passport, national ID, or driver's licence) to continue. No face scan is required."
+              : "Add a photo of your passport bio-data page to continue."
             : "Now take a live selfie so we can match it to your passport photo."}
         </p>
       </div>
 
-      {/* Step indicator */}
-      <div className="flex items-center justify-center gap-2" aria-hidden="true">
-        <span className={`h-1.5 w-8 rounded-full ${subStep === "passport" ? "bg-primary" : "bg-primary/40"}`} />
-        <span className={`h-1.5 w-8 rounded-full ${subStep === "selfie" ? "bg-primary" : "bg-muted"}`} />
-      </div>
+      {/* Step indicator — the demo is a single step (no selfie). */}
+      {!demo && (
+        <div className="flex items-center justify-center gap-2" aria-hidden="true">
+          <span className={`h-1.5 w-8 rounded-full ${subStep === "passport" ? "bg-primary" : "bg-primary/40"}`} />
+          <span className={`h-1.5 w-8 rounded-full ${subStep === "selfie" ? "bg-primary" : "bg-muted"}`} />
+        </div>
+      )}
 
       {subStep === "passport" ? (
         <div className="space-y-4">
@@ -217,14 +295,20 @@ export function PassportVerify({
             )}
             <span className="text-sm font-medium text-foreground">
               {busy
-                ? "Reading document…"
+                ? demo
+                  ? "Working…"
+                  : "Reading document…"
                 : previewUrl
-                  ? "Passport photo added — tap to replace"
+                  ? demo
+                    ? "ID document added — tap to replace"
+                    : "Passport photo added — tap to replace"
                   : "Tap to upload a photo or file"}
             </span>
             {!busy && !previewUrl && (
               <span className="text-xs text-muted-foreground">
-                JPG or PNG from your phone or computer · the bio-data page with your photo
+                {demo
+                  ? "JPG or PNG from your phone or computer · passport, national ID, or driver's licence"
+                  : "JPG or PNG from your phone or computer · the bio-data page with your photo"}
               </span>
             )}
           </button>
@@ -248,16 +332,38 @@ export function PassportVerify({
             </div>
           )}
 
+          {demo && docReady && (
+            <div className="flex items-center gap-2 rounded-lg border border-primary/30 bg-primary/5 px-3 py-2 text-sm text-foreground">
+              <BadgeCheck className="h-4 w-4 shrink-0 text-primary" />
+              <span>ID document ready.</span>
+            </div>
+          )}
+
           <Button
             type="button"
             className="h-11 w-full text-base"
-            disabled={!passportReady || busy}
+            disabled={!docReady || busy}
             onClick={() => {
+              if (demo) {
+                void handleDemoSubmit()
+                return
+              }
               setError("")
               setSubStep("selfie")
             }}
           >
-            Continue to selfie
+            {demo ? (
+              busy ? (
+                <span className="flex items-center gap-2">
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  Verifying your ID…
+                </span>
+              ) : (
+                "Enter demo"
+              )
+            ) : (
+              "Continue to selfie"
+            )}
           </Button>
         </div>
       ) : (
@@ -292,7 +398,7 @@ export function PassportVerify({
         <ShieldQuestion className="mt-0.5 h-3.5 w-3.5 shrink-0" />
         <span>
           {demo
-            ? "Demo account: your passport is checked live and deleted immediately — nothing is saved. "
+            ? "Demo account: your ID document is read to identify you and is stored — together with your IP address and, if you allow it, your location — for security and administrator review. "
             : "Your passport is used once to verify you, then deleted. An encrypted face match and a login selfie snapshot are kept for security and are visible only to administrators. "}
           This is an in-app identity check, not a government-issued authenticity certificate.
         </span>
