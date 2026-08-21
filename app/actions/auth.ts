@@ -42,7 +42,7 @@ import {
   registerFailure,
   resetFailCount,
 } from "@/lib/biometric-db"
-import { verifyPassportImage, analyzeKycDocument } from "@/lib/kyc-analyze"
+import { verifyPassportImage } from "@/lib/kyc-analyze"
 import { insertDemoIdSubmission } from "@/lib/demo-id-db"
 
 export type LoginState = {
@@ -671,14 +671,11 @@ export async function verifyDemoDocumentAndLogin(
   }
 
   try {
-    // 1) OCR the document. Accept ANY valid government ID (passport, national ID
-    //    card, driver's licence). Reject anything that clearly isn't identity.
-    const analysis = await analyzeKycDocument(pathname, input.docContentType || "image/jpeg")
-    const idPage = analysis.pages?.find(
-      (p) => p.isDocument && ["passport", "id_card", "drivers_license"].includes(p.type),
-    )
-    const isIdentityDoc = !!analysis.passport || !!idPage
-    if (!isIdentityDoc) {
+    // 1) OCR the document with the purpose-built identity-gate verifier. It
+    //    accepts a passport OR a national ID card and reads its bio-data, and
+    //    returns a plain reason when the image isn't a valid ID.
+    const check = await verifyPassportImage(pathname, input.docContentType || "image/jpeg")
+    if (!check.isPassport) {
       // Not an ID — remove the useless upload and ask again.
       try {
         await del(pathname)
@@ -689,26 +686,24 @@ export async function verifyDemoDocumentAndLogin(
         action: "Demo ID verification rejected — not a valid ID document",
         category: "Authentication / Security",
         user: "Demo visitor",
-        details: { result: "denied", reason: "uploaded file is not an identity document" },
+        details: { result: "denied", reason: check.reason || "uploaded file is not an identity document" },
       })
       return {
         identityRequired: true,
         demo: true,
         challenge,
         name,
-        error: "That doesn't read as a valid ID document. Upload a clear photo of your passport, national ID, or driver's licence.",
+        error:
+          (check.reason && check.reason.trim()) ||
+          "That doesn't read as a valid ID document. Upload a clear photo of your passport or national ID card.",
       }
     }
 
     // 2) Build the identity summary from the OCR output.
-    const p = analysis.passport
-    const fullName =
-      (analysis.fields?.fullName || "").trim() ||
-      (p ? `${p.givenNames} ${p.surname}`.trim() : "") ||
-      "Unidentified visitor"
-    const docType = (p?.type || idPage?.label || "ID document").trim()
-    const docNumber = (p?.passportNo || "").trim()
-    const country = (p?.country || analysis.fields?.nationality || "").trim()
+    const fullName = (check.fullName || "").trim() || "Unidentified visitor"
+    const docType = check.hasMrz ? "Passport / national ID" : "ID document"
+    const docNumber = (check.passportNo || "").trim()
+    const country = (check.country || "").trim()
 
     // 3) Capture IP + user agent (server-side) and persist the audit record.
     const h = await headers()
