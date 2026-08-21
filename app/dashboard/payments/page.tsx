@@ -197,29 +197,30 @@ export default function PaymentsPage() {
   // Live available balance from recorded incoming payments.
   const masterBalance = balanceFor(MASTER_ACCOUNT_CURRENCY)
 
+  // Balance in the currency the user selected for THIS payment. The transfer is
+  // debited in that currency, so the check (and the displayed "Available
+  // balance") must be against the same currency's balance — not a fixed EUR one.
+  const selectedCurrencyBalance = balanceFor(payCurrency)
+
   // Live affordability check for the transfer form: recomputed on every keystroke
-  // so the customer is told IMMEDIATELY (at the input) whether the account can
-  // cover amount + 2% fee — no need to submit and wait for a rejection. The
-  // amount is converted into the master-balance currency (EUR) because a payment
-  // may be denominated in another currency. This mirrors the submit-time and
-  // authoritative server-side solvency checks.
+  // so the customer is told IMMEDIATELY (at the input) whether the selected
+  // currency's balance can cover amount + 2% fee — no need to submit and wait
+  // for a rejection. Compared like-for-like in payCurrency (no FX conversion).
   const liveTransfer = useMemo(() => {
     const amt = Number.parseFloat(payAmount)
     if (!payAmount || Number.isNaN(amt) || amt <= 0) {
-      return { valid: false, amount: 0, fee: 0, total: 0, totalEur: 0, insufficient: false }
+      return { valid: false, amount: 0, fee: 0, total: 0, insufficient: false }
     }
     const fee = Math.round(amt * PLATFORM_FEE_RATE * 100) / 100
     const total = amt + fee
-    const totalEur = convertCurrency(total, payCurrency, MASTER_ACCOUNT_CURRENCY)
     return {
       valid: true,
       amount: amt,
       fee,
       total,
-      totalEur,
-      insufficient: totalEur > masterBalance + 0.001,
+      insufficient: total > selectedCurrencyBalance + 0.001,
     }
-  }, [payAmount, payCurrency, masterBalance])
+  }, [payAmount, selectedCurrencyBalance])
 
   // Payment History is derived from persistent sources so rows never disappear
   // on navigation: outgoing rows come from the persisted payment-request store,
@@ -513,20 +514,22 @@ export default function PaymentsPage() {
     const feeValue = Math.round(amountValue * PLATFORM_FEE_RATE * 100) / 100
     const totalDebit = amountValue + feeValue
 
-    // Soft pre-check: warn the customer if the account currently cannot cover
-    // amount + fee. Funds are NOT moved here — they are only debited once an
-    // Administrator approves the request.
-    if (totalDebit > masterBalance) {
+    // Soft pre-check: warn the customer if the SELECTED currency's balance
+    // cannot cover amount + fee. The transfer is debited in payCurrency, so we
+    // check against that currency's balance (like-for-like). Funds are NOT moved
+    // here — they are only debited once an Administrator approves the request.
+    const availableForPayment = balanceFor(payCurrency)
+    if (totalDebit > availableForPayment) {
       setFormError(
         `Insufficient funds for this request. It requires ${formatCurrency(
           totalDebit,
-          MASTER_ACCOUNT_CURRENCY,
-        )} (${formatCurrency(amountValue, MASTER_ACCOUNT_CURRENCY)} + ${formatCurrency(
+          payCurrency,
+        )} (${formatCurrency(amountValue, payCurrency)} + ${formatCurrency(
           feeValue,
-          MASTER_ACCOUNT_CURRENCY,
-        )} platform fee). Available balance: ${formatCurrency(
-          masterBalance,
-          MASTER_ACCOUNT_CURRENCY,
+          payCurrency,
+        )} platform fee). Available ${payCurrency} balance: ${formatCurrency(
+          availableForPayment,
+          payCurrency,
         )}.`,
       )
       return
@@ -792,9 +795,9 @@ export default function PaymentsPage() {
               <DialogHeader>
                 <DialogTitle>Request New Payment</DialogTitle>
                 <DialogDescription>
-                  Submit an outgoing SWIFT transfer for Administrator approval · Available balance:{" "}
-                  <span className="font-medium text-foreground">
-                    {formatCurrency(masterBalance, MASTER_ACCOUNT_CURRENCY)}
+                  Submit an outgoing SWIFT transfer for Administrator approval · Available {payCurrency} balance:{" "}
+                  <span className={liveTransfer.insufficient ? "font-medium text-destructive" : "font-medium text-foreground"}>
+                    {formatCurrency(selectedCurrencyBalance, payCurrency)}
                   </span>
                 </DialogDescription>
               </DialogHeader>
@@ -846,7 +849,7 @@ export default function PaymentsPage() {
                     />
                     {liveTransfer.insufficient && (
                       <p className="text-xs text-destructive" role="alert">
-                        Exceeds available balance of {formatCurrency(masterBalance, MASTER_ACCOUNT_CURRENCY)} (need{" "}
+                        Exceeds available {payCurrency} balance of {formatCurrency(selectedCurrencyBalance, payCurrency)} (need{" "}
                         {formatCurrency(liveTransfer.total, payCurrency)} incl. 2% fee).
                       </p>
                     )}
@@ -934,9 +937,9 @@ export default function PaymentsPage() {
                         </span>
                       </div>
                       <div className="flex items-center justify-between mt-1 text-xs">
-                        <span className="text-muted-foreground">Available balance</span>
+                        <span className="text-muted-foreground">Available {payCurrency} balance</span>
                         <span className={liveTransfer.insufficient ? "text-destructive" : "text-muted-foreground"}>
-                          {formatCurrency(masterBalance, MASTER_ACCOUNT_CURRENCY)}
+                          {formatCurrency(selectedCurrencyBalance, payCurrency)}
                         </span>
                       </div>
                       {liveTransfer.insufficient && (
