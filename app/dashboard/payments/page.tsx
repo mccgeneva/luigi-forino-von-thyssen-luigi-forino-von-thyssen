@@ -197,6 +197,30 @@ export default function PaymentsPage() {
   // Live available balance from recorded incoming payments.
   const masterBalance = balanceFor(MASTER_ACCOUNT_CURRENCY)
 
+  // Live affordability check for the transfer form: recomputed on every keystroke
+  // so the customer is told IMMEDIATELY (at the input) whether the account can
+  // cover amount + 2% fee — no need to submit and wait for a rejection. The
+  // amount is converted into the master-balance currency (EUR) because a payment
+  // may be denominated in another currency. This mirrors the submit-time and
+  // authoritative server-side solvency checks.
+  const liveTransfer = useMemo(() => {
+    const amt = Number.parseFloat(payAmount)
+    if (!payAmount || Number.isNaN(amt) || amt <= 0) {
+      return { valid: false, amount: 0, fee: 0, total: 0, totalEur: 0, insufficient: false }
+    }
+    const fee = Math.round(amt * PLATFORM_FEE_RATE * 100) / 100
+    const total = amt + fee
+    const totalEur = convertCurrency(total, payCurrency, MASTER_ACCOUNT_CURRENCY)
+    return {
+      valid: true,
+      amount: amt,
+      fee,
+      total,
+      totalEur,
+      insufficient: totalEur > masterBalance + 0.001,
+    }
+  }, [payAmount, payCurrency, masterBalance])
+
   // Payment History is derived from persistent sources so rows never disappear
   // on navigation: outgoing rows come from the persisted payment-request store,
   // incoming rows come from the ledger's credit entries.
@@ -809,7 +833,23 @@ export default function PaymentsPage() {
                 <div className="grid grid-cols-2 gap-4">
                   <div className="grid gap-2">
                     <Label htmlFor="amount">Amount *</Label>
-                    <Input id="amount" placeholder="0.00" type="number" min="0" step="0.01" value={payAmount} onChange={(e) => setPayAmount(e.target.value)} />
+                    <Input
+                      id="amount"
+                      placeholder="0.00"
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      value={payAmount}
+                      onChange={(e) => setPayAmount(e.target.value)}
+                      aria-invalid={liveTransfer.insufficient}
+                      className={liveTransfer.insufficient ? "border-destructive focus-visible:ring-destructive" : undefined}
+                    />
+                    {liveTransfer.insufficient && (
+                      <p className="text-xs text-destructive" role="alert">
+                        Exceeds available balance of {formatCurrency(masterBalance, MASTER_ACCOUNT_CURRENCY)} (need{" "}
+                        {formatCurrency(liveTransfer.total, payCurrency)} incl. 2% fee).
+                      </p>
+                    )}
                   </div>
                   <div className="grid gap-2">
                     <Label htmlFor="currency">Currency</Label>
@@ -889,8 +929,21 @@ export default function PaymentsPage() {
                       </div>
                       <div className="flex items-center justify-between mt-2 border-t border-border pt-2 font-medium">
                         <span className="text-foreground">Total to debit on approval</span>
-                        <span className="text-foreground">{formatCurrency(total, payCurrency)}</span>
+                        <span className={liveTransfer.insufficient ? "text-destructive" : "text-foreground"}>
+                          {formatCurrency(total, payCurrency)}
+                        </span>
                       </div>
+                      <div className="flex items-center justify-between mt-1 text-xs">
+                        <span className="text-muted-foreground">Available balance</span>
+                        <span className={liveTransfer.insufficient ? "text-destructive" : "text-muted-foreground"}>
+                          {formatCurrency(masterBalance, MASTER_ACCOUNT_CURRENCY)}
+                        </span>
+                      </div>
+                      {liveTransfer.insufficient && (
+                        <p className="mt-2 text-xs text-destructive" role="alert">
+                          Insufficient funds — reduce the amount or add funds before submitting.
+                        </p>
+                      )}
                     </div>
                   )
                 })()}
@@ -918,9 +971,9 @@ export default function PaymentsPage() {
                 >
                   Cancel
                 </Button>
-                <Button onClick={handleSendPayment}>
+                <Button onClick={handleSendPayment} disabled={liveTransfer.insufficient}>
                   <ShieldCheck className="mr-2 h-4 w-4" />
-                  Submit for Approval
+                  {liveTransfer.insufficient ? "Insufficient balance" : "Submit for Approval"}
                 </Button>
               </DialogFooter>
             </DialogContent>
