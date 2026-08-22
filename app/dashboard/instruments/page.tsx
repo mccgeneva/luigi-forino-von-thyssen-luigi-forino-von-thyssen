@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useMemo } from "react"
+import { useState, useMemo, useEffect, useRef } from "react"
 import { useRouter } from "next/navigation"
 import {
   FileText,
@@ -68,6 +68,8 @@ import { usePdfViewer } from "@/lib/pdf-viewer"
 import { toast } from "sonner"
 import { useInstrumentRequests, type Instrument } from "@/lib/instrument-requests-store"
 import { useLedger } from "@/lib/ledger-store"
+import { removeMyLedgerEntry } from "@/app/actions/ledger"
+import { computeMonetizationEquity } from "@/lib/monetization-equity"
 import { InstrumentMarketplace } from "@/components/dashboard/instrument-marketplace"
 import { IsinTools, type IsinAcquisitionRequest } from "@/components/instruments/isin-tools"
 import { EdgarTools } from "@/components/instruments/edgar-tools"
@@ -162,8 +164,8 @@ export default function InstrumentsPage() {
   // instruments. Bank instruments are issued and managed exclusively by the
   // administrator; the client view only displays them.
   const { instruments, transferInstrument, addInstrument, deleteInstrument } = useInstrumentRequests()
-  const { totalIn } = useLedger()
-  const { addRequest: addMonetizationRequest, requests: monetizationRequests } = useMonetizationRequests()
+  const { totalIn, balanceFor, addDebit, entries: ledgerEntries, refresh: refreshLedger, hydrated: ledgerHydrated } = useLedger()
+  const { addRequest: addMonetizationRequest, requests: monetizationRequests, hydrated: monetizationHydrated } = useMonetizationRequests()
   const { requests: leverageRequests } = useLeverageRequests()
 
   // Delete confirmation target (client-initiated removal of an unused holding).
@@ -518,11 +520,33 @@ export default function InstrumentsPage() {
     monetizeTarget && Number.isFinite(monetizeAdvanceRate)
       ? Math.round(monetizeBaseValue * (monetizeAdvanceRate / 100))
       : 0
+  // Monetization upfront cost, all reserved in the INSTRUMENT'S OWN CURRENCY:
+  //   • EQUITY DEPOSIT — scales linearly with LTV (0.75% at 1% LTV → 5% at 100%)
+  //   • PPI — Payment Protection Insurance, 1% of the advance, funded from the
+  //     same upfront deposit.
+  // The client must hold the FULL amount (equity + PPI) before the request is
+  // sent; otherwise the operation is refused with an explanation and no request
+  // is created. `monetizeReserve` is the TOTAL upfront that gets blocked.
+  const monetizeReserveCurrency = monetizeTarget?.currency ?? "EUR"
+  const monetizeEquityQuote =
+    monetizeTarget && Number.isFinite(monetizeAdvanceRate)
+      ? computeMonetizationEquity(monetizeProceeds, monetizeAdvanceRate)
+      : { ltvPercent: 0, equityRate: 0, equityDeposit: 0, ppi: 0, totalUpfront: 0 }
+  const monetizeEquityRate = monetizeEquityQuote.equityRate
+  const monetizeEquityDeposit = monetizeEquityQuote.equityDeposit
+  const monetizePpi = monetizeEquityQuote.ppi
+  const monetizeReserve = monetizeEquityQuote.totalUpfront
+  const monetizeReserveAvailable = monetizeTarget ? balanceFor(monetizeReserveCurrency) : 0
+  const monetizeReserveShortfall = Math.max(0, monetizeReserve - monetizeReserveAvailable)
+  const canCoverMonetizeReserve =
+    monetizeReserve <= 0 || monetizeReserveAvailable + 0.01 >= monetizeReserve
+
   const canSubmitMonetization =
     !!monetizeTarget &&
     Number.isFinite(monetizeAdvanceRate) &&
     monetizeAdvanceRate > 0 &&
-    monetizeAdvanceRate <= 100
+    monetizeAdvanceRate <= 100 &&
+    canCoverMonetizeReserve
   // Progressive (tiered) debit-interest pricing on the gross proceeds — the
   // outstanding debit the client will owe. Shown live so the client sees the
   // blended effective rate and per-tranche breakdown before submitting.
@@ -543,6 +567,14 @@ export default function InstrumentsPage() {
     if (monetizedInstrumentIds.has(instrument.id)) {
       toast.error("Instrument already monetized", {
         description: `${instrument.id} already has a live monetization. Reverse it before monetizing again.`,
+      })
+      return
+    }
+    // Same-currency solvency gate: 0.75% of the advance must be reservable from
+    // the balance in the INSTRUMENT'S currency, or the operation is refused.
+    if (!canCoverMonetizeReserve) {
+      toast.error("Operation not possible — insufficient equity", {
+        description: `Monetizing ${instrument.id} at ${monetizeAdvanceRate}% LTV requires ${formatCurrency(monetizeReserve, monetizeReserveCurrency)} blocked in ${monetizeReserveCurrency} — a ${(monetizeEquityRate * 100).toFixed(2)}% equity deposit (${formatCurrency(monetizeEquityDeposit, monetizeReserveCurrency)}) plus 1% PPI (${formatCurrency(monetizePpi, monetizeReserveCurrency)}). You have ${formatCurrency(monetizeReserveAvailable, monetizeReserveCurrency)} available — short by ${formatCurrency(monetizeReserveShortfall, monetizeReserveCurrency)}. Fund your ${monetizeReserveCurrency} balance and try again.`,
       })
       return
     }
@@ -575,8 +607,26 @@ export default function InstrumentsPage() {
       notes: monetizeForm.notes.trim(),
     })
 
+    // Block the 0.75% reserve immediately as a server-persisted HOLD in the
+    // instrument's currency. It reduces the available balance now, stays blocked
+    // while the request is pending/approved (facility collateral), and is
+    // released automatically by the reconciler below if it is declined/reversed.
+    if (monetizeReserve > 0) {
+      addDebit({
+        id: `MON-RSV-${created.id}`,
+        amount: monetizeReserve,
+        currency: monetizeReserveCurrency,
+        status: "hold",
+        date: new Date().toISOString(),
+        counterparty: `Monetization equity + PPI — ${instrument.type} ${instrument.id}`,
+        reference: created.id,
+        category: "Monetization Reserve",
+        comment: `Equity deposit ${(monetizeEquityRate * 100).toFixed(2)}% (${formatCurrency(monetizeEquityDeposit, monetizeReserveCurrency)}) + 1% PPI (${formatCurrency(monetizePpi, monetizeReserveCurrency)}) blocked in ${monetizeReserveCurrency} against monetization of ${instrument.type} ${instrument.id} at ${monetizeAdvanceRate}% LTV. Released automatically if the request is declined or reversed.`,
+      })
+    }
+
     toast.success("Monetization request submitted", {
-      description: `Request ${created.id} for ${instrument.id} is pending Administrator authorization. The ${formatCurrency(monetizeProceeds, monetizeForm.proceedsCurrency)} gross proceeds will be credited to your Master Account only once it is approved.`,
+      description: `Request ${created.id} for ${instrument.id} is pending Administrator authorization. ${formatCurrency(monetizeReserve, monetizeReserveCurrency)} is now blocked from your ${monetizeReserveCurrency} balance (equity ${formatCurrency(monetizeEquityDeposit, monetizeReserveCurrency)} + PPI ${formatCurrency(monetizePpi, monetizeReserveCurrency)}). The ${formatCurrency(monetizeProceeds, monetizeForm.proceedsCurrency)} gross proceeds will be credited to your Master Account only once it is approved.`,
     })
     logActivity({
       action: `Requested monetization of ${instrument.type} ${instrument.id} (${formatCurrency(instrument.faceValue, instrument.currency)})`,
@@ -599,6 +649,41 @@ export default function InstrumentsPage() {
 
     setMonetizeTarget(null)
   }
+
+  // Release monetization reserve holds once their request is no longer live.
+  // The 0.75% reserve stays blocked while a request is PENDING or APPROVED
+  // (active facility collateral); when it is rejected or reversed — or the
+  // optimistic request was rolled back on a server refusal — the matching
+  // `MON-RSV-<id>` hold is deleted so the funds return to available. Guarded on
+  // BOTH stores being hydrated so a slow requests-load can never release a
+  // legitimately-pending reserve.
+  const releasedReservesRef = useRef<Set<string>>(new Set())
+  useEffect(() => {
+    if (!ledgerHydrated || !monetizationHydrated) return
+    const activeIds = new Set(
+      monetizationRequests
+        .filter((r) => r.status === "pending" || r.status === "approved")
+        .map((r) => r.id),
+    )
+    const stale = ledgerEntries.filter(
+      (e) =>
+        e.status === "hold" &&
+        e.direction === "debit" &&
+        e.category === "Monetization Reserve" &&
+        typeof e.id === "string" &&
+        e.id.startsWith("MON-RSV-") &&
+        !activeIds.has(e.id.slice("MON-RSV-".length)) &&
+        !releasedReservesRef.current.has(e.id),
+    )
+    if (stale.length === 0) return
+    stale.forEach((e) => releasedReservesRef.current.add(e.id))
+    void (async () => {
+      for (const e of stale) {
+        await removeMyLedgerEntry(e.id)
+      }
+      void refreshLedger()
+    })()
+  }, [monetizationRequests, ledgerEntries, ledgerHydrated, monetizationHydrated, refreshLedger])
 
   // Step 1 — verify the recipient email resolves to a real, active account and
   // show the holder exactly WHO they are about to transfer to before confirming.
@@ -1956,6 +2041,68 @@ export default function InstrumentsPage() {
                   </p>
                 </div>
 
+                {/* Upfront equity deposit (LTV-scaled) + PPI, blocked in the instrument's currency */}
+                <div
+                  className={cn(
+                    "rounded-lg border p-3 sm:col-span-2",
+                    canCoverMonetizeReserve ? "border-primary/20 bg-primary/5" : "border-destructive/40 bg-destructive/10",
+                  )}
+                >
+                  <p className="mb-2 text-sm font-medium text-foreground">
+                    Upfront equity deposit — blocked in {monetizeReserveCurrency}
+                  </p>
+                  <div className="space-y-1.5 text-xs">
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="text-muted-foreground">
+                        Equity ({(monetizeEquityRate * 100).toFixed(2)}% at {monetizeAdvanceRate || 0}% LTV)
+                      </span>
+                      <span className="font-medium text-foreground">
+                        {formatCurrency(monetizeEquityDeposit, monetizeReserveCurrency)}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="text-muted-foreground">PPI — Payment Protection Insurance (1% of advance)</span>
+                      <span className="font-medium text-foreground">
+                        {formatCurrency(monetizePpi, monetizeReserveCurrency)}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between gap-3 border-t border-border/60 pt-1.5">
+                      <span className="font-medium text-foreground">Total blocked upfront</span>
+                      <span className="text-base font-semibold text-foreground">
+                        {formatCurrency(monetizeReserve, monetizeReserveCurrency)}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="text-muted-foreground">Available {monetizeReserveCurrency} balance</span>
+                      <span className={cn("font-medium", canCoverMonetizeReserve ? "text-foreground" : "text-destructive")}>
+                        {formatCurrency(monetizeReserveAvailable, monetizeReserveCurrency)}
+                      </span>
+                    </div>
+                  </div>
+                  {canCoverMonetizeReserve ? (
+                    <p className="mt-2 flex items-start gap-1.5 text-[11px] leading-relaxed text-muted-foreground">
+                      <Lock className="mt-px h-3 w-3 shrink-0" />
+                      <span>
+                        The equity scales from 0.75% at 1% LTV to 5% at 100% LTV; the PPI premium is funded from it. The
+                        full amount is blocked from your {monetizeReserveCurrency} Master Account on submission and
+                        released automatically if the request is declined or reversed.
+                      </span>
+                    </p>
+                  ) : (
+                    <div className="mt-2 flex items-start gap-1.5 rounded-md border border-destructive/40 bg-destructive/10 p-2 text-[11px] leading-relaxed text-destructive">
+                      <AlertCircle className="mt-px h-3.5 w-3.5 shrink-0" />
+                      <span>
+                        <strong>Operation not possible.</strong> You must reserve{" "}
+                        {formatCurrency(monetizeReserve, monetizeReserveCurrency)} upfront in {monetizeReserveCurrency} —
+                        a {(monetizeEquityRate * 100).toFixed(2)}% equity deposit plus 1% PPI — but only{" "}
+                        {formatCurrency(monetizeReserveAvailable, monetizeReserveCurrency)} is available, short by{" "}
+                        {formatCurrency(monetizeReserveShortfall, monetizeReserveCurrency)}. Fund your{" "}
+                        {monetizeReserveCurrency} balance before monetizing this instrument.
+                      </span>
+                    </div>
+                  )}
+                </div>
+
                 {/* Progressive (tiered) debit interest on the gross proceeds. */}
                 {monetizePricing.totalAnnualInterest > 0 && (
                   <div className="space-y-2 rounded-lg border border-border bg-secondary/30 p-3 sm:col-span-2">
@@ -2142,7 +2289,7 @@ export default function InstrumentsPage() {
                 </Button>
                 <Button onClick={confirmMonetization} disabled={!canSubmitMonetization}>
                   <ShieldCheck className="mr-2 h-4 w-4" />
-                  Submit for Authorization
+                  {canCoverMonetizeReserve ? "Submit for Authorization" : "Insufficient reserve balance"}
                 </Button>
               </DialogFooter>
             </>
