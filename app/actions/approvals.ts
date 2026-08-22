@@ -25,7 +25,7 @@ import {
 import { planReservation, formatMoney, type ReservationPlan } from "@/lib/fund-reservation"
 import { cardFeeFor, formatCardFee, CARD_FEE_CURRENCY } from "@/lib/card-fees"
 import { buildTradingFundPosts, TRADING_FUND_MONTHLY_ROI, type TradingFundPauseWindow } from "@/lib/trading-fund"
-import { buildPppRoiPosts } from "@/lib/ppp-yield"
+import { buildPppRoiPosts, yieldCancellationPenalty, YIELD_EARLY_CANCELLATION_PENALTY_RATE } from "@/lib/ppp-yield"
 import { buildInternalLoanPosts } from "@/lib/internal-loan"
 import type { LedgerEntry } from "@/lib/ledger-store"
 import { insertNotification } from "@/lib/notifications-db"
@@ -613,6 +613,147 @@ export async function revokeMyCommodityDeal(
   } catch (err) {
     console.log("[v0] revokeMyCommodityDeal failed:", (err as Error).message)
     return { ok: false, error: "The deal could not be revoked. Please try again." }
+  }
+}
+
+/**
+ * Client self-service cancellation of an ONGOING (approved) Yield / PPP program.
+ *
+ * Settled INSTANTLY, no administrator step:
+ *  1. All ROI matured up to now is first CREDITED (idempotent) so the client
+ *     keeps everything already earned — only FUTURE ROI stops.
+ *  2. A fixed early-cancellation PENALTY (a % of the invested principal) is
+ *     DEBITED from the Master Account, gated by a same-currency solvency check.
+ *  3. The application is moved to `cancelled`, which stops all future ROI
+ *     accrual (`buildPppRoiPosts` only credits `approved` programs) AND frees
+ *     the funding instrument (the in-use gates release a `cancelled` request).
+ *
+ * The penalty is affordability-gated: if the client can't cover it, nothing is
+ * cancelled or charged. Race-safe/ownership-scoped via `revokeApprovedApproval`.
+ */
+export async function cancelMyApprovedYield(
+  approvalId: string,
+): Promise<{ ok: boolean; error?: string; penalty?: number; currency?: string }> {
+  const session = await resolveCurrentSession()
+  if (!session) return { ok: false, error: "Your session has expired. Please sign in again." }
+  try {
+    const existing = await getApprovalById(approvalId)
+    if (!existing || existing.userId !== session.id) {
+      return { ok: false, error: "This program could not be found." }
+    }
+    if (existing.kind !== "ppp") return { ok: false, error: "Only a yield / PPP program can be cancelled here." }
+    if (existing.status !== "approved") {
+      return { ok: false, error: "Only an ongoing (approved) program can be cancelled." }
+    }
+
+    const record = (existing.payload as { record?: { amount?: number; currency?: string } } | undefined)?.record ?? {}
+    const amount = Number(record.amount ?? existing.amount) || 0
+    const currency = record.currency || existing.currency || "USD"
+    const penalty = yieldCancellationPenalty(amount)
+
+    const ownerId = await resolveDataOwnerIdFor(existing.userId)
+
+    // 1) Credit any ROI matured up to now so nothing earned is lost on cancel.
+    try {
+      const roiPosts = buildPppRoiPosts(existing)
+      const existingRows = await readLedgerEntries(ownerId)
+      const have = new Set(existingRows.map((e) => e.id))
+      for (const post of roiPosts) {
+        if (!have.has(post.id)) await upsertLedgerEntry(ownerId, post)
+      }
+    } catch (err) {
+      console.log("[v0] yield cancel ROI catch-up failed:", (err as Error).message)
+    }
+
+    // 2) Solvency gate for the penalty (same-currency available on the master).
+    if (penalty > 0) {
+      const available = availableByCurrency(await readLedgerEntries(ownerId))
+      const availableInCcy = Object.entries(available).reduce(
+        (sum, [cur, amt]) => sum + convertCurrency(amt, cur, currency),
+        0,
+      )
+      if (penalty > availableInCcy + 0.01) {
+        return {
+          ok: false,
+          error: `Cancelling incurs a ${(YIELD_EARLY_CANCELLATION_PENALTY_RATE * 100).toFixed(0)}% penalty of ${currency} ${penalty.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}, but your available balance can't cover it. Fund the account first.`,
+        }
+      }
+    }
+
+    // 3) Flip to cancelled (race-safe, ownership-scoped). Stops future ROI and
+    //    frees the funding instrument.
+    const cancelled = await revokeApprovedApproval(
+      approvalId,
+      session.id,
+      "Yield / PPP program cancelled by client before term end.",
+    )
+    if (!cancelled) return { ok: false, error: "This program can no longer be cancelled." }
+
+    // 4) Charge the penalty (deterministic id → idempotent, never double-charges).
+    if (penalty > 0) {
+      try {
+        await upsertLedgerEntry(ownerId, {
+          id: `PPP-CANCEL-PENALTY-${approvalId}`,
+          direction: "debit",
+          amount: penalty,
+          currency,
+          status: "completed",
+          date: new Date().toISOString(),
+          counterparty: existing.title || "Yield / PPP program",
+          reference: approvalId,
+          category: "NAFTAhub Yield — Early Cancellation Penalty",
+          comment: `${(YIELD_EARLY_CANCELLATION_PENALTY_RATE * 100).toFixed(0)}% early-cancellation penalty on "${existing.title}".`,
+        })
+      } catch (err) {
+        console.log("[v0] yield cancel penalty debit failed:", (err as Error).message)
+      }
+    }
+
+    // Stamp the cancellation on the record for display (best-effort).
+    try {
+      const prevPayload = cancelled.payload ?? {}
+      const prevRecord = (prevPayload.record as Record<string, unknown> | undefined) ?? {}
+      await updateApprovalPayload(approvalId, {
+        ...prevPayload,
+        record: { ...prevRecord, cancelledAt: new Date().toISOString(), penaltyAmount: penalty },
+      })
+    } catch (err) {
+      console.log("[v0] yield cancel record stamp failed:", (err as Error).message)
+    }
+
+    try {
+      await insertNotification({
+        userId: existing.userId,
+        tone: "info",
+        title: "Yield program cancelled",
+        body: `Your yield / PPP program "${existing.title}" was cancelled. ${penalty > 0 ? `A ${currency} ${penalty.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} early-cancellation penalty was charged. ` : ""}ROI already earned was kept; future ROI has stopped and the funding instrument is now free.`,
+        href: KIND_HREF.ppp ?? "/dashboard/ppp",
+      })
+    } catch (err) {
+      console.log("[v0] yield cancel notification failed:", (err as Error).message)
+    }
+
+    try {
+      const profile = await resolveAccountProfileById(existing.userId)
+      await logActivity({
+        action: `Client cancelled yield / PPP program "${existing.title}"`,
+        category: "Yield / PPP",
+        user: profile.fullName,
+        details: {
+          referenceId: existing.id,
+          summary: `Cancelled ongoing program. Penalty ${currency} ${penalty.toLocaleString("en-US")} charged; earned ROI kept; funding instrument released.`,
+          amount: `${currency} ${amount.toLocaleString("en-US")}`,
+          decision: "Cancelled",
+        },
+      })
+    } catch (err) {
+      console.log("[v0] yield cancel activity log failed:", (err as Error).message)
+    }
+
+    return { ok: true, penalty, currency }
+  } catch (err) {
+    console.log("[v0] cancelMyApprovedYield failed:", (err as Error).message)
+    return { ok: false, error: "The program could not be cancelled. Please try again." }
   }
 }
 

@@ -196,8 +196,8 @@ export default function InstrumentsPage() {
     }
     for (const req of pppRequests) {
       if (!req.fundingInstrumentId) continue
-      // A rejected yield/PPP application releases the funding instrument.
-      if (req.status !== "rejected") ids.add(req.fundingInstrumentId)
+      // A rejected OR cancelled yield/PPP application releases the funding instrument.
+      if (req.status !== "rejected" && req.status !== "cancelled") ids.add(req.fundingInstrumentId)
     }
     return ids
   }, [leverageRequests, monetizationRequests, pppRequests])
@@ -213,7 +213,7 @@ export default function InstrumentsPage() {
     if (leverageRequests.some((r) => r.pledgedInstrumentId === inst.id && r.status !== "rejected" && r.status !== "closed")) {
       reasons.push("a leverage line — close it first")
     }
-    if (pppRequests.some((r) => r.fundingInstrumentId === inst.id && r.status !== "rejected")) {
+    if (pppRequests.some((r) => r.fundingInstrumentId === inst.id && r.status !== "rejected" && r.status !== "cancelled")) {
       reasons.push("a yield / PPP application — cancel it first")
     }
     return reasons

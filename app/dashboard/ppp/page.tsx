@@ -18,6 +18,7 @@ import {
   ExternalLink,
   ShieldCheck,
   Landmark,
+  Loader2,
 } from "lucide-react"
 import useSWR from "swr"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -53,6 +54,11 @@ import { cn } from "@/lib/utils"
 import { toast } from "sonner"
 import { useActivityLog } from "@/components/activity-tracker"
 import { usePPPRequests, type PPPRequest } from "@/lib/ppp-requests-store"
+import { cancelMyApprovedYield } from "@/app/actions/approvals"
+import {
+  yieldCancellationPenalty,
+  YIELD_EARLY_CANCELLATION_PENALTY_RATE,
+} from "@/lib/ppp-yield"
 import { useInstrumentRequests, isMccHeldInstrument } from "@/lib/instrument-requests-store"
 import { computeBenefitSplit } from "@/lib/benefit-split"
 import { convertCurrency } from "@/lib/fx"
@@ -213,6 +219,11 @@ const applicationStatusConfig = {
     icon: XCircle,
     color: "bg-red-500/10 text-red-500 border-red-500/20",
   },
+  cancelled: {
+    label: "Cancelled",
+    icon: XCircle,
+    color: "bg-muted text-muted-foreground border-border",
+  },
 }
 
 export default function PPPPage() {
@@ -227,8 +238,11 @@ export default function PPPPage() {
   const [fundingInstrumentId, setFundingInstrumentId] = useState("")
   const [formError, setFormError] = useState<string | null>(null)
   const [detailInvestment, setDetailInvestment] = useState<PPPRequest | null>(null)
+  // Early-cancellation of an ongoing (approved) program: confirm target + busy.
+  const [cancelTarget, setCancelTarget] = useState<PPPRequest | null>(null)
+  const [cancelling, setCancelling] = useState(false)
   const log = useActivityLog()
-  const { requests, addRequest, hydrated } = usePPPRequests()
+  const { requests, addRequest, refresh, hydrated } = usePPPRequests()
   const { instruments } = useInstrumentRequests()
 
   // Active, MCC HOLDING SA-owned instruments the client can nominate as the
@@ -351,6 +365,41 @@ export default function PPPPage() {
     setSelectedProgram(program)
     resetForm()
     setIsApplyOpen(true)
+  }
+
+  // Cancel an ongoing (approved) program instantly: earned ROI is kept, future
+  // ROI stops, the funding instrument is freed, and the early-cancellation
+  // penalty is debited from the Master Account (server-authoritative).
+  const confirmCancel = async () => {
+    const target = cancelTarget
+    if (!target?.approvalId || cancelling) return
+    setCancelling(true)
+    try {
+      const res = await cancelMyApprovedYield(target.approvalId)
+      if (!res.ok) {
+        toast.error("Could not cancel program", { description: res.error })
+        return
+      }
+      const penaltyLabel =
+        res.penalty && res.penalty > 0
+          ? `${res.currency} ${res.penalty.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} penalty charged. `
+          : ""
+      toast.success("Program cancelled", {
+        description: `${penaltyLabel}ROI already earned was kept, future ROI stopped, and the funding instrument is now free.`,
+      })
+      log({
+        action: `Cancelled yield / PPP program "${target.programName}"`,
+        category: "Yield / PPP",
+        details: {
+          summary: `Client cancelled the ongoing program ${target.programName} (${target.id}) before term end. ${penaltyLabel}Earned ROI kept; future ROI stopped; funding instrument released.`,
+          referenceId: target.id,
+        },
+      })
+      setCancelTarget(null)
+      void refresh()
+    } finally {
+      setCancelling(false)
+    }
   }
 
   const submitApplication = () => {
@@ -983,6 +1032,15 @@ export default function PPPPage() {
                           <ExternalLink className="mr-2 h-4 w-4" />
                           View Details
                         </Button>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="text-destructive hover:text-destructive"
+                          onClick={() => setCancelTarget(investment)}
+                        >
+                          <XCircle className="mr-2 h-4 w-4" />
+                          Cancel program
+                        </Button>
                       </div>
                     </div>
                   </CardContent>
@@ -1268,6 +1326,71 @@ export default function PPPPage() {
               </DialogFooter>
             </>
           )}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={cancelTarget !== null} onOpenChange={(open) => !open && !cancelling && setCancelTarget(null)}>
+        <DialogContent className="sm:max-w-md">
+          {cancelTarget &&
+            (() => {
+              const penalty = yieldCancellationPenalty(cancelTarget.amount)
+              const penaltyLabel = `${cancelTarget.currency} ${penalty.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+              return (
+                <>
+                  <DialogHeader>
+                    <DialogTitle className="flex items-center gap-2">
+                      <XCircle className="h-5 w-5 text-destructive" />
+                      Cancel ongoing program
+                    </DialogTitle>
+                    <DialogDescription>
+                      Cancel{" "}
+                      <span className="font-medium text-foreground">{cancelTarget.programName}</span> (
+                      {cancelTarget.id}) before its term ends. This is settled instantly and cannot be undone.
+                    </DialogDescription>
+                  </DialogHeader>
+
+                  <div className="space-y-3 text-sm">
+                    <div className="flex items-center justify-between rounded-lg border border-destructive/30 bg-destructive/10 p-3">
+                      <span className="text-foreground">
+                        Early-cancellation penalty ({(YIELD_EARLY_CANCELLATION_PENALTY_RATE * 100).toFixed(0)}% of{" "}
+                        {formatMoney(cancelTarget.amount, cancelTarget.currency)})
+                      </span>
+                      <span className="font-semibold text-destructive">{penaltyLabel}</span>
+                    </div>
+                    <ul className="list-disc space-y-1 pl-5 text-muted-foreground">
+                      <li>The penalty is debited from your Master Account.</li>
+                      <li>ROI you have already earned is kept — only future ROI stops.</li>
+                      {cancelTarget.fundingInstrumentLabel && (
+                        <li>
+                          The funding instrument{" "}
+                          <span className="text-foreground">{cancelTarget.fundingInstrumentLabel}</span> is freed and
+                          can be returned to the marketplace.
+                        </li>
+                      )}
+                    </ul>
+                  </div>
+
+                  <DialogFooter className="flex-col gap-2 sm:flex-row">
+                    <Button variant="outline" onClick={() => setCancelTarget(null)} disabled={cancelling}>
+                      Keep program
+                    </Button>
+                    <Button variant="destructive" onClick={confirmCancel} disabled={cancelling}>
+                      {cancelling ? (
+                        <>
+                          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                          Cancelling…
+                        </>
+                      ) : (
+                        <>
+                          <XCircle className="mr-2 h-4 w-4" />
+                          Cancel &amp; pay {penaltyLabel}
+                        </>
+                      )}
+                    </Button>
+                  </DialogFooter>
+                </>
+              )
+            })()}
         </DialogContent>
       </Dialog>
     </div>
