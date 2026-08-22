@@ -8,6 +8,7 @@ import {
   insertSubAccount,
   listSubAccountsForUser,
   getSubAccountById,
+  updateSubAccountBeneficiary,
 } from "@/lib/sub-account-db"
 import { readLedgerEntries, upsertLedgerEntry, assertOwnerSolvent, deleteLedgerEntry } from "@/lib/ledger-db"
 import { MAIN_ACCOUNT_ID, type SubAccount } from "@/lib/sub-account-types"
@@ -61,6 +62,8 @@ export async function requestSubAccount(input: {
   label: string
   currency: string
   purpose?: string
+  beneficiaryName?: string
+  beneficiaryDetails?: string
 }): Promise<SubAccountResult<SubAccount>> {
   const session = await resolveCurrentSession()
   if (!session) return { ok: false, error: "Your session has expired. Please sign in again." }
@@ -78,6 +81,8 @@ export async function requestSubAccount(input: {
   const label = (input.label || "").trim()
   const currency = (input.currency || "EUR").trim().toUpperCase()
   const purpose = (input.purpose || "").trim()
+  const beneficiaryName = (input.beneficiaryName || "").trim()
+  const beneficiaryDetails = (input.beneficiaryDetails || "").trim()
   if (label.length < 2) return { ok: false, error: "Enter a name for the sub-account (at least 2 characters)." }
   if (!/^[A-Z]{3}$/.test(currency)) return { ok: false, error: "Choose a valid currency." }
 
@@ -90,7 +95,15 @@ export async function requestSubAccount(input: {
     }
 
     const id = `SUB-${Date.now().toString(36).toUpperCase()}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`
-    const created = await insertSubAccount({ id, userId: ownerId, label, currency, purpose: purpose || undefined })
+    const created = await insertSubAccount({
+      id,
+      userId: ownerId,
+      label,
+      currency,
+      purpose: purpose || undefined,
+      beneficiaryName: beneficiaryName || undefined,
+      beneficiaryDetails: beneficiaryDetails || undefined,
+    })
 
     await logActivity({
       action: `Requested a new ${currency} sub-account "${label}"`,
@@ -106,6 +119,46 @@ export async function requestSubAccount(input: {
   } catch (err) {
     console.log("[v0] requestSubAccount failed:", (err as Error).message)
     return { ok: false, error: "Could not open the sub-account. Please try again." }
+  }
+}
+
+/** Update a sub-account's own beneficiary. Owner-scoped; PRO / Avant-Garde. */
+export async function updateMySubAccountBeneficiary(input: {
+  id: string
+  beneficiaryName?: string
+  beneficiaryDetails?: string
+}): Promise<SubAccountResult<SubAccount>> {
+  const session = await resolveCurrentSession()
+  if (!session) return { ok: false, error: "Your session has expired. Please sign in again." }
+
+  const membership = await getMyMembership()
+  if (capabilitiesForAccount(session.profile.accountBadge, membership).isVisitor) {
+    return { ok: false, error: "Sub-accounts are available on PRO and Avant-Garde plans." }
+  }
+
+  const beneficiaryName = (input.beneficiaryName || "").trim()
+  const beneficiaryDetails = (input.beneficiaryDetails || "").trim()
+  const ownerId = session.dataOwnerId
+  try {
+    const existing = await getSubAccountById(input.id)
+    if (!existing || existing.userId !== ownerId) return { ok: false, error: "Sub-account not found." }
+    const updated = await updateSubAccountBeneficiary(input.id, ownerId, {
+      beneficiaryName: beneficiaryName || undefined,
+      beneficiaryDetails: beneficiaryDetails || undefined,
+    })
+    if (!updated) return { ok: false, error: "Could not update the beneficiary." }
+    await logActivity({
+      action: `Updated the beneficiary of sub-account "${existing.label}"`,
+      category: "Accounts",
+      details: {
+        summary: `Beneficiary for sub-account ${existing.id} set to "${beneficiaryName || "(none)"}".`,
+        referenceId: existing.id,
+      },
+    })
+    return { ok: true, data: updated }
+  } catch (err) {
+    console.log("[v0] updateMySubAccountBeneficiary failed:", (err as Error).message)
+    return { ok: false, error: "Could not update the beneficiary. Please try again." }
   }
 }
 

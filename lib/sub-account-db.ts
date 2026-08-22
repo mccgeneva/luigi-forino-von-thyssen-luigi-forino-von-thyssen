@@ -31,6 +31,9 @@ async function ensureTable(): Promise<void> {
   )
   await query(`CREATE INDEX IF NOT EXISTS sub_accounts_user_idx ON sub_accounts (user_id, created_at DESC)`)
   await query(`CREATE INDEX IF NOT EXISTS sub_accounts_status_idx ON sub_accounts (status, created_at DESC)`)
+  // Additive migrations for the sub-account's own beneficiary (idempotent).
+  await query(`ALTER TABLE sub_accounts ADD COLUMN IF NOT EXISTS beneficiary_name text`)
+  await query(`ALTER TABLE sub_accounts ADD COLUMN IF NOT EXISTS beneficiary_details text`)
   ensured = true
 }
 
@@ -41,6 +44,8 @@ function rowToSubAccount(r: Record<string, unknown>): SubAccount {
     label: (r.label as string) ?? "",
     currency: (r.currency as string) ?? "EUR",
     purpose: (r.purpose as string) ?? undefined,
+    beneficiaryName: (r.beneficiary_name as string) ?? undefined,
+    beneficiaryDetails: (r.beneficiary_details as string) ?? undefined,
     status: ((r.status as string) ?? "pending") as SubAccountStatus,
     iban: (r.iban as string) ?? undefined,
     bic: (r.bic as string) ?? undefined,
@@ -57,14 +62,41 @@ export async function insertSubAccount(input: {
   label: string
   currency: string
   purpose?: string
+  beneficiaryName?: string
+  beneficiaryDetails?: string
 }): Promise<SubAccount> {
   await ensureTable()
   const { rows } = await query(
-    `INSERT INTO sub_accounts (id, user_id, label, currency, purpose, status)
-     VALUES ($1,$2,$3,$4,$5,'pending') RETURNING *`,
-    [input.id, input.userId, input.label, input.currency, input.purpose ?? null],
+    `INSERT INTO sub_accounts (id, user_id, label, currency, purpose, beneficiary_name, beneficiary_details, status)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,'pending') RETURNING *`,
+    [
+      input.id,
+      input.userId,
+      input.label,
+      input.currency,
+      input.purpose ?? null,
+      input.beneficiaryName ?? null,
+      input.beneficiaryDetails ?? null,
+    ],
   )
   return rowToSubAccount(rows[0])
+}
+
+/** Owner-scoped update of a sub-account's own beneficiary (managed by the client). */
+export async function updateSubAccountBeneficiary(
+  id: string,
+  userId: string,
+  input: { beneficiaryName?: string; beneficiaryDetails?: string },
+): Promise<SubAccount | null> {
+  await ensureTable()
+  const { rows } = await query(
+    `UPDATE sub_accounts
+        SET beneficiary_name = $3, beneficiary_details = $4
+      WHERE id = $1 AND user_id = $2
+      RETURNING *`,
+    [id, userId, input.beneficiaryName ?? null, input.beneficiaryDetails ?? null],
+  )
+  return rows[0] ? rowToSubAccount(rows[0]) : null
 }
 
 /** All sub-accounts owned by a user (most recent first). */

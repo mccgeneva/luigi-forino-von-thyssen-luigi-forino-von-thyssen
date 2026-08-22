@@ -29,6 +29,12 @@ export interface SubAccount {
   currency: string
   /** Why the client opened it (free text, optional). */
   purpose?: string
+  /** The sub-account's OWN beneficiary — the party this compartment is held for
+   *  / pays out to. Distinct from the user's main-account holder, so the
+   *  sub-account is managed as a separate account. Set by the client, editable. */
+  beneficiaryName?: string
+  /** Optional free-text beneficiary details (address, bank, reference…). */
+  beneficiaryDetails?: string
   status: SubAccountStatus
   /** Assigned by the administrator on activation. */
   iban?: string
