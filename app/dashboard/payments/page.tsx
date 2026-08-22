@@ -69,6 +69,8 @@ import {
   type PaymentStage,
 } from "@/lib/payment-status"
 import { requestPaymentRecall } from "@/app/actions/approvals"
+import { listMySubAccounts } from "@/app/actions/sub-accounts"
+import type { SubAccount } from "@/lib/sub-account-types"
 import { exportToCsv } from "@/lib/export-utils"
 import { generateTablePdf, tablePdfFilename } from "@/lib/table-pdf"
 import { useHolderIdentity } from "@/lib/holder-identity"
@@ -165,13 +167,38 @@ export default function PaymentsPage() {
   const [payReference, setPayReference] = useState("")
   const [payNotes, setPayNotes] = useState("")
   const [selectedPayeeId, setSelectedPayeeId] = useState("manual")
+  // Which compartment the payment is remitted FROM: "main" (default) or a
+  // sub-account id. Drives the "Available balance" shown and the compartment the
+  // debit posts against on approval.
+  const [payFrom, setPayFrom] = useState("main")
   const [formError, setFormError] = useState<string | null>(null)
   const { beneficiaries } = useBeneficiaries()
   const logActivity = useActivityLog()
   const { show } = usePdfViewer()
   const { holderName, holderCompany, holderAddress, holderRepresentative } = useHolderIdentity()
-  const { balanceFor, entries } = useLedger()
+  const { balanceFor, subAccountBalanceFor, entries } = useLedger()
   const { requests, addRequest } = usePaymentRequests()
+
+  // The signed-in user's ACTIVE sub-accounts (compartments). Loaded once so the
+  // "Pay from" selector can offer Main + each usable sub-account and reflect the
+  // chosen compartment's isolated balance.
+  const [subAccounts, setSubAccounts] = useState<SubAccount[]>([])
+  useEffect(() => {
+    let cancelled = false
+    listMySubAccounts()
+      .then((list) => {
+        if (!cancelled) setSubAccounts(list.filter((s) => s.status === "active"))
+      })
+      .catch(() => {
+        /* selector simply falls back to Main only */
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  // The sub-account the payment is being remitted from (undefined ⇒ Main).
+  const activeSubAccount = payFrom === "main" ? undefined : subAccounts.find((s) => s.id === payFrom)
 
   // The signed-in user's EFFECTIVE account limits (per-user override or the
   // platform default). Read via the non-proxied /api/account-limits route so a
@@ -197,10 +224,14 @@ export default function PaymentsPage() {
   // Live available balance from recorded incoming payments.
   const masterBalance = balanceFor(MASTER_ACCOUNT_CURRENCY)
 
-  // Balance in the currency the user selected for THIS payment. The transfer is
-  // debited in that currency, so the check (and the displayed "Available
-  // balance") must be against the same currency's balance — not a fixed EUR one.
-  const selectedCurrencyBalance = balanceFor(payCurrency)
+  // Balance available for THIS payment, in the selected currency AND from the
+  // selected compartment. The transfer is debited from that compartment in that
+  // currency, so the check (and the displayed "Available balance") must be
+  // against the same compartment's same-currency balance — the Main account
+  // when "Pay from" is Main, or the chosen sub-account's isolated balance.
+  const selectedCurrencyBalance = activeSubAccount
+    ? subAccountBalanceFor(activeSubAccount.id, payCurrency)
+    : balanceFor(payCurrency)
 
   // Live affordability check for the transfer form: recomputed on every keystroke
   // so the customer is told IMMEDIATELY (at the input) whether the selected
@@ -463,7 +494,19 @@ export default function PaymentsPage() {
     setPayReference("")
     setPayNotes("")
     setSelectedPayeeId("manual")
+    setPayFrom("main")
     setFormError(null)
+  }
+
+  // Switch the source compartment. A sub-account operates in a single currency,
+  // so selecting one locks the payment currency to that compartment's currency
+  // (the balance shown, the affordability check, and the debit all use it).
+  const handleSelectPayFrom = (value: string) => {
+    setPayFrom(value)
+    setFormError(null)
+    if (value === "main") return
+    const sub = subAccounts.find((s) => s.id === value)
+    if (sub) setPayCurrency(sub.currency)
   }
 
   const handleSelectPayee = (value: string) => {
@@ -514,20 +557,22 @@ export default function PaymentsPage() {
     const feeValue = Math.round(amountValue * PLATFORM_FEE_RATE * 100) / 100
     const totalDebit = amountValue + feeValue
 
-    // Soft pre-check: warn the customer if the SELECTED currency's balance
-    // cannot cover amount + fee. The transfer is debited in payCurrency, so we
-    // check against that currency's balance (like-for-like). Funds are NOT moved
-    // here — they are only debited once an Administrator approves the request.
-    const availableForPayment = balanceFor(payCurrency)
+    // Soft pre-check: warn the customer if the SELECTED compartment's balance in
+    // the SELECTED currency cannot cover amount + fee. The transfer is debited
+    // from that compartment in payCurrency, so we check against the same
+    // compartment/currency balance (like-for-like). Funds are NOT moved here —
+    // they are only debited once an Administrator approves the request.
+    const availableForPayment = selectedCurrencyBalance
+    const sourceLabel = activeSubAccount ? activeSubAccount.label : "Main account"
     if (totalDebit > availableForPayment) {
       setFormError(
-        `Insufficient funds for this request. It requires ${formatCurrency(
+        `Insufficient funds in ${sourceLabel}. This request requires ${formatCurrency(
           totalDebit,
           payCurrency,
         )} (${formatCurrency(amountValue, payCurrency)} + ${formatCurrency(
           feeValue,
           payCurrency,
-        )} platform fee). Available ${payCurrency} balance: ${formatCurrency(
+        )} platform fee). Available ${payCurrency} balance in ${sourceLabel}: ${formatCurrency(
           availableForPayment,
           payCurrency,
         )}.`,
@@ -599,6 +644,8 @@ export default function PaymentsPage() {
       fee: feeValue,
       total: totalDebit,
       payeeSource,
+      subAccountId: activeSubAccount?.id,
+      subAccountLabel: activeSubAccount?.label,
     })
 
     logActivity({
@@ -619,6 +666,7 @@ export default function PaymentsPage() {
         paymentReference: reference,
         notes: payNotes.trim() || "(none)",
         payeeSource,
+        remittedFrom: activeSubAccount ? `Sub-account: ${activeSubAccount.label}` : "Main account",
         status: "Pending Administrator Approval",
       },
     })
@@ -795,13 +843,39 @@ export default function PaymentsPage() {
               <DialogHeader>
                 <DialogTitle>Request New Payment</DialogTitle>
                 <DialogDescription>
-                  Submit an outgoing SWIFT transfer for Administrator approval · Available {payCurrency} balance:{" "}
+                  Submit an outgoing SWIFT transfer for Administrator approval · Available {payCurrency} balance in{" "}
+                  {activeSubAccount ? activeSubAccount.label : "Main account"}:{" "}
                   <span className={liveTransfer.insufficient ? "font-medium text-destructive" : "font-medium text-foreground"}>
                     {formatCurrency(selectedCurrencyBalance, payCurrency)}
                   </span>
                 </DialogDescription>
               </DialogHeader>
               <div className="grid gap-4 py-4">
+                {subAccounts.length > 0 && (
+                  <div className="grid gap-2">
+                    <Label htmlFor="pay-from">Pay from</Label>
+                    <Select value={payFrom} onValueChange={handleSelectPayFrom}>
+                      <SelectTrigger id="pay-from">
+                        <SelectValue placeholder="Main account" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="main">
+                          Main account · {formatCurrency(balanceFor(payCurrency), payCurrency)}
+                        </SelectItem>
+                        {subAccounts.map((s) => (
+                          <SelectItem key={s.id} value={s.id}>
+                            {s.label} · {formatCurrency(subAccountBalanceFor(s.id, s.currency), s.currency)}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <p className="text-xs text-muted-foreground">
+                      {activeSubAccount
+                        ? `Funds are debited from the "${activeSubAccount.label}" sub-account (${activeSubAccount.currency}).`
+                        : "Funds are debited from your Main account."}
+                    </p>
+                  </div>
+                )}
                 <div className="grid gap-2">
                   <Label htmlFor="payee">Saved Payee</Label>
                   <Select value={selectedPayeeId} onValueChange={handleSelectPayee}>
@@ -856,7 +930,7 @@ export default function PaymentsPage() {
                   </div>
                   <div className="grid gap-2">
                     <Label htmlFor="currency">Currency</Label>
-                    <Select value={payCurrency} onValueChange={setPayCurrency}>
+                    <Select value={payCurrency} onValueChange={setPayCurrency} disabled={!!activeSubAccount}>
                       <SelectTrigger>
                         <SelectValue placeholder="EUR" />
                       </SelectTrigger>
@@ -867,6 +941,11 @@ export default function PaymentsPage() {
                         <SelectItem value="CHF">CHF</SelectItem>
                       </SelectContent>
                     </Select>
+                    {activeSubAccount && (
+                      <p className="text-xs text-muted-foreground">
+                        Locked to the sub-account&apos;s currency ({activeSubAccount.currency}).
+                      </p>
+                    )}
                   </div>
                 </div>
                 <div className="grid grid-cols-2 gap-4">
@@ -937,7 +1016,9 @@ export default function PaymentsPage() {
                         </span>
                       </div>
                       <div className="flex items-center justify-between mt-1 text-xs">
-                        <span className="text-muted-foreground">Available {payCurrency} balance</span>
+                        <span className="text-muted-foreground">
+                          Available {payCurrency} in {activeSubAccount ? activeSubAccount.label : "Main account"}
+                        </span>
                         <span className={liveTransfer.insufficient ? "text-destructive" : "text-muted-foreground"}>
                           {formatCurrency(selectedCurrencyBalance, payCurrency)}
                         </span>
