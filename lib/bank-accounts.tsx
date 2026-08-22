@@ -186,6 +186,29 @@ export function formatCurrency(amount: number, currency: string): string {
   return `${symbol}${amount.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 }
 
+/**
+ * Compact currency for tight cards/tiles where large figures (millions and up)
+ * would otherwise overflow. Amounts below 1M render in full (e.g. €100,000.00);
+ * 1M+ are abbreviated on a single line (€100M, €1.5B, €2.3T). Always pair with a
+ * `title` showing the exact `formatCurrency` value so the full number stays
+ * accessible.
+ */
+export function formatCompactCurrency(amount: number, currency: string): string {
+  const symbol = currencySymbols[currency] || currency
+  const abs = Math.abs(amount)
+  if (abs < 1_000_000) return formatCurrency(amount, currency)
+  const units: Array<{ value: number; suffix: string }> = [
+    { value: 1_000_000_000_000, suffix: "T" },
+    { value: 1_000_000_000, suffix: "B" },
+    { value: 1_000_000, suffix: "M" },
+  ]
+  const unit = units.find((u) => abs >= u.value)!
+  const scaled = amount / unit.value
+  // Up to one decimal, but drop a trailing ".0" (100.0M -> 100M).
+  const text = scaled.toLocaleString("en-US", { maximumFractionDigits: 1 })
+  return `${symbol}${text}${unit.suffix}`
+}
+
 export function getRatingColor(rating: string): string {
   if (rating.startsWith("AAA")) return "bg-emerald-500/20 text-emerald-400 border-emerald-500/30"
   if (rating.startsWith("AA")) return "bg-green-500/20 text-green-400 border-green-500/30"
