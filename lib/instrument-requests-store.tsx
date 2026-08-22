@@ -175,6 +175,8 @@ interface InstrumentRequestsContextValue {
     approvalId: string,
     recipientEmail: string,
   ) => Promise<{ ok: boolean; error?: string; recipientName?: string }>
+  /** Re-fetch the authoritative portfolio from the server (e.g. after an upgrade). */
+  refresh: () => Promise<Instrument[] | null>
   hydrated: boolean
 }
 
@@ -352,6 +354,7 @@ export function InstrumentRequestsProvider({ children }: { children: React.React
         deleteInstrument,
         returnInstrument,
         transferInstrument,
+        refresh,
         hydrated,
       }}
     >

@@ -30,6 +30,7 @@ import {
   Radio,
   Trash2,
   Undo2,
+  Sparkles,
 } from "lucide-react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -83,6 +84,8 @@ import {
   isMccOwnedAction,
 } from "@/lib/instrument-marketplace"
 import { resolveTransferRecipient } from "@/app/actions/transfers"
+import { acceptInstrumentUpgrade, declineInstrumentUpgrade } from "@/app/actions/approvals"
+import { INSTRUMENT_UPGRADE_FEE_RATE } from "@/lib/instrument-upgrade"
 import type { TransferDirectoryEntry } from "@/lib/users"
 import { useLeverageRequests } from "@/lib/leverage-requests-store"
 import { usePPPRequests } from "@/lib/ppp-requests-store"
@@ -168,7 +171,8 @@ export default function InstrumentsPage() {
   // Read-only portfolio: clients can no longer create, cancel, or delete
   // instruments. Bank instruments are issued and managed exclusively by the
   // administrator; the client view only displays them.
-  const { instruments, transferInstrument, addInstrument, deleteInstrument, returnInstrument } = useInstrumentRequests()
+  const { instruments, transferInstrument, addInstrument, deleteInstrument, returnInstrument, refresh: refreshInstruments } =
+    useInstrumentRequests()
   const { totalIn, balanceFor, addDebit, entries: ledgerEntries, refresh: refreshLedger, hydrated: ledgerHydrated } = useLedger()
   const { addRequest: addMonetizationRequest, requests: monetizationRequests, hydrated: monetizationHydrated } = useMonetizationRequests()
   const { requests: leverageRequests } = useLeverageRequests()
@@ -178,6 +182,9 @@ export default function InstrumentsPage() {
   const [deleteTarget, setDeleteTarget] = useState<Instrument | null>(null)
   // Return-to-marketplace target (assigned/reserved instrument going back).
   const [returnTarget, setReturnTarget] = useState<Instrument | null>(null)
+  // Administrator transformation-upgrade offer the customer can accept/decline.
+  const [upgradeTarget, setUpgradeTarget] = useState<Instrument | null>(null)
+  const [upgradeBusy, setUpgradeBusy] = useState(false)
 
   // Instrument ids that are "in use" by the account and therefore may NOT be
   // deleted: pledged to a leverage line (anything but a rejected/closed line) or
@@ -207,6 +214,9 @@ export default function InstrumentsPage() {
   // to revoke first. Empty = free to return.
   const usageReasons = (inst: Instrument): string[] => {
     const reasons: string[] = []
+    if (inst.blocked) {
+      reasons.push("an Administrator transformation upgrade — respond to the offer first")
+    }
     if (monetizationRequests.some((r) => r.instrumentId === inst.id && r.status !== "rejected" && r.status !== "reversed")) {
       reasons.push("a monetization — reverse it first")
     }
@@ -223,7 +233,7 @@ export default function InstrumentsPage() {
   // not already been transferred away (a transferred card is a historical echo
   // of an instrument the account no longer controls).
   const canDeleteInstrument = (inst: Instrument) =>
-    inst.status !== "transferred" && !inUseInstrumentIds.has(inst.id)
+    inst.status !== "transferred" && !inst.blocked && !inUseInstrumentIds.has(inst.id)
 
   // Instrument ids that already have a LIVE monetization request (pending review
   // or approved). Such an instrument cannot be monetized again — its value is
@@ -417,10 +427,82 @@ export default function InstrumentsPage() {
     })
   }
 
+  // Accept the Administrator's transformation offer: the fresh instrument is
+  // issued into the portfolio immediately and the old blocked one is retired.
+  const acceptUpgrade = async () => {
+    const target = upgradeTarget
+    if (!target?.approvalId || upgradeBusy) return
+    setUpgradeBusy(true)
+    try {
+      const res = await acceptInstrumentUpgrade(target.approvalId)
+      if (!res.ok) {
+        toast.error("Could not accept upgrade", { description: res.error })
+        return
+      }
+      toast.success("Upgrade accepted", {
+        description: `Your new ${target.upgrade?.newTypeFull} from ${target.upgrade?.newIssuer} is now active in your portfolio.`,
+      })
+      logActivity({
+        action: `Accepted transformation upgrade for ${target.id}`,
+        category: "Bank Instruments",
+        details: {
+          summary: `Accepted the deal to transform ${target.id} into a ${target.upgrade?.newCurrency} ${target.upgrade?.newFaceValue.toLocaleString("en-US")} ${target.upgrade?.newTypeFull} from ${target.upgrade?.newIssuer}. Fresh instrument issued; old one retired.`,
+          referenceId: target.id,
+        },
+      })
+      setUpgradeTarget(null)
+      void refreshInstruments()
+    } finally {
+      setUpgradeBusy(false)
+    }
+  }
+
+  // Decline the offer: the old instrument is unblocked and the 3% fee refunded.
+  const declineUpgrade = async () => {
+    const target = upgradeTarget
+    if (!target?.approvalId || upgradeBusy) return
+    setUpgradeBusy(true)
+    try {
+      const res = await declineInstrumentUpgrade(target.approvalId)
+      if (!res.ok) {
+        toast.error("Could not decline upgrade", { description: res.error })
+        return
+      }
+      const refundLabel =
+        res.refunded && res.refunded > 0
+          ? `The ${res.currency} ${res.refunded.toLocaleString("en-US")} fee was refunded. `
+          : ""
+      toast.success("Upgrade declined", {
+        description: `${refundLabel}Your instrument is unblocked and available again.`,
+      })
+      logActivity({
+        action: `Declined transformation upgrade for ${target.id}`,
+        category: "Bank Instruments",
+        details: {
+          summary: `Declined the transformation offer for ${target.id}. ${refundLabel}Instrument unblocked.`,
+          referenceId: target.id,
+        },
+      })
+      setUpgradeTarget(null)
+      void refreshInstruments()
+    } finally {
+      setUpgradeBusy(false)
+    }
+  }
+
   const requestInstrumentAction = (
     instrument: Instrument,
     action: "Assign/Transfer" | "Monetize",
   ) => {
+    // Guard: an instrument locked in an Administrator transformation/upgrade is
+    // blocked on behalf of the customer and cannot be used for anything until the
+    // upgrade completes (new instrument issued) or is declined.
+    if (instrument.blocked) {
+      toast.error("Instrument blocked", {
+        description: `${instrument.id} is locked while a transformation upgrade is in progress. Respond to the upgrade offer first.`,
+      })
+      return
+    }
     if (action === "Monetize") {
       // Guard: an instrument with a live (pending or approved) monetization is
       // already pledged and cannot be monetized again until that request is
@@ -1278,6 +1360,24 @@ export default function InstrumentsPage() {
                                 Owned by {MCC_HOLDING_OWNER} · you keep 25%
                               </span>
                             ) : null}
+                            {instrument.upgrade?.status === "proposed" ? (
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation()
+                                  setUpgradeTarget(instrument)
+                                }}
+                                className="mt-1.5 flex w-fit items-center gap-1 rounded-md border border-amber-500/40 bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-600 transition-colors hover:bg-amber-500/20 dark:text-amber-400"
+                              >
+                                <Sparkles className="h-2.5 w-2.5" />
+                                Upgrade offer — review
+                              </button>
+                            ) : instrument.blocked ? (
+                              <span className="mt-1.5 inline-flex items-center gap-1 rounded-md border border-muted-foreground/30 bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+                                <Ban className="h-2.5 w-2.5" />
+                                Blocked — upgrade in progress
+                              </span>
+                            ) : null}
                           </div>
                         </div>
                         <DropdownMenu>
@@ -1291,6 +1391,18 @@ export default function InstrumentsPage() {
                               <ExternalLink className="mr-2 h-4 w-4" />
                               View Details
                             </DropdownMenuItem>
+                            {instrument.upgrade?.status === "proposed" && (
+                              <>
+                                <DropdownMenuItem
+                                  onClick={() => setUpgradeTarget(instrument)}
+                                  className="text-amber-600 focus:text-amber-600 dark:text-amber-400"
+                                >
+                                  <Sparkles className="mr-2 h-4 w-4" />
+                                  Review upgrade offer
+                                </DropdownMenuItem>
+                                <DropdownMenuSeparator />
+                              </>
+                            )}
                             {instrument.status === "active" &&
                               instrument.assignable &&
                               (isMonetized(instrument) ? (
@@ -1363,6 +1475,23 @@ export default function InstrumentsPage() {
                             )}
                           </span>
                         </div>
+
+                        {instrument.upgrade?.status === "proposed" && (
+                          <button
+                            type="button"
+                            onClick={() => setUpgradeTarget(instrument)}
+                            className="w-full rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-left transition-colors hover:bg-amber-500/20"
+                          >
+                            <div className="flex items-center gap-1.5 text-xs font-semibold text-amber-600">
+                              <Sparkles className="h-3.5 w-3.5" />
+                              Transformation offer — action required
+                            </div>
+                            <p className="mt-1 text-xs text-muted-foreground">
+                              Blocked while an upgrade to a {instrument.upgrade.newTypeFull} from{" "}
+                              {instrument.upgrade.newIssuer} is offered. Tap to review.
+                            </p>
+                          </button>
+                        )}
 
                         {leverageByInstrument.has(instrument.id) && (
                           <div className="rounded-lg border border-primary/30 bg-primary/5 p-3">
@@ -2568,6 +2697,82 @@ export default function InstrumentsPage() {
                         Return to marketplace
                       </Button>
                     )}
+                  </DialogFooter>
+                </>
+              )
+            })()}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={upgradeTarget !== null} onOpenChange={(o) => !o && !upgradeBusy && setUpgradeTarget(null)}>
+        <DialogContent className="sm:max-w-lg">
+          {upgradeTarget?.upgrade &&
+            (() => {
+              const u = upgradeTarget.upgrade!
+              const money = (v: number, ccy: string) =>
+                `${ccy} ${v.toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 2 })}`
+              return (
+                <>
+                  <DialogHeader>
+                    <DialogTitle className="flex items-center gap-2">
+                      <Sparkles className="h-5 w-5 text-amber-500" />
+                      Transformation upgrade offer
+                    </DialogTitle>
+                    <DialogDescription>
+                      Your Administrator proposes to transform{" "}
+                      <span className="font-medium text-foreground">
+                        {upgradeTarget.typeFull} ({upgradeTarget.id})
+                      </span>{" "}
+                      into a fresh instrument from a reputable bank partner. Review the deal below.
+                    </DialogDescription>
+                  </DialogHeader>
+
+                  <div className="space-y-3 text-sm">
+                    <div className="grid grid-cols-2 gap-3">
+                      <div className="rounded-lg border bg-muted/40 p-3">
+                        <p className="text-xs text-muted-foreground">Current</p>
+                        <p className="mt-1 font-medium text-foreground">{upgradeTarget.typeFull}</p>
+                        <p className="text-xs text-muted-foreground">{upgradeTarget.issuer}</p>
+                        <p className="mt-1 font-semibold">{money(upgradeTarget.faceValue, upgradeTarget.currency)}</p>
+                      </div>
+                      <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3">
+                        <p className="text-xs text-amber-600">Upgraded</p>
+                        <p className="mt-1 font-medium text-foreground">{u.newTypeFull}</p>
+                        <p className="text-xs text-muted-foreground">
+                          {u.newIssuer}
+                          {u.newIssuerCountry ? ` · ${u.newIssuerCountry}` : ""}
+                        </p>
+                        <p className="mt-1 font-semibold text-amber-600">{money(u.newFaceValue, u.newCurrency)}</p>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center justify-between rounded-lg border p-3">
+                      <span className="text-muted-foreground">
+                        Expertise &amp; upgrade fee ({(INSTRUMENT_UPGRADE_FEE_RATE * 100).toFixed(0)}%, one-time)
+                      </span>
+                      <span className="font-semibold text-foreground">{money(u.fee, u.feeCurrency)}</span>
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      The fee was charged from your Master Account when the upgrade started. Accepting issues the new
+                      instrument into your portfolio immediately. Declining unblocks the current instrument and refunds
+                      the fee.
+                    </p>
+                    {u.note && (
+                      <div className="rounded-lg border border-border bg-muted/40 p-3 text-xs text-muted-foreground">
+                        <span className="font-medium text-foreground">Terms &amp; note: </span>
+                        {u.note}
+                      </div>
+                    )}
+                  </div>
+
+                  <DialogFooter className="flex-col gap-2 sm:flex-row">
+                    <Button variant="outline" onClick={declineUpgrade} disabled={upgradeBusy}>
+                      {upgradeBusy ? "Working…" : "Decline & refund"}
+                    </Button>
+                    <Button onClick={acceptUpgrade} disabled={upgradeBusy} className="bg-amber-600 hover:bg-amber-700">
+                      <Sparkles className="mr-2 h-4 w-4" />
+                      {upgradeBusy ? "Working…" : "Accept & receive new instrument"}
+                    </Button>
                   </DialogFooter>
                 </>
               )

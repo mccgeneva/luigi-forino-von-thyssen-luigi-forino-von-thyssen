@@ -248,7 +248,7 @@ export default function PPPPage() {
   // Active, MCC HOLDING SA-owned instruments the client can nominate as the
   // funding source. Using one triggers the 75% MCC / 25% client benefit split.
   const mccOwnedInstruments = useMemo(
-    () => instruments.filter((i) => i.status === "active" && isMccHeldInstrument(i)),
+    () => instruments.filter((i) => i.status === "active" && !i.blocked && isMccHeldInstrument(i)),
     [instruments],
   )
   const selectedFundingInstrument = useMemo(
