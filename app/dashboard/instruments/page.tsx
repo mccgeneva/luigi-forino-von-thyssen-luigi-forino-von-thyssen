@@ -509,6 +509,9 @@ export default function InstrumentsPage() {
   }
 
   const monetizeAdvanceRate = Number.parseFloat(monetizeForm.advanceRate)
+  // LTV / advance rate is only valid between 1% and 100% inclusive.
+  const monetizeLtvValid =
+    Number.isFinite(monetizeAdvanceRate) && monetizeAdvanceRate >= 1 && monetizeAdvanceRate <= 100
   // Monetize against the leveraged value when the instrument is pledged to an
   // approved leverage line (e.g. €50M BG at 1:5 -> €250M), otherwise face value.
   const monetizeLeverageLine = monetizeTarget
@@ -555,12 +558,7 @@ export default function InstrumentsPage() {
   const transferFeeShortfall = Math.max(0, transferFee - transferFeeAvailable)
   const canCoverTransferFee = transferFee <= 0 || transferFeeAvailable + 0.01 >= transferFee
 
-  const canSubmitMonetization =
-    !!monetizeTarget &&
-    Number.isFinite(monetizeAdvanceRate) &&
-    monetizeAdvanceRate > 0 &&
-    monetizeAdvanceRate <= 100 &&
-    canCoverMonetizeReserve
+  const canSubmitMonetization = !!monetizeTarget && monetizeLtvValid && canCoverMonetizeReserve
   // Progressive (tiered) debit-interest pricing on the gross proceeds — the
   // outstanding debit the client will owe. Shown live so the client sees the
   // blended effective rate and per-tranche breakdown before submitting.
@@ -2080,12 +2078,25 @@ export default function InstrumentsPage() {
                     <Input
                       id="mon-rate"
                       inputMode="decimal"
-                      className="pl-9"
+                      min={1}
+                      max={100}
+                      className={cn("pl-9", monetizeForm.advanceRate && !monetizeLtvValid && "border-destructive")}
                       value={monetizeForm.advanceRate}
-                      onChange={(e) => setMon("advanceRate", e.target.value)}
+                      onChange={(e) => {
+                        // Keep only digits + a single decimal point, then cap at 100.
+                        const cleaned = e.target.value.replace(/[^0-9.]/g, "").replace(/(\..*)\./g, "$1")
+                        const num = Number.parseFloat(cleaned)
+                        setMon("advanceRate", Number.isFinite(num) && num > 100 ? "100" : cleaned)
+                      }}
                       placeholder="e.g. 65"
                     />
                   </div>
+                  {monetizeForm.advanceRate && !monetizeLtvValid ? (
+                    <p className="flex items-start gap-1.5 text-[11px] leading-relaxed text-destructive">
+                      <AlertCircle className="mt-px h-3 w-3 shrink-0" />
+                      <span>The LTV / advance rate must be between 1% and 100%.</span>
+                    </p>
+                  ) : null}
                 </div>
                 <div className="space-y-2">
                   <Label htmlFor="mon-currency">Proceeds Currency *</Label>
