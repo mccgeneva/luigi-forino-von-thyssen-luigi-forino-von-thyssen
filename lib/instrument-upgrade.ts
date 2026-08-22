@@ -3,16 +3,16 @@
 //
 // An Administrator can take a bank instrument a customer holds and apply for a
 // transformation upgrade into a fresh, better instrument issued by a reputable
-// partner bank. While the upgrade is in progress the OLD instrument is BLOCKED
-// (no monetization / leverage / yield / transfer / return) until the new one is
-// delivered into the platform treasury and issued to the customer.
+// partner bank.
 //
-// The expertise + upgrade cost is a one-time 0.08% upfront fee on the OLD
-// instrument's face value, charged to the customer's Master Account when the
-// Administrator starts the upgrade (the customer's balance is checked first).
-// The new instrument's face value is negotiated by the Administrator and
-// proposed to the customer as a deal; on acceptance the fresh instrument is
-// transferred into the customer's portfolio immediately.
+// The deal is NEGOTIATED first: the Administrator proposes a new instrument +
+// face value; the customer can discuss it (chat) and submit a counter-offer;
+// the Administrator can revise the proposal or withdraw it. During negotiation
+// the OLD instrument stays fully usable and NO fee is charged.
+//
+// Only when the customer CONFIRMS the agreed deal is the one-time 0.08%
+// expertise + upgrade fee charged (balance checked first), the OLD instrument
+// retired, and the fresh instrument published into the customer's portfolio.
 //
 // This module is intentionally dependency-free so it can be imported from both
 // client components and server actions / API routes.
@@ -32,26 +32,43 @@ export function instrumentUpgradeFee(faceValue: number): number {
   return Math.round(faceValue * INSTRUMENT_UPGRADE_FEE_RATE * 100) / 100
 }
 
-/** Lifecycle of a proposed instrument upgrade. */
-export type InstrumentUpgradeStatus = "proposed" | "accepted" | "declined"
+/**
+ * Lifecycle of an instrument upgrade.
+ * - `negotiating` — admin proposed a deal; old instrument stays usable, NO fee
+ *   charged. Customer can counter / discuss; admin can revise / withdraw.
+ * - `proposed` — LEGACY: old flow where the fee was charged and the instrument
+ *   blocked at proposal time. Still supported for accept/decline/refund.
+ * - `accepted` — customer confirmed; fee charged, new instrument published,
+ *   old one retired.
+ * - `declined` — offer withdrawn/declined; any charged fee refunded.
+ */
+export type InstrumentUpgradeStatus = "negotiating" | "proposed" | "accepted" | "declined"
 
 /**
  * The upgrade deal stored on the OLD instrument approval's `payload.upgrade`.
- * `status === "proposed"` means the old instrument is blocked and the customer
- * has a pending deal to accept or decline.
  */
 export interface InstrumentUpgrade {
   status: InstrumentUpgradeStatus
   /** ISO timestamp the Administrator started the upgrade. */
   proposedAt: string
-  /** Fee rate applied (e.g. 0.0008 = 0.08%). */
+  /** Fee rate that WILL apply / did apply (e.g. 0.0008 = 0.08%). */
   feeRate: number
-  /** The fee actually charged, in `feeCurrency`. */
+  /** The fee (charged on accept, or already charged for legacy `proposed`). */
   fee: number
-  /** Currency the fee was charged in (the old instrument's currency). */
+  /** Currency the fee is charged in (the old instrument's currency). */
   feeCurrency: string
-  /** Face value of the old instrument the fee was based on. */
+  /** Face value of the old instrument the fee is based on. */
   oldFaceValue: number
+  /** Whether the upfront fee has actually been charged yet. */
+  feeCharged?: boolean
+
+  // --- Customer counter-offer (during negotiation) --------------------------
+  /** Face value the customer proposed back to the administrator, if any. */
+  customerCounterFaceValue?: number
+  /** ISO timestamp of the customer's latest counter-offer. */
+  customerCounterAt?: string
+  /** Optional customer note accompanying the counter-offer. */
+  customerCounterNote?: string
 
   // --- The negotiated NEW instrument proposed to the customer ---------------
   newType: string
@@ -78,4 +95,17 @@ export interface InstrumentUpgrade {
 export function describeUpgradeTarget(u: Pick<InstrumentUpgrade, "newTypeFull" | "newIssuer" | "newFaceValue" | "newCurrency">): string {
   const face = Number.isFinite(u.newFaceValue) ? u.newFaceValue.toLocaleString("en-US") : String(u.newFaceValue)
   return `${u.newCurrency} ${face} ${u.newTypeFull} — ${u.newIssuer}`
+}
+
+/** True when the deal is still open (customer can act on it). */
+export function isUpgradeOpen(u?: InstrumentUpgrade | null): boolean {
+  return !!u && (u.status === "negotiating" || u.status === "proposed")
+}
+
+/**
+ * True when the deal currently BLOCKS the old instrument from any use.
+ * Only the legacy `proposed` (fee-charged) flow blocks; `negotiating` does not.
+ */
+export function upgradeBlocksInstrument(u?: InstrumentUpgrade | null): boolean {
+  return !!u && u.status === "proposed"
 }

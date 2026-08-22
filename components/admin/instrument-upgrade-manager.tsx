@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react"
 import { toast } from "sonner"
-import { ArrowUpCircle, Loader2, RefreshCw, Search, Lock, Sparkles } from "lucide-react"
+import { ArrowUpCircle, Loader2, RefreshCw, Search, Sparkles, MessageSquare, Pencil, Undo2, Handshake } from "lucide-react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -25,6 +25,8 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { BankCombobox } from "@/components/admin/bank-combobox"
+import { Messenger } from "@/components/bankeka/messenger"
+import { adminListConversations, adminGetThread, adminReply, adminDeleteMessage } from "@/app/actions/bankeka"
 import { ADMIN_PASSCODE } from "@/lib/admin-config"
 import { INSTRUMENT_UPGRADE_FEE_LABEL, instrumentUpgradeFee, type InstrumentUpgrade } from "@/lib/instrument-upgrade"
 
@@ -66,14 +68,18 @@ function money(amount: number | undefined, currency: string | undefined): string
   return `${currency ?? ""} ${n.toLocaleString("en-US")}`.trim()
 }
 
+const NEGOTIATION_TERMS =
+  "The customer's instrument stays fully usable while the value is negotiated — nothing is blocked or charged. When the customer confirms the deal, the one-time expertise & upgrade fee is charged to their Master Account, the upgraded instrument is delivered into their portfolio, and the old one is retired."
+
 export function InstrumentUpgradeManager() {
   const [items, setItems] = useState<HeldInstrument[]>([])
   const [loading, setLoading] = useState(false)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [search, setSearch] = useState("")
 
-  // Start-upgrade dialog state
+  // Propose / revise dialog state
   const [target, setTarget] = useState<HeldInstrument | null>(null)
+  const [mode, setMode] = useState<"start" | "revise">("start")
   const [bankKey, setBankKey] = useState("")
   const [newTypeCode, setNewTypeCode] = useState("SBLC")
   const [newFaceValue, setNewFaceValue] = useState("")
@@ -81,6 +87,10 @@ export function InstrumentUpgradeManager() {
   const [terms, setTerms] = useState("")
   const [note, setNote] = useState("")
   const [submitting, setSubmitting] = useState(false)
+
+  // Inline discussion + per-row busy state
+  const [discussFor, setDiscussFor] = useState<string | null>(null)
+  const [busyId, setBusyId] = useState<string | null>(null)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -130,24 +140,36 @@ export function InstrumentUpgradeManager() {
 
   const openStart = useCallback((it: HeldInstrument) => {
     setTarget(it)
+    setMode("start")
     setBankKey("")
     setNewTypeCode(it.instrument.type || "SBLC")
     setNewFaceValue("")
     setNewCurrency(it.instrument.currency || "EUR")
-    setTerms(
-      `The customer's existing instrument is blocked from all use while the transformation is arranged. On acceptance, the upgraded instrument is delivered into the customer's portfolio and the old one is retired. The ${INSTRUMENT_UPGRADE_FEE_LABEL} expertise & upgrade fee is charged upfront and refunded only if the customer declines the deal.`,
-    )
+    setTerms(NEGOTIATION_TERMS)
     setNote("")
+  }, [])
+
+  const openRevise = useCallback((it: HeldInstrument) => {
+    const u = it.upgrade
+    setTarget(it)
+    setMode("revise")
+    setBankKey("")
+    setNewTypeCode(u?.newType || it.instrument.type || "SBLC")
+    // Prefill with the customer's counter-offer if they made one, else the current proposal.
+    setNewFaceValue(String(u?.customerCounterFaceValue ?? u?.newFaceValue ?? ""))
+    setNewCurrency(u?.newCurrency || it.instrument.currency || "EUR")
+    setTerms(u?.terms || NEGOTIATION_TERMS)
+    setNote(u?.note || "")
   }, [])
 
   const oldFace = Number(target?.instrument.faceValue ?? 0)
   const oldCurrency = target?.instrument.currency ?? "USD"
   const fee = instrumentUpgradeFee(oldFace)
 
-  const submitStart = useCallback(async () => {
+  const submitDeal = useCallback(async () => {
     if (!target) return
     const faceNum = Number(newFaceValue.replace(/,/g, ""))
-    if (!bankKey) {
+    if (mode === "start" && !bankKey) {
       toast.error("Select a reputable partner bank for the new instrument.")
       return
     }
@@ -164,10 +186,10 @@ export function InstrumentUpgradeManager() {
         credentials: "include",
         cache: "no-store",
         body: JSON.stringify({
-          op: "start",
+          op: mode,
           pin: ADMIN_PASSCODE,
           approvalId: target.approvalId,
-          newBankKey: bankKey,
+          newBankKey: bankKey || undefined,
           newType: typeDef.code,
           newTypeFull: typeDef.full,
           newFaceValue: faceNum,
@@ -178,12 +200,10 @@ export function InstrumentUpgradeManager() {
       })
       const data = await res.json()
       if (!data.ok) {
-        toast.error(data.error ?? "The upgrade could not be started.")
+        toast.error(data.error ?? "The offer could not be sent.")
         return
       }
-      toast.success(
-        `Upgrade proposed. Old instrument blocked and ${money(data.fee, data.feeCurrency)} expertise fee charged.`,
-      )
+      toast.success(mode === "revise" ? "Revised offer sent to the customer." : "Upgrade proposed — no fee charged until the customer confirms.")
       setTarget(null)
       void load()
     } catch {
@@ -191,7 +211,38 @@ export function InstrumentUpgradeManager() {
     } finally {
       setSubmitting(false)
     }
-  }, [target, bankKey, newFaceValue, newTypeCode, newCurrency, terms, note, load])
+  }, [target, mode, bankKey, newFaceValue, newTypeCode, newCurrency, terms, note, load])
+
+  const withdraw = useCallback(
+    async (it: HeldInstrument) => {
+      setBusyId(it.approvalId)
+      try {
+        const res = await fetch("/api/admin/instrument-upgrade", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          cache: "no-store",
+          body: JSON.stringify({ op: "cancel", pin: ADMIN_PASSCODE, approvalId: it.approvalId }),
+        })
+        const data = await res.json()
+        if (!data.ok) {
+          toast.error(data.error ?? "The offer could not be withdrawn.")
+          return
+        }
+        toast.success(
+          data.refunded > 0
+            ? `Offer withdrawn. ${money(data.refunded, data.currency)} fee refunded to the customer.`
+            : "Offer withdrawn.",
+        )
+        void load()
+      } catch {
+        toast.error("Could not reach the server. Please try again.")
+      } finally {
+        setBusyId(null)
+      }
+    },
+    [load],
+  )
 
   return (
     <Card className="bg-card border-border">
@@ -203,9 +254,9 @@ export function InstrumentUpgradeManager() {
               Instrument Transformation & Upgrade
             </CardTitle>
             <CardDescription className="mt-1">
-              Block a customer&apos;s held instrument and transform it into a fresh, better one from a reputable
-              partner bank. A one-time {INSTRUMENT_UPGRADE_FEE_LABEL} expertise &amp; upgrade fee is
-              charged upfront (balance checked first).
+              Propose transforming a customer&apos;s held instrument into a fresh, better one from a reputable partner
+              bank. Negotiate the face value with the customer (chat + counter-offers) — the one-time{" "}
+              {INSTRUMENT_UPGRADE_FEE_LABEL} expertise &amp; upgrade fee is charged only when they confirm.
             </CardDescription>
           </div>
           <Button variant="outline" size="sm" onClick={() => void load()} disabled={loading} className="shrink-0">
@@ -236,44 +287,121 @@ export function InstrumentUpgradeManager() {
         ) : (
           <ul className="space-y-3">
             {filtered.map((it) => {
-              const inProgress = it.upgrade?.status === "proposed"
+              const u = it.upgrade
+              const negotiating = u?.status === "negotiating"
+              const legacyProposed = u?.status === "proposed"
+              const open = negotiating || legacyProposed
+              const counter = u?.customerCounterFaceValue
               return (
                 <li
                   key={it.approvalId}
-                  className="flex flex-col gap-3 rounded-lg border border-border bg-background p-4 sm:flex-row sm:items-center sm:justify-between"
+                  className="flex flex-col gap-3 rounded-lg border border-border bg-background p-4"
                 >
-                  <div className="min-w-0 space-y-1">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className="font-medium">{it.instrument.typeFull ?? it.instrument.type ?? "Instrument"}</span>
-                      <span className="text-sm text-muted-foreground">{money(it.instrument.faceValue, it.instrument.currency)}</span>
-                      {inProgress ? (
-                        <Badge variant="secondary" className="gap-1">
-                          <Lock className="size-3" /> Blocked — upgrade proposed
-                        </Badge>
-                      ) : it.upgrade?.status === "accepted" ? (
-                        <Badge className="gap-1 bg-primary/15 text-primary">
-                          <Sparkles className="size-3" /> Upgraded
-                        </Badge>
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                    <div className="min-w-0 space-y-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="font-medium">{it.instrument.typeFull ?? it.instrument.type ?? "Instrument"}</span>
+                        <span className="text-sm text-muted-foreground">{money(it.instrument.faceValue, it.instrument.currency)}</span>
+                        {negotiating ? (
+                          <Badge variant="secondary" className="gap-1">
+                            <Handshake className="size-3" /> In negotiation
+                          </Badge>
+                        ) : legacyProposed ? (
+                          <Badge variant="secondary" className="gap-1">
+                            <Handshake className="size-3" /> Awaiting confirmation
+                          </Badge>
+                        ) : u?.status === "accepted" ? (
+                          <Badge className="gap-1 bg-primary/15 text-primary">
+                            <Sparkles className="size-3" /> Upgraded
+                          </Badge>
+                        ) : null}
+                      </div>
+                      <p className="truncate text-sm text-muted-foreground">
+                        {it.holderLabel} · {it.instrument.issuer ?? "—"} · {it.instrument.isin ?? it.instrument.id}
+                      </p>
+                      {open && u ? (
+                        <p className="text-xs text-muted-foreground">
+                          Proposed: {money(u.newFaceValue, u.newCurrency)} {u.newTypeFull} — {u.newIssuer}
+                        </p>
+                      ) : null}
+                      {open && counter ? (
+                        <p className="flex items-center gap-1 rounded-md bg-amber-500/10 px-2 py-1 text-xs font-medium text-amber-600">
+                          <Handshake className="size-3" /> Customer counter-offer: {money(counter, u?.newCurrency)}
+                          {u?.customerCounterNote ? ` — "${u.customerCounterNote}"` : ""}
+                        </p>
                       ) : null}
                     </div>
-                    <p className="truncate text-sm text-muted-foreground">
-                      {it.holderLabel} · {it.instrument.issuer ?? "—"} · {it.instrument.isin ?? it.instrument.id}
-                    </p>
-                    {inProgress && it.upgrade ? (
-                      <p className="text-xs text-muted-foreground">
-                        Proposed: {money(it.upgrade.newFaceValue, it.upgrade.newCurrency)} {it.upgrade.newTypeFull} — {it.upgrade.newIssuer}
-                      </p>
-                    ) : null}
+                    <div className="flex shrink-0 flex-wrap gap-2">
+                      {open ? (
+                        <>
+                          <Button
+                            size="sm"
+                            variant={discussFor === it.approvalId ? "secondary" : "outline"}
+                            onClick={() => setDiscussFor(discussFor === it.approvalId ? null : it.approvalId)}
+                          >
+                            <MessageSquare className="mr-2 size-4" />
+                            {discussFor === it.approvalId ? "Hide chat" : "Discuss"}
+                          </Button>
+                          <Button size="sm" onClick={() => openRevise(it)}>
+                            <Pencil className="mr-2 size-4" /> Revise
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => void withdraw(it)}
+                            disabled={busyId === it.approvalId}
+                          >
+                            {busyId === it.approvalId ? (
+                              <Loader2 className="mr-2 size-4 animate-spin" />
+                            ) : (
+                              <Undo2 className="mr-2 size-4" />
+                            )}
+                            Withdraw
+                          </Button>
+                        </>
+                      ) : u?.status === "accepted" ? (
+                        <span className="text-sm text-muted-foreground">Completed</span>
+                      ) : (
+                        <Button size="sm" onClick={() => openStart(it)}>
+                          <ArrowUpCircle className="mr-2 size-4" /> Propose upgrade
+                        </Button>
+                      )}
+                    </div>
                   </div>
-                  <div className="shrink-0">
-                    {inProgress ? (
-                      <span className="text-sm text-muted-foreground">Awaiting customer acceptance</span>
-                    ) : (
-                      <Button size="sm" onClick={() => openStart(it)}>
-                        <ArrowUpCircle className="mr-2 size-4" /> Start upgrade
-                      </Button>
-                    )}
-                  </div>
+
+                  {discussFor === it.approvalId ? (
+                    <div className="rounded-lg border border-border bg-card p-2">
+                      <Messenger
+                        key={it.approvalId}
+                        scope={`admin-instr-upgrade-${it.approvalId}`}
+                        fetchConversations={() => adminListConversations(ADMIN_PASSCODE)}
+                        fetchThread={(id) => adminGetThread(ADMIN_PASSCODE, id)}
+                        send={(id, body, atts) => adminReply(ADMIN_PASSCODE, id, body, atts)}
+                        deleteMessage={(m) => adminDeleteMessage(ADMIN_PASSCODE, m)}
+                        attachmentsEnabled
+                        uploadPayload={JSON.stringify({ passcode: ADMIN_PASSCODE })}
+                        hideConversationList
+                        initialThreadId={it.userId}
+                        initialParticipant={{
+                          id: it.userId,
+                          name: it.holderLabel,
+                          company: "",
+                          initials: it.holderLabel
+                            .split(/\s+/)
+                            .map((w) => w[0])
+                            .filter(Boolean)
+                            .slice(0, 2)
+                            .join("")
+                            .toUpperCase(),
+                          isAdmin: false,
+                        }}
+                        initialDraft={`Regarding the transformation upgrade of your ${it.instrument.typeFull ?? "instrument"} (${money(
+                          it.instrument.faceValue,
+                          it.instrument.currency,
+                        )}): `}
+                      />
+                    </div>
+                  ) : null}
                 </li>
               )
             })}
@@ -281,25 +409,53 @@ export function InstrumentUpgradeManager() {
         )}
       </CardContent>
 
-      {/* Start-upgrade dialog */}
+      {/* Propose / revise dialog */}
       <Dialog open={!!target} onOpenChange={(o) => !o && setTarget(null)}>
         <DialogContent className="max-h-[92dvh] max-w-lg overflow-y-auto">
           <DialogHeader>
-            <DialogTitle>Transform &amp; upgrade instrument</DialogTitle>
+            <DialogTitle>{mode === "revise" ? "Revise upgrade offer" : "Propose instrument upgrade"}</DialogTitle>
             <DialogDescription>
               {target ? (
                 <>
-                  Blocking {target.holderLabel}&apos;s {target.instrument.typeFull ?? "instrument"} (
-                  {money(target.instrument.faceValue, target.instrument.currency)}) and proposing a fresh instrument.
+                  {mode === "revise" ? "Revising the offer for " : "Proposing a fresh instrument for "}
+                  {target.holderLabel}&apos;s {target.instrument.typeFull ?? "instrument"} (
+                  {money(target.instrument.faceValue, target.instrument.currency)}). No fee is charged until the
+                  customer confirms.
                 </>
               ) : null}
             </DialogDescription>
           </DialogHeader>
 
+          {/* Show the customer's counter-offer to react to, when revising */}
+          {mode === "revise" && target?.upgrade?.customerCounterFaceValue ? (
+            <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-sm">
+              <p className="flex items-center gap-1 font-medium text-amber-600">
+                <Handshake className="size-4" /> Customer counter-offer
+              </p>
+              <p className="mt-1 text-foreground">
+                {money(target.upgrade.customerCounterFaceValue, target.upgrade.newCurrency)}
+                {target.upgrade.customerCounterNote ? ` — "${target.upgrade.customerCounterNote}"` : ""}
+              </p>
+              <button
+                type="button"
+                className="mt-2 text-xs font-medium text-primary underline"
+                onClick={() => setNewFaceValue(String(target.upgrade?.customerCounterFaceValue ?? ""))}
+              >
+                Use this value
+              </button>
+            </div>
+          ) : null}
+
           <div className="space-y-4">
             <div className="space-y-2">
-              <Label htmlFor="up-bank">Reputable partner bank (new issuer)</Label>
+              <Label htmlFor="up-bank">
+                Reputable partner bank (new issuer)
+                {mode === "revise" && target?.upgrade?.newIssuer ? ` — currently ${target.upgrade.newIssuer}` : ""}
+              </Label>
               <BankCombobox id="up-bank" value={bankKey} onChange={setBankKey} />
+              {mode === "revise" ? (
+                <p className="text-xs text-muted-foreground">Leave unchanged to keep the current issuer.</p>
+              ) : null}
             </div>
 
             <div className="grid grid-cols-2 gap-3">
@@ -357,7 +513,7 @@ export function InstrumentUpgradeManager() {
               <Input id="up-note" value={note} onChange={(e) => setNote(e.target.value)} className="text-base" />
             </div>
 
-            {/* Fee summary */}
+            {/* Fee summary — informational; charged only on customer confirm */}
             <div className="rounded-lg border border-border bg-muted/40 p-3 text-sm">
               <div className="flex items-center justify-between">
                 <span className="text-muted-foreground">
@@ -366,8 +522,8 @@ export function InstrumentUpgradeManager() {
                 <span className="font-semibold">{money(fee, oldCurrency)}</span>
               </div>
               <p className="mt-1 text-xs text-muted-foreground">
-                Charged to the customer&apos;s Master Account now. Their balance is verified first — the upgrade is
-                refused if they cannot cover it. Refunded automatically if the customer declines the deal.
+                Charged to the customer&apos;s Master Account only when they confirm the deal (balance verified first).
+                Nothing is charged now.
               </p>
             </div>
           </div>
@@ -376,9 +532,9 @@ export function InstrumentUpgradeManager() {
             <Button variant="outline" onClick={() => setTarget(null)} disabled={submitting}>
               Cancel
             </Button>
-            <Button onClick={() => void submitStart()} disabled={submitting}>
-              {submitting ? <Loader2 className="mr-2 size-4 animate-spin" /> : <Lock className="mr-2 size-4" />}
-              Block &amp; propose ({money(fee, oldCurrency)})
+            <Button onClick={() => void submitDeal()} disabled={submitting}>
+              {submitting ? <Loader2 className="mr-2 size-4 animate-spin" /> : <Handshake className="mr-2 size-4" />}
+              {mode === "revise" ? "Send revised offer" : "Propose deal"}
             </Button>
           </DialogFooter>
         </DialogContent>

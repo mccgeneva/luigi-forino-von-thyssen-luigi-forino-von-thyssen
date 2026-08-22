@@ -26,7 +26,11 @@ import { planReservation, formatMoney, type ReservationPlan } from "@/lib/fund-r
 import { cardFeeFor, formatCardFee, CARD_FEE_CURRENCY } from "@/lib/card-fees"
 import { buildTradingFundPosts, TRADING_FUND_MONTHLY_ROI, type TradingFundPauseWindow } from "@/lib/trading-fund"
 import { buildPppRoiPosts, yieldCancellationPenalty, YIELD_EARLY_CANCELLATION_PENALTY_RATE } from "@/lib/ppp-yield"
-import { INSTRUMENT_UPGRADE_FEE_LABEL, type InstrumentUpgrade } from "@/lib/instrument-upgrade"
+import {
+  INSTRUMENT_UPGRADE_FEE_LABEL,
+  instrumentUpgradeFee,
+  type InstrumentUpgrade,
+} from "@/lib/instrument-upgrade"
 import { buildInternalLoanPosts } from "@/lib/internal-loan"
 import type { LedgerEntry } from "@/lib/ledger-store"
 import { insertNotification } from "@/lib/notifications-db"
@@ -4124,12 +4128,12 @@ export type InstrumentUpgradeResult =
   | { ok: false; error: string }
 
 /**
- * Accept an Administrator-proposed transformation/upgrade. The fresh, negotiated
- * instrument is issued into the customer's portfolio IMMEDIATELY (born pending →
- * approved, exactly like administrator issuance), the old blocked instrument is
- * retired, and the deal is stamped `accepted`. The expertise fee was already
- * charged when the Administrator started the upgrade, so acceptance moves no
- * further money.
+ * Confirm an Administrator-proposed transformation/upgrade at the agreed value.
+ * This is the moment money moves: the one-time expertise & upgrade fee is
+ * charged to the Master Account (balance verified FIRST — nothing is issued if
+ * it can't be covered), UNLESS a legacy `proposed` deal already charged it. Then
+ * the fresh, negotiated instrument is issued into the customer's portfolio
+ * immediately, the old instrument retired, and the deal stamped `accepted`.
  */
 export async function acceptInstrumentUpgrade(approvalId: string): Promise<InstrumentUpgradeResult> {
   const session = await resolveCurrentSession()
@@ -4147,10 +4151,48 @@ export async function acceptInstrumentUpgrade(approvalId: string): Promise<Instr
       upgrade?: InstrumentUpgrade
     }
     const upgrade = payload.upgrade
-    if (!upgrade || upgrade.status !== "proposed") {
+    if (!upgrade || (upgrade.status !== "negotiating" && upgrade.status !== "proposed")) {
       return { ok: false, error: "There is no upgrade offer to accept for this instrument." }
     }
     const oldBase = (payload.issuedByAdmin ? payload.instrument : payload.record ?? payload.instrument) ?? {}
+
+    // Charge the one-time expertise & upgrade fee NOW (on confirm) unless a
+    // legacy `proposed` deal already charged it. Balance verified first —
+    // nothing is issued or charged if the customer cannot cover it.
+    const ownerId = await resolveDataOwnerIdFor(existing.userId)
+    const feeCurrency = upgrade.feeCurrency
+    const feeAmount = upgrade.fee > 0 ? upgrade.fee : instrumentUpgradeFee(upgrade.oldFaceValue)
+    const alreadyCharged = upgrade.feeCharged === true || upgrade.status === "proposed"
+    if (!alreadyCharged && feeAmount > 0) {
+      const available = availableByCurrency(await readLedgerEntries(ownerId))
+      const availableInCcy = Object.entries(available).reduce(
+        (sum, [cur, amt]) => sum + convertCurrency(amt, cur, feeCurrency),
+        0,
+      )
+      if (feeAmount > availableInCcy + 0.01) {
+        return {
+          ok: false,
+          error: `You cannot cover the ${INSTRUMENT_UPGRADE_FEE_LABEL} expertise & upgrade fee of ${feeCurrency} ${feeAmount.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}. Fund your Master Account and try again — nothing was charged.`,
+        }
+      }
+      try {
+        await upsertLedgerEntry(ownerId, {
+          id: `INSTR-UPGRADE-FEE-${approvalId}`,
+          direction: "debit",
+          amount: feeAmount,
+          currency: feeCurrency,
+          status: "completed",
+          date: new Date().toISOString(),
+          counterparty: `${String((oldBase as { typeFull?: unknown }).typeFull ?? "Instrument")} ${String((oldBase as { id?: unknown }).id ?? "")}`.trim(),
+          reference: approvalId,
+          category: `Bank Instrument — Expertise & Upgrade Fee (${INSTRUMENT_UPGRADE_FEE_LABEL})`,
+          comment: `${INSTRUMENT_UPGRADE_FEE_LABEL} one-time upgrade fee on ${feeCurrency} ${upgrade.oldFaceValue.toLocaleString("en-US")} instrument (charged on customer confirm).`,
+        })
+      } catch (err) {
+        console.log("[v0] upgrade accept fee charge failed:", (err as Error).message)
+        return { ok: false, error: "The upgrade fee could not be charged. Please try again." }
+      }
+    }
 
     // Build the fresh instrument view-model from the negotiated deal, carrying
     // over sensible defaults from the old instrument where not superseded.
@@ -4195,7 +4237,7 @@ export async function acceptInstrumentUpgrade(approvalId: string): Promise<Instr
     // 2) Stamp the old deal accepted, then retire the old (blocked) instrument.
     await updateApprovalPayload(approvalId, {
       ...(existing.payload ?? {}),
-      upgrade: { ...upgrade, status: "accepted", decidedAt: now.toISOString(), newInstrumentId: newId },
+      upgrade: { ...upgrade, status: "accepted", feeCharged: true, decidedAt: now.toISOString(), newInstrumentId: newId },
     })
     await revokeApprovedApproval(approvalId, session.dataOwnerId, "Retired — transformed into an upgraded instrument.")
 
@@ -4235,10 +4277,10 @@ export async function acceptInstrumentUpgrade(approvalId: string): Promise<Instr
 }
 
 /**
- * Decline an Administrator-proposed upgrade. The old instrument is UNBLOCKED and
- * remains active/usable, and the expertise & upgrade fee is REFUNDED to the
- * Master Account (the customer never received a new instrument). Idempotent
- * refund via a deterministic ledger id.
+ * Decline an Administrator-proposed upgrade. The old instrument stays active and
+ * usable. If a legacy `proposed` deal had already charged the upfront fee, it is
+ * REFUNDED (idempotent via a deterministic ledger id); a `negotiating` deal had
+ * no fee so nothing is refunded.
  */
 export async function declineInstrumentUpgrade(approvalId: string): Promise<InstrumentUpgradeResult> {
   const session = await resolveCurrentSession()
@@ -4251,13 +4293,15 @@ export async function declineInstrumentUpgrade(approvalId: string): Promise<Inst
     }
     const payload = (existing.payload ?? {}) as { upgrade?: InstrumentUpgrade }
     const upgrade = payload.upgrade
-    if (!upgrade || upgrade.status !== "proposed") {
+    if (!upgrade || (upgrade.status !== "negotiating" && upgrade.status !== "proposed")) {
       return { ok: false, error: "There is no upgrade offer to decline for this instrument." }
     }
 
     const ownerId = await resolveDataOwnerIdFor(existing.userId)
-    // Refund the upfront fee (no new instrument was delivered).
-    if (upgrade.fee > 0) {
+    // Refund the upfront fee ONLY if it was actually charged (legacy flow).
+    const wasCharged = upgrade.feeCharged === true || upgrade.status === "proposed"
+    let refunded = 0
+    if (wasCharged && upgrade.fee > 0) {
       try {
         await upsertLedgerEntry(ownerId, {
           id: `INSTR-UPGRADE-REFUND-${approvalId}`,
@@ -4271,13 +4315,13 @@ export async function declineInstrumentUpgrade(approvalId: string): Promise<Inst
           category: "Bank Instrument — Upgrade Fee Refund",
           comment: `Refund of the ${INSTRUMENT_UPGRADE_FEE_LABEL} upgrade fee after the customer declined the transformation.`,
         })
+        refunded = upgrade.fee
       } catch (err) {
         console.log("[v0] upgrade decline refund failed:", (err as Error).message)
       }
     }
 
-    // Clear the deal → unblocks the old instrument (materializer only blocks on
-    // status === "proposed").
+    // Mark the deal declined (materializer only blocks on status === "proposed").
     await updateApprovalPayload(approvalId, {
       ...(existing.payload ?? {}),
       upgrade: { ...upgrade, status: "declined", decidedAt: new Date().toISOString() },
@@ -4288,17 +4332,77 @@ export async function declineInstrumentUpgrade(approvalId: string): Promise<Inst
         userId: existing.userId,
         tone: "info",
         title: "Instrument upgrade declined",
-        body: `You declined the transformation of your instrument. It is unblocked and available again${upgrade.fee > 0 ? `, and the ${upgrade.feeCurrency} ${upgrade.fee.toLocaleString("en-US")} fee was refunded` : ""}.`,
+        body: `You declined the transformation of your instrument. It remains active and available${refunded > 0 ? `, and the ${upgrade.feeCurrency} ${refunded.toLocaleString("en-US")} fee was refunded` : ""}.`,
         href: KIND_HREF.instrument ?? "/dashboard/instruments",
       })
     } catch {
       /* best-effort */
     }
 
-    return { ok: true, refunded: upgrade.fee, currency: upgrade.feeCurrency }
+    return { ok: true, refunded, currency: upgrade.feeCurrency }
   } catch (err) {
     console.log("[v0] declineInstrumentUpgrade failed:", (err as Error).message)
     return { ok: false, error: "The upgrade could not be declined. Please try again." }
+  }
+}
+
+/**
+ * Customer submits a counter-offer for the new instrument's face value during
+ * negotiation. Records it on the deal (`customerCounter*`) so the administrator
+ * sees it in the upgrade manager and can revise or accept. No money moves.
+ */
+export async function counterInstrumentUpgrade(
+  approvalId: string,
+  counterFaceValue: number,
+  note?: string,
+): Promise<InstrumentUpgradeResult> {
+  const session = await resolveCurrentSession()
+  if (!session) return { ok: false, error: "Your session has expired. Please sign in again." }
+  try {
+    if (!Number.isFinite(counterFaceValue) || counterFaceValue <= 0) {
+      return { ok: false, error: "Enter a valid counter-offer amount." }
+    }
+    const existing = await getApprovalById(approvalId)
+    if (!existing || existing.kind !== "instrument") return { ok: false, error: "Instrument not found." }
+    if (existing.userId !== session.dataOwnerId) {
+      return { ok: false, error: "You can only act on instruments in your own portfolio." }
+    }
+    const payload = (existing.payload ?? {}) as { upgrade?: InstrumentUpgrade }
+    const upgrade = payload.upgrade
+    if (!upgrade || upgrade.status !== "negotiating") {
+      return { ok: false, error: "This offer is no longer open for counter-offers." }
+    }
+
+    await updateApprovalPayload(approvalId, {
+      ...(existing.payload ?? {}),
+      upgrade: {
+        ...upgrade,
+        customerCounterFaceValue: Math.round(counterFaceValue * 100) / 100,
+        customerCounterAt: new Date().toISOString(),
+        customerCounterNote: note?.trim() || undefined,
+      },
+    })
+
+    try {
+      const profile = await resolveAccountProfileById(existing.userId)
+      await logActivity({
+        action: `Counter-offer on instrument upgrade`,
+        category: "Bank Instruments",
+        user: profile.fullName,
+        details: {
+          referenceId: approvalId,
+          summary: `Client proposed a new face value of ${upgrade.newCurrency} ${counterFaceValue.toLocaleString("en-US")} for the upgrade${note?.trim() ? ` — "${note.trim()}"` : ""}.`,
+          action: "Upgrade counter-offer",
+        },
+      })
+    } catch (err) {
+      console.log("[v0] counterInstrumentUpgrade activity failed:", (err as Error).message)
+    }
+
+    return { ok: true }
+  } catch (err) {
+    console.log("[v0] counterInstrumentUpgrade failed:", (err as Error).message)
+    return { ok: false, error: "The counter-offer could not be sent. Please try again." }
   }
 }
 
