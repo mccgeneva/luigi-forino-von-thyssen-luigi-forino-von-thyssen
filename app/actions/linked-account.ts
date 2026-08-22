@@ -11,16 +11,20 @@
 // that one compartment. If the caller has no link, every action refuses.
 // ---------------------------------------------------------------------------
 
-import { resolveCurrentSession } from "@/lib/session-user"
+import { resolveCurrentSession, resolveDataOwnerIdFor } from "@/lib/session-user"
 import { getVisitorLink } from "@/lib/visitor-link-db"
-import { getSubAccountById } from "@/lib/sub-account-db"
+import { getSubAccountById, listAllSubAccounts } from "@/lib/sub-account-db"
 import { readLedgerEntries, upsertLedgerEntry, deleteLedgerEntry, assertOwnerSolvent } from "@/lib/ledger-db"
 import type { LedgerEntry } from "@/lib/ledger-store"
-import { insertApproval, listApprovalsForUser } from "@/lib/approvals-db"
+import { insertApproval, seedApproval, listApprovalsForUser } from "@/lib/approvals-db"
 import { insertNotification } from "@/lib/notifications-db"
 import { transferFeeFor, TRANSFER_FEE_RATE } from "@/lib/sub-account-fees"
 import { generateUetr } from "@/lib/swift-gpi"
 import type { SubAccount } from "@/lib/sub-account-types"
+import { query } from "@/lib/db"
+import { listDynamicUsers } from "@/lib/admin-users-db"
+import { extractBankingCoordinates } from "@/lib/banking-coordinates"
+import { validateIban } from "@/lib/iban-swift"
 
 // Outgoing payments carry the standard 2% platform fee, charged from the same
 // compartment the payment is remitted from.
@@ -94,6 +98,130 @@ function mainBalance(entries: LedgerEntry[], currency: string): number {
   return total
 }
 
+/** Strip an IBAN/account string down to comparable A–Z0–9 (uppercase). */
+function normIban(raw: string | undefined | null): string {
+  return (raw ?? "").toUpperCase().replace(/[^A-Z0-9]/g, "")
+}
+
+/**
+ * A platform account whose IBAN matches a beneficiary — i.e. the payment stays
+ * INSIDE NAFTAhub and settles in real time as an intra-user transfer.
+ */
+interface InternalMatch {
+  /** Data-owner ledger to credit (a sub-account's balance lives on its master). */
+  recipientOwnerId: string
+  /** When set, credit that isolated compartment; otherwise the main account. */
+  recipientSubAccountId?: string
+  /** Human label for the audit trail / notification (never shown to the payer). */
+  recipientLabel: string
+  /** The kind of account matched, for the audit note. */
+  kind: "sub_account" | "gateway_account" | "master_account"
+}
+
+/**
+ * Resolve a beneficiary IBAN to a platform account, if any. Checks — in order —
+ * every active sub-account IBAN, every active gateway (registered bank) account
+ * IBAN, and every active user's master-account IBAN. A single unambiguous match
+ * means the payment is INTERNAL (settles instantly); no match means it leaves
+ * the platform and must be handled by the administrator.
+ *
+ * The compartment the payment is remitted FROM is excluded so a visitor can
+ * never "pay" money straight back into the very same sub-account.
+ */
+async function resolveInternalIban(iban: string, payerSubId: string): Promise<InternalMatch | null> {
+  const target = normIban(iban)
+  if (!target) return null
+
+  // 1) Active sub-accounts (credit the exact compartment the IBAN represents).
+  try {
+    const subs = await listAllSubAccounts("active")
+    const sub = subs.find((s) => s.iban && normIban(s.iban) === target && s.id !== payerSubId)
+    if (sub) {
+      return {
+        recipientOwnerId: await resolveDataOwnerIdFor(sub.userId),
+        recipientSubAccountId: sub.id,
+        recipientLabel: sub.label || "Sub-account",
+        kind: "sub_account",
+      }
+    }
+  } catch (err) {
+    console.log("[v0] resolveInternalIban sub-accounts failed:", (err as Error).message)
+  }
+
+  // 2) Active gateway (registered bank) accounts → credit the owner's master.
+  try {
+    await query(
+      `CREATE TABLE IF NOT EXISTS gateway_accounts (
+         user_id text NOT NULL, request_id text NOT NULL, status text NOT NULL,
+         submitted_at timestamptz, decided_at timestamptz,
+         updated_at timestamptz NOT NULL DEFAULT now(), payload jsonb NOT NULL,
+         PRIMARY KEY (user_id, request_id))`,
+    )
+    const { rows } = await query(`SELECT user_id, payload FROM gateway_accounts WHERE status = 'active'`)
+    for (const row of rows as Array<{ user_id: string; payload: Record<string, unknown> }>) {
+      const payload = (row.payload ?? {}) as {
+        userId?: string
+        currency?: string
+        coordinates?: { iban?: string; partnerBankName?: string }
+      }
+      if (payload.coordinates?.iban && normIban(payload.coordinates.iban) === target) {
+        const ownerId = payload.userId || row.user_id
+        return {
+          recipientOwnerId: await resolveDataOwnerIdFor(ownerId),
+          recipientLabel: payload.coordinates.partnerBankName || "Registered account",
+          kind: "gateway_account",
+        }
+      }
+    }
+  } catch (err) {
+    console.log("[v0] resolveInternalIban gateway failed:", (err as Error).message)
+  }
+
+  // 3) Active users' master-account IBANs (set by the administrator).
+  try {
+    const users = await listDynamicUsers()
+    for (const u of users) {
+      if (u.status !== "active") continue
+      const coords = extractBankingCoordinates(u.profile.banking)
+      if (coords.iban && normIban(coords.iban) === target) {
+        return {
+          recipientOwnerId: await resolveDataOwnerIdFor(u.id),
+          recipientLabel: u.profile.fullName || u.profile.company || "NAFTAhub account",
+          kind: "master_account",
+        }
+      }
+    }
+  } catch (err) {
+    console.log("[v0] resolveInternalIban master failed:", (err as Error).message)
+  }
+
+  return null
+}
+
+/**
+ * Called live by the payout form as the visitor types an IBAN. Returns whether
+ * the (valid) IBAN belongs to a NAFTAhub account — so the UI can tell the user
+ * the transfer will arrive INSTANTLY (internal) or go through administrator
+ * authorization (external). Never reveals the counterparty's identity.
+ */
+export async function resolveLinkedBeneficiary(
+  iban: string,
+): Promise<{ ok: true; internal: boolean } | { ok: false; error: string }> {
+  const ctx = await requireMyLink()
+  if (!ctx) return { ok: false, error: "You are not linked to a sub-account." }
+  const clean = normIban(iban)
+  if (clean.length < 8) return { ok: true, internal: false }
+  // Only IBAN-scheme values can be matched against stored IBANs.
+  if (!validateIban(clean).valid) return { ok: true, internal: false }
+  try {
+    const match = await resolveInternalIban(clean, ctx.subId)
+    return { ok: true, internal: !!match }
+  } catch (err) {
+    console.log("[v0] resolveLinkedBeneficiary failed:", (err as Error).message)
+    return { ok: true, internal: false }
+  }
+}
+
 interface ResolvedLink {
   session: NonNullable<Awaited<ReturnType<typeof resolveCurrentSession>>>
   ownerId: string
@@ -147,7 +275,13 @@ export async function getMyLinkedAccount(): Promise<LinkedResult<LinkedAccountVi
     // the sub via the ledger effect).
     const payments = await listApprovalsForUser(ownerId, "payment")
     const payouts: LinkedAccountPayout[] = payments
-      .filter((r) => (r.ledgerEffect?.subAccountId || undefined) === subId)
+      .filter((r) => {
+        const recSub = (r.payload?.record as { subAccountId?: string } | undefined)?.subAccountId
+        // Match by the record's compartment tag (set on every linked payout,
+        // internal or external) OR the ledger effect's tag (external only, for
+        // legacy rows written before internal settlement existed).
+        return (recSub || r.ledgerEffect?.subAccountId || undefined) === subId
+      })
       .map((r) => {
         const rec = (r.payload?.record as Record<string, unknown> | undefined) ?? {}
         const amount = typeof rec.amount === "number" ? rec.amount : Number(r.amount) || 0
@@ -326,7 +460,7 @@ export async function linkedPayout(input: {
   reference?: string
   notes?: string
   amount: number
-}): Promise<LinkedResult<{ id: string }>> {
+}): Promise<LinkedResult<{ id: string; settlement: "instant" | "pending" }>> {
   const ctx = await requireMyLink()
   if (!ctx) return { ok: false, error: "You are not linked to a sub-account." }
   const { ownerId, subId, sub, session } = ctx
@@ -360,16 +494,22 @@ export async function linkedPayout(input: {
     const localId = `LPAY-${Date.now().toString().slice(-9)}`
     const reference = (input.reference || "").trim()
     const initiatorName = session.profile.fullName || session.profile.company || "Linked user"
+    const swiftCode = (input.swiftCode || "").trim().toUpperCase()
 
-    // PaymentRequest-shaped record so the admin queue + owner payments view
-    // render it exactly like an owner-initiated payment.
-    const record = {
+    // Decide the rail: if the beneficiary IBAN belongs to a NAFTAhub account the
+    // transfer stays INSIDE the platform and settles in real time; otherwise it
+    // leaves the platform and must be authorized by an administrator.
+    const internal = await resolveInternalIban(iban, subId)
+
+    // Shared PaymentRequest-shaped record so the admin queue + owner payments
+    // view + the linked payouts list all render it consistently.
+    const record: Record<string, unknown> = {
       id: localId,
       uetr,
       beneficiary,
       beneficiaryCountry: (input.beneficiaryCountry || "").trim(),
       iban,
-      swiftCode: (input.swiftCode || "").trim().toUpperCase(),
+      swiftCode,
       reference,
       notes: (input.notes || "").trim(),
       currency,
@@ -379,9 +519,120 @@ export async function linkedPayout(input: {
       payeeSource: sub.label,
       subAccountId: subId,
       subAccountLabel: sub.label,
-      status: "pending",
       submittedAt: new Date().toISOString(),
     }
+
+    // -----------------------------------------------------------------------
+    // INTERNAL — instant intra-platform transfer (no administrator step).
+    // -----------------------------------------------------------------------
+    if (internal) {
+      record.status = "approved"
+      record.settledAt = new Date().toISOString()
+      record.internal = true
+      record.settlement = "instant"
+
+      const nowIso = new Date().toISOString()
+      const ref = reference || uetr
+
+      // 1) Debit the paying compartment: principal to the beneficiary…
+      await upsertLedgerEntry(ownerId, {
+        id: `${localId}-OUT`,
+        direction: "debit",
+        amount,
+        currency,
+        status: "completed",
+        date: nowIso,
+        counterparty: beneficiary,
+        account: iban,
+        reference: ref,
+        category: "Outgoing Payment",
+        comment: `Instant NAFTAhub transfer to ${beneficiary} from "${sub.label}"${reference ? ` · ${reference}` : ""}.`,
+        subAccountId: subId,
+      })
+      // …plus the 2% platform fee, charged from the same compartment.
+      if (fee > 0) {
+        await upsertLedgerEntry(ownerId, {
+          id: `${localId}-FEE`,
+          direction: "debit",
+          amount: fee,
+          currency,
+          status: "completed",
+          date: nowIso,
+          counterparty: "NAFTAhub",
+          reference: ref,
+          category: "Payment Fee",
+          comment: `${(PAYMENT_FEE_RATE * 100).toFixed(0)}% platform fee on ${fmt(amount)} (payment to ${beneficiary}).`,
+          subAccountId: subId,
+        })
+      }
+      // 2) Credit the recipient's account in real time (their compartment when
+      //    the IBAN is a sub-account, otherwise their main account).
+      await upsertLedgerEntry(internal.recipientOwnerId, {
+        id: `${localId}-IN`,
+        direction: "credit",
+        amount,
+        currency,
+        status: "completed",
+        date: nowIso,
+        counterparty: initiatorName,
+        account: iban,
+        reference: ref,
+        category: "Inbound Transfer",
+        comment: `Instant NAFTAhub transfer received from ${initiatorName}${reference ? ` · ${reference}` : ""}.`,
+        subAccountId: internal.recipientSubAccountId,
+      })
+
+      // 3) Guard the payer's overall solvency; unwind everything on failure.
+      try {
+        await assertOwnerSolvent(ownerId)
+        if (internal.recipientOwnerId !== ownerId) await assertOwnerSolvent(internal.recipientOwnerId)
+      } catch {
+        await deleteLedgerEntry(ownerId, `${localId}-OUT`)
+        await deleteLedgerEntry(ownerId, `${localId}-FEE`)
+        await deleteLedgerEntry(internal.recipientOwnerId, `${localId}-IN`)
+        return { ok: false, error: "The transfer could not be completed. Please try again." }
+      }
+
+      // 4) Record a settled payment for the audit trail / payouts list (no
+      //    ledger effect — the ledger is posted directly above).
+      await seedApproval({
+        id: `APPR-${localId}`,
+        userId: ownerId,
+        kind: "payment",
+        status: "approved",
+        decidedAt: nowIso,
+        title: `Payment to ${beneficiary}`,
+        summary: `${fmt(amount)} to ${beneficiary}${reference ? ` · ${reference}` : ""} — instant NAFTAhub transfer from "${sub.label}" (linked user)`,
+        amount: total,
+        currency,
+        payload: { localId, uetr, iban, swiftCode, internal: true, record },
+      })
+
+      // 5) Notify both sides.
+      await insertNotification({
+        userId: internal.recipientOwnerId,
+        tone: "success",
+        title: "Payment received",
+        body: `${fmt(amount)} received from ${initiatorName}${reference ? ` · ${reference}` : ""}.`,
+        href: "/dashboard",
+      }).catch(() => {})
+      if (internal.recipientOwnerId !== ownerId) {
+        await insertNotification({
+          userId: ownerId,
+          tone: "info",
+          title: "Instant transfer sent",
+          body: `${fmt(amount)} sent to ${beneficiary} from "${sub.label}" — settled instantly to a NAFTAhub account.`,
+          href: "/dashboard",
+        }).catch(() => {})
+      }
+
+      return { ok: true, data: { id: `APPR-${localId}`, settlement: "instant" } }
+    }
+
+    // -----------------------------------------------------------------------
+    // EXTERNAL — leaves the platform: administrator-authorized outgoing payment.
+    // -----------------------------------------------------------------------
+    record.status = "pending"
 
     const request = await insertApproval({
       userId: ownerId,
@@ -390,7 +641,7 @@ export async function linkedPayout(input: {
       summary: `${fmt(amount)} to ${beneficiary}${reference ? ` · ${reference}` : ""} — from "${sub.label}" (linked user)`,
       amount: total,
       currency,
-      payload: { localId, uetr, iban, swiftCode: record.swiftCode, record },
+      payload: { localId, uetr, iban, swiftCode, record },
       ledgerEffect: {
         direction: "debit",
         amount: total,
@@ -414,7 +665,7 @@ export async function linkedPayout(input: {
       href: "/dashboard/payments",
     }).catch(() => {})
 
-    return { ok: true, data: { id: request.id } }
+    return { ok: true, data: { id: request.id, settlement: "pending" } }
   } catch (err) {
     console.log("[v0] linkedPayout failed:", (err as Error).message)
     return { ok: false, error: "The payment could not be submitted. Please try again." }

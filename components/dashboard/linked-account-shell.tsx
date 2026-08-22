@@ -1,22 +1,32 @@
 "use client"
 
-import { useCallback, useEffect, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import useSWR from "swr"
 import {
+  AlertCircle,
   ArrowDownLeft,
   ArrowUpRight,
   Banknote,
   Building2,
   Copy,
   Check,
+  Globe,
   Loader2,
   LogOut,
   RefreshCw,
   Send,
   ShieldCheck,
   Wallet,
+  Zap,
 } from "lucide-react"
-import { getMyLinkedAccount, linkedPayout, type LinkedAccountView } from "@/app/actions/linked-account"
+import {
+  getMyLinkedAccount,
+  linkedPayout,
+  resolveLinkedBeneficiary,
+  type LinkedAccountView,
+} from "@/app/actions/linked-account"
+import { validateIban, lookupBankByIban, isGenericBankInfo, type BankInfo } from "@/lib/iban-swift"
+import { resolveIbanExternal } from "@/app/actions/bank-resolve"
 
 function money(n: number, currency: string) {
   return `${currency} ${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
@@ -297,11 +307,81 @@ function ActionSheet({
   const [country, setCountry] = useState("")
   const [reference, setReference] = useState("")
 
+  // IBAN verification + auto-fill + rail (internal instant vs external approval)
+  const [ibanStatus, setIbanStatus] = useState<"idle" | "checking" | "valid" | "invalid">("idle")
+  const [ibanError, setIbanError] = useState<string | null>(null)
+  const [bankInfo, setBankInfo] = useState<BankInfo | null>(null)
+  const [rail, setRail] = useState<"internal" | "external" | null>(null)
+  const ibanTicket = useRef(0)
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose()
     window.addEventListener("keydown", onKey)
     return () => window.removeEventListener("keydown", onKey)
   }, [onClose])
+
+  // Validate the beneficiary IBAN, resolve its bank (auto-filling SWIFT +
+  // country), and determine whether it belongs to a NAFTAhub account so the
+  // user knows the transfer will settle instantly vs. go through the desk.
+  useEffect(() => {
+    const trimmed = iban.trim()
+    const ticket = ++ibanTicket.current
+    if (!trimmed) {
+      setIbanStatus("idle")
+      setIbanError(null)
+      setBankInfo(null)
+      setRail(null)
+      return
+    }
+    const result = validateIban(trimmed)
+    if (!result.valid) {
+      setIbanStatus("invalid")
+      setIbanError(result.error ?? "Invalid IBAN")
+      setBankInfo(null)
+      setRail(null)
+      return
+    }
+    setIbanStatus("checking")
+    setIbanError(null)
+    setRail(null)
+    const timer = setTimeout(async () => {
+      let info = await lookupBankByIban(trimmed)
+      if (isGenericBankInfo(info)) {
+        try {
+          const ext = await resolveIbanExternal(trimmed)
+          if (ext && (ext.name || ext.bic || ext.city)) {
+            info = {
+              name: ext.name ?? info?.name ?? "Registered institution",
+              country: info?.country ?? "",
+              countryCode: info?.countryCode ?? "",
+              bic: ext.bic ?? info?.bic,
+              city: ext.city ?? info?.city,
+              postalCode: ext.postalCode ?? info?.postalCode,
+              address: ext.address ?? info?.address,
+            }
+          }
+        } catch {
+          /* keep offline result */
+        }
+      }
+      let internal = false
+      try {
+        const res = await resolveLinkedBeneficiary(trimmed)
+        if (res.ok) internal = res.internal
+      } catch {
+        /* default to external */
+      }
+      if (ticket !== ibanTicket.current) return
+      setBankInfo(info)
+      setIbanStatus("valid")
+      setRail(internal ? "internal" : "external")
+      // Auto-fill SWIFT + country from the resolved bank when still empty.
+      if (info?.bic) setSwiftCode((prev) => (prev.trim() ? prev : info!.bic!))
+      if (info?.country) setCountry((prev) => (prev.trim() ? prev : info!.country))
+    }, 350)
+    return () => clearTimeout(timer)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [iban])
 
   const amt = Number.parseFloat(amount)
   const feeRate = 0.02
@@ -333,7 +413,13 @@ function ActionSheet({
     }
   }
 
-  const disabled = busy || !(amt > 0) || beneficiary.trim().length === 0 || iban.trim().length < 8
+  const disabled =
+    busy ||
+    !(amt > 0) ||
+    beneficiary.trim().length === 0 ||
+    iban.trim().length < 8 ||
+    ibanStatus === "invalid" ||
+    ibanStatus === "checking"
 
   return (
     <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/60 p-0 sm:items-center sm:p-4">
@@ -346,8 +432,8 @@ function ActionSheet({
         </div>
 
         <p className="mb-4 text-xs text-neutral-400">
-          Outgoing SWIFT transfer from &ldquo;{view.label}&rdquo;, paid out of this sub-account&apos;s own
-          balance and subject to administrator approval.
+          Paid out of &ldquo;{view.label}&rdquo;&apos;s own balance. Transfers to another NAFTAhub account
+          settle instantly; payments to an outside bank are released after administrator authorization.
         </p>
 
         <div className="space-y-3">
@@ -368,7 +454,62 @@ function ActionSheet({
             </Field>
           </div>
           <Field label="IBAN / Account number">
-            <input value={iban} onChange={(e) => setIban(e.target.value)} placeholder="XX00 0000 0000 0000" className={inputCls} />
+            <div className="relative">
+              <input
+                value={iban}
+                onChange={(e) => setIban(e.target.value)}
+                placeholder="XX00 0000 0000 0000"
+                autoCapitalize="characters"
+                spellCheck={false}
+                className={`${inputCls} pr-9 font-mono uppercase ${
+                  ibanStatus === "valid"
+                    ? "border-emerald-500/60"
+                    : ibanStatus === "invalid"
+                      ? "border-red-500/60"
+                      : ""
+                }`}
+              />
+              <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2">
+                {ibanStatus === "checking" && <Loader2 className="h-4 w-4 animate-spin text-neutral-400" />}
+                {ibanStatus === "valid" && <Check className="h-4 w-4 text-emerald-400" />}
+                {ibanStatus === "invalid" && <AlertCircle className="h-4 w-4 text-red-400" />}
+              </span>
+            </div>
+            {ibanStatus === "invalid" && ibanError && (
+              <p className="mt-1 text-xs text-red-300">{ibanError}</p>
+            )}
+            {ibanStatus === "checking" && (
+              <p className="mt-1 text-xs text-neutral-400">Verifying with the bank directory…</p>
+            )}
+            {ibanStatus === "valid" && bankInfo && (
+              <div className="mt-2 rounded-lg border border-white/10 bg-black/20 p-2.5">
+                <div className="flex items-center gap-2 text-sm">
+                  <Building2 className="h-4 w-4 text-amber-400" />
+                  <span className="font-medium text-neutral-100">{bankInfo.name}</span>
+                </div>
+                <div className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-neutral-400">
+                  {bankInfo.country && (
+                    <span className="inline-flex items-center gap-1">
+                      <Globe className="h-3 w-3" />
+                      {bankInfo.country}
+                    </span>
+                  )}
+                  {bankInfo.bic && <span className="font-mono">BIC {bankInfo.bic}</span>}
+                </div>
+              </div>
+            )}
+            {ibanStatus === "valid" && rail === "internal" && (
+              <p className="mt-2 inline-flex items-center gap-1.5 rounded-md border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-1.5 text-xs text-emerald-300">
+                <Zap className="h-3.5 w-3.5" />
+                NAFTAhub account — this transfer settles instantly.
+              </p>
+            )}
+            {ibanStatus === "valid" && rail === "external" && (
+              <p className="mt-2 inline-flex items-center gap-1.5 rounded-md border border-amber-500/30 bg-amber-500/10 px-2.5 py-1.5 text-xs text-amber-300">
+                <ShieldCheck className="h-3.5 w-3.5" />
+                External bank — released after administrator authorization.
+              </p>
+            )}
           </Field>
           <Field label="Reference (optional)">
             <input value={reference} onChange={(e) => setReference(e.target.value)} placeholder="INV-2024-XXX" className={inputCls} />
