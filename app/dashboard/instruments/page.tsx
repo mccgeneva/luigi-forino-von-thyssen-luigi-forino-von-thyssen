@@ -29,6 +29,7 @@ import {
   Globe,
   Radio,
   Trash2,
+  Undo2,
 } from "lucide-react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -84,6 +85,7 @@ import {
 import { resolveTransferRecipient } from "@/app/actions/transfers"
 import type { TransferDirectoryEntry } from "@/lib/users"
 import { useLeverageRequests } from "@/lib/leverage-requests-store"
+import { usePPPRequests } from "@/lib/ppp-requests-store"
 import {
   useMonetizationRequests,
   type MonetizationStructure,
@@ -166,13 +168,16 @@ export default function InstrumentsPage() {
   // Read-only portfolio: clients can no longer create, cancel, or delete
   // instruments. Bank instruments are issued and managed exclusively by the
   // administrator; the client view only displays them.
-  const { instruments, transferInstrument, addInstrument, deleteInstrument } = useInstrumentRequests()
+  const { instruments, transferInstrument, addInstrument, deleteInstrument, returnInstrument } = useInstrumentRequests()
   const { totalIn, balanceFor, addDebit, entries: ledgerEntries, refresh: refreshLedger, hydrated: ledgerHydrated } = useLedger()
   const { addRequest: addMonetizationRequest, requests: monetizationRequests, hydrated: monetizationHydrated } = useMonetizationRequests()
   const { requests: leverageRequests } = useLeverageRequests()
+  const { requests: pppRequests } = usePPPRequests()
 
   // Delete confirmation target (client-initiated removal of an unused holding).
   const [deleteTarget, setDeleteTarget] = useState<Instrument | null>(null)
+  // Return-to-marketplace target (assigned/reserved instrument going back).
+  const [returnTarget, setReturnTarget] = useState<Instrument | null>(null)
 
   // Instrument ids that are "in use" by the account and therefore may NOT be
   // deleted: pledged to a leverage line (anything but a rejected/closed line) or
@@ -189,8 +194,30 @@ export default function InstrumentsPage() {
       // A rejected OR reversed monetization no longer engages the instrument.
       if (req.status !== "rejected" && req.status !== "reversed") ids.add(req.instrumentId)
     }
+    for (const req of pppRequests) {
+      if (!req.fundingInstrumentId) continue
+      // A rejected yield/PPP application releases the funding instrument.
+      if (req.status !== "rejected") ids.add(req.fundingInstrumentId)
+    }
     return ids
-  }, [leverageRequests, monetizationRequests])
+  }, [leverageRequests, monetizationRequests, pppRequests])
+
+  // Human-readable list of the trading / debit scenarios that currently engage
+  // an instrument, so a return can tell the holder exactly what reconciliation
+  // to revoke first. Empty = free to return.
+  const usageReasons = (inst: Instrument): string[] => {
+    const reasons: string[] = []
+    if (monetizationRequests.some((r) => r.instrumentId === inst.id && r.status !== "rejected" && r.status !== "reversed")) {
+      reasons.push("a monetization — reverse it first")
+    }
+    if (leverageRequests.some((r) => r.pledgedInstrumentId === inst.id && r.status !== "rejected" && r.status !== "closed")) {
+      reasons.push("a leverage line — close it first")
+    }
+    if (pppRequests.some((r) => r.fundingInstrumentId === inst.id && r.status !== "rejected")) {
+      reasons.push("a yield / PPP application — cancel it first")
+    }
+    return reasons
+  }
 
   // A client may delete a holding only when it is not engaged anywhere and has
   // not already been transferred away (a transferred card is a historical echo
@@ -1298,17 +1325,27 @@ export default function InstrumentsPage() {
                               <Download className="mr-2 h-4 w-4" />
                               Download Certificate
                             </DropdownMenuItem>
-                            {canDeleteInstrument(instrument) && (
+                            {isMccHeldInstrument(instrument) && instrument.status === "active" ? (
                               <>
                                 <DropdownMenuSeparator />
-                                <DropdownMenuItem
-                                  onClick={() => setDeleteTarget(instrument)}
-                                  className="text-destructive focus:text-destructive"
-                                >
-                                  <Trash2 className="mr-2 h-4 w-4" />
-                                  Delete
+                                <DropdownMenuItem onClick={() => setReturnTarget(instrument)}>
+                                  <Undo2 className="mr-2 h-4 w-4" />
+                                  Return to marketplace
                                 </DropdownMenuItem>
                               </>
+                            ) : (
+                              canDeleteInstrument(instrument) && (
+                                <>
+                                  <DropdownMenuSeparator />
+                                  <DropdownMenuItem
+                                    onClick={() => setDeleteTarget(instrument)}
+                                    className="text-destructive focus:text-destructive"
+                                  >
+                                    <Trash2 className="mr-2 h-4 w-4" />
+                                    Delete
+                                  </DropdownMenuItem>
+                                </>
+                              )
                             )}
                           </DropdownMenuContent>
                         </DropdownMenu>
@@ -2456,6 +2493,85 @@ export default function InstrumentsPage() {
               </DialogFooter>
             </>
           )}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={returnTarget !== null} onOpenChange={(o) => !o && setReturnTarget(null)}>
+        <DialogContent className="sm:max-w-md">
+          {returnTarget &&
+            (() => {
+              const reasons = usageReasons(returnTarget)
+              const blocked = reasons.length > 0
+              return (
+                <>
+                  <DialogHeader>
+                    <DialogTitle className="flex items-center gap-2">
+                      {blocked ? (
+                        <AlertCircle className="h-5 w-5 text-yellow-500" />
+                      ) : (
+                        <Undo2 className="h-5 w-5 text-primary" />
+                      )}
+                      Return to marketplace
+                    </DialogTitle>
+                    <DialogDescription>
+                      {blocked ? (
+                        <>
+                          <span className="font-medium text-foreground">
+                            {returnTarget.typeFull} ({returnTarget.id})
+                          </span>{" "}
+                          is currently used in {reasons.join(", ")}. You must revoke the reconciliation before it can
+                          be returned. Once nothing engages it, come back here to return it.
+                        </>
+                      ) : (
+                        <>
+                          Return{" "}
+                          <span className="font-medium text-foreground">
+                            {returnTarget.typeFull} ({returnTarget.id})
+                          </span>{" "}
+                          issued by {returnTarget.issuer} to the marketplace. It will be removed from your portfolio
+                          and become available to everyone again. This action cannot be undone.
+                        </>
+                      )}
+                    </DialogDescription>
+                  </DialogHeader>
+                  {blocked && (
+                    <ul className="list-disc space-y-1 rounded-lg border border-yellow-500/30 bg-yellow-500/10 p-3 pl-8 text-sm text-foreground">
+                      {reasons.map((r) => (
+                        <li key={r}>{r}</li>
+                      ))}
+                    </ul>
+                  )}
+                  <DialogFooter>
+                    <Button variant="outline" onClick={() => setReturnTarget(null)}>
+                      {blocked ? "Understood" : "Cancel"}
+                    </Button>
+                    {!blocked && (
+                      <Button
+                        onClick={() => {
+                          const target = returnTarget
+                          returnInstrument(target.id)
+                          logActivity({
+                            action: `Returned bank instrument ${target.id} to the marketplace`,
+                            category: "Bank Instruments",
+                            details: {
+                              summary: `Client returned ${target.typeFull} (${target.id}) issued by ${target.issuer} to the marketplace. The instrument was not engaged in any monetization, leverage or yield scenario and is now available to everyone again.`,
+                              referenceId: target.id,
+                            },
+                          })
+                          toast.success("Returned to marketplace", {
+                            description: `${target.type} ${target.id} has been removed from your portfolio and is available again.`,
+                          })
+                          setReturnTarget(null)
+                        }}
+                      >
+                        <Undo2 className="mr-2 h-4 w-4" />
+                        Return to marketplace
+                      </Button>
+                    )}
+                  </DialogFooter>
+                </>
+              )
+            })()}
         </DialogContent>
       </Dialog>
     </div>
