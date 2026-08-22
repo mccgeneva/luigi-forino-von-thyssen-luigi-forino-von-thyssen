@@ -10,6 +10,8 @@ import {
   getSubAccountById,
   updateSubAccountBeneficiary,
   dismissDeclinedSubAccounts,
+  closeSubAccount,
+  reconcileSubAccountFees,
 } from "@/lib/sub-account-db"
 import {
   readLedgerEntries,
@@ -22,6 +24,7 @@ import { convertCurrency } from "@/lib/fx"
 import {
   serviceFeeFor,
   SUB_ACCOUNT_ANNUAL_FEE,
+  SUB_ACCOUNT_CLOSING_FEE,
   SUB_ACCOUNT_FEE_CURRENCY,
   formatSubAccountFee,
 } from "@/lib/sub-account-fees"
@@ -251,6 +254,66 @@ export async function purgeDeclinedSubAccounts(): Promise<SubAccountResult<{ pur
   } catch (err) {
     console.log("[v0] purgeDeclinedSubAccounts failed:", (err as Error).message)
     return { ok: false, error: "Could not purge declined requests. Please try again." }
+  }
+}
+
+/**
+ * Client-initiated CLOSE of an active sub-account. The compartment must be
+ * empty first (funds moved back to Main), then it is closed and the €350
+ * closing fee is charged to the MASTER account immediately. Uses the shared
+ * reconciler so the SUBA-CLOSE-* post is deterministic/idempotent (the
+ * ledger-read reconciler never double-charges it). Owner-scoped; PRO /
+ * Avant-Garde only.
+ */
+export async function closeMySubAccount(id: string): Promise<SubAccountResult<{ fee: number; currency: string }>> {
+  const session = await resolveCurrentSession()
+  if (!session) return { ok: false, error: "Your session has expired. Please sign in again." }
+
+  const membership = await getMyMembership()
+  if (capabilitiesForAccount(session.profile.accountBadge, membership).isVisitor) {
+    return { ok: false, error: "Sub-accounts are available on PRO and Avant-Garde plans." }
+  }
+
+  const ownerId = session.dataOwnerId
+  try {
+    const sub = await getSubAccountById(id)
+    if (!sub || sub.userId !== ownerId) return { ok: false, error: "Sub-account not found." }
+    if (sub.status !== "active") return { ok: false, error: "Only an active sub-account can be closed." }
+
+    // The compartment must be emptied before closing so no funds are stranded.
+    const entries = await readLedgerEntries(ownerId)
+    const balance = compartmentBalance(entries, sub.currency, sub.id)
+    if (Math.abs(balance) > 0.01) {
+      return {
+        ok: false,
+        error: `Move the remaining ${sub.currency} ${balance.toLocaleString("en-US", {
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 2,
+        })} back to your Main account before closing this sub-account.`,
+      }
+    }
+
+    const closed = await closeSubAccount(id)
+    if (!closed) return { ok: false, error: "This sub-account could not be closed. Please try again." }
+
+    // Charge the €350 closing fee to the Master now (idempotent SUBA-CLOSE-* id).
+    await reconcileSubAccountFees(ownerId)
+
+    await logActivity({
+      action: `Closed sub-account "${sub.label}"`,
+      category: "Accounts",
+      details: {
+        summary: `Client closed sub-account ${sub.id} ("${sub.label}"). A ${formatSubAccountFee(
+          SUB_ACCOUNT_CLOSING_FEE,
+        )} closing fee was charged to the Master Account.`,
+        referenceId: sub.id,
+      },
+    })
+
+    return { ok: true, data: { fee: SUB_ACCOUNT_CLOSING_FEE, currency: SUB_ACCOUNT_FEE_CURRENCY } }
+  } catch (err) {
+    console.log("[v0] closeMySubAccount failed:", (err as Error).message)
+    return { ok: false, error: "Could not close the sub-account. Please try again." }
   }
 }
 
