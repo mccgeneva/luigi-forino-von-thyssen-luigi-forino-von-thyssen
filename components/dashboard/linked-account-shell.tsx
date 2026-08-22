@@ -16,18 +16,13 @@ import {
   ShieldCheck,
   Wallet,
 } from "lucide-react"
-import {
-  getMyLinkedAccount,
-  linkedTransfer,
-  linkedPayout,
-  type LinkedAccountView,
-} from "@/app/actions/linked-account"
+import { getMyLinkedAccount, linkedPayout, type LinkedAccountView } from "@/app/actions/linked-account"
 
 function money(n: number, currency: string) {
   return `${currency} ${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 }
 
-type Mode = null | "topup" | "withdraw" | "payout"
+type Mode = null | "payout"
 
 export function LinkedAccountShell({ displayName }: { displayName: string }) {
   const { data, isLoading, mutate } = useSWR("linked-account", async () => {
@@ -65,8 +60,8 @@ export function LinkedAccountShell({ displayName }: { displayName: string }) {
         <div className="mb-5">
           <h1 className="text-balance text-xl font-semibold sm:text-2xl">Welcome, {displayName}</h1>
           <p className="mt-1 text-sm text-neutral-400">
-            You have delegated access to the sub-account below. You can view its balance, move funds, and
-            request outgoing payments &mdash; every action is authorized by the administrator.
+            You have delegated access to the sub-account below. You can view its balance and activity, and
+            request outgoing payments from it &mdash; every payment is authorized by the administrator.
           </p>
         </div>
 
@@ -166,23 +161,13 @@ function AccountCard({
           </div>
         )}
 
-        {/* Actions */}
-        <div className="mt-5 grid grid-cols-1 gap-2 sm:grid-cols-3">
-          <button
-            onClick={() => onAction("topup")}
-            className="inline-flex items-center justify-center gap-2 rounded-lg bg-amber-500 px-4 py-2.5 text-sm font-medium text-black transition hover:bg-amber-400"
-          >
-            <ArrowDownLeft className="h-4 w-4" /> Add funds
-          </button>
-          <button
-            onClick={() => onAction("withdraw")}
-            className="inline-flex items-center justify-center gap-2 rounded-lg border border-white/15 px-4 py-2.5 text-sm font-medium transition hover:bg-white/5"
-          >
-            <ArrowUpRight className="h-4 w-4" /> Return funds
-          </button>
+        {/* Actions — a linked visitor can only REQUEST an outgoing payment from
+            this compartment's own balance. Funding the compartment is done by the
+            account owner / administrator, not from here. */}
+        <div className="mt-5">
           <button
             onClick={() => onAction("payout")}
-            className="inline-flex items-center justify-center gap-2 rounded-lg border border-white/15 px-4 py-2.5 text-sm font-medium transition hover:bg-white/5"
+            className="inline-flex w-full items-center justify-center gap-2 rounded-lg bg-amber-500 px-4 py-2.5 text-sm font-medium text-black transition hover:bg-amber-400"
           >
             <Send className="h-4 w-4" /> New payment
           </button>
@@ -272,7 +257,7 @@ function AccountCard({
       </section>
 
       <p className="pb-4 text-center text-[11px] text-neutral-500">
-        Delegated access &middot; A 2% fee applies to fund movements and outgoing payments.
+        Delegated access &middot; A 2% platform fee applies to outgoing payments.
       </p>
     </div>
   )
@@ -304,10 +289,8 @@ function ActionSheet({
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  // transfer fields
-  const [amount, setAmount] = useState("")
-  const [note, setNote] = useState("")
   // payout fields
+  const [amount, setAmount] = useState("")
   const [beneficiary, setBeneficiary] = useState("")
   const [iban, setIban] = useState("")
   const [swiftCode, setSwiftCode] = useState("")
@@ -324,36 +307,23 @@ function ActionSheet({
   const feeRate = 0.02
   const fee = Number.isFinite(amt) && amt > 0 ? Math.round(amt * feeRate * 100) / 100 : 0
 
-  const title =
-    mode === "topup" ? "Add funds" : mode === "withdraw" ? "Return funds to Main" : "Request a payment"
+  const title = "Request a payment"
 
   const submit = async () => {
     setBusy(true)
     setError(null)
     try {
-      if (mode === "payout") {
-        const res = await linkedPayout({
-          beneficiary,
-          beneficiaryCountry: country,
-          iban,
-          swiftCode,
-          reference,
-          amount: amt,
-        })
-        if (!res.ok) {
-          setError(res.error)
-          return
-        }
-      } else {
-        const res = await linkedTransfer({
-          direction: mode === "topup" ? "topup" : "withdraw",
-          amount: amt,
-          note,
-        })
-        if (!res.ok) {
-          setError(res.error)
-          return
-        }
+      const res = await linkedPayout({
+        beneficiary,
+        beneficiaryCountry: country,
+        iban,
+        swiftCode,
+        reference,
+        amount: amt,
+      })
+      if (!res.ok) {
+        setError(res.error)
+        return
       }
       onDone()
     } catch {
@@ -363,10 +333,7 @@ function ActionSheet({
     }
   }
 
-  const disabled =
-    busy ||
-    !(amt > 0) ||
-    (mode === "payout" && (beneficiary.trim().length === 0 || iban.trim().length < 8))
+  const disabled = busy || !(amt > 0) || beneficiary.trim().length === 0 || iban.trim().length < 8
 
   return (
     <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/60 p-0 sm:items-center sm:p-4">
@@ -379,40 +346,33 @@ function ActionSheet({
         </div>
 
         <p className="mb-4 text-xs text-neutral-400">
-          {mode === "topup"
-            ? `Move funds from the owner's Main account into "${view.label}".`
-            : mode === "withdraw"
-              ? `Return funds from "${view.label}" back to the owner's Main account.`
-              : `Outgoing SWIFT transfer from "${view.label}", subject to administrator approval.`}
+          Outgoing SWIFT transfer from &ldquo;{view.label}&rdquo;, paid out of this sub-account&apos;s own
+          balance and subject to administrator approval.
         </p>
 
         <div className="space-y-3">
-          {mode === "payout" && (
-            <>
-              <Field label="Beneficiary name">
-                <input
-                  value={beneficiary}
-                  onChange={(e) => setBeneficiary(e.target.value)}
-                  placeholder="e.g. Apple Distribution Intl."
-                  className={inputCls}
-                />
-              </Field>
-              <div className="grid grid-cols-2 gap-3">
-                <Field label="SWIFT / BIC">
-                  <input value={swiftCode} onChange={(e) => setSwiftCode(e.target.value)} placeholder="XXXXXXXX" className={inputCls} />
-                </Field>
-                <Field label="Country">
-                  <input value={country} onChange={(e) => setCountry(e.target.value)} placeholder="e.g. Ireland" className={inputCls} />
-                </Field>
-              </div>
-              <Field label="IBAN / Account number">
-                <input value={iban} onChange={(e) => setIban(e.target.value)} placeholder="XX00 0000 0000 0000" className={inputCls} />
-              </Field>
-              <Field label="Reference (optional)">
-                <input value={reference} onChange={(e) => setReference(e.target.value)} placeholder="INV-2024-XXX" className={inputCls} />
-              </Field>
-            </>
-          )}
+          <Field label="Beneficiary name">
+            <input
+              value={beneficiary}
+              onChange={(e) => setBeneficiary(e.target.value)}
+              placeholder="e.g. Apple Distribution Intl."
+              className={inputCls}
+            />
+          </Field>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="SWIFT / BIC">
+              <input value={swiftCode} onChange={(e) => setSwiftCode(e.target.value)} placeholder="XXXXXXXX" className={inputCls} />
+            </Field>
+            <Field label="Country">
+              <input value={country} onChange={(e) => setCountry(e.target.value)} placeholder="e.g. Ireland" className={inputCls} />
+            </Field>
+          </div>
+          <Field label="IBAN / Account number">
+            <input value={iban} onChange={(e) => setIban(e.target.value)} placeholder="XX00 0000 0000 0000" className={inputCls} />
+          </Field>
+          <Field label="Reference (optional)">
+            <input value={reference} onChange={(e) => setReference(e.target.value)} placeholder="INV-2024-XXX" className={inputCls} />
+          </Field>
 
           <Field label={`Amount (${view.currency})`}>
             <input
@@ -424,19 +384,10 @@ function ActionSheet({
             />
           </Field>
 
-          {mode !== "payout" && (
-            <Field label="Note (optional)">
-              <input value={note} onChange={(e) => setNote(e.target.value)} placeholder="Reason for the transfer" className={inputCls} />
-            </Field>
-          )}
-
           {amt > 0 && (
             <div className="rounded-lg border border-white/10 bg-black/20 p-3 text-sm">
               <Row label="Amount" value={money(amt, view.currency)} />
-              <Row
-                label={mode === "payout" ? "2% platform fee" : "2% fee (charged to Main)"}
-                value={money(fee, view.currency)}
-              />
+              <Row label="2% platform fee" value={money(fee, view.currency)} />
               <div className="mt-2 border-t border-white/10 pt-2">
                 <Row label="Total" value={money(amt + fee, view.currency)} strong />
               </div>
@@ -463,7 +414,7 @@ function ActionSheet({
             className="inline-flex flex-1 items-center justify-center gap-2 rounded-lg bg-amber-500 px-4 py-2.5 text-sm font-medium text-black transition hover:bg-amber-400 disabled:cursor-not-allowed disabled:opacity-50"
           >
             {busy && <Loader2 className="h-4 w-4 animate-spin" />}
-            {mode === "payout" ? "Submit request" : "Confirm transfer"}
+            Submit request
           </button>
         </div>
       </div>
