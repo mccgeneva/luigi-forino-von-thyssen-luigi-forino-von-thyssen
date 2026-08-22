@@ -20,11 +20,11 @@
 export const ACQUISITION_FEE_RATES = {
   /**
    * Reserve / assignee fee — charged upfront to reserve or assign an
-   * instrument to the client. A single 2% rate governs both the Marketplace
+   * instrument to the client. A single 0.2% rate governs both the Marketplace
    * "Reserve" action and the ISIN-tools "Assign" action; the client's balance
    * is verified before the request is sent to the Administrator.
    */
-  assign: 0.02, // 2%
+  assign: 0.002, // 0.2%
   /** Lease (collateral transfer for a term) fee on face value. */
   lease: 0.04, // 4%
   /** Outright purchase fee on face value. */
