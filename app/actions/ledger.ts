@@ -6,6 +6,7 @@ import { type UserProfile } from "@/lib/users"
 import { resolveAccountProfileById, resolveCurrentSession, resolveDataOwnerIdFor } from "@/lib/session-user"
 import { getDynamicUserByEmail } from "@/lib/admin-users-db"
 import { listApprovalsForUser } from "@/lib/approvals-db"
+import { reconcileSubAccountFees } from "@/lib/sub-account-db"
 import { logActivity } from "@/app/actions/log-activity"
 import { getMyMembership } from "@/app/actions/membership"
 import { capabilitiesForAccount, VISITOR_RESTRICTION_MESSAGE } from "@/lib/tier-capabilities"
@@ -158,6 +159,13 @@ export async function getMyLedger(): Promise<LedgerEntry[]> {
   const ownerId = await getDataOwnerId()
   if (!ownerId) return []
   try {
+    // Accrue any due sub-account tariffs (recurring annual fee) before reading,
+    // so the master ledger is always current. Best-effort — never block a read.
+    try {
+      await reconcileSubAccountFees(ownerId)
+    } catch (err) {
+      console.log("[v0] reconcileSubAccountFees failed:", (err as Error).message)
+    }
     return await readLedger(ownerId)
   } catch (err) {
     console.log("[v0] getMyLedger query failed:", (err as Error).message)

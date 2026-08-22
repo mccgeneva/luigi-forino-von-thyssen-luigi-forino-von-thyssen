@@ -10,8 +10,21 @@ import {
   getSubAccountById,
   updateSubAccountBeneficiary,
 } from "@/lib/sub-account-db"
-import { readLedgerEntries, upsertLedgerEntry, assertOwnerSolvent, deleteLedgerEntry } from "@/lib/ledger-db"
-import { MAIN_ACCOUNT_ID, type SubAccount } from "@/lib/sub-account-types"
+import {
+  readLedgerEntries,
+  upsertLedgerEntry,
+  assertOwnerSolvent,
+  deleteLedgerEntry,
+  availableByCurrency,
+} from "@/lib/ledger-db"
+import { convertCurrency } from "@/lib/fx"
+import {
+  serviceFeeFor,
+  SUB_ACCOUNT_ANNUAL_FEE,
+  SUB_ACCOUNT_FEE_CURRENCY,
+  formatSubAccountFee,
+} from "@/lib/sub-account-fees"
+import { MAIN_ACCOUNT_ID, type SubAccount, type SubAccountDoc } from "@/lib/sub-account-types"
 import type { LedgerEntry } from "@/lib/ledger-store"
 
 /**
@@ -64,6 +77,11 @@ export async function requestSubAccount(input: {
   purpose?: string
   beneficiaryName?: string
   beneficiaryDetails?: string
+  /** Uploaded UBO identity documents (passport + KYC). When both are present the
+   *  sub-account is a DECLARED UBO; otherwise it is flagged as an alias. */
+  kycDocuments?: SubAccountDoc[]
+  /** Required acceptance of personal legal responsibility for an alias account. */
+  legalResponsibilityAccepted?: boolean
 }): Promise<SubAccountResult<SubAccount>> {
   const session = await resolveCurrentSession()
   if (!session) return { ok: false, error: "Your session has expired. Please sign in again." }
@@ -86,12 +104,57 @@ export async function requestSubAccount(input: {
   if (label.length < 2) return { ok: false, error: "Enter a name for the sub-account (at least 2 characters)." }
   if (!/^[A-Z]{3}$/.test(currency)) return { ok: false, error: "Choose a valid currency." }
 
+  // UBO verification: keep only stored (blob-backed) docs, then require BOTH a
+  // passport AND a KYC document to count as a DECLARED sub-account. Anything
+  // less is an ALIAS, which is allowed only if the holder explicitly accepts
+  // personal legal responsibility for all activity under it.
+  const docs = (input.kycDocuments || []).filter(
+    (d) => d && (d.kind === "passport" || d.kind === "kyc") && typeof d.pathname === "string" && d.pathname.length > 0,
+  )
+  const hasPassport = docs.some((d) => d.kind === "passport")
+  const hasKyc = docs.some((d) => d.kind === "kyc")
+  const isDeclared = hasPassport && hasKyc
+  const verification: "declared" | "alias" = isDeclared ? "declared" : "alias"
+  if (!isDeclared && input.legalResponsibilityAccepted !== true) {
+    return {
+      ok: false,
+      error:
+        "Upload the beneficiary's passport and a KYC document to declare the UBO, or accept legal responsibility to continue as an alias sub-account.",
+    }
+  }
+  const legalResponsibilityAcceptedAt = !isDeclared ? new Date().toISOString() : undefined
+
   const ownerId = session.dataOwnerId
   try {
     const existing = await listSubAccountsForUser(ownerId)
     const openCount = existing.filter((s) => s.status === "pending" || s.status === "active").length
     if (openCount >= MAX_SUB_ACCOUNTS) {
       return { ok: false, error: `You have reached the maximum of ${MAX_SUB_ACCOUNTS} sub-accounts.` }
+    }
+
+    // Affordability gate — checked NOW, before the request reaches the
+    // administrator. Activation charges the Master Account the service fee (by
+    // verification) plus the first annual fee immediately, so the client must
+    // already hold enough to cover them; otherwise the request is rejected here
+    // with a clear explanation rather than being approved and then bouncing.
+    const serviceFee = serviceFeeFor(verification)
+    const dueAtActivation = serviceFee + SUB_ACCOUNT_ANNUAL_FEE
+    const available = availableByCurrency(await readLedgerEntries(ownerId))
+    const availableEur = Object.entries(available).reduce(
+      (sum, [cur, amt]) => sum + convertCurrency(amt, cur, SUB_ACCOUNT_FEE_CURRENCY),
+      0,
+    )
+    if (dueAtActivation > availableEur + 0.01) {
+      return {
+        ok: false,
+        error: `Opening this ${verification === "declared" ? "declared" : "alias"} sub-account costs ${formatSubAccountFee(
+          serviceFee,
+        )} service + ${formatSubAccountFee(SUB_ACCOUNT_ANNUAL_FEE)} annual = ${formatSubAccountFee(
+          dueAtActivation,
+        )} on activation, but your Master Account has only ${formatSubAccountFee(
+          Math.max(0, availableEur),
+        )} available. Please fund your account and try again.`,
+      }
     }
 
     const id = `SUB-${Date.now().toString(36).toUpperCase()}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`
@@ -103,15 +166,19 @@ export async function requestSubAccount(input: {
       purpose: purpose || undefined,
       beneficiaryName: beneficiaryName || undefined,
       beneficiaryDetails: beneficiaryDetails || undefined,
+      verification,
+      kycDocuments: docs.length ? docs : undefined,
+      legalResponsibilityAcceptedAt,
     })
 
     await logActivity({
       action: `Requested a new ${currency} sub-account "${label}"`,
       category: "Accounts",
       details: {
-        summary: `Client opened sub-account request ${id} ("${label}", ${currency}). Awaiting administrator IBAN assignment.`,
+        summary: `Client opened sub-account request ${id} ("${label}", ${currency}, ${verification === "declared" ? "UBO declared with KYC + passport" : "alias — holder accepted legal responsibility"}). Awaiting administrator IBAN assignment.`,
         referenceId: id,
         purpose: purpose || "(none)",
+        verification,
       },
     })
 

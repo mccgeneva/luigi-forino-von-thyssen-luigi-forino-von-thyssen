@@ -1,6 +1,23 @@
 import "server-only"
 import { query } from "@/lib/db"
-import type { SubAccount, SubAccountStatus } from "@/lib/sub-account-types"
+import type { SubAccount, SubAccountStatus, SubAccountVerification, SubAccountDoc } from "@/lib/sub-account-types"
+import { buildSubAccountFeeEntries } from "@/lib/sub-account-fees"
+import { upsertLedgerEntry } from "@/lib/ledger-db"
+
+/** Coerce a jsonb column (already parsed by node-postgres, or a JSON string) into
+ *  the document array shape, tolerating null/legacy values. */
+function parseDocs(value: unknown): SubAccountDoc[] | undefined {
+  if (!value) return undefined
+  let arr: unknown = value
+  if (typeof value === "string") {
+    try {
+      arr = JSON.parse(value)
+    } catch {
+      return undefined
+    }
+  }
+  return Array.isArray(arr) ? (arr as SubAccountDoc[]) : undefined
+}
 
 /**
  * Server-only persistence for client-managed sub-accounts (see
@@ -34,6 +51,14 @@ async function ensureTable(): Promise<void> {
   // Additive migrations for the sub-account's own beneficiary (idempotent).
   await query(`ALTER TABLE sub_accounts ADD COLUMN IF NOT EXISTS beneficiary_name text`)
   await query(`ALTER TABLE sub_accounts ADD COLUMN IF NOT EXISTS beneficiary_details text`)
+  // Additive migrations for UBO verification (KYC/passport) vs alias liability.
+  await query(`ALTER TABLE sub_accounts ADD COLUMN IF NOT EXISTS verification text NOT NULL DEFAULT 'alias'`)
+  await query(`ALTER TABLE sub_accounts ADD COLUMN IF NOT EXISTS kyc_documents jsonb`)
+  await query(`ALTER TABLE sub_accounts ADD COLUMN IF NOT EXISTS legal_ack_at timestamptz`)
+  // Lifecycle anchors for tariff accrual: activation date (annual-fee anchor,
+  // preserved through closure) and closure date (stops annual accrual).
+  await query(`ALTER TABLE sub_accounts ADD COLUMN IF NOT EXISTS activated_at timestamptz`)
+  await query(`ALTER TABLE sub_accounts ADD COLUMN IF NOT EXISTS closed_at timestamptz`)
   ensured = true
 }
 
@@ -46,12 +71,17 @@ function rowToSubAccount(r: Record<string, unknown>): SubAccount {
     purpose: (r.purpose as string) ?? undefined,
     beneficiaryName: (r.beneficiary_name as string) ?? undefined,
     beneficiaryDetails: (r.beneficiary_details as string) ?? undefined,
+    verification: ((r.verification as string) ?? "alias") as SubAccountVerification,
+    kycDocuments: parseDocs(r.kyc_documents),
+    legalResponsibilityAcceptedAt: r.legal_ack_at ? new Date(r.legal_ack_at as string).toISOString() : undefined,
     status: ((r.status as string) ?? "pending") as SubAccountStatus,
     iban: (r.iban as string) ?? undefined,
     bic: (r.bic as string) ?? undefined,
     adminNote: (r.admin_note as string) ?? undefined,
     createdAt: r.created_at ? new Date(r.created_at as string).toISOString() : new Date().toISOString(),
     decidedAt: r.decided_at ? new Date(r.decided_at as string).toISOString() : undefined,
+    activatedAt: r.activated_at ? new Date(r.activated_at as string).toISOString() : undefined,
+    closedAt: r.closed_at ? new Date(r.closed_at as string).toISOString() : undefined,
   }
 }
 
@@ -64,11 +94,16 @@ export async function insertSubAccount(input: {
   purpose?: string
   beneficiaryName?: string
   beneficiaryDetails?: string
+  verification: SubAccountVerification
+  kycDocuments?: SubAccountDoc[]
+  legalResponsibilityAcceptedAt?: string
 }): Promise<SubAccount> {
   await ensureTable()
   const { rows } = await query(
-    `INSERT INTO sub_accounts (id, user_id, label, currency, purpose, beneficiary_name, beneficiary_details, status)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,'pending') RETURNING *`,
+    `INSERT INTO sub_accounts
+       (id, user_id, label, currency, purpose, beneficiary_name, beneficiary_details,
+        verification, kyc_documents, legal_ack_at, status)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10,'pending') RETURNING *`,
     [
       input.id,
       input.userId,
@@ -77,6 +112,9 @@ export async function insertSubAccount(input: {
       input.purpose ?? null,
       input.beneficiaryName ?? null,
       input.beneficiaryDetails ?? null,
+      input.verification,
+      input.kycDocuments && input.kycDocuments.length ? JSON.stringify(input.kycDocuments) : null,
+      input.legalResponsibilityAcceptedAt ?? null,
     ],
   )
   return rowToSubAccount(rows[0])
@@ -133,7 +171,8 @@ export async function activateSubAccount(
   await ensureTable()
   const { rows } = await query(
     `UPDATE sub_accounts
-        SET status = 'active', iban = $2, bic = $3, admin_note = $4, decided_at = now()
+        SET status = 'active', iban = $2, bic = $3, admin_note = $4,
+            decided_at = now(), activated_at = COALESCE(activated_at, now())
       WHERE id = $1 AND status IN ('pending','rejected')
       RETURNING *`,
     [id, input.iban, input.bic ?? null, input.adminNote ?? null],
@@ -154,12 +193,42 @@ export async function rejectSubAccount(id: string, adminNote?: string): Promise<
   return rows[0] ? rowToSubAccount(rows[0]) : null
 }
 
+/**
+ * Post any sub-account tariffs (service / annual / closing) that have accrued
+ * for an owner but are not yet on the ledger. Runs on every ledger read so the
+ * recurring ANNUAL fee accrues cross-device with no scheduler; deterministic
+ * `SUBA-*` ids make it idempotent (existing rows are skipped). Charges land on
+ * the owner's MASTER ledger, so tariffs reflect on the Master Account.
+ */
+export async function reconcileSubAccountFees(ownerId: string, now: Date = new Date()): Promise<void> {
+  await ensureTable()
+  const subs = await listSubAccountsForUser(ownerId)
+  const relevant = subs.filter((s) => s.status === "active" || s.status === "closed")
+  if (!relevant.length) return
+
+  const existing = new Set<string>()
+  const { rows } = await query(`SELECT entry_id FROM ledger_entries WHERE user_id = $1 AND entry_id LIKE 'SUBA-%'`, [
+    ownerId,
+  ])
+  for (const r of rows) existing.add(String((r as Record<string, unknown>).entry_id))
+
+  const nowIso = now.toISOString()
+  for (const sub of relevant) {
+    for (const post of buildSubAccountFeeEntries(sub, nowIso)) {
+      if (existing.has(post.id)) continue
+      await upsertLedgerEntry(ownerId, post)
+      existing.add(post.id)
+    }
+  }
+}
+
 /** Administrator: close an active sub-account (kept for the audit trail). */
 export async function closeSubAccount(id: string, adminNote?: string): Promise<SubAccount | null> {
   await ensureTable()
   const { rows } = await query(
     `UPDATE sub_accounts
-        SET status = 'closed', admin_note = COALESCE($2, admin_note), decided_at = now()
+        SET status = 'closed', admin_note = COALESCE($2, admin_note),
+            decided_at = now(), closed_at = COALESCE(closed_at, now())
       WHERE id = $1 AND status = 'active'
       RETURNING *`,
     [id, adminNote ?? null],

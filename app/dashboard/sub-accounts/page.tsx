@@ -2,7 +2,25 @@
 
 import { useEffect, useMemo, useState } from "react"
 import { toast } from "sonner"
-import { Layers, Plus, ArrowLeftRight, Landmark, Clock, CheckCircle2, XCircle, Wallet, Copy, Check, User, Pencil } from "lucide-react"
+import {
+  Layers,
+  Plus,
+  ArrowLeftRight,
+  Landmark,
+  Clock,
+  CheckCircle2,
+  XCircle,
+  Wallet,
+  Copy,
+  Check,
+  User,
+  Pencil,
+  UploadCloud,
+  ShieldCheck,
+  ShieldAlert,
+  FileText,
+  X,
+} from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -25,6 +43,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
+import { Checkbox } from "@/components/ui/checkbox"
+import { upload } from "@vercel/blob/client"
 import { useLedger } from "@/lib/ledger-store"
 import { GATEWAY_CURRENCIES } from "@/lib/gateway-catalog"
 import {
@@ -33,7 +53,13 @@ import {
   transferToSubAccount,
   updateMySubAccountBeneficiary,
 } from "@/app/actions/sub-accounts"
-import { MAIN_ACCOUNT_ID, SUB_ACCOUNT_STATUS_LABEL, type SubAccount } from "@/lib/sub-account-types"
+import { MAIN_ACCOUNT_ID, SUB_ACCOUNT_STATUS_LABEL, type SubAccount, type SubAccountDoc } from "@/lib/sub-account-types"
+import {
+  SUB_ACCOUNT_SERVICE_FEE,
+  SUB_ACCOUNT_ANNUAL_FEE,
+  SUB_ACCOUNT_CLOSING_FEE,
+  formatSubAccountFee,
+} from "@/lib/sub-account-fees"
 
 function formatMoney(amount: number, currency: string): string {
   try {
@@ -71,6 +97,12 @@ export default function SubAccountsPage() {
   const [beneficiaryName, setBeneficiaryName] = useState("")
   const [beneficiaryDetails, setBeneficiaryDetails] = useState("")
   const [creating, setCreating] = useState(false)
+  // UBO identity documents (passport + KYC). Both present ⇒ declared; otherwise
+  // the sub-account is an alias requiring the legal-responsibility acknowledgment.
+  const [passportDoc, setPassportDoc] = useState<SubAccountDoc | null>(null)
+  const [kycDoc, setKycDoc] = useState<SubAccountDoc | null>(null)
+  const [uploading, setUploading] = useState<null | "passport" | "kyc">(null)
+  const [aliasAccepted, setAliasAccepted] = useState(false)
 
   // Edit-beneficiary dialog
   const [benOpen, setBenOpen] = useState(false)
@@ -134,23 +166,74 @@ export default function SubAccountsPage() {
     setTimeout(() => setCopied((c) => (c === key ? null : c)), 1500)
   }
 
+  // Both identity documents present ⇒ the UBO is declared (no alias liability).
+  const isDeclared = !!passportDoc && !!kycDoc
+  // When not declared, the holder must accept legal responsibility for the alias.
+  const createBlocked =
+    label.trim().length < 2 || creating || uploading !== null || (!isDeclared && !aliasAccepted)
+
+  const handleUpload = async (kind: "passport" | "kyc", file: File | undefined) => {
+    if (!file) return
+    setUploading(kind)
+    try {
+      const safe = file.name.replace(/[^a-zA-Z0-9._-]/g, "_")
+      const result = await upload(`sub-accounts/${kind}/${Date.now()}-${safe}`, file, {
+        access: "public",
+        handleUploadUrl: "/api/sub-accounts/blob-upload",
+      })
+      const doc: SubAccountDoc = {
+        kind,
+        fileName: file.name,
+        uploadedAt: new Date().toISOString(),
+        pathname: result.pathname,
+        url: result.url,
+        contentType: file.type || "application/octet-stream",
+        size: file.size,
+      }
+      if (kind === "passport") setPassportDoc(doc)
+      else setKycDoc(doc)
+    } catch {
+      toast.error("Upload failed", { description: `Could not upload "${file.name}". Please try again.` })
+    } finally {
+      setUploading(null)
+    }
+  }
+
+  const resetCreateForm = () => {
+    setLabel("")
+    setPurpose("")
+    setCurrency("EUR")
+    setBeneficiaryName("")
+    setBeneficiaryDetails("")
+    setPassportDoc(null)
+    setKycDoc(null)
+    setAliasAccepted(false)
+  }
+
   const handleCreate = async () => {
     setCreating(true)
-    const res = await requestSubAccount({ label, currency, purpose, beneficiaryName, beneficiaryDetails })
+    const kycDocuments = [passportDoc, kycDoc].filter(Boolean) as SubAccountDoc[]
+    const res = await requestSubAccount({
+      label,
+      currency,
+      purpose,
+      beneficiaryName,
+      beneficiaryDetails,
+      kycDocuments,
+      legalResponsibilityAccepted: !isDeclared ? aliasAccepted : undefined,
+    })
     setCreating(false)
     if (!res.ok) {
       toast.error("Could not open sub-account", { description: res.error })
       return
     }
     toast.success("Sub-account requested", {
-      description: "An administrator will assign its IBAN and activate it shortly.",
+      description: isDeclared
+        ? "UBO declared. An administrator will assign its IBAN and activate it shortly."
+        : "Alias sub-account requested. An administrator will assign its IBAN shortly.",
     })
     setCreateOpen(false)
-    setLabel("")
-    setPurpose("")
-    setCurrency("EUR")
-    setBeneficiaryName("")
-    setBeneficiaryDetails("")
+    resetCreateForm()
     await loadSubs()
   }
 
@@ -320,13 +403,139 @@ export default function SubAccountsPage() {
                     Each sub-account can name its own beneficiary, separate from your main account.
                   </p>
                 </div>
+
+                {/* UBO identity verification — declared (KYC + passport) vs alias */}
+                <div className="space-y-2 rounded-lg border border-border/70 bg-muted/30 p-3">
+                  <div className="flex items-center gap-1.5">
+                    {isDeclared ? (
+                      <ShieldCheck className="h-3.5 w-3.5 text-emerald-600" />
+                    ) : (
+                      <ShieldAlert className="h-3.5 w-3.5 text-amber-600" />
+                    )}
+                    <Label className="text-sm">Beneficiary identity (UBO)</Label>
+                  </div>
+                  <p className="text-[11px] leading-relaxed text-muted-foreground">
+                    Upload the beneficiary&apos;s passport and a KYC document to declare the ultimate
+                    beneficial owner. Without them the sub-account is flagged as an alias.
+                  </p>
+
+                  {(
+                    [
+                      { kind: "passport", label: "Passport", doc: passportDoc },
+                      { kind: "kyc", label: "KYC document", doc: kycDoc },
+                    ] as const
+                  ).map((slot) => (
+                    <div
+                      key={slot.kind}
+                      className="flex items-center justify-between gap-2 rounded-md border border-border/60 bg-background px-2.5 py-2"
+                    >
+                      <div className="flex min-w-0 items-center gap-2">
+                        <FileText className="h-4 w-4 shrink-0 text-muted-foreground" />
+                        <div className="min-w-0">
+                          <p className="truncate text-xs font-medium text-foreground">{slot.label}</p>
+                          {slot.doc ? (
+                            <p className="truncate text-[11px] text-emerald-600">{slot.doc.fileName}</p>
+                          ) : (
+                            <p className="text-[11px] text-muted-foreground">Not uploaded</p>
+                          )}
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-1">
+                        {slot.doc && (
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-7 w-7"
+                            onClick={() => (slot.kind === "passport" ? setPassportDoc(null) : setKycDoc(null))}
+                            aria-label={`Remove ${slot.label}`}
+                          >
+                            <X className="h-3.5 w-3.5" />
+                          </Button>
+                        )}
+                        <input
+                          id={`sub-upload-${slot.kind}`}
+                          type="file"
+                          accept=".pdf,.jpg,.jpeg,.png,.webp"
+                          className="hidden"
+                          onChange={(e) => {
+                            const f = e.target.files?.[0]
+                            void handleUpload(slot.kind, f)
+                            e.target.value = ""
+                          }}
+                        />
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          disabled={uploading === slot.kind}
+                          onClick={() => document.getElementById(`sub-upload-${slot.kind}`)?.click()}
+                        >
+                          <UploadCloud className="mr-1.5 h-3.5 w-3.5" />
+                          {uploading === slot.kind ? "Uploading…" : slot.doc ? "Replace" : "Upload"}
+                        </Button>
+                      </div>
+                    </div>
+                  ))}
+
+                  {isDeclared ? (
+                    <div className="flex items-center gap-1.5 rounded-md border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-2 text-[11px] text-emerald-700">
+                      <ShieldCheck className="h-3.5 w-3.5 shrink-0" />
+                      UBO declared — full KYC on file. No personal-liability flag applies.
+                    </div>
+                  ) : (
+                    <div className="space-y-2 rounded-md border border-amber-500/30 bg-amber-500/10 p-2.5">
+                      <p className="flex items-start gap-1.5 text-[11px] leading-relaxed text-amber-700">
+                        <ShieldAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                        <span>
+                          Without KYC + passport this sub-account is an <strong>alias</strong>. It can be
+                          used, but all transactions and usage under it are your own legal responsibility.
+                          This flag is removed once you declare the UBO with KYC and passport.
+                        </span>
+                      </p>
+                      <label className="flex items-start gap-2 text-[11px] leading-relaxed text-foreground">
+                        <Checkbox
+                          checked={aliasAccepted}
+                          onCheckedChange={(v) => setAliasAccepted(v === true)}
+                          className="mt-0.5"
+                        />
+                        <span>
+                          I understand and accept full legal responsibility for all activity under this
+                          alias sub-account.
+                        </span>
+                      </label>
+                    </div>
+                  )}
+                </div>
+
+                {/* Applicable tariffs (charged to the Master Account on activation) */}
+                <div className="space-y-1 rounded-lg border border-border/70 bg-muted/30 p-3 text-[11px] leading-relaxed">
+                  <p className="font-medium text-foreground">Tariffs (applied to your Master Account)</p>
+                  <div className="flex items-center justify-between text-muted-foreground">
+                    <span>Service fee {isDeclared ? "(declared UBO)" : "(alias)"}</span>
+                    <span className="font-medium text-foreground">
+                      {formatSubAccountFee(isDeclared ? SUB_ACCOUNT_SERVICE_FEE.declared : SUB_ACCOUNT_SERVICE_FEE.alias)}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between text-muted-foreground">
+                    <span>Annual fee</span>
+                    <span className="font-medium text-foreground">{formatSubAccountFee(SUB_ACCOUNT_ANNUAL_FEE)}</span>
+                  </div>
+                  <div className="flex items-center justify-between text-muted-foreground">
+                    <span>Closing fee (on closure)</span>
+                    <span className="font-medium text-foreground">{formatSubAccountFee(SUB_ACCOUNT_CLOSING_FEE)}</span>
+                  </div>
+                  <p className="pt-1 text-muted-foreground">
+                    The service and first annual fee are charged when an administrator activates the
+                    sub-account.
+                  </p>
+                </div>
               </div>
               <DialogFooter>
                 <Button variant="ghost" onClick={() => setCreateOpen(false)} disabled={creating}>
                   Cancel
                 </Button>
-                <Button onClick={handleCreate} disabled={creating || label.trim().length < 2}>
-                  {creating ? "Submitting…" : "Submit request"}
+                <Button onClick={handleCreate} disabled={createBlocked}>
+                  {creating ? "Submitting…" : uploading ? "Uploading…" : "Submit request"}
                 </Button>
               </DialogFooter>
             </DialogContent>
@@ -370,10 +579,21 @@ export default function SubAccountsPage() {
                 <Card key={sub.id} className="overflow-hidden">
                   <CardHeader className="pb-3">
                     <div className="flex items-start justify-between gap-3">
-                      <div className="min-w-0">
-                        <CardTitle className="truncate text-base">{sub.label}</CardTitle>
-                        <CardDescription className="mt-0.5">{sub.currency} compartment</CardDescription>
-                      </div>
+                        <div className="min-w-0">
+                          <CardTitle className="truncate text-base">{sub.label}</CardTitle>
+                          <CardDescription className="mt-0.5">{sub.currency} compartment</CardDescription>
+                          {sub.verification === "alias" ? (
+                            <span className="mt-1 inline-flex items-center gap-1 rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-[10px] font-medium text-amber-600">
+                              <ShieldAlert className="h-3 w-3" />
+                              Alias · your legal responsibility
+                            </span>
+                          ) : (
+                            <span className="mt-1 inline-flex items-center gap-1 rounded-full border border-emerald-500/40 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-medium text-emerald-600">
+                              <ShieldCheck className="h-3 w-3" />
+                              UBO declared
+                            </span>
+                          )}
+                        </div>
                       <Badge variant="outline" className={`gap-1 ${STATUS_STYLE[sub.status]}`}>
                         <StatusIcon className="h-3 w-3" />
                         {SUB_ACCOUNT_STATUS_LABEL[sub.status]}

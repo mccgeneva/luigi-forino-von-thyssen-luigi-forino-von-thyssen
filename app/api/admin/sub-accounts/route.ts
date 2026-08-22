@@ -9,7 +9,26 @@ import {
   getSubAccountById,
 } from "@/lib/sub-account-db"
 import { insertNotification } from "@/lib/notifications-db"
+import { upsertLedgerEntry } from "@/lib/ledger-db"
+import { buildSubAccountFeeEntries } from "@/lib/sub-account-fees"
 import type { SubAccount } from "@/lib/sub-account-types"
+
+/**
+ * Post a sub-account's accrued tariffs to its owner's MASTER ledger immediately
+ * (deterministic SUBA-* ids ⇒ idempotent, so the ledger-read reconciler never
+ * double-charges). Best-effort: a fee-posting hiccup must not fail the admin
+ * authorization itself. Sub-accounts are stored under the master owner id, so
+ * `sub.userId` is already the master ledger owner.
+ */
+async function chargeSubAccountFees(sub: SubAccount): Promise<void> {
+  try {
+    for (const post of buildSubAccountFeeEntries(sub, new Date().toISOString())) {
+      await upsertLedgerEntry(sub.userId, post)
+    }
+  } catch (err) {
+    console.log("[v0] chargeSubAccountFees failed:", (err as Error).message)
+  }
+}
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -75,11 +94,16 @@ export async function POST(req: Request) {
       const updated = await activateSubAccount(id, { iban, bic: bic || undefined, adminNote: adminNote || undefined })
       if (!updated) return NextResponse.json({ ok: false, error: "That request could not be activated." })
 
+      // Apply the administrator authorization immediately: the service fee
+      // (€800 alias / €1,500 declared) and the first annual fee (€1,000) are
+      // charged to the Master Account the moment the sub-account is activated.
+      await chargeSubAccountFees(updated)
+
       await insertNotification({
         userId: updated.userId,
         tone: "success",
         title: "Sub-account activated",
-        body: `Your ${updated.currency} sub-account "${updated.label}" is active. IBAN ${iban}. You can now move funds into it.`,
+        body: `Your ${updated.currency} sub-account "${updated.label}" is active. IBAN ${iban}. The service and annual fees have been applied to your Master Account. You can now move funds into it.`,
         href: "/dashboard/sub-accounts",
       })
       return NextResponse.json({ ok: true, subAccount: updated })
@@ -111,11 +135,15 @@ export async function POST(req: Request) {
       if (!id) return NextResponse.json({ ok: false, error: "Missing sub-account id." })
       const updated = await closeSubAccount(id, adminNote || undefined)
       if (!updated) return NextResponse.json({ ok: false, error: "That sub-account could not be closed." })
+
+      // Apply the €350 closing fee to the Master Account immediately.
+      await chargeSubAccountFees(updated)
+
       await insertNotification({
         userId: updated.userId,
         tone: "info",
         title: "Sub-account closed",
-        body: `Your sub-account "${updated.label}" has been closed by an administrator.`,
+        body: `Your sub-account "${updated.label}" has been closed by an administrator. A €350.00 closing fee has been applied to your Master Account.`,
         href: "/dashboard/sub-accounts",
       })
       return NextResponse.json({ ok: true, subAccount: updated })

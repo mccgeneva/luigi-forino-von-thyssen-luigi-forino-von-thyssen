@@ -18,6 +18,31 @@ export type SubAccountStatus =
   | "rejected" // administrator declined the request
   | "closed" // closed by an administrator (kept for the audit trail)
 
+/**
+ * How the sub-account's beneficiary / UBO is verified:
+ * - "declared": the client uploaded the beneficiary's passport + a KYC document,
+ *   so the ultimate beneficial owner is fully declared and identity-verified.
+ * - "alias": no KYC/passport supplied. The compartment is allowed to operate as
+ *   an unverified alias, but ALL activity under it is the account holder's own
+ *   legal responsibility (acknowledged at request time). This liability is
+ *   removed once the UBO is declared with KYC + passport.
+ */
+export type SubAccountVerification = "declared" | "alias"
+
+/** A single identity document uploaded for the sub-account's UBO. The file
+ *  lives in Blob so an administrator can download and study it. */
+export interface SubAccountDoc {
+  /** Which document this is. */
+  kind: "passport" | "kyc"
+  fileName: string
+  uploadedAt: string
+  /** Blob coordinates for the stored file (absent for legacy/metadata-only). */
+  pathname?: string
+  url?: string
+  contentType?: string
+  size?: number
+}
+
 export interface SubAccount {
   /** Stable id, also used as the ledger `sub_account_id` tag. */
   id: string
@@ -35,6 +60,12 @@ export interface SubAccount {
   beneficiaryName?: string
   /** Optional free-text beneficiary details (address, bank, reference…). */
   beneficiaryDetails?: string
+  /** Whether the UBO is fully declared (KYC + passport) or an unverified alias. */
+  verification: SubAccountVerification
+  /** Identity documents uploaded for the UBO (passport + KYC) when declared. */
+  kycDocuments?: SubAccountDoc[]
+  /** When the client accepted personal legal responsibility for an alias. */
+  legalResponsibilityAcceptedAt?: string
   status: SubAccountStatus
   /** Assigned by the administrator on activation. */
   iban?: string
@@ -44,6 +75,12 @@ export interface SubAccount {
   createdAt: string
   /** When the administrator activated (assigned the IBAN) or rejected it. */
   decidedAt?: string
+  /** When the sub-account was first activated — the anchor for annual fees.
+   *  Preserved even after closure (unlike decidedAt, which tracks the last
+   *  decision). */
+  activatedAt?: string
+  /** When an administrator closed the sub-account (stops annual accrual). */
+  closedAt?: string
 }
 
 export const SUB_ACCOUNT_STATUS_LABEL: Record<SubAccountStatus, string> = {
