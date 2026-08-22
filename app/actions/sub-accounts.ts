@@ -11,7 +11,7 @@ import {
   updateSubAccountBeneficiary,
 } from "@/lib/sub-account-db"
 import { readLedgerEntries, upsertLedgerEntry, assertOwnerSolvent, deleteLedgerEntry } from "@/lib/ledger-db"
-import { MAIN_ACCOUNT_ID, type SubAccount } from "@/lib/sub-account-types"
+import { MAIN_ACCOUNT_ID, type SubAccount, type SubAccountDoc } from "@/lib/sub-account-types"
 import type { LedgerEntry } from "@/lib/ledger-store"
 
 /**
@@ -64,6 +64,11 @@ export async function requestSubAccount(input: {
   purpose?: string
   beneficiaryName?: string
   beneficiaryDetails?: string
+  /** Uploaded UBO identity documents (passport + KYC). When both are present the
+   *  sub-account is a DECLARED UBO; otherwise it is flagged as an alias. */
+  kycDocuments?: SubAccountDoc[]
+  /** Required acceptance of personal legal responsibility for an alias account. */
+  legalResponsibilityAccepted?: boolean
 }): Promise<SubAccountResult<SubAccount>> {
   const session = await resolveCurrentSession()
   if (!session) return { ok: false, error: "Your session has expired. Please sign in again." }
@@ -86,6 +91,26 @@ export async function requestSubAccount(input: {
   if (label.length < 2) return { ok: false, error: "Enter a name for the sub-account (at least 2 characters)." }
   if (!/^[A-Z]{3}$/.test(currency)) return { ok: false, error: "Choose a valid currency." }
 
+  // UBO verification: keep only stored (blob-backed) docs, then require BOTH a
+  // passport AND a KYC document to count as a DECLARED sub-account. Anything
+  // less is an ALIAS, which is allowed only if the holder explicitly accepts
+  // personal legal responsibility for all activity under it.
+  const docs = (input.kycDocuments || []).filter(
+    (d) => d && (d.kind === "passport" || d.kind === "kyc") && typeof d.pathname === "string" && d.pathname.length > 0,
+  )
+  const hasPassport = docs.some((d) => d.kind === "passport")
+  const hasKyc = docs.some((d) => d.kind === "kyc")
+  const isDeclared = hasPassport && hasKyc
+  const verification: "declared" | "alias" = isDeclared ? "declared" : "alias"
+  if (!isDeclared && input.legalResponsibilityAccepted !== true) {
+    return {
+      ok: false,
+      error:
+        "Upload the beneficiary's passport and a KYC document to declare the UBO, or accept legal responsibility to continue as an alias sub-account.",
+    }
+  }
+  const legalResponsibilityAcceptedAt = !isDeclared ? new Date().toISOString() : undefined
+
   const ownerId = session.dataOwnerId
   try {
     const existing = await listSubAccountsForUser(ownerId)
@@ -103,15 +128,19 @@ export async function requestSubAccount(input: {
       purpose: purpose || undefined,
       beneficiaryName: beneficiaryName || undefined,
       beneficiaryDetails: beneficiaryDetails || undefined,
+      verification,
+      kycDocuments: docs.length ? docs : undefined,
+      legalResponsibilityAcceptedAt,
     })
 
     await logActivity({
       action: `Requested a new ${currency} sub-account "${label}"`,
       category: "Accounts",
       details: {
-        summary: `Client opened sub-account request ${id} ("${label}", ${currency}). Awaiting administrator IBAN assignment.`,
+        summary: `Client opened sub-account request ${id} ("${label}", ${currency}, ${verification === "declared" ? "UBO declared with KYC + passport" : "alias — holder accepted legal responsibility"}). Awaiting administrator IBAN assignment.`,
         referenceId: id,
         purpose: purpose || "(none)",
+        verification,
       },
     })
 

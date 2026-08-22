@@ -1,6 +1,21 @@
 import "server-only"
 import { query } from "@/lib/db"
-import type { SubAccount, SubAccountStatus } from "@/lib/sub-account-types"
+import type { SubAccount, SubAccountStatus, SubAccountVerification, SubAccountDoc } from "@/lib/sub-account-types"
+
+/** Coerce a jsonb column (already parsed by node-postgres, or a JSON string) into
+ *  the document array shape, tolerating null/legacy values. */
+function parseDocs(value: unknown): SubAccountDoc[] | undefined {
+  if (!value) return undefined
+  let arr: unknown = value
+  if (typeof value === "string") {
+    try {
+      arr = JSON.parse(value)
+    } catch {
+      return undefined
+    }
+  }
+  return Array.isArray(arr) ? (arr as SubAccountDoc[]) : undefined
+}
 
 /**
  * Server-only persistence for client-managed sub-accounts (see
@@ -34,6 +49,10 @@ async function ensureTable(): Promise<void> {
   // Additive migrations for the sub-account's own beneficiary (idempotent).
   await query(`ALTER TABLE sub_accounts ADD COLUMN IF NOT EXISTS beneficiary_name text`)
   await query(`ALTER TABLE sub_accounts ADD COLUMN IF NOT EXISTS beneficiary_details text`)
+  // Additive migrations for UBO verification (KYC/passport) vs alias liability.
+  await query(`ALTER TABLE sub_accounts ADD COLUMN IF NOT EXISTS verification text NOT NULL DEFAULT 'alias'`)
+  await query(`ALTER TABLE sub_accounts ADD COLUMN IF NOT EXISTS kyc_documents jsonb`)
+  await query(`ALTER TABLE sub_accounts ADD COLUMN IF NOT EXISTS legal_ack_at timestamptz`)
   ensured = true
 }
 
@@ -46,6 +65,9 @@ function rowToSubAccount(r: Record<string, unknown>): SubAccount {
     purpose: (r.purpose as string) ?? undefined,
     beneficiaryName: (r.beneficiary_name as string) ?? undefined,
     beneficiaryDetails: (r.beneficiary_details as string) ?? undefined,
+    verification: ((r.verification as string) ?? "alias") as SubAccountVerification,
+    kycDocuments: parseDocs(r.kyc_documents),
+    legalResponsibilityAcceptedAt: r.legal_ack_at ? new Date(r.legal_ack_at as string).toISOString() : undefined,
     status: ((r.status as string) ?? "pending") as SubAccountStatus,
     iban: (r.iban as string) ?? undefined,
     bic: (r.bic as string) ?? undefined,
@@ -64,11 +86,16 @@ export async function insertSubAccount(input: {
   purpose?: string
   beneficiaryName?: string
   beneficiaryDetails?: string
+  verification: SubAccountVerification
+  kycDocuments?: SubAccountDoc[]
+  legalResponsibilityAcceptedAt?: string
 }): Promise<SubAccount> {
   await ensureTable()
   const { rows } = await query(
-    `INSERT INTO sub_accounts (id, user_id, label, currency, purpose, beneficiary_name, beneficiary_details, status)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,'pending') RETURNING *`,
+    `INSERT INTO sub_accounts
+       (id, user_id, label, currency, purpose, beneficiary_name, beneficiary_details,
+        verification, kyc_documents, legal_ack_at, status)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10,'pending') RETURNING *`,
     [
       input.id,
       input.userId,
@@ -77,6 +104,9 @@ export async function insertSubAccount(input: {
       input.purpose ?? null,
       input.beneficiaryName ?? null,
       input.beneficiaryDetails ?? null,
+      input.verification,
+      input.kycDocuments && input.kycDocuments.length ? JSON.stringify(input.kycDocuments) : null,
+      input.legalResponsibilityAcceptedAt ?? null,
     ],
   )
   return rowToSubAccount(rows[0])

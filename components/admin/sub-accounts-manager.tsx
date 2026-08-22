@@ -1,14 +1,16 @@
 "use client"
 
 import { useCallback, useEffect, useMemo, useState } from "react"
+import { createPortal } from "react-dom"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { Badge } from "@/components/ui/badge"
-import { Layers, Check, X, Loader2, RefreshCw, Search } from "lucide-react"
-import type { SubAccount } from "@/lib/sub-account-types"
+import { Layers, Check, X, Loader2, RefreshCw, Search, ShieldCheck, ShieldAlert, FileText, ArrowLeft, Download } from "lucide-react"
+import type { SubAccount, SubAccountDoc } from "@/lib/sub-account-types"
+import { blobFileUrl } from "@/lib/kyc-types"
 
 type AdminRow = SubAccount & { holderName: string; holderEmail: string }
 
@@ -19,6 +21,82 @@ const STATUS_VARIANT: Record<string, string> = {
   closed: "border-muted-foreground/30 text-muted-foreground",
 }
 
+const DOC_LABEL: Record<SubAccountDoc["kind"], string> = { passport: "Passport", kyc: "KYC document" }
+
+/**
+ * In-app overlay for viewing an uploaded UBO document. NEVER use target="_blank"
+ * in the installed PWA (dead links) — render an iframe preview with an explicit
+ * Back + Download toolbar, and download via the share-sheet / object-URL path.
+ */
+function DocViewer({ doc, passcode, onClose }: { doc: SubAccountDoc; passcode: string; onClose: () => void }) {
+  const [downloading, setDownloading] = useState(false)
+  const url = doc.pathname ? blobFileUrl(doc.pathname, passcode) : doc.url || ""
+
+  const handleDownload = async () => {
+    if (!url) return
+    setDownloading(true)
+    try {
+      const res = await fetch(url)
+      const blob = await res.blob()
+      const file = new File([blob], doc.fileName || "document", { type: blob.type || "application/octet-stream" })
+      const nav = navigator as Navigator & { canShare?: (d: { files: File[] }) => boolean }
+      if (typeof navigator.share === "function" && nav.canShare?.({ files: [file] })) {
+        try {
+          await navigator.share({ files: [file] })
+          return
+        } catch (err) {
+          if ((err as Error).name === "AbortError") return
+        }
+      }
+      const objectUrl = URL.createObjectURL(blob)
+      const a = document.createElement("a")
+      a.href = objectUrl
+      a.download = doc.fileName || "document"
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+      setTimeout(() => URL.revokeObjectURL(objectUrl), 4000)
+    } catch {
+      /* best effort */
+    } finally {
+      setDownloading(false)
+    }
+  }
+
+  return createPortal(
+    <div className="fixed inset-0 z-[100] flex flex-col bg-background">
+      <div className="flex shrink-0 items-center justify-between gap-2 border-b border-border p-3">
+        <div className="flex min-w-0 items-center gap-2">
+          <Button variant="ghost" size="sm" onClick={onClose}>
+            <ArrowLeft className="mr-1.5 h-4 w-4" />
+            Back
+          </Button>
+          <span className="truncate text-sm font-medium text-foreground">
+            {DOC_LABEL[doc.kind]} — {doc.fileName}
+          </span>
+        </div>
+        <div className="flex items-center gap-1">
+          <Button variant="outline" size="sm" onClick={() => void handleDownload()} disabled={downloading}>
+            {downloading ? <Loader2 className="mr-1.5 h-4 w-4 animate-spin" /> : <Download className="mr-1.5 h-4 w-4" />}
+            Download
+          </Button>
+          <Button variant="ghost" size="icon" onClick={onClose} aria-label="Close">
+            <X className="h-4 w-4" />
+          </Button>
+        </div>
+      </div>
+      {url ? (
+        <iframe src={url} title={`${DOC_LABEL[doc.kind]} preview`} className="min-h-0 flex-1 bg-muted" />
+      ) : (
+        <div className="flex flex-1 items-center justify-center text-sm text-muted-foreground">
+          This document was not stored (metadata only).
+        </div>
+      )}
+    </div>,
+    document.body,
+  )
+}
+
 export function SubAccountsManager({ passcode }: { passcode: string }) {
   const [rows, setRows] = useState<AdminRow[]>([])
   const [loading, setLoading] = useState(true)
@@ -27,6 +105,8 @@ export function SubAccountsManager({ passcode }: { passcode: string }) {
   const [busyId, setBusyId] = useState<string | null>(null)
   // Per-row editable IBAN/BIC/note inputs for activation.
   const [drafts, setDrafts] = useState<Record<string, { iban: string; bic: string; note: string }>>({})
+  // Currently-open UBO document in the in-app viewer.
+  const [viewerDoc, setViewerDoc] = useState<SubAccountDoc | null>(null)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -210,7 +290,45 @@ export function SubAccountsManager({ passcode }: { passcode: string }) {
                           {row.beneficiaryDetails ? ` — ${row.beneficiaryDetails}` : ""}
                         </p>
                       )}
-                      <p className="mt-1 text-xs text-muted-foreground">
+
+                      {/* UBO verification: declared (KYC + passport) vs alias liability */}
+                      <div className="mt-2">
+                        {row.verification === "declared" ? (
+                          <Badge variant="outline" className="border-emerald-500/40 text-emerald-600">
+                            <ShieldCheck className="mr-1 h-3 w-3" />
+                            UBO declared · KYC + passport
+                          </Badge>
+                        ) : (
+                          <Badge variant="outline" className="border-amber-500/50 text-amber-600">
+                            <ShieldAlert className="mr-1 h-3 w-3" />
+                            Alias · client legal responsibility
+                          </Badge>
+                        )}
+                        {row.verification !== "declared" && row.legalResponsibilityAcceptedAt && (
+                          <p className="mt-1 text-[11px] text-muted-foreground">
+                            Holder accepted legal responsibility on{" "}
+                            {new Date(row.legalResponsibilityAcceptedAt).toLocaleString()}.
+                          </p>
+                        )}
+                        {row.kycDocuments && row.kycDocuments.length > 0 && (
+                          <div className="mt-2 flex flex-wrap gap-2">
+                            {row.kycDocuments.map((doc, i) => (
+                              <Button
+                                key={`${row.id}-${doc.kind}-${i}`}
+                                variant="outline"
+                                size="sm"
+                                className="h-8"
+                                onClick={() => setViewerDoc(doc)}
+                              >
+                                <FileText className="mr-1.5 h-3.5 w-3.5" />
+                                {DOC_LABEL[doc.kind]}
+                              </Button>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+
+                      <p className="mt-2 text-xs text-muted-foreground">
                         Requested {new Date(row.createdAt).toLocaleString()}
                       </p>
                       {row.status === "active" && row.iban && (
@@ -274,6 +392,7 @@ export function SubAccountsManager({ passcode }: { passcode: string }) {
           </div>
         )}
       </CardContent>
+      {viewerDoc && <DocViewer doc={viewerDoc} passcode={passcode} onClose={() => setViewerDoc(null)} />}
     </Card>
   )
 }
