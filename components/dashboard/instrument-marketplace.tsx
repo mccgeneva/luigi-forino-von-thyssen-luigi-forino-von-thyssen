@@ -50,6 +50,7 @@ import {
   MARKET_INSTRUMENT_TYPES,
   instrumentTypesByCategory,
   tenorLabel,
+  MCC_HOLDING_OWNER,
 } from "@/lib/instrument-marketplace"
 import {
   getPublishedInstruments,
@@ -357,6 +358,10 @@ export function InstrumentMarketplace() {
           assignable: target.assignable,
           monetizable: target.monetizable,
           tradeType: `${actionLabel} ${action === "reserve" ? "hold" : "acquisition"}`,
+          acquisitionAction: action,
+          // Reserve keeps ownership with MCC HOLDING SA (client is assignee,
+          // 75/25 benefit split); lease/purchase transfer to the client.
+          owner: action === "reserve" ? MCC_HOLDING_OWNER : undefined,
           ...ids,
           isin: target.isin,
           cusip: target.cusip ?? ids.cusip,

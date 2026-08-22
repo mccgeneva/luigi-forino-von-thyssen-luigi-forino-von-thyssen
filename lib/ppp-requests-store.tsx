@@ -23,6 +23,16 @@ export interface PPPRequest {
   submittedAt: string // ISO timestamp of the client request
   decidedAt?: string // ISO timestamp of approval/rejection
   decisionNote?: string // administrator note (e.g. rejection reason)
+
+  // ---- MCC-owned funding instrument & 75/25 benefit split (optional) --------
+  /** Id of the MCC HOLDING SA-owned instrument funding this investment, if any. */
+  fundingInstrumentId?: string
+  /** Human label of that instrument (type + id) for display/audit. */
+  fundingInstrumentLabel?: string
+  /** MCC HOLDING SA share of the RETURN (0.75) when funded by an MCC instrument. */
+  mccBenefitRate?: number
+  /** Assignee client share of the RETURN (0.25) when funded by an MCC instrument. */
+  clientBenefitRate?: number
 }
 
 interface PPPRequestsContextValue {
