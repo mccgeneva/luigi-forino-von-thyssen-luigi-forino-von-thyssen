@@ -938,6 +938,25 @@ async function matchRecordAndCredit(
           decision: "Auto-reconciled",
         },
       })
+
+      // Alert the account owner in the Bell that funds landed. This is the one
+      // incoming path (manual admin entry + SWIFT ingestion, both routed here)
+      // that previously credited the balance WITHOUT notifying the client.
+      // Best-effort: a notification failure must never undo the recorded credit.
+      try {
+        const creditedLabel = `${payment.currency} ${amount.toLocaleString("en-US")}`
+        await insertNotification({
+          userId: account.userId,
+          tone: "success",
+          title: `Payment received — ${creditedLabel}`,
+          body: `You received ${creditedLabel} from ${payment.payer.trim()}${
+            payment.reference?.trim() ? ` (reference ${payment.reference.trim()})` : ""
+          }${payment.swiftType ? ` via SWIFT ${payment.swiftType}` : ""}. The funds were credited to your Master Account.`,
+          href: "/dashboard",
+        })
+      } catch (err) {
+        console.log("[v0] reconciliation credit notification failed:", (err as Error).message)
+      }
     } else {
       // Should not happen, but never lose a payment — park for review.
       record.status = "needs_review"
