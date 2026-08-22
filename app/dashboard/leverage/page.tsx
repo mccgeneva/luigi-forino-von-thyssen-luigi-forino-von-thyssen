@@ -393,7 +393,7 @@ export default function LeveragePage() {
   // leverage line from "Bank Instruments". Only approved/active instruments
   // qualify; pending or rejected ones cannot back a line.
   const activeInstruments = useMemo(
-    () => instruments.filter((i) => i.status === "active"),
+    () => instruments.filter((i) => i.status === "active" && !i.blocked),
     [instruments],
   )
   const selectedInstrument = useMemo(

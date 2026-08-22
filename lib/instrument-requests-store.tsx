@@ -6,6 +6,7 @@ import { mirrorSubmission, mapApprovalStatus, type ApprovalRecord } from "@/lib/
 import { useServerRequestList } from "@/lib/use-server-request-list"
 import { cancelMyApproval, transferMyInstrument, deleteMyInstrument } from "@/app/actions/approvals"
 import { releaseInstrumentByIsin } from "@/app/actions/marketplace-instruments"
+import type { InstrumentUpgrade } from "@/lib/instrument-upgrade"
 
 /**
  * Ensure an instrument carries the full identifier set. Records created before
@@ -78,6 +79,14 @@ export interface Instrument {
   deliveryMethod?: string
   /** Instrument form (documentary, global note, etc.). */
   form?: string
+  /**
+   * True while an Administrator-initiated transformation/upgrade is in progress.
+   * A blocked instrument cannot be monetized, leveraged, used to fund a yield,
+   * transferred, returned or deleted until the upgrade completes or is declined.
+   */
+  blocked?: boolean
+  /** The pending/decided transformation-upgrade deal, if any. */
+  upgrade?: InstrumentUpgrade
 }
 
 /**
@@ -90,7 +99,13 @@ export interface Instrument {
  */
 function instrumentFromApproval(rec: ApprovalRecord): Instrument | null {
   const p = rec.payload as
-    | { record?: Instrument; instrument?: Instrument; issuedByAdmin?: boolean; transferredTo?: string }
+    | {
+        record?: Instrument
+        instrument?: Instrument
+        issuedByAdmin?: boolean
+        transferredTo?: string
+        upgrade?: InstrumentUpgrade
+      }
     | undefined
   const base = p?.issuedByAdmin ? p?.instrument : (p?.record ?? p?.instrument)
   if (!base || typeof base !== "object" || !base.id) return null
@@ -98,12 +113,19 @@ function instrumentFromApproval(rec: ApprovalRecord): Instrument | null {
   // "Transferred" (not a plain cancellation) so the sender sees what happened.
   let status = mapApprovalStatus(rec.status, { approvedStatus: "active" }) as InstrumentStatus
   if (status === "cancelled" && p?.transferredTo) status = "transferred"
+  // A transformation/upgrade in progress (`proposed`) blocks the old instrument
+  // from any use until the customer accepts (→ new instrument issued) or
+  // declines (→ unblocked). The deal lives at the top level of the payload so it
+  // works regardless of which base shape (record vs instrument) carries the VM.
+  const upgrade = p?.upgrade
   return ensureIdentifiers({
     ...base,
     approvalId: rec.id,
     status,
     decidedAt: rec.decidedAt ?? base.decidedAt,
     decisionNote: rec.decisionNote ?? base.decisionNote,
+    upgrade,
+    blocked: upgrade?.status === "proposed" || base.blocked || undefined,
   })
 }
 
@@ -153,6 +175,8 @@ interface InstrumentRequestsContextValue {
     approvalId: string,
     recipientEmail: string,
   ) => Promise<{ ok: boolean; error?: string; recipientName?: string }>
+  /** Re-fetch the authoritative portfolio from the server (e.g. after an upgrade). */
+  refresh: () => Promise<Instrument[] | null>
   hydrated: boolean
 }
 
@@ -330,6 +354,7 @@ export function InstrumentRequestsProvider({ children }: { children: React.React
         deleteInstrument,
         returnInstrument,
         transferInstrument,
+        refresh,
         hydrated,
       }}
     >

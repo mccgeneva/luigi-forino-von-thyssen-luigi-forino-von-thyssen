@@ -4,7 +4,7 @@ import { createContext, useContext } from "react"
 import { mirrorSubmission } from "@/lib/approval-sync"
 import { useServerRequestList } from "@/lib/use-server-request-list"
 
-export type PPPRequestStatus = "pending" | "approved" | "rejected"
+export type PPPRequestStatus = "pending" | "approved" | "rejected" | "cancelled"
 
 export interface PPPRequest {
   id: string
@@ -23,6 +23,10 @@ export interface PPPRequest {
   submittedAt: string // ISO timestamp of the client request
   decidedAt?: string // ISO timestamp of approval/rejection
   decisionNote?: string // administrator note (e.g. rejection reason)
+  /** ISO timestamp the client cancelled an ongoing (approved) program. */
+  cancelledAt?: string
+  /** Early-cancellation penalty charged (in the invested currency), if cancelled. */
+  penaltyAmount?: number
 
   // ---- MCC-owned funding instrument & 75/25 benefit split (optional) --------
   /** Id of the MCC HOLDING SA-owned instrument funding this investment, if any. */
@@ -45,6 +49,8 @@ interface PPPRequestsContextValue {
   approveRequest: (id: string) => PPPRequest | null
   /** Reject a pending application with an optional reason. */
   rejectRequest: (id: string, reason?: string) => PPPRequest | null
+  /** Re-fetch the authoritative list from the server (e.g. after a cancel). */
+  refresh: () => Promise<PPPRequest[] | null>
   hydrated: boolean
 }
 
@@ -111,7 +117,7 @@ export function PPPRequestsProvider({ children }: { children: React.ReactNode })
 
   return (
     <PPPRequestsContext.Provider
-      value={{ requests, addRequest, approveRequest, rejectRequest, hydrated }}
+      value={{ requests, addRequest, approveRequest, rejectRequest, refresh, hydrated }}
     >
       {children}
     </PPPRequestsContext.Provider>

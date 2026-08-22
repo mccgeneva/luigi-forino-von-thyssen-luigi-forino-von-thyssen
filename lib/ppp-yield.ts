@@ -28,6 +28,19 @@ import { round2 } from "@/lib/interest-accrual"
  * returns principal — it purely reflects the periodic yield the client earns.
  */
 
+/**
+ * Early-cancellation penalty rate for an ONGOING (approved) yield/PPP program,
+ * as a fraction of the invested principal. Charged from the client's Master
+ * Account when they cancel before the program's term ends.
+ */
+export const YIELD_EARLY_CANCELLATION_PENALTY_RATE = 0.02
+
+/** The early-cancellation penalty (2% of the invested principal), rounded. */
+export function yieldCancellationPenalty(amount: number): number {
+  if (!Number.isFinite(amount) || amount <= 0) return 0
+  return round2(amount * YIELD_EARLY_CANCELLATION_PENALTY_RATE)
+}
+
 /** How often a program pays out. `maturity` = a single payout at term end. */
 export type YieldPeriodUnit = "day" | "week" | "month" | "quarter" | "year" | "maturity"
 

@@ -160,6 +160,7 @@ import { FundBlockManager } from "@/components/admin/fund-block-manager"
 import { SkrManager } from "@/components/admin/skr-manager"
 import { SkrOverview } from "@/components/admin/skr-overview"
 import { InstrumentIssuer } from "@/components/admin/instrument-issuer"
+import { InstrumentUpgradeManager } from "@/components/admin/instrument-upgrade-manager"
 import { YieldIssuer } from "@/components/admin/yield-issuer"
 import { MarketplaceInstrumentManager } from "@/components/admin/marketplace-instrument-manager"
 import { CardManager } from "@/components/admin/card-manager"
@@ -2828,6 +2829,8 @@ export default function AdminPage() {
       <div className="space-y-6">
       {/* Issue a bank instrument directly into a client's portfolio */}
       <InstrumentIssuer />
+      {/* Transform & upgrade a held instrument into a fresh one (block + 3% fee) */}
+      <InstrumentUpgradeManager />
       {/* Publish real, registry-verified instruments to the client marketplace */}
       <MarketplaceInstrumentManager />
       {/* Pending instrument requests */}
