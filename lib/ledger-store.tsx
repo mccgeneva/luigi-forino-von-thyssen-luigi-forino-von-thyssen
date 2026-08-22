@@ -40,6 +40,10 @@ export interface LedgerEntry {
   reference?: string
   comment?: string
   category?: string
+  /** Sub-account compartment this entry belongs to. Absent/empty ⇒ the user's
+   *  MAIN account. Entries tagged with a sub-account id are isolated: they are
+   *  excluded from the main balance and only counted for that sub-account. */
+  subAccountId?: string
 }
 
 // Re-exported (imported at top) from the shared, server-safe FX module so
@@ -61,8 +65,11 @@ interface LedgerContextValue {
   balanceFor: (currency: string) => number
   /** Funds currently reserved/blocked (sum of held debits) for a currency. */
   reservedFor: (currency: string) => number
-  /** Aggregated balance of every currency converted into the target currency. */
+  /** Aggregated MAIN balance of every currency converted into the target currency. */
   totalIn: (currency: string) => number
+  /** Net balance of a specific SUB-ACCOUNT compartment in a currency: settled
+   *  credits − settled debits − held debits tagged with that sub-account id. */
+  subAccountBalanceFor: (subAccountId: string, currency: string) => number
   /** All currencies that have at least one entry. */
   currencies: string[]
   /** Re-read the persisted ledger from storage (e.g. after an admin edit to the
@@ -156,22 +163,37 @@ export function LedgerProvider({ children }: { children: React.ReactNode }) {
   const reservedFor = useCallback(
     (currency: string) =>
       entries
-        .filter((e) => e.currency === currency && e.status === "hold" && e.direction === "debit")
+        .filter((e) => e.currency === currency && e.status === "hold" && e.direction === "debit" && !e.subAccountId)
         .reduce((sum, e) => sum + e.amount, 0),
     [entries],
   )
 
-  // Available (spendable) balance: settled credits minus settled debits, minus
-  // anything currently on hold. Reserved funds cannot be spent, so they reduce
-  // the available balance everywhere it is read (send, payments, exchange…).
+  // Available (spendable) MAIN balance: settled credits minus settled debits,
+  // minus anything currently on hold. Reserved funds cannot be spent, so they
+  // reduce the available balance everywhere it is read (send, payments…).
+  // Entries tagged to a sub-account are EXCLUDED so parking money in a
+  // sub-account correctly lowers the main balance (all legacy rows are untagged
+  // ⇒ identical behaviour to before).
   const balanceFor = useCallback(
     (currency: string) => {
       const settled = entries
-        .filter((e) => e.currency === currency && e.status === "completed")
+        .filter((e) => e.currency === currency && e.status === "completed" && !e.subAccountId)
         .reduce((sum, e) => sum + (e.direction === "credit" ? e.amount : -e.amount), 0)
       return settled - reservedFor(currency)
     },
     [entries, reservedFor],
+  )
+
+  // Net balance of a single sub-account compartment in a currency.
+  const subAccountBalanceFor = useCallback(
+    (subAccountId: string, currency: string) =>
+      entries
+        .filter((e) => e.currency === currency && e.subAccountId === subAccountId)
+        .reduce((sum, e) => {
+          if (e.status === "hold") return e.direction === "debit" ? sum - e.amount : sum
+          return sum + (e.direction === "credit" ? e.amount : -e.amount)
+        }, 0),
+    [entries],
   )
 
   const currencies = useMemo(
@@ -205,8 +227,19 @@ export function LedgerProvider({ children }: { children: React.ReactNode }) {
   // whole dashboard's ledger consumers from re-rendering in lockstep and stops
   // any consumer effect keyed on these callbacks from re-firing spuriously.
   const value = useMemo(
-    () => ({ entries, addReceipt, addDebit, balanceFor, reservedFor, totalIn, currencies, refresh, hydrated }),
-    [entries, addReceipt, addDebit, balanceFor, reservedFor, totalIn, currencies, refresh, hydrated],
+    () => ({
+      entries,
+      addReceipt,
+      addDebit,
+      balanceFor,
+      reservedFor,
+      totalIn,
+      subAccountBalanceFor,
+      currencies,
+      refresh,
+      hydrated,
+    }),
+    [entries, addReceipt, addDebit, balanceFor, reservedFor, totalIn, subAccountBalanceFor, currencies, refresh, hydrated],
   )
 
   return <LedgerContext.Provider value={value}>{children}</LedgerContext.Provider>
