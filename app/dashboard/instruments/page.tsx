@@ -943,8 +943,8 @@ export default function InstrumentsPage() {
             </div>
             <div className="flex flex-wrap gap-4">
               <div className="text-center">
-                <p className="text-xs text-muted-foreground">Assignee</p>
-                <p className="text-lg font-bold text-primary">0.2%</p>
+                <p className="text-xs text-muted-foreground">Reserve / Assign</p>
+                <p className="text-lg font-bold text-primary">2%</p>
               </div>
               <div className="text-center">
                 <p className="text-xs text-muted-foreground">Lease</p>
