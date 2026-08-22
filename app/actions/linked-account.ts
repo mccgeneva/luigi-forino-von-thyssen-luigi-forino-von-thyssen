@@ -14,13 +14,8 @@
 import { resolveCurrentSession } from "@/lib/session-user"
 import { getVisitorLink } from "@/lib/visitor-link-db"
 import { getSubAccountById } from "@/lib/sub-account-db"
-import {
-  readLedgerEntries,
-  upsertLedgerEntry,
-  deleteLedgerEntry,
-  assertOwnerSolvent,
-  type LedgerEntry,
-} from "@/lib/ledger-db"
+import { readLedgerEntries, upsertLedgerEntry, deleteLedgerEntry, assertOwnerSolvent } from "@/lib/ledger-db"
+import type { LedgerEntry } from "@/lib/ledger-store"
 import { insertApproval, listApprovalsForUser } from "@/lib/approvals-db"
 import { insertNotification } from "@/lib/notifications-db"
 import { transferFeeFor, TRANSFER_FEE_RATE } from "@/lib/sub-account-fees"
