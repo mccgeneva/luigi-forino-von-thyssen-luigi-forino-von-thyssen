@@ -298,6 +298,7 @@ function ActionSheet({
 }) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [done, setDone] = useState<"instant" | "pending" | null>(null)
 
   // payout fields
   const [amount, setAmount] = useState("")
@@ -405,7 +406,9 @@ function ActionSheet({
         setError(res.error)
         return
       }
-      onDone()
+      // Show the outcome, then close + refresh so the balance/activity update.
+      setDone(res.data.settlement)
+      setTimeout(() => onDone(), 1600)
     } catch {
       setError("Something went wrong. Please try again.")
     } finally {
@@ -431,6 +434,26 @@ function ActionSheet({
           </button>
         </div>
 
+        {done ? (
+          <div className="flex flex-col items-center py-8 text-center">
+            <div
+              className={`flex h-14 w-14 items-center justify-center rounded-full ${
+                done === "instant" ? "bg-emerald-500/15 text-emerald-400" : "bg-amber-500/15 text-amber-400"
+              }`}
+            >
+              {done === "instant" ? <Zap className="h-7 w-7" /> : <ShieldCheck className="h-7 w-7" />}
+            </div>
+            <h4 className="mt-4 text-base font-semibold text-neutral-100">
+              {done === "instant" ? "Transfer settled" : "Payment submitted"}
+            </h4>
+            <p className="mt-1 max-w-xs text-sm text-neutral-400">
+              {done === "instant"
+                ? `${money(amt, view.currency)} was transferred instantly to ${beneficiary}.`
+                : `Your ${money(amt, view.currency)} payment to ${beneficiary} is awaiting administrator authorization.`}
+            </p>
+          </div>
+        ) : (
+          <>
         <p className="mb-4 text-xs text-neutral-400">
           Paid out of &ldquo;{view.label}&rdquo;&apos;s own balance. Transfers to another NAFTAhub account
           settle instantly; payments to an outside bank are released after administrator authorization.
@@ -558,6 +581,8 @@ function ActionSheet({
             Submit request
           </button>
         </div>
+          </>
+        )}
       </div>
     </div>
   )
