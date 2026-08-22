@@ -367,7 +367,7 @@ function ActionSheet({
       }
       let internal = false
       try {
-        const res = await resolveLinkedBeneficiary(trimmed)
+        const res = await resolveLinkedBeneficiary(trimmed, beneficiary)
         if (res.ok) internal = res.internal
       } catch {
         /* default to external */
@@ -381,8 +381,10 @@ function ActionSheet({
       if (info?.country) setCountry((prev) => (prev.trim() ? prev : info!.country))
     }, 350)
     return () => clearTimeout(timer)
+    // Re-evaluate the rail when the beneficiary name changes too: the shared
+    // default (house) IBAN is disambiguated to a recipient by name server-side.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [iban])
+  }, [iban, beneficiary])
 
   const amt = Number.parseFloat(amount)
   const feeRate = 0.02
