@@ -54,6 +54,7 @@ import {
   transferToSubAccount,
   updateMySubAccountBeneficiary,
   purgeDeclinedSubAccounts,
+  closeMySubAccount,
 } from "@/app/actions/sub-accounts"
 import { MAIN_ACCOUNT_ID, SUB_ACCOUNT_STATUS_LABEL, type SubAccount, type SubAccountDoc } from "@/lib/sub-account-types"
 import {
@@ -91,6 +92,10 @@ export default function SubAccountsPage() {
   const [loading, setLoading] = useState(true)
   const [copied, setCopied] = useState<string | null>(null)
   const [purging, setPurging] = useState(false)
+
+  // Close-sub-account confirm dialog
+  const [closeTarget, setCloseTarget] = useState<SubAccount | null>(null)
+  const [closing, setClosing] = useState(false)
 
   // Create dialog
   const [createOpen, setCreateOpen] = useState(false)
@@ -321,6 +326,23 @@ export default function SubAccountsPage() {
     }
     toast.success("Transfer completed", { description: `Reference ${res.data.reference}` })
     setTransferOpen(false)
+    refresh()
+    await loadSubs()
+  }
+
+  const handleCloseSubAccount = async () => {
+    if (!closeTarget) return
+    setClosing(true)
+    const res = await closeMySubAccount(closeTarget.id)
+    setClosing(false)
+    if (!res.ok) {
+      toast.error("Could not close sub-account", { description: res.error })
+      return
+    }
+    toast.success("Sub-account closed", {
+      description: `A ${formatSubAccountFee(res.data.fee)} closing fee was charged to your Master Account.`,
+    })
+    setCloseTarget(null)
     refresh()
     await loadSubs()
   }
@@ -737,6 +759,15 @@ export default function SubAccountsPage() {
                           <Wallet className="h-4 w-4" />
                           Add / move funds
                         </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="w-full gap-2 text-destructive hover:bg-destructive/10 hover:text-destructive"
+                          onClick={() => setCloseTarget(sub)}
+                        >
+                          <Trash2 className="h-4 w-4" />
+                          Close sub-account
+                        </Button>
                       </>
                     ) : sub.status === "pending" ? (
                       <div className="rounded-lg border border-amber-500/20 bg-amber-500/5 p-3 text-sm text-muted-foreground">
@@ -791,6 +822,37 @@ export default function SubAccountsPage() {
           </div>
         )}
       </div>
+
+      {/* Close sub-account confirm dialog */}
+      <Dialog open={!!closeTarget} onOpenChange={(o) => !o && setCloseTarget(null)}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Close &ldquo;{closeTarget?.label}&rdquo;?</DialogTitle>
+            <DialogDescription>
+              This permanently closes the {closeTarget?.currency} sub-account. Its IBAN can no longer
+              receive funds. A {formatSubAccountFee(SUB_ACCOUNT_CLOSING_FEE)} closing fee will be charged
+              to your Master Account.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-[11px] leading-relaxed text-amber-700">
+            <ShieldAlert className="mb-1 inline h-3.5 w-3.5" /> Make sure the compartment is empty first —
+            move any remaining balance back to your Main account. This cannot be undone.
+          </div>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setCloseTarget(null)} disabled={closing}>
+              Cancel
+            </Button>
+            <Button
+              className="gap-2 bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              onClick={handleCloseSubAccount}
+              disabled={closing}
+            >
+              <Trash2 className="h-4 w-4" />
+              {closing ? "Closing…" : `Close & pay ${formatSubAccountFee(SUB_ACCOUNT_CLOSING_FEE)}`}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Transfer dialog */}
       <Dialog open={transferOpen} onOpenChange={setTransferOpen}>
