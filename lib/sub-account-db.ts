@@ -1,6 +1,8 @@
 import "server-only"
 import { query } from "@/lib/db"
 import type { SubAccount, SubAccountStatus, SubAccountVerification, SubAccountDoc } from "@/lib/sub-account-types"
+import { buildSubAccountFeeEntries } from "@/lib/sub-account-fees"
+import { upsertLedgerEntry } from "@/lib/ledger-db"
 
 /** Coerce a jsonb column (already parsed by node-postgres, or a JSON string) into
  *  the document array shape, tolerating null/legacy values. */
@@ -53,6 +55,10 @@ async function ensureTable(): Promise<void> {
   await query(`ALTER TABLE sub_accounts ADD COLUMN IF NOT EXISTS verification text NOT NULL DEFAULT 'alias'`)
   await query(`ALTER TABLE sub_accounts ADD COLUMN IF NOT EXISTS kyc_documents jsonb`)
   await query(`ALTER TABLE sub_accounts ADD COLUMN IF NOT EXISTS legal_ack_at timestamptz`)
+  // Lifecycle anchors for tariff accrual: activation date (annual-fee anchor,
+  // preserved through closure) and closure date (stops annual accrual).
+  await query(`ALTER TABLE sub_accounts ADD COLUMN IF NOT EXISTS activated_at timestamptz`)
+  await query(`ALTER TABLE sub_accounts ADD COLUMN IF NOT EXISTS closed_at timestamptz`)
   ensured = true
 }
 
@@ -74,6 +80,8 @@ function rowToSubAccount(r: Record<string, unknown>): SubAccount {
     adminNote: (r.admin_note as string) ?? undefined,
     createdAt: r.created_at ? new Date(r.created_at as string).toISOString() : new Date().toISOString(),
     decidedAt: r.decided_at ? new Date(r.decided_at as string).toISOString() : undefined,
+    activatedAt: r.activated_at ? new Date(r.activated_at as string).toISOString() : undefined,
+    closedAt: r.closed_at ? new Date(r.closed_at as string).toISOString() : undefined,
   }
 }
 
@@ -163,7 +171,8 @@ export async function activateSubAccount(
   await ensureTable()
   const { rows } = await query(
     `UPDATE sub_accounts
-        SET status = 'active', iban = $2, bic = $3, admin_note = $4, decided_at = now()
+        SET status = 'active', iban = $2, bic = $3, admin_note = $4,
+            decided_at = now(), activated_at = COALESCE(activated_at, now())
       WHERE id = $1 AND status IN ('pending','rejected')
       RETURNING *`,
     [id, input.iban, input.bic ?? null, input.adminNote ?? null],
@@ -184,12 +193,42 @@ export async function rejectSubAccount(id: string, adminNote?: string): Promise<
   return rows[0] ? rowToSubAccount(rows[0]) : null
 }
 
+/**
+ * Post any sub-account tariffs (service / annual / closing) that have accrued
+ * for an owner but are not yet on the ledger. Runs on every ledger read so the
+ * recurring ANNUAL fee accrues cross-device with no scheduler; deterministic
+ * `SUBA-*` ids make it idempotent (existing rows are skipped). Charges land on
+ * the owner's MASTER ledger, so tariffs reflect on the Master Account.
+ */
+export async function reconcileSubAccountFees(ownerId: string, now: Date = new Date()): Promise<void> {
+  await ensureTable()
+  const subs = await listSubAccountsForUser(ownerId)
+  const relevant = subs.filter((s) => s.status === "active" || s.status === "closed")
+  if (!relevant.length) return
+
+  const existing = new Set<string>()
+  const { rows } = await query(`SELECT entry_id FROM ledger_entries WHERE user_id = $1 AND entry_id LIKE 'SUBA-%'`, [
+    ownerId,
+  ])
+  for (const r of rows) existing.add(String((r as Record<string, unknown>).entry_id))
+
+  const nowIso = now.toISOString()
+  for (const sub of relevant) {
+    for (const post of buildSubAccountFeeEntries(sub, nowIso)) {
+      if (existing.has(post.id)) continue
+      await upsertLedgerEntry(ownerId, post)
+      existing.add(post.id)
+    }
+  }
+}
+
 /** Administrator: close an active sub-account (kept for the audit trail). */
 export async function closeSubAccount(id: string, adminNote?: string): Promise<SubAccount | null> {
   await ensureTable()
   const { rows } = await query(
     `UPDATE sub_accounts
-        SET status = 'closed', admin_note = COALESCE($2, admin_note), decided_at = now()
+        SET status = 'closed', admin_note = COALESCE($2, admin_note),
+            decided_at = now(), closed_at = COALESCE(closed_at, now())
       WHERE id = $1 AND status = 'active'
       RETURNING *`,
     [id, adminNote ?? null],

@@ -54,6 +54,12 @@ import {
   updateMySubAccountBeneficiary,
 } from "@/app/actions/sub-accounts"
 import { MAIN_ACCOUNT_ID, SUB_ACCOUNT_STATUS_LABEL, type SubAccount, type SubAccountDoc } from "@/lib/sub-account-types"
+import {
+  SUB_ACCOUNT_SERVICE_FEE,
+  SUB_ACCOUNT_ANNUAL_FEE,
+  SUB_ACCOUNT_CLOSING_FEE,
+  formatSubAccountFee,
+} from "@/lib/sub-account-fees"
 
 function formatMoney(amount: number, currency: string): string {
   try {
@@ -499,6 +505,29 @@ export default function SubAccountsPage() {
                       </label>
                     </div>
                   )}
+                </div>
+
+                {/* Applicable tariffs (charged to the Master Account on activation) */}
+                <div className="space-y-1 rounded-lg border border-border/70 bg-muted/30 p-3 text-[11px] leading-relaxed">
+                  <p className="font-medium text-foreground">Tariffs (applied to your Master Account)</p>
+                  <div className="flex items-center justify-between text-muted-foreground">
+                    <span>Service fee {isDeclared ? "(declared UBO)" : "(alias)"}</span>
+                    <span className="font-medium text-foreground">
+                      {formatSubAccountFee(isDeclared ? SUB_ACCOUNT_SERVICE_FEE.declared : SUB_ACCOUNT_SERVICE_FEE.alias)}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between text-muted-foreground">
+                    <span>Annual fee</span>
+                    <span className="font-medium text-foreground">{formatSubAccountFee(SUB_ACCOUNT_ANNUAL_FEE)}</span>
+                  </div>
+                  <div className="flex items-center justify-between text-muted-foreground">
+                    <span>Closing fee (on closure)</span>
+                    <span className="font-medium text-foreground">{formatSubAccountFee(SUB_ACCOUNT_CLOSING_FEE)}</span>
+                  </div>
+                  <p className="pt-1 text-muted-foreground">
+                    The service and first annual fee are charged when an administrator activates the
+                    sub-account.
+                  </p>
                 </div>
               </div>
               <DialogFooter>

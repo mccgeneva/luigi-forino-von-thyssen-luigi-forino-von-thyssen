@@ -75,6 +75,12 @@ export interface SubAccount {
   createdAt: string
   /** When the administrator activated (assigned the IBAN) or rejected it. */
   decidedAt?: string
+  /** When the sub-account was first activated — the anchor for annual fees.
+   *  Preserved even after closure (unlike decidedAt, which tracks the last
+   *  decision). */
+  activatedAt?: string
+  /** When an administrator closed the sub-account (stops annual accrual). */
+  closedAt?: string
 }
 
 export const SUB_ACCOUNT_STATUS_LABEL: Record<SubAccountStatus, string> = {

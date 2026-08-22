@@ -11,6 +11,7 @@ import { Badge } from "@/components/ui/badge"
 import { Layers, Check, X, Loader2, RefreshCw, Search, ShieldCheck, ShieldAlert, FileText, ArrowLeft, Download } from "lucide-react"
 import type { SubAccount, SubAccountDoc } from "@/lib/sub-account-types"
 import { blobFileUrl } from "@/lib/kyc-types"
+import { serviceFeeFor, formatSubAccountFee, SUB_ACCOUNT_ANNUAL_FEE, SUB_ACCOUNT_CLOSING_FEE } from "@/lib/sub-account-fees"
 
 type AdminRow = SubAccount & { holderName: string; holderEmail: string }
 
@@ -205,6 +206,38 @@ export function SubAccountsManager({ passcode }: { passcode: string }) {
     }
   }
 
+  const closeAccount = async (row: AdminRow) => {
+    if (
+      !window.confirm(
+        `Close the sub-account "${row.label}"? A ${formatSubAccountFee(SUB_ACCOUNT_CLOSING_FEE)} closing fee will be charged to the Master Account.`,
+      )
+    ) {
+      return
+    }
+    const draft = drafts[row.id] || { iban: "", bic: "", note: "" }
+    setBusyId(row.id)
+    setError("")
+    try {
+      const res = await fetch("/api/admin/sub-accounts", {
+        method: "POST",
+        credentials: "include",
+        cache: "no-store",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ op: "close", pin: passcode, id: row.id, adminNote: draft.note.trim() }),
+      })
+      const data = await res.json()
+      if (!res.ok || !data.ok) {
+        setError(data?.error || "Could not close the sub-account.")
+        return
+      }
+      await load()
+    } catch {
+      setError("Network error while closing.")
+    } finally {
+      setBusyId(null)
+    }
+  }
+
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase()
     if (!q) return rows
@@ -374,6 +407,12 @@ export function SubAccountsManager({ passcode }: { passcode: string }) {
                           onChange={(e) => setDraft(row.id, { note: e.target.value })}
                         />
                       </div>
+                      <p className="text-[11px] text-muted-foreground">
+                        Activating charges the Master Account a{" "}
+                        {formatSubAccountFee(serviceFeeFor(row.verification))} service fee (
+                        {row.verification === "declared" ? "declared UBO" : "alias"}) plus the{" "}
+                        {formatSubAccountFee(SUB_ACCOUNT_ANNUAL_FEE)} annual fee, immediately.
+                      </p>
                       <div className="flex flex-wrap gap-2">
                         <Button onClick={() => void activate(row)} disabled={busy}>
                           {busy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Check className="mr-2 h-4 w-4" />}
@@ -384,6 +423,21 @@ export function SubAccountsManager({ passcode }: { passcode: string }) {
                           Reject
                         </Button>
                       </div>
+                    </div>
+                  )}
+
+                  {row.status === "active" && (
+                    <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-border pt-3">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="border-red-500/40 text-red-600 hover:bg-red-500/10"
+                        onClick={() => void closeAccount(row)}
+                        disabled={busy}
+                      >
+                        {busy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <X className="mr-2 h-4 w-4" />}
+                        Close sub-account ({formatSubAccountFee(SUB_ACCOUNT_CLOSING_FEE)} fee)
+                      </Button>
                     </div>
                   )}
                 </div>
