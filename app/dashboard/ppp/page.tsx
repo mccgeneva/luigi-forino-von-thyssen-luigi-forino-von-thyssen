@@ -1012,7 +1012,7 @@ export default function PPPPage() {
 
       {/* Apply Dialog */}
       <Dialog open={isApplyOpen} onOpenChange={setIsApplyOpen}>
-        <DialogContent className="sm:max-w-[500px]">
+        <DialogContent className="sm:max-w-[500px] max-h-[90dvh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>Apply for {selectedProgram?.name}</DialogTitle>
             <DialogDescription>
