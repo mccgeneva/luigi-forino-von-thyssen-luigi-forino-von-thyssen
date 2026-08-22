@@ -1,0 +1,493 @@
+"use client"
+
+import { useCallback, useEffect, useState } from "react"
+import useSWR from "swr"
+import {
+  ArrowDownLeft,
+  ArrowUpRight,
+  Banknote,
+  Building2,
+  Copy,
+  Check,
+  Loader2,
+  LogOut,
+  RefreshCw,
+  Send,
+  ShieldCheck,
+  Wallet,
+} from "lucide-react"
+import {
+  getMyLinkedAccount,
+  linkedTransfer,
+  linkedPayout,
+  type LinkedAccountView,
+} from "@/app/actions/linked-account"
+
+function money(n: number, currency: string) {
+  return `${currency} ${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+}
+
+type Mode = null | "topup" | "withdraw" | "payout"
+
+export function LinkedAccountShell({ displayName }: { displayName: string }) {
+  const { data, isLoading, mutate } = useSWR("linked-account", async () => {
+    const res = await getMyLinkedAccount()
+    return res.ok ? res.data : null
+  })
+
+  const [mode, setMode] = useState<Mode>(null)
+
+  return (
+    <div className="min-h-[100dvh] bg-[#0b0b0d] text-neutral-100">
+      {/* Top bar */}
+      <header className="flex items-center justify-between border-b border-white/10 px-4 py-3 sm:px-6">
+        <div className="flex items-center gap-2">
+          <div className="flex h-8 w-8 items-center justify-center rounded-md bg-amber-500/15 text-amber-400">
+            <Building2 className="h-4 w-4" />
+          </div>
+          <div className="leading-tight">
+            <p className="text-sm font-semibold">NAFTAhub</p>
+            <p className="text-[11px] text-neutral-400">Linked sub-account access</p>
+          </div>
+        </div>
+        <form action="/api/logout" method="POST">
+          <button
+            type="submit"
+            className="inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm text-neutral-300 transition hover:bg-white/5 hover:text-white"
+          >
+            <LogOut className="h-4 w-4" />
+            <span className="hidden sm:inline">Sign out</span>
+          </button>
+        </form>
+      </header>
+
+      <main className="mx-auto w-full max-w-2xl px-4 py-6 sm:px-6">
+        <div className="mb-5">
+          <h1 className="text-balance text-xl font-semibold sm:text-2xl">Welcome, {displayName}</h1>
+          <p className="mt-1 text-sm text-neutral-400">
+            You have delegated access to the sub-account below. You can view its balance, move funds, and
+            request outgoing payments &mdash; every action is authorized by the administrator.
+          </p>
+        </div>
+
+        {isLoading ? (
+          <div className="flex items-center gap-2 rounded-xl border border-white/10 bg-white/[0.03] p-6 text-sm text-neutral-400">
+            <Loader2 className="h-4 w-4 animate-spin" /> Loading your linked account&hellip;
+          </div>
+        ) : !data ? (
+          <div className="rounded-xl border border-white/10 bg-white/[0.03] p-6 text-sm text-neutral-400">
+            Your linked sub-account is no longer available. It may have been closed or unlinked by the
+            administrator. Please contact support if you believe this is an error.
+          </div>
+        ) : (
+          <AccountCard
+            view={data}
+            onAction={(m) => setMode(m)}
+            onRefresh={() => void mutate()}
+          />
+        )}
+      </main>
+
+      {mode && data && (
+        <ActionSheet
+          mode={mode}
+          view={data}
+          onClose={() => setMode(null)}
+          onDone={() => {
+            setMode(null)
+            void mutate()
+          }}
+        />
+      )}
+    </div>
+  )
+}
+
+function AccountCard({
+  view,
+  onAction,
+  onRefresh,
+}: {
+  view: LinkedAccountView
+  onAction: (m: Mode) => void
+  onRefresh: () => void
+}) {
+  const [copied, setCopied] = useState(false)
+  const copyIban = useCallback(() => {
+    if (!view.iban) return
+    navigator.clipboard?.writeText(view.iban).then(() => {
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1500)
+    })
+  }, [view.iban])
+
+  return (
+    <div className="space-y-5">
+      {/* Balance + identity */}
+      <section className="rounded-2xl border border-white/10 bg-gradient-to-b from-white/[0.06] to-white/[0.02] p-5">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <h2 className="text-lg font-semibold">{view.label}</h2>
+            <p className="text-xs text-neutral-400">{view.currency} compartment</p>
+          </div>
+          <span className="inline-flex items-center gap-1 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-1 text-xs font-medium text-emerald-400">
+            <ShieldCheck className="h-3.5 w-3.5" /> Active
+          </span>
+        </div>
+
+        <div className="mt-5">
+          <p className="text-xs text-neutral-400">Available balance</p>
+          <p className="mt-1 text-3xl font-semibold tracking-tight sm:text-4xl">
+            {money(view.balance, view.currency)}
+          </p>
+        </div>
+
+        {view.iban && (
+          <div className="mt-5 rounded-xl border border-white/10 bg-black/30 p-3">
+            <div className="flex items-center justify-between gap-2">
+              <div className="min-w-0">
+                <p className="flex items-center gap-1.5 text-[11px] uppercase tracking-wide text-neutral-400">
+                  <Building2 className="h-3 w-3" /> IBAN
+                </p>
+                <p className="mt-0.5 truncate font-mono text-sm">{view.iban}</p>
+              </div>
+              <button
+                onClick={copyIban}
+                className="shrink-0 rounded-md p-2 text-neutral-400 transition hover:bg-white/5 hover:text-white"
+                title="Copy IBAN"
+              >
+                {copied ? <Check className="h-4 w-4 text-emerald-400" /> : <Copy className="h-4 w-4" />}
+              </button>
+            </div>
+            {view.bic && <p className="mt-2 text-xs text-neutral-400">BIC {view.bic}</p>}
+            {view.beneficiaryName && (
+              <p className="mt-1 text-xs text-neutral-400">Beneficiary {view.beneficiaryName}</p>
+            )}
+          </div>
+        )}
+
+        {/* Actions */}
+        <div className="mt-5 grid grid-cols-1 gap-2 sm:grid-cols-3">
+          <button
+            onClick={() => onAction("topup")}
+            className="inline-flex items-center justify-center gap-2 rounded-lg bg-amber-500 px-4 py-2.5 text-sm font-medium text-black transition hover:bg-amber-400"
+          >
+            <ArrowDownLeft className="h-4 w-4" /> Add funds
+          </button>
+          <button
+            onClick={() => onAction("withdraw")}
+            className="inline-flex items-center justify-center gap-2 rounded-lg border border-white/15 px-4 py-2.5 text-sm font-medium transition hover:bg-white/5"
+          >
+            <ArrowUpRight className="h-4 w-4" /> Return funds
+          </button>
+          <button
+            onClick={() => onAction("payout")}
+            className="inline-flex items-center justify-center gap-2 rounded-lg border border-white/15 px-4 py-2.5 text-sm font-medium transition hover:bg-white/5"
+          >
+            <Send className="h-4 w-4" /> New payment
+          </button>
+        </div>
+      </section>
+
+      {/* Pending payouts */}
+      {view.payouts.length > 0 && (
+        <section className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+          <h3 className="mb-3 flex items-center gap-2 text-sm font-medium">
+            <Banknote className="h-4 w-4 text-amber-400" /> Payments
+          </h3>
+          <ul className="space-y-2">
+            {view.payouts.map((p) => (
+              <li
+                key={p.id}
+                className="flex items-center justify-between gap-3 rounded-lg border border-white/10 bg-black/20 px-3 py-2.5"
+              >
+                <div className="min-w-0">
+                  <p className="truncate text-sm">{p.beneficiary}</p>
+                  <p className="text-[11px] text-neutral-400">
+                    {p.reference || "No reference"} &middot; {new Date(p.submittedAt).toLocaleDateString()}
+                  </p>
+                </div>
+                <div className="text-right">
+                  <p className="text-sm font-medium">{money(p.amount, p.currency)}</p>
+                  <StatusChip status={p.status} />
+                </div>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+
+      {/* Activity */}
+      <section className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+        <div className="mb-3 flex items-center justify-between">
+          <h3 className="flex items-center gap-2 text-sm font-medium">
+            <Wallet className="h-4 w-4 text-amber-400" /> Recent activity
+          </h3>
+          <button
+            onClick={onRefresh}
+            className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-neutral-400 transition hover:bg-white/5 hover:text-white"
+          >
+            <RefreshCw className="h-3.5 w-3.5" /> Refresh
+          </button>
+        </div>
+        {view.activity.length === 0 ? (
+          <p className="py-6 text-center text-sm text-neutral-500">No activity yet.</p>
+        ) : (
+          <ul className="divide-y divide-white/5">
+            {view.activity.map((a) => (
+              <li key={a.id} className="flex items-center justify-between gap-3 py-2.5">
+                <div className="flex min-w-0 items-center gap-3">
+                  <div
+                    className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full ${
+                      a.direction === "credit"
+                        ? "bg-emerald-500/10 text-emerald-400"
+                        : "bg-red-500/10 text-red-400"
+                    }`}
+                  >
+                    {a.direction === "credit" ? (
+                      <ArrowDownLeft className="h-4 w-4" />
+                    ) : (
+                      <ArrowUpRight className="h-4 w-4" />
+                    )}
+                  </div>
+                  <div className="min-w-0">
+                    <p className="truncate text-sm">{a.counterparty || a.category || "Transaction"}</p>
+                    <p className="text-[11px] text-neutral-400">
+                      {new Date(a.date).toLocaleDateString()} &middot; {a.category || "—"}
+                    </p>
+                  </div>
+                </div>
+                <p
+                  className={`shrink-0 text-sm font-medium ${
+                    a.direction === "credit" ? "text-emerald-400" : "text-neutral-200"
+                  }`}
+                >
+                  {a.direction === "credit" ? "+" : "−"}
+                  {money(a.amount, a.currency)}
+                </p>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+
+      <p className="pb-4 text-center text-[11px] text-neutral-500">
+        Delegated access &middot; A 2% fee applies to fund movements and outgoing payments.
+      </p>
+    </div>
+  )
+}
+
+function StatusChip({ status }: { status: string }) {
+  const s = status.toLowerCase()
+  const cls =
+    s === "approved"
+      ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-400"
+      : s === "rejected" || s === "cancelled"
+        ? "border-red-500/30 bg-red-500/10 text-red-400"
+        : "border-amber-500/30 bg-amber-500/10 text-amber-400"
+  const label = s === "pending" ? "Awaiting approval" : status.charAt(0).toUpperCase() + status.slice(1)
+  return <span className={`mt-0.5 inline-block rounded-full border px-2 py-0.5 text-[10px] ${cls}`}>{label}</span>
+}
+
+function ActionSheet({
+  mode,
+  view,
+  onClose,
+  onDone,
+}: {
+  mode: Mode
+  view: LinkedAccountView
+  onClose: () => void
+  onDone: () => void
+}) {
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  // transfer fields
+  const [amount, setAmount] = useState("")
+  const [note, setNote] = useState("")
+  // payout fields
+  const [beneficiary, setBeneficiary] = useState("")
+  const [iban, setIban] = useState("")
+  const [swiftCode, setSwiftCode] = useState("")
+  const [country, setCountry] = useState("")
+  const [reference, setReference] = useState("")
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose()
+    window.addEventListener("keydown", onKey)
+    return () => window.removeEventListener("keydown", onKey)
+  }, [onClose])
+
+  const amt = Number.parseFloat(amount)
+  const feeRate = 0.02
+  const fee = Number.isFinite(amt) && amt > 0 ? Math.round(amt * feeRate * 100) / 100 : 0
+
+  const title =
+    mode === "topup" ? "Add funds" : mode === "withdraw" ? "Return funds to Main" : "Request a payment"
+
+  const submit = async () => {
+    setBusy(true)
+    setError(null)
+    try {
+      if (mode === "payout") {
+        const res = await linkedPayout({
+          beneficiary,
+          beneficiaryCountry: country,
+          iban,
+          swiftCode,
+          reference,
+          amount: amt,
+        })
+        if (!res.ok) {
+          setError(res.error)
+          return
+        }
+      } else {
+        const res = await linkedTransfer({
+          direction: mode === "topup" ? "topup" : "withdraw",
+          amount: amt,
+          note,
+        })
+        if (!res.ok) {
+          setError(res.error)
+          return
+        }
+      }
+      onDone()
+    } catch {
+      setError("Something went wrong. Please try again.")
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const disabled =
+    busy ||
+    !(amt > 0) ||
+    (mode === "payout" && (beneficiary.trim().length === 0 || iban.trim().length < 8))
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/60 p-0 sm:items-center sm:p-4">
+      <div className="w-full max-w-md rounded-t-2xl border border-white/10 bg-[#141416] p-5 text-neutral-100 sm:rounded-2xl">
+        <div className="mb-4 flex items-center justify-between">
+          <h3 className="text-base font-semibold">{title}</h3>
+          <button onClick={onClose} className="rounded-md p-1.5 text-neutral-400 hover:bg-white/5 hover:text-white">
+            <span className="sr-only">Close</span>✕
+          </button>
+        </div>
+
+        <p className="mb-4 text-xs text-neutral-400">
+          {mode === "topup"
+            ? `Move funds from the owner's Main account into "${view.label}".`
+            : mode === "withdraw"
+              ? `Return funds from "${view.label}" back to the owner's Main account.`
+              : `Outgoing SWIFT transfer from "${view.label}", subject to administrator approval.`}
+        </p>
+
+        <div className="space-y-3">
+          {mode === "payout" && (
+            <>
+              <Field label="Beneficiary name">
+                <input
+                  value={beneficiary}
+                  onChange={(e) => setBeneficiary(e.target.value)}
+                  placeholder="e.g. Apple Distribution Intl."
+                  className={inputCls}
+                />
+              </Field>
+              <div className="grid grid-cols-2 gap-3">
+                <Field label="SWIFT / BIC">
+                  <input value={swiftCode} onChange={(e) => setSwiftCode(e.target.value)} placeholder="XXXXXXXX" className={inputCls} />
+                </Field>
+                <Field label="Country">
+                  <input value={country} onChange={(e) => setCountry(e.target.value)} placeholder="e.g. Ireland" className={inputCls} />
+                </Field>
+              </div>
+              <Field label="IBAN / Account number">
+                <input value={iban} onChange={(e) => setIban(e.target.value)} placeholder="XX00 0000 0000 0000" className={inputCls} />
+              </Field>
+              <Field label="Reference (optional)">
+                <input value={reference} onChange={(e) => setReference(e.target.value)} placeholder="INV-2024-XXX" className={inputCls} />
+              </Field>
+            </>
+          )}
+
+          <Field label={`Amount (${view.currency})`}>
+            <input
+              inputMode="decimal"
+              value={amount}
+              onChange={(e) => setAmount(e.target.value)}
+              placeholder="0.00"
+              className={inputCls}
+            />
+          </Field>
+
+          {mode !== "payout" && (
+            <Field label="Note (optional)">
+              <input value={note} onChange={(e) => setNote(e.target.value)} placeholder="Reason for the transfer" className={inputCls} />
+            </Field>
+          )}
+
+          {amt > 0 && (
+            <div className="rounded-lg border border-white/10 bg-black/20 p-3 text-sm">
+              <Row label="Amount" value={money(amt, view.currency)} />
+              <Row
+                label={mode === "payout" ? "2% platform fee" : "2% fee (charged to Main)"}
+                value={money(fee, view.currency)}
+              />
+              <div className="mt-2 border-t border-white/10 pt-2">
+                <Row label="Total" value={money(amt + fee, view.currency)} strong />
+              </div>
+            </div>
+          )}
+
+          {error && (
+            <p className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-300">
+              {error}
+            </p>
+          )}
+        </div>
+
+        <div className="mt-5 flex gap-2">
+          <button
+            onClick={onClose}
+            className="flex-1 rounded-lg border border-white/15 px-4 py-2.5 text-sm font-medium transition hover:bg-white/5"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={submit}
+            disabled={disabled}
+            className="inline-flex flex-1 items-center justify-center gap-2 rounded-lg bg-amber-500 px-4 py-2.5 text-sm font-medium text-black transition hover:bg-amber-400 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {busy && <Loader2 className="h-4 w-4 animate-spin" />}
+            {mode === "payout" ? "Submit request" : "Confirm transfer"}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+const inputCls =
+  "w-full rounded-lg border border-white/15 bg-black/30 px-3 py-2.5 text-sm text-neutral-100 placeholder:text-neutral-500 outline-none focus:border-amber-500/60"
+
+function Field({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <label className="block">
+      <span className="mb-1 block text-xs text-neutral-400">{label}</span>
+      {children}
+    </label>
+  )
+}
+
+function Row({ label, value, strong }: { label: string; value: string; strong?: boolean }) {
+  return (
+    <div className="flex items-center justify-between">
+      <span className="text-neutral-400">{label}</span>
+      <span className={strong ? "font-semibold" : "font-medium"}>{value}</span>
+    </div>
+  )
+}
