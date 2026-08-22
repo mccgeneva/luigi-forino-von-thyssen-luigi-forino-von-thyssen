@@ -28,6 +28,17 @@ const nextConfig = {
       ],
     },
   },
+  // Legacy notification hrefs: older notifications persisted in the DB point at
+  // routes that never existed (they 404'd when clicked from the bell). Redirect
+  // each stale path to the real page so historic notifications keep working.
+  async redirects() {
+    return [
+      { source: "/dashboard/yield", destination: "/dashboard/ppp", permanent: true },
+      { source: "/dashboard/monetization", destination: "/dashboard/instruments", permanent: true },
+      { source: "/dashboard/commodities", destination: "/dashboard/commodity", permanent: true },
+      { source: "/dashboard/download-of-funds", destination: "/dashboard/institutional", permanent: true },
+    ]
+  },
 }
 
 export default nextConfig
