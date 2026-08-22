@@ -272,7 +272,7 @@ export function PortfolioOverview() {
       {/* Reserved-funds breakdown: shows every held debit that locks part of the
           balance, so the client can see exactly what each reservation is for. */}
       <Dialog open={reservedCurrency !== null} onOpenChange={(open) => !open && setReservedCurrency(null)}>
-        <DialogContent className="max-w-lg">
+        <DialogContent className="w-[calc(100vw-2rem)] max-w-lg overflow-hidden">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <Lock className="h-4 w-4 text-amber-600" />
@@ -307,7 +307,7 @@ export function PortfolioOverview() {
                     >
                       <div className="flex items-start justify-between gap-3">
                         <div className="min-w-0">
-                          <p className="truncate text-sm font-medium text-foreground">
+                          <p className="text-sm font-medium text-foreground break-words">
                             {e.counterparty || e.category || "Reserved transaction"}
                           </p>
                           <p className="text-xs text-muted-foreground">
@@ -320,7 +320,7 @@ export function PortfolioOverview() {
                         </span>
                       </div>
                       {(e.comment || e.reference || e.bank) && (
-                        <p className="mt-1.5 text-xs text-muted-foreground text-pretty">
+                        <p className="mt-1.5 text-xs text-muted-foreground text-pretty break-words">
                           {e.comment || `Held pending settlement`}
                           {e.bank ? ` · ${e.bank}` : ""}
                         </p>

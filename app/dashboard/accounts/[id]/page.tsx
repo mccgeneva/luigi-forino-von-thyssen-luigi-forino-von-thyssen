@@ -540,7 +540,7 @@ export default function AccountDetailPage() {
       {/* Reserved-funds breakdown: every held debit that locks part of this
           account's balance, so the client sees exactly what each hold is for. */}
       <Dialog open={reservedOpen} onOpenChange={setReservedOpen}>
-        <DialogContent className="max-w-lg">
+        <DialogContent className="w-[calc(100vw-2rem)] max-w-lg overflow-hidden">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <Lock className="h-4 w-4 text-amber-400" />
@@ -570,7 +570,7 @@ export default function AccountDetailPage() {
                   <li key={e.id} className="rounded-lg border border-border bg-secondary/40 p-3">
                     <div className="flex items-start justify-between gap-3">
                       <div className="min-w-0">
-                        <p className="truncate text-sm font-medium text-foreground">
+                        <p className="text-sm font-medium text-foreground break-words">
                           {e.counterparty || e.category || "Reserved transaction"}
                         </p>
                         <p className="text-xs text-muted-foreground">
@@ -587,7 +587,7 @@ export default function AccountDetailPage() {
                       </span>
                     </div>
                     {(e.comment || e.bank) && (
-                      <p className="mt-1.5 text-xs text-muted-foreground text-pretty">
+                      <p className="mt-1.5 text-xs text-muted-foreground text-pretty break-words">
                         {e.comment || "Held pending settlement"}
                         {e.bank ? ` · ${e.bank}` : ""}
                       </p>
