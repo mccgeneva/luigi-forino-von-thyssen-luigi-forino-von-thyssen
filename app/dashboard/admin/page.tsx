@@ -2220,6 +2220,7 @@ export default function AdminPage() {
     { id: "section-kyc", view: "kyc", label: "KYC Verification", count: pendingKycCount, icon: ShieldCheck },
     { id: "section-gateway", view: "gateway", label: "Gateway Accounts", count: pendingGatewayCount, icon: Globe },
     { id: "section-swiftrouting", view: "swiftrouting", label: "SWIFT Routing", count: pendingSwiftRoutingCount, icon: Send },
+    { id: "section-subaccounts", view: "subaccounts", label: "Sub-Account Requests", count: pendingSubAccountCount, icon: Layers },
     { id: "section-payments", view: "approvals", kind: "payment", label: "Outgoing Payments", count: dbPending.payment ?? 0, icon: ArrowUpRight },
     { id: "section-instruments", view: "approvals", kind: "instrument", label: "Bank Instruments", count: dbPending.instrument ?? 0, icon: FileText },
     { id: "section-ppp", view: "approvals", kind: "ppp", label: "Yield / PPP", count: dbPending.ppp ?? 0, icon: TrendingUp },
