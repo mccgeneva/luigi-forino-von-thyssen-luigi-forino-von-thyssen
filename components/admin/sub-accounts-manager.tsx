@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { createPortal } from "react-dom"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -12,6 +12,8 @@ import { Layers, Check, X, Loader2, RefreshCw, Search, ShieldCheck, ShieldAlert,
 import type { SubAccount, SubAccountDoc } from "@/lib/sub-account-types"
 import { blobFileUrl } from "@/lib/kyc-types"
 import { serviceFeeFor, formatSubAccountFee, SUB_ACCOUNT_ANNUAL_FEE, SUB_ACCOUNT_CLOSING_FEE } from "@/lib/sub-account-fees"
+import { validateIban, validateBic, lookupBankByIban, isGenericBankInfo } from "@/lib/iban-swift"
+import { resolveIbanExternal } from "@/app/actions/bank-resolve"
 
 type AdminRow = SubAccount & { holderName: string; holderEmail: string }
 
@@ -95,6 +97,190 @@ function DocViewer({ doc, passcode, onClose }: { doc: SubAccountDoc; passcode: s
       )}
     </div>,
     document.body,
+  )
+}
+
+type ActivateDraft = { iban: string; bic: string; note: string }
+
+/**
+ * Pending-request activation form for ONE sub-account. Owns the live IBAN
+ * check + SWIFT/BIC auto-fill (hooks can't run inside the parent's row map).
+ * Mirrors the master-account editor: the IBAN is the source of truth — a valid
+ * IBAN auto-resolves the bank's SWIFT/BIC (curated directory first, then the
+ * external resolver) and OVERWRITES a stale wrong-country BIC; a live
+ * cross-country pair shows a fix button.
+ */
+function ActivatePanel({
+  row,
+  draft,
+  setDraft,
+  busy,
+  onActivate,
+  onReject,
+}: {
+  row: AdminRow
+  draft: ActivateDraft
+  setDraft: (id: string, patch: Partial<ActivateDraft>) => void
+  busy: boolean
+  onActivate: () => void
+  onReject: () => void
+}) {
+  const [bankLookingUp, setBankLookingUp] = useState(false)
+
+  const ibanCheck = useMemo(() => (draft.iban.trim() ? validateIban(draft.iban) : null), [draft.iban])
+  const bicCheck = useMemo(() => (draft.bic.trim() ? validateBic(draft.bic) : null), [draft.bic])
+  const ibanInvalid = !!ibanCheck && !ibanCheck.valid
+  const bicInvalid = !!bicCheck && !bicCheck.valid
+  const validIban = ibanCheck?.valid ? ibanCheck.formatted.replace(/\s/g, "") : ""
+
+  // Read the latest BIC inside the resolver without re-running it per keystroke.
+  const bicRef = useRef("")
+  bicRef.current = draft.bic
+
+  const resolveBankForIban = async (ibanClean: string): Promise<{ bic?: string; name?: string }> => {
+    let info = await lookupBankByIban(ibanClean)
+    if (isGenericBankInfo(info)) {
+      try {
+        const ext = await resolveIbanExternal(ibanClean)
+        if (ext && (ext.name || ext.bic)) {
+          info = {
+            name: ext.name || info?.name || "",
+            bic: ext.bic || info?.bic,
+            city: ext.city,
+            country: info?.country || "",
+            countryCode: info?.countryCode || ibanClean.slice(0, 2),
+          }
+        }
+      } catch {
+        /* best-effort — keep the structural fallback */
+      }
+    }
+    return { bic: info?.bic }
+  }
+
+  // On a valid IBAN, fill an empty SWIFT/BIC or overwrite one that belongs to a
+  // different country (a leftover from a previous IBAN). Runs on every IBAN edit.
+  useEffect(() => {
+    if (!validIban) return
+    let active = true
+    const ibanCountry = validIban.slice(0, 2)
+    const curBic = bicRef.current.trim()
+    const curBicCheck = curBic ? validateBic(curBic) : null
+    const overwrite = !!(curBicCheck?.valid && curBicCheck.countryCode !== ibanCountry)
+    if (curBic && !overwrite) return // already has a compatible BIC — don't clobber
+
+    setBankLookingUp(true)
+    ;(async () => {
+      const bank = await resolveBankForIban(validIban)
+      if (!active) return
+      if (bank.bic) setDraft(row.id, { bic: bank.bic })
+      else if (overwrite) setDraft(row.id, { bic: "" })
+    })().finally(() => {
+      if (active) setBankLookingUp(false)
+    })
+    return () => {
+      active = false
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [validIban])
+
+  // Safety net: a manually mistyped SWIFT (same IBAN, wrong-country BIC).
+  const countryMismatch = !!(
+    ibanCheck?.valid &&
+    bicCheck?.valid &&
+    ibanCheck.countryCode !== bicCheck.countryCode
+  )
+
+  const fixFromIban = async () => {
+    if (!validIban) return
+    setBankLookingUp(true)
+    try {
+      const bank = await resolveBankForIban(validIban)
+      setDraft(row.id, { bic: bank.bic ?? "" })
+    } finally {
+      setBankLookingUp(false)
+    }
+  }
+
+  return (
+    <div className="mt-4 space-y-3 border-t border-border pt-3">
+      <div className="grid gap-3 sm:grid-cols-2">
+        <div className="grid gap-1.5">
+          <Label htmlFor={`iban-${row.id}`}>IBAN / Account reference *</Label>
+          <Input
+            id={`iban-${row.id}`}
+            className="font-mono"
+            placeholder="CH00 0000 0000 0000 0000 0"
+            value={draft.iban}
+            onChange={(e) => setDraft(row.id, { iban: e.target.value })}
+            aria-invalid={ibanInvalid}
+          />
+          {ibanInvalid ? (
+            <p className="text-[11px] text-red-600">{ibanCheck?.error}</p>
+          ) : ibanCheck?.valid ? (
+            <p className="text-[11px] text-emerald-600">
+              Valid {ibanCheck.countryName} IBAN{bankLookingUp ? " — looking up bank…" : ""}
+            </p>
+          ) : null}
+        </div>
+        <div className="grid gap-1.5">
+          <Label htmlFor={`bic-${row.id}`}>SWIFT / BIC (optional)</Label>
+          <Input
+            id={`bic-${row.id}`}
+            className="font-mono"
+            placeholder="XXXXXXXX"
+            value={draft.bic}
+            onChange={(e) => setDraft(row.id, { bic: e.target.value.toUpperCase() })}
+            aria-invalid={bicInvalid}
+          />
+          {bicInvalid ? (
+            <p className="text-[11px] text-red-600">{bicCheck?.error}</p>
+          ) : draft.bic.trim() && !countryMismatch ? (
+            <p className="text-[11px] text-emerald-600">Auto-filled from IBAN — verify before activating.</p>
+          ) : null}
+        </div>
+      </div>
+
+      {countryMismatch && (
+        <div className="flex flex-wrap items-center gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 p-2.5 text-[11px] text-amber-700">
+          <ShieldAlert className="h-3.5 w-3.5 shrink-0" />
+          <span className="min-w-0 flex-1">
+            The SWIFT/BIC country ({bicCheck?.countryCode}) does not match the IBAN country (
+            {ibanCheck?.countryCode}).
+          </span>
+          <Button type="button" variant="outline" size="sm" onClick={() => void fixFromIban()} disabled={bankLookingUp}>
+            {bankLookingUp ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : null}
+            Use the IBAN&apos;s bank
+          </Button>
+        </div>
+      )}
+
+      <div className="grid gap-1.5">
+        <Label htmlFor={`note-${row.id}`}>Note to client (optional)</Label>
+        <Textarea
+          id={`note-${row.id}`}
+          rows={2}
+          placeholder="Shown to the client with the decision…"
+          value={draft.note}
+          onChange={(e) => setDraft(row.id, { note: e.target.value })}
+        />
+      </div>
+      <p className="text-[11px] text-muted-foreground">
+        Activating charges the Master Account a {formatSubAccountFee(serviceFeeFor(row.verification))} service fee (
+        {row.verification === "declared" ? "declared UBO" : "alias"}) plus the{" "}
+        {formatSubAccountFee(SUB_ACCOUNT_ANNUAL_FEE)} annual fee, immediately.
+      </p>
+      <div className="flex flex-wrap gap-2">
+        <Button onClick={onActivate} disabled={busy || ibanInvalid || bicInvalid}>
+          {busy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Check className="mr-2 h-4 w-4" />}
+          Assign IBAN &amp; activate
+        </Button>
+        <Button variant="outline" onClick={onReject} disabled={busy}>
+          <X className="mr-2 h-4 w-4" />
+          Reject
+        </Button>
+      </div>
+    </div>
   )
 }
 
@@ -374,56 +560,14 @@ export function SubAccountsManager({ passcode }: { passcode: string }) {
                   </div>
 
                   {row.status === "pending" && (
-                    <div className="mt-4 space-y-3 border-t border-border pt-3">
-                      <div className="grid gap-3 sm:grid-cols-2">
-                        <div className="grid gap-1.5">
-                          <Label htmlFor={`iban-${row.id}`}>IBAN / Account reference *</Label>
-                          <Input
-                            id={`iban-${row.id}`}
-                            className="font-mono"
-                            placeholder="CH00 0000 0000 0000 0000 0"
-                            value={draft.iban}
-                            onChange={(e) => setDraft(row.id, { iban: e.target.value })}
-                          />
-                        </div>
-                        <div className="grid gap-1.5">
-                          <Label htmlFor={`bic-${row.id}`}>SWIFT / BIC (optional)</Label>
-                          <Input
-                            id={`bic-${row.id}`}
-                            className="font-mono"
-                            placeholder="XXXXXXXX"
-                            value={draft.bic}
-                            onChange={(e) => setDraft(row.id, { bic: e.target.value })}
-                          />
-                        </div>
-                      </div>
-                      <div className="grid gap-1.5">
-                        <Label htmlFor={`note-${row.id}`}>Note to client (optional)</Label>
-                        <Textarea
-                          id={`note-${row.id}`}
-                          rows={2}
-                          placeholder="Shown to the client with the decision…"
-                          value={draft.note}
-                          onChange={(e) => setDraft(row.id, { note: e.target.value })}
-                        />
-                      </div>
-                      <p className="text-[11px] text-muted-foreground">
-                        Activating charges the Master Account a{" "}
-                        {formatSubAccountFee(serviceFeeFor(row.verification))} service fee (
-                        {row.verification === "declared" ? "declared UBO" : "alias"}) plus the{" "}
-                        {formatSubAccountFee(SUB_ACCOUNT_ANNUAL_FEE)} annual fee, immediately.
-                      </p>
-                      <div className="flex flex-wrap gap-2">
-                        <Button onClick={() => void activate(row)} disabled={busy}>
-                          {busy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Check className="mr-2 h-4 w-4" />}
-                          Assign IBAN &amp; activate
-                        </Button>
-                        <Button variant="outline" onClick={() => void reject(row)} disabled={busy}>
-                          <X className="mr-2 h-4 w-4" />
-                          Reject
-                        </Button>
-                      </div>
-                    </div>
+                    <ActivatePanel
+                      row={row}
+                      draft={draft}
+                      setDraft={setDraft}
+                      busy={busy}
+                      onActivate={() => void activate(row)}
+                      onReject={() => void reject(row)}
+                    />
                   )}
 
                   {row.status === "active" && (
