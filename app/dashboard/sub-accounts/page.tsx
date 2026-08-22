@@ -62,6 +62,8 @@ import {
   SUB_ACCOUNT_ANNUAL_FEE,
   SUB_ACCOUNT_CLOSING_FEE,
   formatSubAccountFee,
+  transferFeeFor,
+  TRANSFER_FEE_RATE,
 } from "@/lib/sub-account-fees"
 
 function formatMoney(amount: number, currency: string): string {
@@ -182,13 +184,21 @@ export default function SubAccountsPage() {
   }, [transferLegs, fromId])
 
   const amountNum = Number.parseFloat(transferAmount)
+  // The 2% fee is always charged to the Main account. When the source IS the
+  // Main account it must cover amount + fee; when the source is a sub-account
+  // the Main account must independently cover the fee.
+  const transferFee = amountNum > 0 && !Number.isNaN(amountNum) ? transferFeeFor(amountNum) : 0
+  const mainBalance = balanceFor(transferCurrency)
+  const sourceNeed = fromId === MAIN_ACCOUNT_ID ? amountNum + transferFee : amountNum
+  const feeCoveredByMain = fromId === MAIN_ACCOUNT_ID || transferFee <= mainBalance + 0.001
   const transferInvalid =
     !transferAmount ||
     Number.isNaN(amountNum) ||
     amountNum <= 0 ||
     fromId === toId ||
     !toId ||
-    amountNum > fromBalance + 0.001
+    sourceNeed > fromBalance + 0.001 ||
+    !feeCoveredByMain
 
   const copy = (text: string, key: string) => {
     void navigator.clipboard?.writeText(text)
@@ -860,8 +870,8 @@ export default function SubAccountsPage() {
           <DialogHeader>
             <DialogTitle>Internal transfer</DialogTitle>
             <DialogDescription>
-              Move funds instantly between your main account and your sub-accounts. Same currency,
-              zero fees.
+              Move funds instantly between your main account and your sub-accounts. Same currency. A{" "}
+              {(TRANSFER_FEE_RATE * 100).toFixed(0)}% fee applies and is charged to your Main account.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4 py-1">
@@ -933,12 +943,43 @@ export default function SubAccountsPage() {
                 onChange={(e) => setTransferAmount(e.target.value)}
                 placeholder="0.00"
               />
-              {transferAmount && amountNum > fromBalance + 0.001 && (
+              {transferAmount && sourceNeed > fromBalance + 0.001 && (
                 <p className="text-xs text-destructive">
-                  Exceeds available balance of {formatMoney(fromBalance, transferCurrency)}.
+                  {fromId === MAIN_ACCOUNT_ID
+                    ? `Amount plus the ${formatMoney(transferFee, transferCurrency)} fee exceeds your available balance of ${formatMoney(fromBalance, transferCurrency)}.`
+                    : `Exceeds available balance of ${formatMoney(fromBalance, transferCurrency)}.`}
+                </p>
+              )}
+              {transferAmount && sourceNeed <= fromBalance + 0.001 && !feeCoveredByMain && (
+                <p className="text-xs text-destructive">
+                  The {formatMoney(transferFee, transferCurrency)} fee is charged to your Main account, which
+                  only has {formatMoney(mainBalance, transferCurrency)} available.
                 </p>
               )}
             </div>
+            {amountNum > 0 && !Number.isNaN(amountNum) && (
+              <div className="rounded-lg border border-border bg-muted/40 p-3 text-sm">
+                <div className="flex items-center justify-between">
+                  <span className="text-muted-foreground">Transfer amount</span>
+                  <span className="font-medium">{formatMoney(amountNum, transferCurrency)}</span>
+                </div>
+                <div className="mt-1 flex items-center justify-between">
+                  <span className="text-muted-foreground">
+                    {(TRANSFER_FEE_RATE * 100).toFixed(0)}% fee (charged to Main account)
+                  </span>
+                  <span className="font-medium">{formatMoney(transferFee, transferCurrency)}</span>
+                </div>
+                <div className="mt-2 flex items-center justify-between border-t border-border pt-2">
+                  <span className="text-muted-foreground">Total debited from Main</span>
+                  <span className="font-semibold">
+                    {formatMoney(
+                      fromId === MAIN_ACCOUNT_ID ? amountNum + transferFee : transferFee,
+                      transferCurrency,
+                    )}
+                  </span>
+                </div>
+              </div>
+            )}
             <div className="space-y-1.5">
               <Label htmlFor="transfer-note">Note (optional)</Label>
               <Input

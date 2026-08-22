@@ -27,6 +27,8 @@ import {
   SUB_ACCOUNT_CLOSING_FEE,
   SUB_ACCOUNT_FEE_CURRENCY,
   formatSubAccountFee,
+  transferFeeFor,
+  TRANSFER_FEE_RATE,
 } from "@/lib/sub-account-fees"
 import { MAIN_ACCOUNT_ID, type SubAccount, type SubAccountDoc } from "@/lib/sub-account-types"
 import type { LedgerEntry } from "@/lib/ledger-store"
@@ -365,16 +367,41 @@ export async function transferToSubAccount(input: {
     const to = await resolveLeg(toId)
     if ("error" in to) return { ok: false, error: to.error }
 
-    // Source solvency: the source compartment must hold the funds.
+    // Every internal movement is charged a 2% fee, always debited from the
+    // MASTER (main) account in the transfer currency.
+    const fee = transferFeeFor(amount)
+    const feeFmt = (n: number) =>
+      `${currency} ${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+
+    // Source solvency: the source compartment must hold the transfer amount.
+    // When the source IS the main account, it must also cover the fee that is
+    // debited from main, so require amount + fee there.
     const entries = await readLedgerEntries(ownerId)
     const available = compartmentBalance(entries, currency, from.tag)
-    if (amount > available + 0.001) {
+    const sourceNeed = from.tag === undefined ? amount + fee : amount
+    if (sourceNeed > available + 0.001) {
       return {
         ok: false,
-        error: `Insufficient funds in ${from.label}. Available ${currency} ${available.toLocaleString("en-US", {
-          minimumFractionDigits: 2,
-          maximumFractionDigits: 2,
-        })}.`,
+        error:
+          from.tag === undefined
+            ? `Insufficient funds in ${from.label}. This transfer needs ${feeFmt(amount)} plus a ${feeFmt(
+                fee,
+              )} fee (${feeFmt(sourceNeed)} total), but only ${feeFmt(available)} is available.`
+            : `Insufficient funds in ${from.label}. Available ${feeFmt(available)}.`,
+      }
+    }
+
+    // When the source is a sub-account, the fee still comes out of the main
+    // account, so main must independently cover it.
+    if (from.tag !== undefined && fee > 0) {
+      const mainAvailable = compartmentBalance(entries, currency, undefined)
+      if (fee > mainAvailable + 0.001) {
+        return {
+          ok: false,
+          error: `The ${feeFmt(fee)} transfer fee is charged to your Main account, which only has ${feeFmt(
+            mainAvailable,
+          )} available.`,
+        }
       }
     }
 
@@ -410,22 +437,41 @@ export async function transferToSubAccount(input: {
       category: "Sub-account Transfer",
       subAccountId: to.tag,
     })
+    // Charge the 2% fee to the MASTER (main) account — never tagged to a
+    // compartment, so it always reduces the master balance.
+    if (fee > 0) {
+      await upsertLedgerEntry(ownerId, {
+        id: `${ref}-FEE`,
+        direction: "debit",
+        amount: fee,
+        currency,
+        status: "completed",
+        date: nowIso,
+        counterparty: "NAFTAhub",
+        reference: ref,
+        comment: `2% transfer fee on ${feeFmt(amount)} (${from.label} → ${to.label}).`,
+        category: "Transfer Fee",
+      })
+    }
 
-    // Non-negativity guard on the whole owner ledger. The transfer is zero-sum
-    // so this always holds, but roll back both legs on any surprise.
+    // Non-negativity guard on the whole owner ledger. Roll back every leg on any
+    // surprise (e.g. the fee tipping the master balance negative).
     try {
       await assertOwnerSolvent(ownerId)
     } catch {
       await deleteLedgerEntry(ownerId, `${ref}-OUT`)
       await deleteLedgerEntry(ownerId, `${ref}-IN`)
+      await deleteLedgerEntry(ownerId, `${ref}-FEE`)
       return { ok: false, error: "The transfer could not be completed. Please try again." }
     }
 
     await logActivity({
-      action: `Moved ${currency} ${amount.toLocaleString("en-US")} from ${from.label} to ${to.label}`,
+      action: `Moved ${feeFmt(amount)} from ${from.label} to ${to.label}`,
       category: "Accounts",
       details: {
-        summary: `Instant internal sub-account transfer of ${currency} ${amount.toLocaleString("en-US")} (${from.label} → ${to.label}). Reference ${ref}.`,
+        summary: `Instant internal sub-account transfer of ${feeFmt(amount)} (${from.label} → ${to.label}). A ${feeFmt(
+          fee,
+        )} (${(TRANSFER_FEE_RATE * 100).toFixed(0)}%) fee was charged to the Master Account. Reference ${ref}.`,
         referenceId: ref,
         note: note || "(none)",
       },
