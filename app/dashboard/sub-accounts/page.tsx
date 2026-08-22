@@ -20,6 +20,7 @@ import {
   ShieldAlert,
   FileText,
   X,
+  Trash2,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -52,6 +53,7 @@ import {
   requestSubAccount,
   transferToSubAccount,
   updateMySubAccountBeneficiary,
+  purgeDeclinedSubAccounts,
 } from "@/app/actions/sub-accounts"
 import { MAIN_ACCOUNT_ID, SUB_ACCOUNT_STATUS_LABEL, type SubAccount, type SubAccountDoc } from "@/lib/sub-account-types"
 import {
@@ -88,6 +90,7 @@ export default function SubAccountsPage() {
   const [subs, setSubs] = useState<SubAccount[]>([])
   const [loading, setLoading] = useState(true)
   const [copied, setCopied] = useState<string | null>(null)
+  const [purging, setPurging] = useState(false)
 
   // Create dialog
   const [createOpen, setCreateOpen] = useState(false)
@@ -131,6 +134,25 @@ export default function SubAccountsPage() {
   }, [])
 
   const activeSubs = useMemo(() => subs.filter((s) => s.status === "active"), [subs])
+  const declinedCount = useMemo(() => subs.filter((s) => s.status === "rejected").length, [subs])
+
+  const handlePurgeDeclined = async () => {
+    setPurging(true)
+    const res = await purgeDeclinedSubAccounts()
+    setPurging(false)
+    if (!res.ok) {
+      toast.error("Could not purge", { description: res.error })
+      return
+    }
+    if (res.data.purged === 0) {
+      toast("Nothing to purge", { description: "There are no declined requests to hide." })
+      return
+    }
+    toast.success("Declined requests purged", {
+      description: `${res.data.purged} declined request${res.data.purged === 1 ? "" : "s"} hidden from your view.`,
+    })
+    await loadSubs()
+  }
 
   // Compartments available as transfer endpoints for the chosen currency: Main +
   // every active sub-account in that currency.
@@ -317,7 +339,18 @@ export default function SubAccountsPage() {
             </p>
           </div>
         </div>
-        <div className="flex shrink-0 gap-2">
+        <div className="flex shrink-0 flex-wrap gap-2">
+          {declinedCount > 0 && (
+            <Button
+              variant="outline"
+              className="gap-2 border-destructive/30 text-destructive hover:bg-destructive/10 hover:text-destructive"
+              disabled={purging}
+              onClick={() => void handlePurgeDeclined()}
+            >
+              <Trash2 className="h-4 w-4" />
+              {purging ? "Purging…" : `Purge declined (${declinedCount})`}
+            </Button>
+          )}
           <Button
             variant="outline"
             className="gap-2"

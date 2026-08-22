@@ -59,6 +59,10 @@ async function ensureTable(): Promise<void> {
   // preserved through closure) and closure date (stops annual accrual).
   await query(`ALTER TABLE sub_accounts ADD COLUMN IF NOT EXISTS activated_at timestamptz`)
   await query(`ALTER TABLE sub_accounts ADD COLUMN IF NOT EXISTS closed_at timestamptz`)
+  // Client-side dismissal: the owner can purge DECLINED requests from their view
+  // without affecting the administrator record. Owner-scoped, persisted so the
+  // purge holds across devices.
+  await query(`ALTER TABLE sub_accounts ADD COLUMN IF NOT EXISTS dismissed_at timestamptz`)
   ensured = true
 }
 
@@ -137,11 +141,32 @@ export async function updateSubAccountBeneficiary(
   return rows[0] ? rowToSubAccount(rows[0]) : null
 }
 
-/** All sub-accounts owned by a user (most recent first). */
+/** All sub-accounts owned by a user (most recent first), excluding any the
+ *  client has purged from their view. */
 export async function listSubAccountsForUser(userId: string): Promise<SubAccount[]> {
   await ensureTable()
-  const { rows } = await query(`SELECT * FROM sub_accounts WHERE user_id = $1 ORDER BY created_at DESC`, [userId])
+  const { rows } = await query(
+    `SELECT * FROM sub_accounts WHERE user_id = $1 AND dismissed_at IS NULL ORDER BY created_at DESC`,
+    [userId],
+  )
   return rows.map(rowToSubAccount)
+}
+
+/**
+ * Client purge: hide every DECLINED (rejected) request from the owner's view.
+ * Owner-scoped; only rejected rows are affected so live/pending/active
+ * sub-accounts are never touched. The administrator record is unchanged (admin
+ * lists use listAllSubAccounts). Returns how many were purged.
+ */
+export async function dismissDeclinedSubAccounts(userId: string): Promise<number> {
+  await ensureTable()
+  const { rowCount } = await query(
+    `UPDATE sub_accounts
+        SET dismissed_at = now()
+      WHERE user_id = $1 AND status = 'rejected' AND dismissed_at IS NULL`,
+    [userId],
+  )
+  return rowCount ?? 0
 }
 
 /** A single sub-account by id (scoped nowhere — callers must check ownership). */
