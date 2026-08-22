@@ -1074,12 +1074,12 @@ export function UserManager() {
 
       {/* Edit dialog */}
       <Dialog open={!!editTarget} onOpenChange={(o) => !o && setEditTarget(null)}>
-        <DialogContent className="sm:max-w-lg">
+        <DialogContent className="flex max-h-[90dvh] flex-col gap-0 sm:max-w-lg">
           <DialogHeader>
             <DialogTitle>Edit client account</DialogTitle>
             <DialogDescription>Update the displayed identity and login email.</DialogDescription>
           </DialogHeader>
-          <div className="space-y-4 py-2">
+          <div className="flex-1 space-y-4 overflow-y-auto py-2 pr-1">
             <div className="grid gap-3 sm:grid-cols-2">
               <div className="space-y-2">
                 <Label htmlFor="ue-fullname">Full name</Label>
