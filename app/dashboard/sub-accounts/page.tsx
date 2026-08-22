@@ -102,6 +102,9 @@ export default function SubAccountsPage() {
   const [creating, setCreating] = useState(false)
   // UBO identity documents (passport + KYC). Both present ⇒ declared; otherwise
   // the sub-account is an alias requiring the legal-responsibility acknowledgment.
+  // Explicit choice: declare the UBO (upload KYC + passport) or open an alias
+  // compartment with no KYC (the holder accepts full legal responsibility).
+  const [uboMode, setUboMode] = useState<"declared" | "alias">("declared")
   const [passportDoc, setPassportDoc] = useState<SubAccountDoc | null>(null)
   const [kycDoc, setKycDoc] = useState<SubAccountDoc | null>(null)
   const [uploading, setUploading] = useState<null | "passport" | "kyc">(null)
@@ -188,11 +191,14 @@ export default function SubAccountsPage() {
     setTimeout(() => setCopied((c) => (c === key ? null : c)), 1500)
   }
 
-  // Both identity documents present ⇒ the UBO is declared (no alias liability).
-  const isDeclared = !!passportDoc && !!kycDoc
-  // When not declared, the holder must accept legal responsibility for the alias.
+  // Declared only in declared mode with BOTH documents present (no alias liability).
+  const isDeclared = uboMode === "declared" && !!passportDoc && !!kycDoc
+  // Declared mode needs both docs; alias mode needs the legal-responsibility tick.
   const createBlocked =
-    label.trim().length < 2 || creating || uploading !== null || (!isDeclared && !aliasAccepted)
+    label.trim().length < 2 ||
+    creating ||
+    uploading !== null ||
+    (uboMode === "declared" ? !isDeclared : !aliasAccepted)
 
   const handleUpload = async (kind: "passport" | "kyc", file: File | undefined) => {
     if (!file) return
@@ -230,11 +236,15 @@ export default function SubAccountsPage() {
     setPassportDoc(null)
     setKycDoc(null)
     setAliasAccepted(false)
+    setUboMode("declared")
   }
 
   const handleCreate = async () => {
     setCreating(true)
-    const kycDocuments = [passportDoc, kycDoc].filter(Boolean) as SubAccountDoc[]
+    // In alias mode, send no documents so the server derives an alias; in
+    // declared mode, send the uploaded passport + KYC.
+    const kycDocuments =
+      uboMode === "declared" ? ([passportDoc, kycDoc].filter(Boolean) as SubAccountDoc[]) : []
     const res = await requestSubAccount({
       label,
       currency,
@@ -242,7 +252,7 @@ export default function SubAccountsPage() {
       beneficiaryName,
       beneficiaryDetails,
       kycDocuments,
-      legalResponsibilityAccepted: !isDeclared ? aliasAccepted : undefined,
+      legalResponsibilityAccepted: uboMode === "alias" ? aliasAccepted : undefined,
     })
     setCreating(false)
     if (!res.ok) {
@@ -440,7 +450,7 @@ export default function SubAccountsPage() {
                 {/* UBO identity verification — declared (KYC + passport) vs alias */}
                 <div className="space-y-2 rounded-lg border border-border/70 bg-muted/30 p-3">
                   <div className="flex items-center gap-1.5">
-                    {isDeclared ? (
+                    {uboMode === "declared" ? (
                       <ShieldCheck className="h-3.5 w-3.5 text-emerald-600" />
                     ) : (
                       <ShieldAlert className="h-3.5 w-3.5 text-amber-600" />
@@ -448,81 +458,131 @@ export default function SubAccountsPage() {
                     <Label className="text-sm">Beneficiary identity (UBO)</Label>
                   </div>
                   <p className="text-[11px] leading-relaxed text-muted-foreground">
-                    Upload the beneficiary&apos;s passport and a KYC document to declare the ultimate
-                    beneficial owner. Without them the sub-account is flagged as an alias.
+                    Choose how this sub-account is held. Declaring the ultimate beneficial owner requires
+                    a passport and a KYC document. An alias needs no documents, but you accept full legal
+                    responsibility for it.
                   </p>
 
-                  {(
-                    [
-                      { kind: "passport", label: "Passport", doc: passportDoc },
-                      { kind: "kyc", label: "KYC document", doc: kycDoc },
-                    ] as const
-                  ).map((slot) => (
-                    <div
-                      key={slot.kind}
-                      className="flex items-center justify-between gap-2 rounded-md border border-border/60 bg-background px-2.5 py-2"
+                  {/* Explicit choice — Declare UBO vs Alias (no KYC) */}
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setUboMode("declared")}
+                      className={`flex flex-col items-start gap-1 rounded-md border p-2.5 text-left transition-colors ${
+                        uboMode === "declared"
+                          ? "border-emerald-500/60 bg-emerald-500/10"
+                          : "border-border/60 bg-background hover:border-border"
+                      }`}
                     >
-                      <div className="flex min-w-0 items-center gap-2">
-                        <FileText className="h-4 w-4 shrink-0 text-muted-foreground" />
-                        <div className="min-w-0">
-                          <p className="truncate text-xs font-medium text-foreground">{slot.label}</p>
-                          {slot.doc ? (
-                            <p className="truncate text-[11px] text-emerald-600">{slot.doc.fileName}</p>
-                          ) : (
-                            <p className="text-[11px] text-muted-foreground">Not uploaded</p>
+                      <span className="flex items-center gap-1.5 text-xs font-medium text-foreground">
+                        <ShieldCheck className="h-3.5 w-3.5 text-emerald-600" />
+                        Declare UBO
+                      </span>
+                      <span className="text-[11px] leading-tight text-muted-foreground">
+                        Upload KYC + passport
+                      </span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setUboMode("alias")}
+                      className={`flex flex-col items-start gap-1 rounded-md border p-2.5 text-left transition-colors ${
+                        uboMode === "alias"
+                          ? "border-amber-500/60 bg-amber-500/10"
+                          : "border-border/60 bg-background hover:border-border"
+                      }`}
+                    >
+                      <span className="flex items-center gap-1.5 text-xs font-medium text-foreground">
+                        <ShieldAlert className="h-3.5 w-3.5 text-amber-600" />
+                        Alias — no KYC
+                      </span>
+                      <span className="text-[11px] leading-tight text-muted-foreground">
+                        No documents required
+                      </span>
+                    </button>
+                  </div>
+
+                  {uboMode === "declared" &&
+                    (
+                      [
+                        { kind: "passport", label: "Passport", doc: passportDoc },
+                        { kind: "kyc", label: "KYC document", doc: kycDoc },
+                      ] as const
+                    ).map((slot) => (
+                      <div
+                        key={slot.kind}
+                        className="flex items-center justify-between gap-2 rounded-md border border-border/60 bg-background px-2.5 py-2"
+                      >
+                        <div className="flex min-w-0 items-center gap-2">
+                          <FileText className="h-4 w-4 shrink-0 text-muted-foreground" />
+                          <div className="min-w-0">
+                            <p className="truncate text-xs font-medium text-foreground">{slot.label}</p>
+                            {slot.doc ? (
+                              <p className="truncate text-[11px] text-emerald-600">{slot.doc.fileName}</p>
+                            ) : (
+                              <p className="text-[11px] text-muted-foreground">Not uploaded</p>
+                            )}
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-1">
+                          {slot.doc && (
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-7 w-7"
+                              onClick={() => (slot.kind === "passport" ? setPassportDoc(null) : setKycDoc(null))}
+                              aria-label={`Remove ${slot.label}`}
+                            >
+                              <X className="h-3.5 w-3.5" />
+                            </Button>
                           )}
+                          <input
+                            id={`sub-upload-${slot.kind}`}
+                            type="file"
+                            accept=".pdf,.jpg,.jpeg,.png,.webp"
+                            className="hidden"
+                            onChange={(e) => {
+                              const f = e.target.files?.[0]
+                              void handleUpload(slot.kind, f)
+                              e.target.value = ""
+                            }}
+                          />
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            disabled={uploading === slot.kind}
+                            onClick={() => document.getElementById(`sub-upload-${slot.kind}`)?.click()}
+                          >
+                            <UploadCloud className="mr-1.5 h-3.5 w-3.5" />
+                            {uploading === slot.kind ? "Uploading…" : slot.doc ? "Replace" : "Upload"}
+                          </Button>
                         </div>
                       </div>
-                      <div className="flex items-center gap-1">
-                        {slot.doc && (
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            className="h-7 w-7"
-                            onClick={() => (slot.kind === "passport" ? setPassportDoc(null) : setKycDoc(null))}
-                            aria-label={`Remove ${slot.label}`}
-                          >
-                            <X className="h-3.5 w-3.5" />
-                          </Button>
-                        )}
-                        <input
-                          id={`sub-upload-${slot.kind}`}
-                          type="file"
-                          accept=".pdf,.jpg,.jpeg,.png,.webp"
-                          className="hidden"
-                          onChange={(e) => {
-                            const f = e.target.files?.[0]
-                            void handleUpload(slot.kind, f)
-                            e.target.value = ""
-                          }}
-                        />
-                        <Button
-                          type="button"
-                          variant="outline"
-                          size="sm"
-                          disabled={uploading === slot.kind}
-                          onClick={() => document.getElementById(`sub-upload-${slot.kind}`)?.click()}
-                        >
-                          <UploadCloud className="mr-1.5 h-3.5 w-3.5" />
-                          {uploading === slot.kind ? "Uploading…" : slot.doc ? "Replace" : "Upload"}
-                        </Button>
-                      </div>
-                    </div>
-                  ))}
+                    ))}
 
-                  {isDeclared ? (
+                  {uboMode === "declared" && isDeclared && (
                     <div className="flex items-center gap-1.5 rounded-md border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-2 text-[11px] text-emerald-700">
                       <ShieldCheck className="h-3.5 w-3.5 shrink-0" />
                       UBO declared — full KYC on file. No personal-liability flag applies.
                     </div>
-                  ) : (
+                  )}
+
+                  {uboMode === "declared" && !isDeclared && (
+                    <p className="text-[11px] leading-relaxed text-muted-foreground">
+                      Upload both the passport and the KYC document to declare the UBO, or switch to
+                      Alias above if you do not want to provide KYC.
+                    </p>
+                  )}
+
+                  {uboMode === "alias" && (
                     <div className="space-y-2 rounded-md border border-amber-500/30 bg-amber-500/10 p-2.5">
                       <p className="flex items-start gap-1.5 text-[11px] leading-relaxed text-amber-700">
                         <ShieldAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" />
                         <span>
-                          Without KYC + passport this sub-account is an <strong>alias</strong>. It can be
-                          used, but all transactions and usage under it are your own legal responsibility.
-                          This flag is removed once you declare the UBO with KYC and passport.
+                          This is an <strong>alias</strong> sub-account — no KYC or passport is required.
+                          It can be used, but all transactions and usage under it are your own legal
+                          responsibility. This flag is removed if you later declare the UBO with KYC and
+                          passport.
                         </span>
                       </p>
                       <label className="flex items-start gap-2 text-[11px] leading-relaxed text-foreground">
