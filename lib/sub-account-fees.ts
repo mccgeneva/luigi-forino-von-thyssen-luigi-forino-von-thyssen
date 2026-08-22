@@ -22,6 +22,16 @@ export const SUB_ACCOUNT_SERVICE_FEE = {
 export const SUB_ACCOUNT_ANNUAL_FEE = 1000
 export const SUB_ACCOUNT_CLOSING_FEE = 350
 
+// Every internal movement of funds between the main account and a sub-account
+// (or between two sub-accounts) is charged a 2% fee, always debited from the
+// MASTER (main) account in the transfer currency — never from a compartment.
+export const TRANSFER_FEE_RATE = 0.02
+
+/** The 2% fee (rounded to 2dp) for an internal transfer of `amount`. */
+export function transferFeeFor(amount: number): number {
+  return Math.round(amount * TRANSFER_FEE_RATE * 100) / 100
+}
+
 /** The one-time service fee (EUR) for a sub-account, by UBO verification mode. */
 export function serviceFeeFor(verification: SubAccount["verification"]): number {
   return verification === "declared" ? SUB_ACCOUNT_SERVICE_FEE.declared : SUB_ACCOUNT_SERVICE_FEE.alias
