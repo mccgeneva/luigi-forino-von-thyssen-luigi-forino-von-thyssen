@@ -1,0 +1,221 @@
+import type { LedgerEntry } from "@/lib/ledger-store"
+import type { ApprovalRequest } from "@/lib/approvals-db"
+import { round2 } from "@/lib/interest-accrual"
+
+/**
+ * NAFTAhub Yield / PPP — automatic periodic ROI -> Master Account.
+ *
+ * Once a Yield/PPP application is APPROVED by an administrator, the program pays
+ * its ROI automatically, IN ARREARS, on a fixed cycle (weekly / monthly / …):
+ * the first payout matures one full period after activation, then on each
+ * subsequent period boundary, up to the program's stated duration (term). Each
+ * matured payout is CREDITED to the client's Master Account.
+ *
+ * 75 / 25 BENEFIT SPLIT: when the investment is funded by an instrument owned by
+ * MCC HOLDING SA (acquired via reserve/assign — the client is the assignee), the
+ * RETURN is alienated 75% to MCC HOLDING SA and 25% to the client. In that case
+ * only the client's 25% share is credited to their Master Account; the gross and
+ * the MCC share are documented in the entry comment. Funded from the client's
+ * own means (no MCC instrument) → the client keeps 100% of the return.
+ *
+ * There is no server scheduler, so — exactly like the Treuhand fund engine — the
+ * posts are made LAZILY: every reconcile posts any matured periods not yet on the
+ * ledger. All entries use deterministic ids so reconciliation is fully idempotent
+ * (never double-credits), and the balance follows the user across devices.
+ *
+ * NOTE: this engine ONLY credits ROI. The invested principal itself is not moved
+ * by the PPP flow today (no capital debit on approval), so nothing here debits or
+ * returns principal — it purely reflects the periodic yield the client earns.
+ */
+
+/** How often a program pays out. `maturity` = a single payout at term end. */
+export type YieldPeriodUnit = "day" | "week" | "month" | "quarter" | "year" | "maturity"
+
+/** The lower-bound rate (as a %) parsed from a program's expected-return string. */
+export function parseYieldRatePct(expectedReturn: string | undefined): number {
+  if (!expectedReturn) return 0
+  const m = expectedReturn.match(/\d+(\.\d+)?/)
+  const pct = m ? Number.parseFloat(m[0]) : 0
+  return Number.isFinite(pct) && pct > 0 ? pct : 0
+}
+
+/** Map a free-text return frequency to a payout cycle. Defaults to monthly. */
+export function parseYieldPeriod(returnFrequency: string | undefined): YieldPeriodUnit {
+  const f = (returnFrequency ?? "").toLowerCase()
+  if (f.includes("matur")) return "maturity"
+  if (f.includes("day") || f.includes("daily")) return "day"
+  if (f.includes("week")) return "week"
+  if (f.includes("quarter")) return "quarter"
+  if (f.includes("year") || f.includes("annual")) return "year"
+  if (f.includes("month")) return "month"
+  return "month"
+}
+
+/** Add `n` whole months to a date, clamping the day to the target month length. */
+function addMonths(base: Date, n: number): Date {
+  const d = new Date(base.getTime())
+  const day = d.getDate()
+  d.setDate(1)
+  d.setMonth(d.getMonth() + n)
+  const daysInMonth = new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate()
+  d.setDate(Math.min(day, daysInMonth))
+  return d
+}
+
+/** The date of the Nth payout period after `start` for a given cycle. */
+function addPeriods(start: Date, n: number, unit: YieldPeriodUnit): Date {
+  switch (unit) {
+    case "day":
+      return new Date(start.getTime() + n * 24 * 60 * 60 * 1000)
+    case "week":
+      return new Date(start.getTime() + n * 7 * 24 * 60 * 60 * 1000)
+    case "quarter":
+      return addMonths(start, n * 3)
+    case "year":
+      return addMonths(start, n * 12)
+    case "month":
+    default:
+      return addMonths(start, n)
+  }
+}
+
+/**
+ * Parse a program duration string ("12 months", "40 banking weeks", "1 year", …)
+ * into a term-end date measured from `activation`. Falls back to 12 months when
+ * the string can't be understood, so ROI is always bounded by a term.
+ */
+export function parseYieldTermEnd(duration: string | undefined, activation: Date): Date {
+  const s = (duration ?? "").toLowerCase()
+  const m = s.match(/(\d+(\.\d+)?)/)
+  const n = m ? Number.parseFloat(m[0]) : NaN
+  if (!Number.isFinite(n) || n <= 0) return addMonths(activation, 12)
+  if (s.includes("day")) return new Date(activation.getTime() + n * 24 * 60 * 60 * 1000)
+  if (s.includes("week")) return new Date(activation.getTime() + n * 7 * 24 * 60 * 60 * 1000)
+  if (s.includes("quarter")) return addMonths(activation, Math.round(n) * 3)
+  if (s.includes("year") || s.includes("annual")) return addMonths(activation, Math.round(n) * 12)
+  if (s.includes("month")) return addMonths(activation, Math.round(n))
+  return addMonths(activation, 12)
+}
+
+/** Deterministic ledger id for the Nth matured ROI payout (1-based). */
+export function pppRoiId(reqId: string, periodIndex: number): string {
+  return `PPP-ROI-${reqId}-P${periodIndex}`
+}
+
+/** The date a program is activated (and from which ROI accrues). */
+function activationDate(req: ApprovalRequest): Date {
+  return req.decidedAt ? new Date(req.decidedAt) : new Date(req.createdAt)
+}
+
+/** Human label for the payout cycle, used in ledger comments. */
+function periodLabel(unit: YieldPeriodUnit): string {
+  switch (unit) {
+    case "day":
+      return "daily"
+    case "week":
+      return "weekly"
+    case "quarter":
+      return "quarterly"
+    case "year":
+      return "annual"
+    case "maturity":
+      return "at-maturity"
+    case "month":
+    default:
+      return "monthly"
+  }
+}
+
+/** Compact money label for engine-generated ledger comments. */
+function formatMoney(amount: number, currency: string): string {
+  return `${currency} ${amount.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+}
+
+interface PppRecord {
+  amount?: number
+  currency?: string
+  programName?: string
+  expectedReturn?: string
+  returnFrequency?: string
+  duration?: string
+  fundingInstrumentId?: string
+  fundingInstrumentLabel?: string
+  mccBenefitRate?: number
+  clientBenefitRate?: number
+}
+
+/**
+ * Every ROI credit an APPROVED Yield/PPP application has already earned by `now`,
+ * in arrears and bounded by the program term. Returns an empty array for any
+ * non-approved / non-ppp request. Deterministic ids keep it idempotent.
+ */
+export function buildPppRoiPosts(req: ApprovalRequest, now: Date = new Date()): LedgerEntry[] {
+  if (req.kind !== "ppp") return []
+  if (req.status !== "approved") return []
+
+  const record = ((req.payload as { record?: PppRecord } | undefined)?.record ?? {}) as PppRecord
+
+  const amount = Number(record.amount ?? req.amount)
+  if (!Number.isFinite(amount) || amount <= 0) return []
+
+  const currency = record.currency || req.currency || "USD"
+  const ratePct = parseYieldRatePct(record.expectedReturn)
+  if (ratePct <= 0) return []
+
+  const unit = parseYieldPeriod(record.returnFrequency)
+  const start = activationDate(req)
+  if (Number.isNaN(start.getTime())) return []
+  const termEnd = parseYieldTermEnd(record.duration, start)
+  const termEndMs = termEnd.getTime()
+  const nowMs = now.getTime()
+
+  // Gross ROI per period, then the client's share after the 75/25 split when the
+  // investment is funded by an MCC HOLDING SA-owned instrument.
+  const grossPerPeriod = round2((amount * ratePct) / 100)
+  if (grossPerPeriod <= 0) return []
+  const hasSplit = !!record.fundingInstrumentId
+  const clientRate = hasSplit ? (record.clientBenefitRate ?? 0.25) : 1
+  const mccRate = hasSplit ? (record.mccBenefitRate ?? 0.75) : 0
+  const clientPerPeriod = round2(grossPerPeriod * clientRate)
+  if (clientPerPeriod <= 0) return []
+
+  const programName = record.programName || req.title || "Yield / PPP program"
+  const splitNote = hasSplit
+    ? ` Gross ${formatMoney(grossPerPeriod, currency)} split ${Math.round(mccRate * 100)}% to MCC HOLDING SA / ${Math.round(clientRate * 100)}% to you${record.fundingInstrumentLabel ? ` (funded by ${record.fundingInstrumentLabel})` : ""}.`
+    : ""
+
+  // Determine matured payout dates (in arrears): the first one full period after
+  // activation, then each cycle, capped at the program term end.
+  const posts: LedgerEntry[] = []
+  const pushPost = (index: number, date: Date) => {
+    posts.push({
+      id: pppRoiId(req.id, index),
+      direction: "credit",
+      amount: clientPerPeriod,
+      currency,
+      status: "completed",
+      date: date.toISOString(),
+      counterparty: programName,
+      reference: req.id,
+      category: "NAFTAhub Yield — ROI",
+      comment: `${periodLabel(unit)} ROI on ${programName} (${ratePct}% per period).${splitNote}`,
+    })
+  }
+
+  if (unit === "maturity") {
+    // A single payout at the end of the term.
+    if (nowMs >= termEndMs) pushPost(1, termEnd)
+    return posts
+  }
+
+  // Recurring cycle, bounded to avoid an unbounded loop on odd data.
+  const MAX_PERIODS = 1040
+  for (let n = 1; n <= MAX_PERIODS; n++) {
+    const d = addPeriods(start, n, unit)
+    const dMs = d.getTime()
+    if (dMs > nowMs) break
+    if (dMs > termEndMs) break
+    pushPost(n, d)
+  }
+  return posts
+}
