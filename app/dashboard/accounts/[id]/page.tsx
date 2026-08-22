@@ -437,17 +437,17 @@ export default function AccountDetailPage() {
               <Card className="bg-secondary/40 border-border">
                 <CardContent className="p-4 space-y-4">
                   <div className="grid grid-cols-2 gap-4">
-                    <div className="p-4 rounded-lg bg-secondary">
+                    <div className="min-w-0 p-4 rounded-lg bg-secondary">
                       <p className="text-xs text-muted-foreground mb-1">Daily Limit</p>
-                      <p className="text-xl font-bold text-foreground">
+                      <p className="text-base sm:text-lg font-bold text-foreground leading-tight tabular-nums break-words">
                         {account.dailyLimitUnlimited
                           ? "Unlimited"
                           : formatCurrency(account.dailyLimit, account.currency)}
                       </p>
                     </div>
-                    <div className="p-4 rounded-lg bg-secondary">
+                    <div className="min-w-0 p-4 rounded-lg bg-secondary">
                       <p className="text-xs text-muted-foreground mb-1">Monthly Volume</p>
-                      <p className="text-xl font-bold text-foreground">
+                      <p className="text-base sm:text-lg font-bold text-foreground leading-tight tabular-nums break-words">
                         {account.monthlyVolumeUnlimited
                           ? "Unlimited"
                           : formatCurrency(account.monthlyVolume, account.currency)}
