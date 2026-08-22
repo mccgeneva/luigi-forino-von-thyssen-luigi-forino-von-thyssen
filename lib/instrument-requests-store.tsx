@@ -137,6 +137,13 @@ interface InstrumentRequestsContextValue {
   /** Permanently remove an instrument from the list. */
   deleteInstrument: (id: string) => void
   /**
+   * Return an assigned/reserved instrument to the marketplace: it leaves the
+   * holder's portfolio (server-side) AND its marketplace row is released
+   * (available = true) so it reappears for everyone. Caller must ensure it is
+   * not engaged in any monetization / leverage / yield scenario first.
+   */
+  returnInstrument: (id: string) => void
+  /**
    * Transfer an ACTIVE instrument to another platform account (by email). The
    * instrument moves server-side immediately, then the local list reconciles:
    * it leaves the sender's active holdings (shown "Transferred") and appears in
@@ -278,6 +285,21 @@ export function InstrumentRequestsProvider({ children }: { children: React.React
     if (target?.isin && target.status === "pending") void releaseInstrumentByIsin(target.isin)
   }
 
+  const returnInstrument: InstrumentRequestsContextValue["returnInstrument"] = (id) => {
+    const target = instruments.find((i) => i.id === id)
+    // Release the marketplace row first so the instrument becomes available to
+    // everyone again (no-op if the ISIN was never a published marketplace row).
+    if (target?.isin) void releaseInstrumentByIsin(target.isin)
+    // Then remove it from the holder's portfolio and persist server-side. A
+    // still-pending request is cancelled; an approved/active holding is deleted
+    // via the owner-scoped delete — mirroring deleteInstrument's persistence.
+    setInstruments(instruments.filter((i) => i.id !== id))
+    if (target?.approvalId) {
+      const persist = target.status === "pending" ? cancelMyApproval : deleteMyInstrument
+      void persist(target.approvalId).then(() => void refresh())
+    }
+  }
+
   const transferInstrument: InstrumentRequestsContextValue["transferInstrument"] = async (
     approvalId,
     recipientEmail,
@@ -306,6 +328,7 @@ export function InstrumentRequestsProvider({ children }: { children: React.React
         rejectInstrument,
         cancelInstrument,
         deleteInstrument,
+        returnInstrument,
         transferInstrument,
         hydrated,
       }}
