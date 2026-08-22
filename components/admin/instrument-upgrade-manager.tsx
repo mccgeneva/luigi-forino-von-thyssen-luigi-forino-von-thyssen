@@ -26,7 +26,7 @@ import {
 } from "@/components/ui/dialog"
 import { BankCombobox } from "@/components/admin/bank-combobox"
 import { ADMIN_PASSCODE } from "@/lib/admin-config"
-import { INSTRUMENT_UPGRADE_FEE_RATE, instrumentUpgradeFee, type InstrumentUpgrade } from "@/lib/instrument-upgrade"
+import { INSTRUMENT_UPGRADE_FEE_LABEL, instrumentUpgradeFee, type InstrumentUpgrade } from "@/lib/instrument-upgrade"
 
 const CURRENCIES = ["EUR", "USD", "GBP", "CHF", "AED", "SGD", "HKD"]
 
@@ -135,7 +135,7 @@ export function InstrumentUpgradeManager() {
     setNewFaceValue("")
     setNewCurrency(it.instrument.currency || "EUR")
     setTerms(
-      "The customer's existing instrument is blocked from all use while the transformation is arranged. On acceptance, the upgraded instrument is delivered into the customer's portfolio and the old one is retired. The 3% expertise & upgrade fee is charged upfront and refunded only if the customer declines the deal.",
+      `The customer's existing instrument is blocked from all use while the transformation is arranged. On acceptance, the upgraded instrument is delivered into the customer's portfolio and the old one is retired. The ${INSTRUMENT_UPGRADE_FEE_LABEL} expertise & upgrade fee is charged upfront and refunded only if the customer declines the deal.`,
     )
     setNote("")
   }, [])
@@ -204,7 +204,7 @@ export function InstrumentUpgradeManager() {
             </CardTitle>
             <CardDescription className="mt-1">
               Block a customer&apos;s held instrument and transform it into a fresh, better one from a reputable
-              partner bank. A one-time {(INSTRUMENT_UPGRADE_FEE_RATE * 100).toFixed(0)}% expertise &amp; upgrade fee is
+              partner bank. A one-time {INSTRUMENT_UPGRADE_FEE_LABEL} expertise &amp; upgrade fee is
               charged upfront (balance checked first).
             </CardDescription>
           </div>
@@ -361,7 +361,7 @@ export function InstrumentUpgradeManager() {
             <div className="rounded-lg border border-border bg-muted/40 p-3 text-sm">
               <div className="flex items-center justify-between">
                 <span className="text-muted-foreground">
-                  Expertise &amp; upgrade fee ({(INSTRUMENT_UPGRADE_FEE_RATE * 100).toFixed(0)}% of {money(oldFace, oldCurrency)})
+                  Expertise &amp; upgrade fee ({INSTRUMENT_UPGRADE_FEE_LABEL} of {money(oldFace, oldCurrency)})
                 </span>
                 <span className="font-semibold">{money(fee, oldCurrency)}</span>
               </div>

@@ -26,7 +26,7 @@ import { planReservation, formatMoney, type ReservationPlan } from "@/lib/fund-r
 import { cardFeeFor, formatCardFee, CARD_FEE_CURRENCY } from "@/lib/card-fees"
 import { buildTradingFundPosts, TRADING_FUND_MONTHLY_ROI, type TradingFundPauseWindow } from "@/lib/trading-fund"
 import { buildPppRoiPosts, yieldCancellationPenalty, YIELD_EARLY_CANCELLATION_PENALTY_RATE } from "@/lib/ppp-yield"
-import { INSTRUMENT_UPGRADE_FEE_RATE, type InstrumentUpgrade } from "@/lib/instrument-upgrade"
+import { INSTRUMENT_UPGRADE_FEE_LABEL, type InstrumentUpgrade } from "@/lib/instrument-upgrade"
 import { buildInternalLoanPosts } from "@/lib/internal-loan"
 import type { LedgerEntry } from "@/lib/ledger-store"
 import { insertNotification } from "@/lib/notifications-db"
@@ -4127,7 +4127,7 @@ export type InstrumentUpgradeResult =
  * Accept an Administrator-proposed transformation/upgrade. The fresh, negotiated
  * instrument is issued into the customer's portfolio IMMEDIATELY (born pending →
  * approved, exactly like administrator issuance), the old blocked instrument is
- * retired, and the deal is stamped `accepted`. The 3% expertise fee was already
+ * retired, and the deal is stamped `accepted`. The expertise fee was already
  * charged when the Administrator started the upgrade, so acceptance moves no
  * further money.
  */
@@ -4236,7 +4236,7 @@ export async function acceptInstrumentUpgrade(approvalId: string): Promise<Instr
 
 /**
  * Decline an Administrator-proposed upgrade. The old instrument is UNBLOCKED and
- * remains active/usable, and the 3% expertise & upgrade fee is REFUNDED to the
+ * remains active/usable, and the expertise & upgrade fee is REFUNDED to the
  * Master Account (the customer never received a new instrument). Idempotent
  * refund via a deterministic ledger id.
  */
@@ -4269,7 +4269,7 @@ export async function declineInstrumentUpgrade(approvalId: string): Promise<Inst
           counterparty: "MCC Capital",
           reference: approvalId,
           category: "Bank Instrument — Upgrade Fee Refund",
-          comment: `Refund of the ${(INSTRUMENT_UPGRADE_FEE_RATE * 100).toFixed(0)}% upgrade fee after the customer declined the transformation.`,
+          comment: `Refund of the ${INSTRUMENT_UPGRADE_FEE_LABEL} upgrade fee after the customer declined the transformation.`,
         })
       } catch (err) {
         console.log("[v0] upgrade decline refund failed:", (err as Error).message)

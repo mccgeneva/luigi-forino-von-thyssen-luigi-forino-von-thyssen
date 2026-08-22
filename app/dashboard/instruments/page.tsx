@@ -85,7 +85,7 @@ import {
 } from "@/lib/instrument-marketplace"
 import { resolveTransferRecipient } from "@/app/actions/transfers"
 import { acceptInstrumentUpgrade, declineInstrumentUpgrade } from "@/app/actions/approvals"
-import { INSTRUMENT_UPGRADE_FEE_RATE } from "@/lib/instrument-upgrade"
+import { INSTRUMENT_UPGRADE_FEE_LABEL } from "@/lib/instrument-upgrade"
 import type { TransferDirectoryEntry } from "@/lib/users"
 import { useLeverageRequests } from "@/lib/leverage-requests-store"
 import { usePPPRequests } from "@/lib/ppp-requests-store"
@@ -457,7 +457,7 @@ export default function InstrumentsPage() {
     }
   }
 
-  // Decline the offer: the old instrument is unblocked and the 3% fee refunded.
+  // Decline the offer: the old instrument is unblocked and the fee refunded.
   const declineUpgrade = async () => {
     const target = upgradeTarget
     if (!target?.approvalId || upgradeBusy) return
@@ -2748,7 +2748,7 @@ export default function InstrumentsPage() {
 
                     <div className="flex items-center justify-between rounded-lg border p-3">
                       <span className="text-muted-foreground">
-                        Expertise &amp; upgrade fee ({(INSTRUMENT_UPGRADE_FEE_RATE * 100).toFixed(0)}%, one-time)
+                        Expertise &amp; upgrade fee ({INSTRUMENT_UPGRADE_FEE_LABEL}, one-time)
                       </span>
                       <span className="font-semibold text-foreground">{money(u.fee, u.feeCurrency)}</span>
                     </div>
