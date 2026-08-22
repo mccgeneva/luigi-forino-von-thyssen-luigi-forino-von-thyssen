@@ -25,6 +25,7 @@ import {
 import { planReservation, formatMoney, type ReservationPlan } from "@/lib/fund-reservation"
 import { cardFeeFor, formatCardFee, CARD_FEE_CURRENCY } from "@/lib/card-fees"
 import { buildTradingFundPosts, TRADING_FUND_MONTHLY_ROI, type TradingFundPauseWindow } from "@/lib/trading-fund"
+import { buildPppRoiPosts } from "@/lib/ppp-yield"
 import { buildInternalLoanPosts } from "@/lib/internal-loan"
 import type { LedgerEntry } from "@/lib/ledger-store"
 import { insertNotification } from "@/lib/notifications-db"
@@ -1845,6 +1846,26 @@ export async function reconcileMyApprovedCredits(): Promise<{ ok: boolean; appli
         if (cur && cur.status === post.status && cur.direction === post.direction && cur.amount === post.amount) {
           continue
         }
+        await upsertLedgerEntry(ownerId, post)
+        rows.set(post.id, post)
+        applied += 1
+      }
+    }
+
+    // Yield / PPP automatic ROI on the ledger. Once an application is APPROVED,
+    // the program pays ROI in arrears on its cycle (weekly / monthly / …): each
+    // matured period is CREDITED to the master account. When the investment is
+    // funded by an MCC HOLDING SA-owned instrument, only the client's 25% share
+    // is credited (the 75% is alienated to MCC HOLDING SA). No scheduler — this
+    // runs on every ledger read, self-healing/cross-device, and deterministic
+    // ids (`PPP-ROI-<id>-P<n>`) keep every credit idempotent.
+    const pppReqs = mine.filter((r) => r.kind === "ppp" && r.status === "approved")
+    for (const req of pppReqs) {
+      const ownerId = await resolveDataOwnerIdFor(req.userId)
+      const rows = await loadOwnerRows(ownerId)
+      const posts = buildPppRoiPosts(req)
+      for (const post of posts) {
+        if (rows.has(post.id)) continue
         await upsertLedgerEntry(ownerId, post)
         rows.set(post.id, post)
         applied += 1
