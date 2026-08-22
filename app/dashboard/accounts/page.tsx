@@ -36,6 +36,7 @@ import { Textarea } from "@/components/ui/textarea"
 import {
   useBankAccounts,
   formatCurrency,
+  formatCompactCurrency,
   getRatingColor,
   getStatusColor,
   getFlagEmoji,
@@ -666,11 +667,18 @@ export default function BankAccountsPage() {
                 <Badge variant="outline" className={getStatusColor(account.status)}>
                   {account.status}
                 </Badge>
-                <span className="text-[10px] text-muted-foreground">
+                <span
+                  className="text-[10px] text-muted-foreground whitespace-nowrap"
+                  title={
+                    account.dailyLimitUnlimited
+                      ? "Unlimited"
+                      : formatCurrency(account.dailyLimit, account.currency)
+                  }
+                >
                   Daily Limit:{" "}
                   {account.dailyLimitUnlimited
                     ? "Unlimited"
-                    : formatCurrency(account.dailyLimit, account.currency)}
+                    : formatCompactCurrency(account.dailyLimit, account.currency)}
                 </span>
               </div>
             </CardContent>

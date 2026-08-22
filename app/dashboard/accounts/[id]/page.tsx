@@ -36,6 +36,7 @@ import { useLedger, type LedgerEntry } from "@/lib/ledger-store"
 import {
   useBankAccounts,
   formatCurrency,
+  formatCompactCurrency,
   getRatingColor,
   getStatusColor,
   getFlagEmoji,
@@ -439,18 +440,32 @@ export default function AccountDetailPage() {
                   <div className="grid grid-cols-2 gap-4">
                     <div className="min-w-0 p-4 rounded-lg bg-secondary">
                       <p className="text-xs text-muted-foreground mb-1">Daily Limit</p>
-                      <p className="text-base sm:text-lg font-bold text-foreground leading-tight tabular-nums break-words">
+                      <p
+                        className="text-lg sm:text-xl font-bold text-foreground leading-tight tabular-nums whitespace-nowrap"
+                        title={
+                          account.dailyLimitUnlimited
+                            ? "Unlimited"
+                            : formatCurrency(account.dailyLimit, account.currency)
+                        }
+                      >
                         {account.dailyLimitUnlimited
                           ? "Unlimited"
-                          : formatCurrency(account.dailyLimit, account.currency)}
+                          : formatCompactCurrency(account.dailyLimit, account.currency)}
                       </p>
                     </div>
                     <div className="min-w-0 p-4 rounded-lg bg-secondary">
                       <p className="text-xs text-muted-foreground mb-1">Monthly Volume</p>
-                      <p className="text-base sm:text-lg font-bold text-foreground leading-tight tabular-nums break-words">
+                      <p
+                        className="text-lg sm:text-xl font-bold text-foreground leading-tight tabular-nums whitespace-nowrap"
+                        title={
+                          account.monthlyVolumeUnlimited
+                            ? "Unlimited"
+                            : formatCurrency(account.monthlyVolume, account.currency)
+                        }
+                      >
                         {account.monthlyVolumeUnlimited
                           ? "Unlimited"
-                          : formatCurrency(account.monthlyVolume, account.currency)}
+                          : formatCompactCurrency(account.monthlyVolume, account.currency)}
                       </p>
                     </div>
                   </div>
