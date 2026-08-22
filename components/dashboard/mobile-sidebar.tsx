@@ -69,6 +69,7 @@ const navGroups: NavGroup[] = [
       { title: "Certificates", href: "/dashboard/certificates", icon: Award, badge: "Official" },
       { title: "Live FX Rates", href: "/dashboard/exchange", icon: DollarSign },
       { title: "Bank Accounts", href: "/dashboard/accounts", icon: Building2 },
+      { title: "Sub-Accounts", href: "/dashboard/sub-accounts", icon: Layers, badge: "PRO" },
       { title: "Payment Gateway", href: "/dashboard/gateway", icon: Globe, badge: "IBAN" },
       { title: "Cards", href: "/dashboard/cards", icon: CreditCard },
     ],

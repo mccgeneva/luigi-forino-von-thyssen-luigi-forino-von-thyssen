@@ -71,6 +71,9 @@ async function ensureTable(): Promise<void> {
   // Additive migration for databases created before per-bank attribution: the
   // client's own receiving account (IBAN) the funds landed in. Idempotent.
   await query(`ALTER TABLE ledger_entries ADD COLUMN IF NOT EXISTS received_account text`)
+  // Additive migration for client sub-accounts: which isolated compartment this
+  // entry belongs to. NULL ⇒ the user's MAIN account. Idempotent.
+  await query(`ALTER TABLE ledger_entries ADD COLUMN IF NOT EXISTS sub_account_id text`)
   ensured = true
 }
 
@@ -91,6 +94,7 @@ function rowToEntry(row: Record<string, unknown>): LedgerEntry {
     reference: (row.reference as string) ?? undefined,
     comment: (row.comment as string) ?? undefined,
     category: (row.category as string) ?? undefined,
+    subAccountId: (row.sub_account_id as string) ?? undefined,
   }
 }
 
@@ -108,8 +112,8 @@ async function upsertEntry(userId: string, entry: LedgerEntry): Promise<void> {
   await query(
     `INSERT INTO ledger_entries
        (user_id, entry_id, direction, amount, currency, status, entry_date,
-        counterparty, account, bank, reference, comment, category, received_account)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+        counterparty, account, bank, reference, comment, category, received_account, sub_account_id)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
      ON CONFLICT (user_id, entry_id) DO UPDATE SET
        direction = EXCLUDED.direction,
        amount = EXCLUDED.amount,
@@ -122,7 +126,8 @@ async function upsertEntry(userId: string, entry: LedgerEntry): Promise<void> {
        reference = EXCLUDED.reference,
        comment = EXCLUDED.comment,
        category = EXCLUDED.category,
-       received_account = EXCLUDED.received_account`,
+       received_account = EXCLUDED.received_account,
+       sub_account_id = EXCLUDED.sub_account_id`,
     [
       userId,
       entry.id,
@@ -138,6 +143,7 @@ async function upsertEntry(userId: string, entry: LedgerEntry): Promise<void> {
       entry.comment ?? null,
       entry.category ?? null,
       entry.receivedAccount ?? null,
+      entry.subAccountId ?? null,
     ],
   )
 }
