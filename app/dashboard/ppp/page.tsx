@@ -17,7 +17,9 @@ import {
   Info,
   ExternalLink,
   ShieldCheck,
+  Landmark,
 } from "lucide-react"
+import useSWR from "swr"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -54,6 +56,10 @@ import { usePPPRequests, type PPPRequest } from "@/lib/ppp-requests-store"
 import { usePdfViewer } from "@/lib/pdf-viewer"
 import { generatePPPConfirmationPdf } from "@/lib/ppp-confirmation-pdf"
 import { Download } from "lucide-react"
+import {
+  getActiveInstitutionalYields,
+  type InstitutionalYield,
+} from "@/app/actions/institutional-yields"
 
 const programs = [
   {
@@ -219,6 +225,38 @@ export default function PPPPage() {
   const log = useActivityLog()
   const { requests, addRequest, hydrated } = usePPPRequests()
   const { show: showPdf } = usePdfViewer()
+
+  // Administrator-published, bank-partner-sourced institutional yields. Only
+  // ACTIVE products are returned by the server, so clients never see pending or
+  // closed offerings. Fails closed (empty) if the catalogue is unavailable.
+  const { data: activeYields = [] } = useSWR<InstitutionalYield[]>(
+    "active-institutional-yields",
+    () => getActiveInstitutionalYields(),
+    { revalidateOnFocus: false },
+  )
+
+  // Open the existing application dialog for a published institutional yield by
+  // mapping it onto the program shape, so it flows through the SAME mandatory
+  // Administrator approval workflow as the standard programs.
+  const openApplyForYield = (y: InstitutionalYield) => {
+    openApplyDialog({
+      id: y.id,
+      name: y.programName,
+      type: "institutional",
+      minInvestment: y.minInvestment,
+      maxInvestment: y.minInvestment * 100,
+      currency: y.currency,
+      expectedReturn: y.expectedReturn,
+      returnFrequency: y.returnFrequency || "At Maturity",
+      duration: y.termLabel,
+      status: "open",
+      spotsAvailable: 1,
+      totalSpots: 1,
+      riskLevel: y.riskClass,
+      description: y.description,
+      requirements: [y.bankName, y.yieldType, y.rating].filter(Boolean) as string[],
+    })
+  }
 
   const myApplications = useMemo(
     () =>
@@ -499,6 +537,92 @@ export default function PPPPage() {
               </div>
             </CardContent>
           </Card>
+
+          {/* Institutional Yields — Bank Partner Programs (admin-published) */}
+          {activeYields.length > 0 && (
+            <div className="mb-8">
+              <div className="mb-4 flex items-center gap-2">
+                <Landmark className="h-5 w-5 text-primary" />
+                <h2 className="text-lg font-semibold text-foreground">
+                  Institutional Yields — Bank Partner Programs
+                </h2>
+                <Badge variant="outline" className="bg-primary/10 text-primary border-primary/20">
+                  {activeYields.length} {activeYields.length === 1 ? "offering" : "offerings"}
+                </Badge>
+              </div>
+              <div className="grid gap-6 md:grid-cols-2">
+                {activeYields.map((y) => (
+                  <Card key={y.id} className="bg-card border-border">
+                    <CardHeader className="pb-2">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <Badge
+                            variant="outline"
+                            className="mb-2 bg-green-500/10 text-green-500 border-green-500/20 text-[10px]"
+                          >
+                            Active
+                          </Badge>
+                          <CardTitle className="text-lg font-semibold text-balance">
+                            {y.programName}
+                          </CardTitle>
+                          <p className="mt-1 flex items-center gap-1.5 text-xs text-muted-foreground">
+                            <Landmark className="h-3.5 w-3.5" />
+                            {y.bankName} · {y.bankCountry}
+                          </p>
+                        </div>
+                        <div className="shrink-0 text-right">
+                          <p className="text-2xl font-bold text-primary">{y.expectedReturn}</p>
+                          <p className="text-xs text-muted-foreground">
+                            {y.returnFrequency || "At Maturity"}
+                          </p>
+                        </div>
+                      </div>
+                    </CardHeader>
+                    <CardContent className="space-y-4">
+                      <div className="flex flex-wrap gap-2">
+                        <Badge variant="outline" className="text-[10px] bg-secondary/50">
+                          {y.yieldType}
+                        </Badge>
+                        {y.rating && (
+                          <Badge variant="outline" className="text-[10px] bg-secondary/50">
+                            {y.rating}
+                          </Badge>
+                        )}
+                      </div>
+
+                      <p className="text-sm text-muted-foreground line-clamp-3">{y.description}</p>
+
+                      <div className="grid grid-cols-2 gap-4">
+                        <div>
+                          <p className="text-xs text-muted-foreground">Min Investment</p>
+                          <p className="text-sm font-semibold text-foreground">
+                            {formatMoney(y.minInvestment, y.currency)}
+                          </p>
+                        </div>
+                        <div>
+                          <p className="text-xs text-muted-foreground">Term</p>
+                          <p className="text-sm font-semibold text-foreground">{y.termLabel}</p>
+                        </div>
+                        <div>
+                          <p className="text-xs text-muted-foreground">Currency</p>
+                          <p className="text-sm font-semibold text-foreground">{y.currency}</p>
+                        </div>
+                        <div>
+                          <p className="text-xs text-muted-foreground">Risk Classification</p>
+                          <p className="text-sm font-semibold text-foreground">{y.riskClass}</p>
+                        </div>
+                      </div>
+
+                      <Button className="w-full" onClick={() => openApplyForYield(y)}>
+                        Request Allocation
+                        <ArrowRight className="ml-2 h-4 w-4" />
+                      </Button>
+                    </CardContent>
+                  </Card>
+                ))}
+              </div>
+            </div>
+          )}
 
           {/* Programs Grid */}
           <div className="grid gap-6 md:grid-cols-2">
