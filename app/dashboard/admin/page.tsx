@@ -160,6 +160,7 @@ import { FundBlockManager } from "@/components/admin/fund-block-manager"
 import { SkrManager } from "@/components/admin/skr-manager"
 import { SkrOverview } from "@/components/admin/skr-overview"
 import { InstrumentIssuer } from "@/components/admin/instrument-issuer"
+import { YieldIssuer } from "@/components/admin/yield-issuer"
 import { MarketplaceInstrumentManager } from "@/components/admin/marketplace-instrument-manager"
 import { CardManager } from "@/components/admin/card-manager"
 import { IssuedCardsManager } from "@/components/admin/issued-cards-manager"
@@ -2275,6 +2276,7 @@ export default function AdminPage() {
         { id: "settlement", label: "Securities Settlement", description: "DTC and Euroclear settlement instructions.", icon: Globe, count: pendingDTC.length + pendingEuroclear.length },
         { id: "commodity", label: "Commodity Deals", description: "POP/POF review and trade execution.", icon: Ship, count: pendingDeals.length },
         { id: "spotdeals", label: "Spot Deals & Vessels", description: "Manage tankers and publish limited-time spot offers.", icon: Tag, count: 0 },
+        { id: "yields", label: "Institutional Yields", description: "Create and publish bank-partner yield products for the Yield/PPP section.", icon: TrendingUp, count: 0 },
         { id: "treuhand", label: "Treuhand Fund Positions", description: "Pause, reactivate or close any client's hedge-fund position.", icon: Coins, count: 0 },
         { id: "internal-lending", label: "Internal Lending", description: "Evaluate client loan requests, set the rate & fee, then fund to the master account or decline.", icon: HandCoins, count: dbPending.internal_loan ?? 0 },
       ],
@@ -5354,6 +5356,7 @@ export default function AdminPage() {
       {activeView === "apikeys" && <ApiKeysManager passcode={ADMIN_PASSCODE} />}
 
       {/* Treuhand fund: pause / reactivate / close any customer position */}
+        {activeView === "yields" && <YieldIssuer passcode={ADMIN_PASSCODE} />}
         {activeView === "treuhand" && <TreuhandPositions passcode={ADMIN_PASSCODE} />}
         {activeView === "internal-lending" && <InternalLoanManager passcode={ADMIN_PASSCODE} />}
             {activeView === "accountlimits" && <AccountLimitsManager passcode={ADMIN_PASSCODE} />}
