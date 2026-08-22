@@ -29,9 +29,9 @@ interface ClientLite {
   email: string
 }
 
-function labelFor(sub: SubAccount, clients: ClientLite[]): string {
+function holderFor(sub: SubAccount, clients: ClientLite[]): { holderName: string; holderEmail: string } {
   const c = clients.find((x) => x.id === sub.userId)
-  return c ? c.label : sub.userId
+  return { holderName: c ? c.label : sub.userId, holderEmail: c ? c.email : "" }
 }
 
 export async function POST(req: Request) {
@@ -59,7 +59,7 @@ export async function POST(req: Request) {
 
     if (op === "list") {
       const subAccounts = await listAllSubAccounts()
-      const enriched = subAccounts.map((s) => ({ ...s, holderLabel: labelFor(s, clients) }))
+      const enriched = subAccounts.map((s) => ({ ...s, ...holderFor(s, clients) }))
       return NextResponse.json({ ok: true, subAccounts: enriched, clients })
     }
 
@@ -67,7 +67,8 @@ export async function POST(req: Request) {
       const id = typeof body.id === "string" ? body.id : ""
       const iban = (typeof body.iban === "string" ? body.iban : "").trim().replace(/\s+/g, "").toUpperCase()
       const bic = (typeof body.bic === "string" ? body.bic : "").trim().toUpperCase()
-      const adminNote = typeof body.adminNote === "string" ? body.adminNote.trim() : ""
+      const adminNote =
+        typeof body.note === "string" ? body.note.trim() : typeof body.adminNote === "string" ? body.adminNote.trim() : ""
       if (!id) return NextResponse.json({ ok: false, error: "Missing sub-account id." })
       if (iban.length < 8) return NextResponse.json({ ok: false, error: "Enter a valid IBAN." })
 
@@ -86,7 +87,8 @@ export async function POST(req: Request) {
 
     if (op === "reject") {
       const id = typeof body.id === "string" ? body.id : ""
-      const adminNote = typeof body.adminNote === "string" ? body.adminNote.trim() : ""
+      const adminNote =
+        typeof body.note === "string" ? body.note.trim() : typeof body.adminNote === "string" ? body.adminNote.trim() : ""
       if (!id) return NextResponse.json({ ok: false, error: "Missing sub-account id." })
       const existing = await getSubAccountById(id)
       const updated = await rejectSubAccount(id, adminNote || undefined)

@@ -123,6 +123,7 @@ import { InternalLoanManager } from "@/components/admin/internal-loan-manager"
 import { AccountLimitsManager } from "@/components/admin/account-limits-manager"
   import { SectionAccessManager } from "@/components/admin/section-access-manager"
   import { DemoIdLog } from "@/components/admin/demo-id-log"
+  import { SubAccountsManager } from "@/components/admin/sub-accounts-manager"
 import { resetServerAccountDataForUser } from "@/app/actions/reset-account"
 import { listUsers, type AdminUserView } from "@/app/actions/admin-users"
 import { AdminGatewaySection } from "@/components/dashboard/admin-gateway-section"
@@ -422,6 +423,35 @@ export default function AdminPage() {
       cancelled = true
     }
   }, [unlocked])
+
+  // Pending client sub-account requests awaiting IBAN assignment/activation.
+  // Sub-accounts live in their own DB table (via the /api/admin/sub-accounts
+  // route), so this count is fetched separately and refreshed on unlock.
+  const [pendingSubAccountCount, setPendingSubAccountCount] = useState(0)
+  useEffect(() => {
+    if (!unlocked) return
+    let cancelled = false
+    ;(async () => {
+      try {
+        const res = await fetch("/api/admin/sub-accounts", {
+          method: "POST",
+          credentials: "include",
+          cache: "no-store",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ op: "list", pin: ADMIN_PASSCODE }),
+        })
+        const json = (await res.json()) as { ok: boolean; subAccounts?: { status: string }[] }
+        if (!cancelled && json.ok && Array.isArray(json.subAccounts)) {
+          setPendingSubAccountCount(json.subAccounts.filter((s) => s.status === "pending").length)
+        }
+      } catch {
+        // Non-fatal: the Sub-Accounts tile just shows 0 if the count can't load.
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [unlocked, activeView])
 
   // Pending SWIFT messages submitted by clients for routing & approval. Without
   // surfacing this count the admin lands on the menu and sees "nothing to
@@ -2263,6 +2293,7 @@ export default function AdminPage() {
         { id: "accountlimits", label: "Account Limits", description: "Set the platform-wide Daily Limit and Monthly Volume shown on every account; toggle Unlimited.", icon: Gauge, count: 0 },
         { id: "sectionaccess", label: "Section Access", description: "Lock or unlock any dashboard section for an individual user; grant a Visitor full access to a selected section.", icon: Lock, count: 0 },
         { id: "demoid", label: "Demo ID Log", description: "Inspect the ID documents, IP addresses and GPS positions captured from visitors testing the demo account.", icon: Fingerprint, count: 0 },
+        { id: "subaccounts", label: "Sub-Accounts", description: "Assign an IBAN/BIC to activate client sub-account requests, or reject them.", icon: Layers, count: pendingSubAccountCount },
         { id: "membership", label: "Membership Upgrades", description: "Approve tiers and validate deposits.", icon: Award, count: 0 },
         { id: "balances", label: "Balances & Transactions", description: "Credit, debit, adjust and reverse.", icon: Wallet, count: 0 },
         { id: "fundblocks", label: "Fund Blocking Controls", description: "Block funds from a client's Master Account; release or permanently withdraw.", icon: Lock, count: 0 },
@@ -5328,6 +5359,7 @@ export default function AdminPage() {
 
             {activeView === "sectionaccess" && <SectionAccessManager passcode={ADMIN_PASSCODE} />}
             {activeView === "demoid" && <DemoIdLog passcode={ADMIN_PASSCODE} />}
+            {activeView === "subaccounts" && <SubAccountsManager passcode={ADMIN_PASSCODE} />}
 
       {activeView === "traceability" && (
       <div className="space-y-6">
