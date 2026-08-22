@@ -8,7 +8,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { Badge } from "@/components/ui/badge"
-import { Layers, Check, X, Loader2, RefreshCw, Search, ShieldCheck, ShieldAlert, FileText, ArrowLeft, Download } from "lucide-react"
+import { Layers, Check, X, Loader2, RefreshCw, Search, ShieldCheck, ShieldAlert, FileText, ArrowLeft, Download, UserPlus } from "lucide-react"
 import type { SubAccount, SubAccountDoc } from "@/lib/sub-account-types"
 import { blobFileUrl } from "@/lib/kyc-types"
 import { serviceFeeFor, formatSubAccountFee, SUB_ACCOUNT_ANNUAL_FEE, SUB_ACCOUNT_CLOSING_FEE } from "@/lib/sub-account-fees"
@@ -286,6 +286,200 @@ function ActivatePanel({
   )
 }
 
+type ConvertDraft = { visitorId: string; iban: string; bic: string; bankName: string; note: string }
+
+/**
+ * CLOSED sub-account → STANDALONE Visitor customer. Promotes the linked (or a
+ * chosen) Visitor login into their own dedicated master account. Owns the same
+ * live IBAN check + SWIFT/BIC auto-fill as the activation panel so the admin
+ * assigns valid coordinates for the new master account.
+ */
+function ConvertPanel({
+  row,
+  draft,
+  setDraft,
+  visitors,
+  busy,
+  onConvert,
+}: {
+  row: AdminRow
+  draft: ConvertDraft
+  setDraft: (id: string, patch: Partial<ConvertDraft>) => void
+  visitors: VisitorCandidate[]
+  busy: boolean
+  onConvert: () => void
+}) {
+  const [bankLookingUp, setBankLookingUp] = useState(false)
+
+  const ibanCheck = useMemo(() => (draft.iban.trim() ? validateIban(draft.iban) : null), [draft.iban])
+  const bicCheck = useMemo(() => (draft.bic.trim() ? validateBic(draft.bic) : null), [draft.bic])
+  const ibanInvalid = !!ibanCheck && !ibanCheck.valid
+  const bicInvalid = !!bicCheck && !bicCheck.valid
+  const validIban = ibanCheck?.valid ? ibanCheck.formatted.replace(/\s/g, "") : ""
+
+  const bicRef = useRef("")
+  bicRef.current = draft.bic
+
+  const resolveBankForIban = async (ibanClean: string): Promise<{ bic?: string; name?: string }> => {
+    let info = await lookupBankByIban(ibanClean)
+    if (isGenericBankInfo(info)) {
+      try {
+        const ext = await resolveIbanExternal(ibanClean)
+        if (ext && (ext.name || ext.bic)) {
+          info = {
+            name: ext.name || info?.name || "",
+            bic: ext.bic || info?.bic,
+            city: ext.city,
+            country: info?.country || "",
+            countryCode: info?.countryCode || ibanClean.slice(0, 2),
+          }
+        }
+      } catch {
+        /* best-effort */
+      }
+    }
+    return { bic: info?.bic, name: info?.name }
+  }
+
+  useEffect(() => {
+    if (!validIban) return
+    let active = true
+    const ibanCountry = validIban.slice(0, 2)
+    const curBic = bicRef.current.trim()
+    const curBicCheck = curBic ? validateBic(curBic) : null
+    const overwrite = !!(curBicCheck?.valid && curBicCheck.countryCode !== ibanCountry)
+    if (curBic && !overwrite) return
+
+    setBankLookingUp(true)
+    ;(async () => {
+      const bank = await resolveBankForIban(validIban)
+      if (!active) return
+      if (bank.bic) setDraft(row.id, { bic: bank.bic })
+      else if (overwrite) setDraft(row.id, { bic: "" })
+      if (bank.name && !bicRef.current) setDraft(row.id, { bankName: bank.name })
+    })().finally(() => {
+      if (active) setBankLookingUp(false)
+    })
+    return () => {
+      active = false
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [validIban])
+
+  const countryMismatch = !!(
+    ibanCheck?.valid &&
+    bicCheck?.valid &&
+    ibanCheck.countryCode !== bicCheck.countryCode
+  )
+
+  const selectable = visitors.filter((v) => v.id !== row.userId)
+
+  return (
+    <div className="mt-4 space-y-3 border-t border-border pt-3">
+      <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
+        <UserPlus className="h-3.5 w-3.5" />
+        Convert to a standalone Visitor customer
+      </div>
+      <p className="text-[11px] text-muted-foreground">
+        Promotes a client login into its own dedicated master account with full visitor access. The closed sub-account
+        link is removed.
+      </p>
+
+      <div className="grid gap-1.5">
+        <Label htmlFor={`conv-visitor-${row.id}`}>Client login to convert *</Label>
+        {selectable.length === 0 ? (
+          <p className="text-[11px] text-amber-600">
+            No Visitor-tier login is available to convert. Link/create a visitor first.
+          </p>
+        ) : (
+          <select
+            id={`conv-visitor-${row.id}`}
+            className="h-9 rounded-md border border-border bg-background px-2 text-sm"
+            value={draft.visitorId}
+            onChange={(e) => setDraft(row.id, { visitorId: e.target.value })}
+            disabled={busy}
+          >
+            <option value="">Select a client login…</option>
+            {selectable.map((v) => (
+              <option key={v.id} value={v.id}>
+                {v.label} · {v.email}
+              </option>
+            ))}
+          </select>
+        )}
+      </div>
+
+      <div className="grid gap-3 sm:grid-cols-2">
+        <div className="grid gap-1.5">
+          <Label htmlFor={`conv-iban-${row.id}`}>Dedicated master IBAN *</Label>
+          <Input
+            id={`conv-iban-${row.id}`}
+            className="font-mono"
+            placeholder="CH00 0000 0000 0000 0000 0"
+            value={draft.iban}
+            onChange={(e) => setDraft(row.id, { iban: e.target.value })}
+            aria-invalid={ibanInvalid}
+          />
+          {ibanInvalid ? (
+            <p className="text-[11px] text-red-600">{ibanCheck?.error}</p>
+          ) : ibanCheck?.valid ? (
+            <p className="text-[11px] text-emerald-600">
+              Valid {ibanCheck.countryName} IBAN{bankLookingUp ? " — looking up bank…" : ""}
+            </p>
+          ) : null}
+        </div>
+        <div className="grid gap-1.5">
+          <Label htmlFor={`conv-bic-${row.id}`}>SWIFT / BIC (optional)</Label>
+          <Input
+            id={`conv-bic-${row.id}`}
+            className="font-mono"
+            placeholder="XXXXXXXX"
+            value={draft.bic}
+            onChange={(e) => setDraft(row.id, { bic: e.target.value.toUpperCase() })}
+            aria-invalid={bicInvalid}
+          />
+          {bicInvalid && <p className="text-[11px] text-red-600">{bicCheck?.error}</p>}
+        </div>
+      </div>
+
+      {countryMismatch && (
+        <div className="flex flex-wrap items-center gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 p-2.5 text-[11px] text-amber-700">
+          <ShieldAlert className="h-3.5 w-3.5 shrink-0" />
+          <span className="min-w-0 flex-1">
+            The SWIFT/BIC country ({bicCheck?.countryCode}) does not match the IBAN country ({ibanCheck?.countryCode}).
+          </span>
+        </div>
+      )}
+
+      <div className="grid gap-1.5">
+        <Label htmlFor={`conv-bank-${row.id}`}>Bank name (optional)</Label>
+        <Input
+          id={`conv-bank-${row.id}`}
+          placeholder="Auto-filled from IBAN"
+          value={draft.bankName}
+          onChange={(e) => setDraft(row.id, { bankName: e.target.value })}
+        />
+      </div>
+
+      <div className="grid gap-1.5">
+        <Label htmlFor={`conv-note-${row.id}`}>Note to client (optional)</Label>
+        <Textarea
+          id={`conv-note-${row.id}`}
+          rows={2}
+          placeholder="Shown to the client with the notification…"
+          value={draft.note}
+          onChange={(e) => setDraft(row.id, { note: e.target.value })}
+        />
+      </div>
+
+      <Button onClick={onConvert} disabled={busy || ibanInvalid || bicInvalid || !draft.visitorId || !draft.iban.trim()}>
+        {busy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <UserPlus className="mr-2 h-4 w-4" />}
+        Convert to standalone customer
+      </Button>
+    </div>
+  )
+}
+
 export function SubAccountsManager({ passcode }: { passcode: string }) {
   const [rows, setRows] = useState<AdminRow[]>([])
   const [loading, setLoading] = useState(true)
@@ -301,6 +495,9 @@ export function SubAccountsManager({ passcode }: { passcode: string }) {
   const [links, setLinks] = useState<VisitorLink[]>([])
   const [linkChoice, setLinkChoice] = useState<Record<string, string>>({})
   const [linkBusyId, setLinkBusyId] = useState<string | null>(null)
+  // Convert a closed sub-account into a standalone Visitor customer.
+  const [convertDrafts, setConvertDrafts] = useState<Record<string, ConvertDraft>>({})
+  const [convertBusyId, setConvertBusyId] = useState<string | null>(null)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -484,6 +681,53 @@ export function SubAccountsManager({ passcode }: { passcode: string }) {
       setError("Network error while closing.")
     } finally {
       setBusyId(null)
+    }
+  }
+
+  const setConvertDraft = (id: string, patch: Partial<ConvertDraft>) =>
+    setConvertDrafts((prev) => {
+      const current = prev[id] || { visitorId: "", iban: "", bic: "", bankName: "", note: "" }
+      return { ...prev, [id]: { ...current, ...patch } }
+    })
+
+  const convertToStandalone = async (row: AdminRow, draft: ConvertDraft) => {
+    if (!draft.visitorId) {
+      setError("Choose the client login to convert.")
+      return
+    }
+    if (!draft.iban.trim()) {
+      setError("Enter a dedicated IBAN for the new master account.")
+      return
+    }
+    setConvertBusyId(row.id)
+    setError("")
+    try {
+      const res = await fetch("/api/admin/sub-accounts", {
+        method: "POST",
+        credentials: "include",
+        cache: "no-store",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          op: "convert",
+          pin: passcode,
+          subId: row.id,
+          visitorId: draft.visitorId,
+          iban: draft.iban.trim(),
+          bic: draft.bic.trim(),
+          bankName: draft.bankName.trim(),
+          note: draft.note.trim(),
+        }),
+      })
+      const data = await res.json()
+      if (!res.ok || !data.ok) {
+        setError(data?.error || "Could not convert the account.")
+        return
+      }
+      await load()
+    } catch {
+      setError("Network error while converting.")
+    } finally {
+      setConvertBusyId(null)
     }
   }
 
@@ -713,6 +957,29 @@ export function SubAccountsManager({ passcode }: { passcode: string }) {
                       </div>
                     </>
                   )}
+
+                  {row.status === "closed" &&
+                    (() => {
+                      const linkedVisitorId = links.find((l) => l.subAccountId === row.id)?.visitorUserId || ""
+                      const convDraft: ConvertDraft =
+                        convertDrafts[row.id] || {
+                          visitorId: linkedVisitorId,
+                          iban: "",
+                          bic: "",
+                          bankName: "",
+                          note: "",
+                        }
+                      return (
+                        <ConvertPanel
+                          row={row}
+                          draft={convDraft}
+                          setDraft={setConvertDraft}
+                          visitors={visitors}
+                          busy={convertBusyId === row.id}
+                          onConvert={() => void convertToStandalone(row, convDraft)}
+                        />
+                      )
+                    })()}
                 </div>
               )
             })}

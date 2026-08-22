@@ -1,6 +1,11 @@
 import { NextResponse } from "next/server"
 import { adminActionAuthorized } from "@/lib/admin-auth"
-import { listDynamicUsers } from "@/lib/admin-users-db"
+import {
+  listDynamicUsers,
+  getDynamicUserById,
+  updateDynamicUserProfile,
+  type SerializableProfileItem,
+} from "@/lib/admin-users-db"
 import {
   listAllSubAccounts,
   activateSubAccount,
@@ -14,6 +19,26 @@ import { buildSubAccountFeeEntries } from "@/lib/sub-account-fees"
 import type { SubAccount } from "@/lib/sub-account-types"
 import { getVisitorLink, setVisitorLink, removeVisitorLink, listAllVisitorLinks } from "@/lib/visitor-link-db"
 import { resolvePlatformTier } from "@/lib/platform-tier"
+import { validateIban, validateBic } from "@/lib/iban-swift"
+import { normalizeAccountBadge } from "@/lib/account-tier"
+
+/** In-place upsert of a labelled banking coordinate row (mirrors the admin
+ *  master-bank editor). Empty value removes the row. */
+function upsertBank(
+  rows: SerializableProfileItem[],
+  match: (label: string) => boolean,
+  canonicalLabel: string,
+  value: string,
+): void {
+  const idx = rows.findIndex((r) => match(r.label.toLowerCase()))
+  const v = value.trim()
+  if (v) {
+    if (idx >= 0) rows[idx] = { ...rows[idx], value: v }
+    else rows.push({ label: canonicalLabel, value: v })
+  } else if (idx >= 0) {
+    rows.splice(idx, 1)
+  }
+}
 
 /**
  * Post a sub-account's accrued tariffs to its owner's MASTER ledger immediately
@@ -136,6 +161,98 @@ export async function POST(req: Request) {
       }
       const links = await listAllVisitorLinks()
       return NextResponse.json({ ok: true, links })
+    }
+
+    // Convert a CLOSED sub-account's holder into a STANDALONE Visitor customer:
+    // promote the linked (or chosen) Visitor login into their OWN master account
+    // (relationship = master, no masterId ⇒ their own data owner), keep Visitor
+    // tier so they still see the whole platform with visitor access, and assign a
+    // dedicated master IBAN / BIC. The (now decommissioned) sub-account link is
+    // removed so they stand alone.
+    if (op === "convert") {
+      const subId = typeof body.subId === "string" ? body.subId : ""
+      const visitorId = typeof body.visitorId === "string" ? body.visitorId : ""
+      const ibanRaw = (typeof body.iban === "string" ? body.iban : "").trim()
+      const bicRaw = (typeof body.bic === "string" ? body.bic : "").trim().toUpperCase()
+      const bankName = typeof body.bankName === "string" ? body.bankName.trim() : ""
+      const note = typeof body.note === "string" ? body.note.trim() : ""
+
+      if (!subId || !visitorId) {
+        return NextResponse.json({ ok: false, error: "Choose the sub-account and the client login to convert." })
+      }
+      const sub = await getSubAccountById(subId)
+      if (!sub) return NextResponse.json({ ok: false, error: "That sub-account no longer exists." })
+      if (sub.status !== "closed") {
+        return NextResponse.json({
+          ok: false,
+          error: "Only a CLOSED sub-account can be converted to a standalone customer.",
+        })
+      }
+      if (visitorId === sub.userId) {
+        return NextResponse.json({ ok: false, error: "The Master owner cannot be converted into a standalone customer here." })
+      }
+
+      // A dedicated master account requires a valid IBAN; a supplied SWIFT/BIC
+      // must belong to the SAME country (a cross-country pair is a corrupt account).
+      const ic = validateIban(ibanRaw)
+      if (!ic.valid) {
+        return NextResponse.json({ ok: false, error: `Enter a valid IBAN for the new master account: ${ic.error}` })
+      }
+      let normalizedBic = ""
+      if (bicRaw) {
+        const bc = validateBic(bicRaw)
+        if (!bc.valid) return NextResponse.json({ ok: false, error: `SWIFT / BIC is not valid: ${bc.error}` })
+        if (bc.countryCode !== ic.countryCode) {
+          return NextResponse.json({
+            ok: false,
+            error: `The SWIFT/BIC country (${bc.countryCode}) does not match the IBAN country (${ic.countryCode}).`,
+          })
+        }
+        normalizedBic = bc.normalized
+      }
+
+      const target = await getDynamicUserById(visitorId)
+      if (!target) return NextResponse.json({ ok: false, error: "That client login was not found." })
+
+      const profile = { ...target.profile }
+      // Promote to a standalone master account (their own data owner).
+      profile.relationship = "master"
+      profile.masterId = undefined
+      profile.masterName = undefined
+      profile.masterEmail = undefined
+      // Keep Visitor tier — they see the whole platform with visitor access.
+      profile.accountBadge = normalizeAccountBadge("Visitor Account")
+      // Assign the dedicated master banking coordinates.
+      const rows: SerializableProfileItem[] = Array.isArray(profile.banking) ? [...profile.banking] : []
+      upsertBank(rows, (l) => l.includes("iban"), "IBAN", ic.formatted)
+      upsertBank(rows, (l) => l.includes("swift") || l.includes("bic"), "SWIFT / BIC", normalizedBic)
+      if (bankName) {
+        upsertBank(
+          rows,
+          (l) => l.includes("bank") && !l.includes("iban") && !l.includes("swift") && !l.includes("bic"),
+          "Bank",
+          bankName,
+        )
+      }
+      upsertBank(rows, (l) => l.includes("currency"), "Account Currency", sub.currency)
+      profile.banking = rows
+
+      const updated = await updateDynamicUserProfile(visitorId, { status: "active", profile })
+      if (!updated) return NextResponse.json({ ok: false, error: "Could not convert the account." })
+
+      // Decouple them from the (closed) sub-account — they now stand alone.
+      await removeVisitorLink(visitorId)
+
+      await insertNotification({
+        userId: visitorId,
+        tone: "success",
+        title: "Your standalone account is ready",
+        body: `You now have your own dedicated master account (IBAN ${ic.formatted}) with full visitor access to the platform. Sign in to continue.${note ? ` Note: ${note}` : ""}`,
+        href: "/dashboard",
+      })
+
+      const links = await listAllVisitorLinks()
+      return NextResponse.json({ ok: true, links, converted: { id: visitorId } })
     }
 
     if (op === "activate") {
