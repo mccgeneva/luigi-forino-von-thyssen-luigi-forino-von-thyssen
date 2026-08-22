@@ -56,10 +56,8 @@ import { usePPPRequests, type PPPRequest } from "@/lib/ppp-requests-store"
 import { usePdfViewer } from "@/lib/pdf-viewer"
 import { generatePPPConfirmationPdf } from "@/lib/ppp-confirmation-pdf"
 import { Download } from "lucide-react"
-import {
-  getActiveInstitutionalYields,
-  type InstitutionalYield,
-} from "@/app/actions/institutional-yields"
+import { getActiveInstitutionalYields } from "@/app/actions/institutional-yields"
+import { type InstitutionalYield } from "@/lib/institutional-yields-shared"
 
 const programs = [
   {

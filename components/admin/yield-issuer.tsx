@@ -25,13 +25,15 @@ import {
   updateInstitutionalYield,
   setInstitutionalYieldStatus,
   removeInstitutionalYield,
+} from "@/app/actions/institutional-yields"
+import {
   YIELD_TYPES,
   YIELD_RISK_CLASSES,
   YIELD_FREQUENCIES,
   type InstitutionalYield,
   type YieldStatus,
   type PublishYieldInput,
-} from "@/app/actions/institutional-yields"
+} from "@/lib/institutional-yields-shared"
 
 const CURRENCIES = ["USD", "EUR", "GBP", "CHF", "AED", "SGD", "HKD"]
 
