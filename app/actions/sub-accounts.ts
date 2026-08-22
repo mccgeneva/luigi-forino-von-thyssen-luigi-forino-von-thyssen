@@ -10,7 +10,20 @@ import {
   getSubAccountById,
   updateSubAccountBeneficiary,
 } from "@/lib/sub-account-db"
-import { readLedgerEntries, upsertLedgerEntry, assertOwnerSolvent, deleteLedgerEntry } from "@/lib/ledger-db"
+import {
+  readLedgerEntries,
+  upsertLedgerEntry,
+  assertOwnerSolvent,
+  deleteLedgerEntry,
+  availableByCurrency,
+} from "@/lib/ledger-db"
+import { convertCurrency } from "@/lib/fx"
+import {
+  serviceFeeFor,
+  SUB_ACCOUNT_ANNUAL_FEE,
+  SUB_ACCOUNT_FEE_CURRENCY,
+  formatSubAccountFee,
+} from "@/lib/sub-account-fees"
 import { MAIN_ACCOUNT_ID, type SubAccount, type SubAccountDoc } from "@/lib/sub-account-types"
 import type { LedgerEntry } from "@/lib/ledger-store"
 
@@ -117,6 +130,31 @@ export async function requestSubAccount(input: {
     const openCount = existing.filter((s) => s.status === "pending" || s.status === "active").length
     if (openCount >= MAX_SUB_ACCOUNTS) {
       return { ok: false, error: `You have reached the maximum of ${MAX_SUB_ACCOUNTS} sub-accounts.` }
+    }
+
+    // Affordability gate — checked NOW, before the request reaches the
+    // administrator. Activation charges the Master Account the service fee (by
+    // verification) plus the first annual fee immediately, so the client must
+    // already hold enough to cover them; otherwise the request is rejected here
+    // with a clear explanation rather than being approved and then bouncing.
+    const serviceFee = serviceFeeFor(verification)
+    const dueAtActivation = serviceFee + SUB_ACCOUNT_ANNUAL_FEE
+    const available = availableByCurrency(await readLedgerEntries(ownerId))
+    const availableEur = Object.entries(available).reduce(
+      (sum, [cur, amt]) => sum + convertCurrency(amt, cur, SUB_ACCOUNT_FEE_CURRENCY),
+      0,
+    )
+    if (dueAtActivation > availableEur + 0.01) {
+      return {
+        ok: false,
+        error: `Opening this ${verification === "declared" ? "declared" : "alias"} sub-account costs ${formatSubAccountFee(
+          serviceFee,
+        )} service + ${formatSubAccountFee(SUB_ACCOUNT_ANNUAL_FEE)} annual = ${formatSubAccountFee(
+          dueAtActivation,
+        )} on activation, but your Master Account has only ${formatSubAccountFee(
+          Math.max(0, availableEur),
+        )} available. Please fund your account and try again.`,
+      }
     }
 
     const id = `SUB-${Date.now().toString(36).toUpperCase()}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`
