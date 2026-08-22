@@ -334,7 +334,7 @@ export default function SubAccountsPage() {
                 New sub-account
               </Button>
             </DialogTrigger>
-            <DialogContent className="sm:max-w-md">
+            <DialogContent className="flex max-h-[90dvh] flex-col overflow-hidden sm:max-w-md">
               <DialogHeader>
                 <DialogTitle>Open a sub-account</DialogTitle>
                 <DialogDescription>
@@ -342,7 +342,7 @@ export default function SubAccountsPage() {
                   then you can move funds into it.
                 </DialogDescription>
               </DialogHeader>
-              <div className="space-y-4 py-1">
+              <div className="-mr-2 min-h-0 flex-1 space-y-4 overflow-y-auto py-1 pr-2">
                 <div className="space-y-1.5">
                   <Label htmlFor="sub-label">Account name</Label>
                   <Input
@@ -530,7 +530,7 @@ export default function SubAccountsPage() {
                   </p>
                 </div>
               </div>
-              <DialogFooter>
+              <DialogFooter className="shrink-0 border-t border-border/60 pt-3">
                 <Button variant="ghost" onClick={() => setCreateOpen(false)} disabled={creating}>
                   Cancel
                 </Button>
