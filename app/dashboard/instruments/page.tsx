@@ -31,6 +31,8 @@ import {
   Trash2,
   Undo2,
   Sparkles,
+  Handshake,
+  MessageSquare,
 } from "lucide-react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -61,6 +63,10 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import { Label } from "@/components/ui/label"
+import { Textarea } from "@/components/ui/textarea"
+import { Messenger } from "@/components/bankeka/messenger"
+import { listConversations, getThread, sendMessage, deleteMessage } from "@/app/actions/bankeka"
+import { BANKEKA_ADMIN_ID, BANKEKA_ADMIN_LABEL, BANKEKA_ADMIN_INITIALS } from "@/lib/bankeka-shared"
 import { cn } from "@/lib/utils"
 import { useActivityLog } from "@/components/activity-tracker"
 import { exportToCsv } from "@/lib/export-utils"
@@ -84,8 +90,8 @@ import {
   isMccOwnedAction,
 } from "@/lib/instrument-marketplace"
 import { resolveTransferRecipient } from "@/app/actions/transfers"
-import { acceptInstrumentUpgrade, declineInstrumentUpgrade } from "@/app/actions/approvals"
-import { INSTRUMENT_UPGRADE_FEE_LABEL } from "@/lib/instrument-upgrade"
+import { acceptInstrumentUpgrade, declineInstrumentUpgrade, counterInstrumentUpgrade } from "@/app/actions/approvals"
+import { INSTRUMENT_UPGRADE_FEE_LABEL, isUpgradeOpen } from "@/lib/instrument-upgrade"
 import type { TransferDirectoryEntry } from "@/lib/users"
 import { useLeverageRequests } from "@/lib/leverage-requests-store"
 import { usePPPRequests } from "@/lib/ppp-requests-store"
@@ -185,6 +191,24 @@ export default function InstrumentsPage() {
   // Administrator transformation-upgrade offer the customer can accept/decline.
   const [upgradeTarget, setUpgradeTarget] = useState<Instrument | null>(null)
   const [upgradeBusy, setUpgradeBusy] = useState(false)
+  const [upgradeDiscuss, setUpgradeDiscuss] = useState(false)
+  const [counterValue, setCounterValue] = useState("")
+  const [counterNote, setCounterNote] = useState("")
+  const [counterBusy, setCounterBusy] = useState(false)
+
+  // Open the negotiation dialog for an instrument's upgrade offer, resetting the
+  // per-offer counter/chat state.
+  const openUpgrade = (inst: Instrument) => {
+    setUpgradeTarget(inst)
+    setUpgradeDiscuss(false)
+    setCounterValue("")
+    setCounterNote("")
+  }
+  const closeUpgrade = () => {
+    if (upgradeBusy || counterBusy) return
+    setUpgradeTarget(null)
+    setUpgradeDiscuss(false)
+  }
 
   // Instrument ids that are "in use" by the account and therefore may NOT be
   // deleted: pledged to a leverage line (anything but a rejected/closed line) or

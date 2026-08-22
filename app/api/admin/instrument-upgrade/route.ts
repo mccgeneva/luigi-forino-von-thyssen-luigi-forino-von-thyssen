@@ -4,8 +4,7 @@ import { listDynamicUsers } from "@/lib/admin-users-db"
 import { getApprovalById, updateApprovalPayload, listAllApprovals } from "@/lib/approvals-db"
 import { insertNotification } from "@/lib/notifications-db"
 import { resolveDataOwnerIdFor, resolveAccountProfileById } from "@/lib/session-user"
-import { readLedgerEntries, availableByCurrency, upsertLedgerEntry } from "@/lib/ledger-db"
-import { convertCurrency } from "@/lib/fx"
+import { upsertLedgerEntry } from "@/lib/ledger-db"
 import { partnerBankByKey } from "@/lib/partner-banks"
 import { logActivity } from "@/app/actions/log-activity"
 import { KIND_HREF } from "@/lib/approval-kinds"
@@ -27,12 +26,15 @@ export const runtime = "nodejs"
 // per call by adminActionAuthorized(pin).
 //
 // Ops:
-//  - list:  every ACTIVE instrument holding across clients (+ any upgrade state).
-//  - start: block the old instrument, charge the 3% expertise+upgrade fee to the
-//           customer's Master Account (balance checked FIRST — refused if it
-//           can't be covered), and record the negotiated new-instrument deal as
-//           `payload.upgrade = { status: "proposed", ... }` for the customer to
-//           accept (customer-side action issues the fresh instrument).
+//  - list:   every ACTIVE instrument holding across clients (+ any upgrade state).
+//  - start:  PROPOSE a negotiated new-instrument deal — no block, no fee. Writes
+//            `payload.upgrade = { status: "negotiating", ... }`. The customer
+//            discusses / counter-offers; the fee is charged only when they
+//            confirm (customer-side accept action).
+//  - revise: update an in-negotiation deal (new value / bank / type / note),
+//            e.g. after the customer's counter-offer.
+//  - cancel: withdraw an open deal. If a legacy fee was already charged
+//            (old "proposed" flow), it is refunded.
 // -----------------------------------------------------------------------------
 
 type InstrumentVM = {
@@ -105,15 +107,19 @@ export async function POST(req: Request) {
       return NextResponse.json({ ok: true, instruments, clients, feeRate: INSTRUMENT_UPGRADE_FEE_RATE }, { status: 200 })
     }
 
-    if (op === "start") {
+    if (op === "start" || op === "revise") {
       const approvalId = String(body.approvalId ?? "")
       const existing = await getApprovalById(approvalId)
       if (!existing || existing.kind !== "instrument" || existing.status !== "approved") {
         return NextResponse.json({ ok: false, error: "Active instrument not found." }, { status: 200 })
       }
       const payload = (existing.payload ?? {}) as Payload
-      if (payload.upgrade && payload.upgrade.status === "proposed") {
-        return NextResponse.json({ ok: false, error: "An upgrade is already in progress for this instrument." }, { status: 200 })
+      const current = payload.upgrade
+      if (op === "start" && current && (current.status === "negotiating" || current.status === "proposed")) {
+        return NextResponse.json({ ok: false, error: "An upgrade is already open for this instrument." }, { status: 200 })
+      }
+      if (op === "revise" && (!current || (current.status !== "negotiating" && current.status !== "proposed"))) {
+        return NextResponse.json({ ok: false, error: "There is no open upgrade to revise." }, { status: 200 })
       }
       const inst = baseInstrument(payload)
       const oldFaceValue = Number(inst.faceValue ?? existing.amount) || 0
@@ -123,69 +129,35 @@ export async function POST(req: Request) {
       // Negotiated new instrument
       const bankKey = String(body.newBankKey ?? "")
       const bank = partnerBankByKey(bankKey)
-      const newIssuer = (bank?.name || String(body.newIssuer ?? "")).trim()
-      const newType = String(body.newType ?? inst.type ?? "SBLC").trim()
-      const newTypeFull = String(body.newTypeFull ?? body.newType ?? inst.typeFull ?? "Bank Instrument").trim()
-      const newFaceValue = Number(body.newFaceValue ?? 0)
-      const newCurrency = String(body.newCurrency ?? feeCurrency).trim()
-      const terms = String(body.terms ?? "").trim() || undefined
-      const note = String(body.note ?? "").trim() || undefined
+      const newIssuer = (bank?.name || String(body.newIssuer ?? current?.newIssuer ?? "")).trim()
+      const newType = String(body.newType ?? current?.newType ?? inst.type ?? "SBLC").trim()
+      const newTypeFull = String(body.newTypeFull ?? body.newType ?? current?.newTypeFull ?? inst.typeFull ?? "Bank Instrument").trim()
+      const newFaceValue = Number(body.newFaceValue ?? current?.newFaceValue ?? 0)
+      const newCurrency = String(body.newCurrency ?? current?.newCurrency ?? feeCurrency).trim()
+      const terms = String(body.terms ?? current?.terms ?? "").trim() || undefined
+      const note = String(body.note ?? current?.note ?? "").trim() || undefined
 
       if (!newIssuer) return NextResponse.json({ ok: false, error: "Select a reputable partner bank for the new instrument." }, { status: 200 })
       if (!Number.isFinite(newFaceValue) || newFaceValue <= 0) {
         return NextResponse.json({ ok: false, error: "Enter a valid negotiated face value for the new instrument." }, { status: 200 })
       }
 
-      // SOLVENCY: check the customer's Master Account can cover the 3% fee BEFORE
-      // blocking or charging anything. All balances converted into the fee
-      // currency (same pattern as the yield/card fee gates).
-      const ownerId = await resolveDataOwnerIdFor(existing.userId)
-      if (fee > 0) {
-        const available = availableByCurrency(await readLedgerEntries(ownerId))
-        const availableInCcy = Object.entries(available).reduce(
-          (sum, [cur, amt]) => sum + convertCurrency(amt, cur, feeCurrency),
-          0,
-        )
-        if (fee > availableInCcy + 0.01) {
-          return NextResponse.json(
-            {
-              ok: false,
-              error: `The customer cannot cover the ${INSTRUMENT_UPGRADE_FEE_LABEL} expertise & upgrade fee of ${feeCurrency} ${fee.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}. Nothing was blocked or charged.`,
-            },
-            { status: 200 },
-          )
-        }
-      }
-
-      // Charge the fee to the Master Account (deterministic id → idempotent).
-      if (fee > 0) {
-        await upsertLedgerEntry(ownerId, {
-          id: `INSTR-UPGRADE-FEE-${approvalId}`,
-          direction: "debit",
-          amount: fee,
-          currency: feeCurrency,
-          status: "completed",
-          date: new Date().toISOString(),
-          counterparty: `${inst.typeFull ?? "Instrument"} ${inst.id ?? ""}`.trim(),
-          reference: approvalId,
-          category: `Bank Instrument — Expertise & Upgrade Fee (${INSTRUMENT_UPGRADE_FEE_LABEL})`,
-          comment: `${INSTRUMENT_UPGRADE_FEE_LABEL} one-time upgrade fee on ${feeCurrency} ${oldFaceValue.toLocaleString("en-US")} ${inst.typeFull ?? "instrument"}.`,
-        })
-      }
-
-      // Block the old instrument + record the proposed deal for the customer.
+      // Record the deal WITHOUT charging or blocking — the fee is taken only when
+      // the customer confirms. A revise keeps any legacy `proposed`/fee state and
+      // clears the customer's stale counter-offer.
       const upgrade: InstrumentUpgrade = {
-        status: "proposed",
-        proposedAt: new Date().toISOString(),
+        status: current?.status === "proposed" ? "proposed" : "negotiating",
+        proposedAt: current?.proposedAt ?? new Date().toISOString(),
         feeRate: INSTRUMENT_UPGRADE_FEE_RATE,
         fee,
         feeCurrency,
         oldFaceValue,
+        feeCharged: current?.feeCharged ?? current?.status === "proposed",
         newType,
         newTypeFull,
         newIssuer,
-        newIssuerCountry: bank?.country,
-        newIssuerBic: bank?.bic,
+        newIssuerCountry: bank?.country ?? current?.newIssuerCountry,
+        newIssuerBic: bank?.bic ?? current?.newIssuerBic,
         newFaceValue,
         newCurrency,
         terms,
@@ -197,8 +169,11 @@ export async function POST(req: Request) {
         await insertNotification({
           userId: existing.userId,
           tone: "info",
-          title: "Instrument upgrade proposed",
-          body: `Your ${inst.typeFull ?? "instrument"} is being transformed into a fresh ${newCurrency} ${newFaceValue.toLocaleString("en-US")} ${newTypeFull} by ${newIssuer}. Review and accept the deal in Bank Instruments.${fee > 0 ? ` A ${feeCurrency} ${fee.toLocaleString("en-US")} expertise & upgrade fee was charged.` : ""}`,
+          title: op === "revise" ? "Upgrade offer revised" : "Instrument upgrade proposed",
+          body:
+            op === "revise"
+              ? `The administrator revised your upgrade offer: a ${newCurrency} ${newFaceValue.toLocaleString("en-US")} ${newTypeFull} by ${newIssuer}. Review it in Bank Instruments.`
+              : `The administrator proposes transforming your ${inst.typeFull ?? "instrument"} into a fresh ${newCurrency} ${newFaceValue.toLocaleString("en-US")} ${newTypeFull} by ${newIssuer}. Discuss the value and confirm the deal in Bank Instruments — no fee until you accept.`,
           href: KIND_HREF.instrument ?? "/dashboard/instruments",
         })
       } catch {
@@ -208,14 +183,14 @@ export async function POST(req: Request) {
       try {
         const target = await resolveAccountProfileById(existing.userId)
         await logActivity({
-          action: `Administrator started an instrument upgrade for ${target.fullName}`,
+          action: `Administrator ${op === "revise" ? "revised" : "proposed"} an instrument upgrade for ${target.fullName}`,
           category: "Administration / Instruments",
           user: "Administrator",
           details: {
             referenceId: String(inst.id ?? approvalId),
             targetAccount: `${target.fullName} — ${target.email}`,
-            summary: `Blocked ${inst.typeFull ?? "instrument"} (${feeCurrency} ${oldFaceValue.toLocaleString("en-US")}), charged ${feeCurrency} ${fee.toLocaleString("en-US")} (${INSTRUMENT_UPGRADE_FEE_LABEL}), proposed new ${newCurrency} ${newFaceValue.toLocaleString("en-US")} ${newTypeFull} from ${newIssuer}.`,
-            action: "Upgrade proposed",
+            summary: `${op === "revise" ? "Revised" : "Proposed"} upgrade of ${inst.typeFull ?? "instrument"} (${feeCurrency} ${oldFaceValue.toLocaleString("en-US")}) → new ${newCurrency} ${newFaceValue.toLocaleString("en-US")} ${newTypeFull} from ${newIssuer}. Fee (${INSTRUMENT_UPGRADE_FEE_LABEL}) charged only on customer confirm.`,
+            action: op === "revise" ? "Upgrade revised" : "Upgrade proposed",
           },
         })
       } catch {
@@ -223,6 +198,58 @@ export async function POST(req: Request) {
       }
 
       return NextResponse.json({ ok: true, fee, feeCurrency }, { status: 200 })
+    }
+
+    if (op === "cancel") {
+      const approvalId = String(body.approvalId ?? "")
+      const existing = await getApprovalById(approvalId)
+      if (!existing || existing.kind !== "instrument") {
+        return NextResponse.json({ ok: false, error: "Instrument not found." }, { status: 200 })
+      }
+      const payload = (existing.payload ?? {}) as Payload
+      const current = payload.upgrade
+      if (!current || (current.status !== "negotiating" && current.status !== "proposed")) {
+        return NextResponse.json({ ok: false, error: "There is no open upgrade to withdraw." }, { status: 200 })
+      }
+      const inst = baseInstrument(payload)
+
+      // Refund the fee only if it was actually charged (legacy proposed flow).
+      let refunded = 0
+      if (current.feeCharged || current.status === "proposed") {
+        if (current.fee > 0) {
+          const ownerId = await resolveDataOwnerIdFor(existing.userId)
+          await upsertLedgerEntry(ownerId, {
+            id: `INSTR-UPGRADE-REFUND-${approvalId}`,
+            direction: "credit",
+            amount: current.fee,
+            currency: current.feeCurrency,
+            status: "completed",
+            date: new Date().toISOString(),
+            counterparty: `${inst.typeFull ?? "Instrument"} ${inst.id ?? ""}`.trim(),
+            reference: approvalId,
+            category: `Bank Instrument — Upgrade Fee Refund`,
+            comment: `Refund of the ${INSTRUMENT_UPGRADE_FEE_LABEL} upgrade fee — offer withdrawn by the administrator.`,
+          })
+          refunded = current.fee
+        }
+      }
+
+      const upgrade: InstrumentUpgrade = { ...current, status: "declined", decidedAt: new Date().toISOString() }
+      await updateApprovalPayload(approvalId, { ...(existing.payload ?? {}), upgrade })
+
+      try {
+        await insertNotification({
+          userId: existing.userId,
+          tone: "info",
+          title: "Upgrade offer withdrawn",
+          body: `The administrator withdrew the upgrade offer for your ${inst.typeFull ?? "instrument"}.${refunded > 0 ? ` The ${current.feeCurrency} ${refunded.toLocaleString("en-US")} fee was refunded.` : ""} Your instrument is fully available.`,
+          href: KIND_HREF.instrument ?? "/dashboard/instruments",
+        })
+      } catch {
+        /* best-effort */
+      }
+
+      return NextResponse.json({ ok: true, refunded, currency: current.feeCurrency }, { status: 200 })
     }
 
     return NextResponse.json({ ok: false, error: "Unknown operation." }, { status: 200 })
