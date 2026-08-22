@@ -54,6 +54,7 @@ import {
 } from "@/lib/instrument-marketplace"
 import {
   getPublishedInstruments,
+  setInstrumentAvailabilityBySession,
   type MarketplaceInstrument,
 } from "@/app/actions/marketplace-instruments"
 import { InstrumentPrintout } from "@/components/dashboard/instrument-printout"
@@ -177,9 +178,23 @@ export function InstrumentMarketplace() {
     return { banks: banks.size, instruments: catalogue.length, countries: countries.size, types: types.size }
   }, [catalogue])
 
+  // ISINs the client already holds (active or pending) — a unique instrument
+  // can't be acquired twice, so hide any the client already has. Covers items
+  // taken before availability holds existed (e.g. an already-reserved EUROBOND).
+  const heldIsins = useMemo(() => {
+    const set = new Set<string>()
+    for (const i of instruments) {
+      if ((i.status === "active" || i.status === "pending") && i.isin) {
+        set.add(i.isin.trim().toUpperCase())
+      }
+    }
+    return set
+  }, [instruments])
+
   const filtered = useMemo(() => {
     const q = filter.trim().toLowerCase()
     const rows = catalogue.filter((i) => {
+      if (i.isin && heldIsins.has(i.isin.trim().toUpperCase())) return false
       if (typeFilter !== "all" && i.type !== typeFilter) return false
       if (bankFilter !== "all" && i.bankName !== bankFilter) return false
       if (!q) return true
@@ -208,7 +223,7 @@ export function InstrumentMarketplace() {
       }
     })
     return sorted
-  }, [catalogue, filter, typeFilter, bankFilter, sortBy])
+  }, [catalogue, filter, typeFilter, bankFilter, sortBy, heldIsins])
 
   // --- Grouping -------------------------------------------------------------
   const groups = useMemo(() => {
@@ -370,6 +385,12 @@ export function InstrumentMarketplace() {
         },
         { amount: fee, actionLabel },
       )
+
+      // Hold the unique instrument the moment it is requested so no other client
+      // can claim it. Remove it from the local catalogue immediately (optimistic)
+      // and persist the hold; released back if the Administrator later declines.
+      setCatalogue((prev) => prev.filter((i) => i.id !== target.id))
+      void setInstrumentAvailabilityBySession(target.id, false)
 
       logActivity({
         action: `Requested ${actionLabel.toLowerCase()} of ${target.type} ${created.id} (${money(target.faceValue, target.currency)})`,
