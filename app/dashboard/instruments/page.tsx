@@ -33,6 +33,8 @@ import {
   Sparkles,
   Handshake,
   MessageSquare,
+  ArrowUpRight,
+  ChevronDown,
 } from "lucide-react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -467,21 +469,22 @@ export default function InstrumentsPage() {
         description: `Your new ${target.upgrade?.newTypeFull} from ${target.upgrade?.newIssuer} is now active in your portfolio.`,
       })
       logActivity({
-        action: `Accepted transformation upgrade for ${target.id}`,
+        action: `Confirmed transformation upgrade for ${target.id}`,
         category: "Bank Instruments",
         details: {
-          summary: `Accepted the deal to transform ${target.id} into a ${target.upgrade?.newCurrency} ${target.upgrade?.newFaceValue.toLocaleString("en-US")} ${target.upgrade?.newTypeFull} from ${target.upgrade?.newIssuer}. Fresh instrument issued; old one retired.`,
+          summary: `Confirmed the deal to transform ${target.id} into a ${target.upgrade?.newCurrency} ${target.upgrade?.newFaceValue.toLocaleString("en-US")} ${target.upgrade?.newTypeFull} from ${target.upgrade?.newIssuer}. Fresh instrument issued; old one retired.`,
           referenceId: target.id,
         },
       })
       setUpgradeTarget(null)
+      setUpgradeDiscuss(false)
       void refreshInstruments()
     } finally {
       setUpgradeBusy(false)
     }
   }
 
-  // Decline the offer: the old instrument is unblocked and the fee refunded.
+  // Decline the offer: the instrument stays active; any charged fee is refunded.
   const declineUpgrade = async () => {
     const target = upgradeTarget
     if (!target?.approvalId || upgradeBusy) return
@@ -496,21 +499,57 @@ export default function InstrumentsPage() {
         res.refunded && res.refunded > 0
           ? `The ${res.currency} ${res.refunded.toLocaleString("en-US")} fee was refunded. `
           : ""
-      toast.success("Upgrade declined", {
-        description: `${refundLabel}Your instrument is unblocked and available again.`,
+      toast.success("Offer declined", {
+        description: `${refundLabel}Your instrument remains active and available.`,
       })
       logActivity({
         action: `Declined transformation upgrade for ${target.id}`,
         category: "Bank Instruments",
         details: {
-          summary: `Declined the transformation offer for ${target.id}. ${refundLabel}Instrument unblocked.`,
+          summary: `Declined the transformation offer for ${target.id}. ${refundLabel}Instrument remains active.`,
           referenceId: target.id,
         },
       })
       setUpgradeTarget(null)
+      setUpgradeDiscuss(false)
       void refreshInstruments()
     } finally {
       setUpgradeBusy(false)
+    }
+  }
+
+  // Send a counter-offer for the new instrument's face value during negotiation.
+  const submitCounter = async () => {
+    const target = upgradeTarget
+    if (!target?.approvalId || counterBusy) return
+    const value = Number(counterValue.replace(/[^0-9.]/g, ""))
+    if (!Number.isFinite(value) || value <= 0) {
+      toast.error("Enter a valid counter-offer amount")
+      return
+    }
+    setCounterBusy(true)
+    try {
+      const res = await counterInstrumentUpgrade(target.approvalId, value, counterNote.trim() || undefined)
+      if (!res.ok) {
+        toast.error("Could not send counter-offer", { description: res.error })
+        return
+      }
+      toast.success("Counter-offer sent", {
+        description: `The administrator will review your proposed ${target.upgrade?.newCurrency} ${value.toLocaleString("en-US")} face value.`,
+      })
+      logActivity({
+        action: `Counter-offer on transformation upgrade for ${target.id}`,
+        category: "Bank Instruments",
+        details: {
+          summary: `Proposed a new face value of ${target.upgrade?.newCurrency} ${value.toLocaleString("en-US")} for the transformation of ${target.id}.`,
+          referenceId: target.id,
+        },
+      })
+      setCounterValue("")
+      setCounterNote("")
+      void refreshInstruments()
+    } finally {
+      setCounterBusy(false)
     }
   }
 
@@ -973,6 +1012,13 @@ export default function InstrumentsPage() {
     })
   }
 
+  // Instruments with an OPEN upgrade offer (negotiating or legacy proposed).
+  // These get an unmissable dedicated section at the top of the portfolio.
+  const upgradeOffers = useMemo(
+    () => instruments.filter((i) => isUpgradeOpen(i.upgrade)),
+    [instruments],
+  )
+
   const filteredInstruments = instruments.filter((instrument) => {
     const matchesSearch =
       instrument.id.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -1266,6 +1312,68 @@ export default function InstrumentsPage() {
         </CardContent>
       </Card>
 
+      {/* Upgrade offers — unmissable section for any instrument the admin has
+          proposed to transform. Open the negotiate/confirm dialog from here. */}
+      {upgradeOffers.length > 0 && (
+        <Card className="border-amber-500/40 bg-amber-500/5">
+          <CardHeader className="pb-3">
+            <div className="flex items-center gap-2">
+              <Handshake className="h-5 w-5 text-amber-500" />
+              <CardTitle className="text-lg font-semibold text-foreground">
+                Instrument upgrade {upgradeOffers.length > 1 ? "offers" : "offer"}
+              </CardTitle>
+              <Badge className="ml-1 bg-amber-500 text-amber-950 hover:bg-amber-500">
+                {upgradeOffers.length} to review
+              </Badge>
+            </div>
+            <p className="mt-1 text-sm text-muted-foreground text-pretty">
+              The administrator has proposed transforming the instrument{upgradeOffers.length > 1 ? "s" : ""} below into a
+              fresh one. Discuss the value, send a counter-offer, then confirm to publish it — no fee is charged until
+              you confirm.
+            </p>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            {upgradeOffers.map((inst) => {
+              const u = inst.upgrade!
+              return (
+                <div
+                  key={inst.approvalId ?? inst.id}
+                  className="flex flex-col gap-3 rounded-lg border border-amber-500/30 bg-card p-4 sm:flex-row sm:items-center sm:justify-between"
+                >
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium text-foreground">
+                      {inst.typeFull}{" "}
+                      <span className="text-muted-foreground">
+                        ({formatCurrency(inst.faceValue, inst.currency)})
+                      </span>
+                    </p>
+                    <p className="mt-0.5 flex flex-wrap items-center gap-1.5 text-sm">
+                      <ArrowUpRight className="h-3.5 w-3.5 shrink-0 text-amber-500" />
+                      <span className="text-foreground">
+                        {u.newCurrency} {u.newFaceValue.toLocaleString("en-US")} {u.newTypeFull}
+                      </span>
+                      <span className="text-muted-foreground">by {u.newIssuer}</span>
+                    </p>
+                    {u.customerCounterFaceValue ? (
+                      <p className="mt-1 text-xs text-amber-600 dark:text-amber-400">
+                        Your counter-offer: {u.newCurrency} {u.customerCounterFaceValue.toLocaleString("en-US")} — awaiting
+                        the administrator.
+                      </p>
+                    ) : null}
+                  </div>
+                  <Button
+                    className="shrink-0 bg-amber-500 text-amber-950 hover:bg-amber-500/90"
+                    onClick={() => openUpgrade(inst)}
+                  >
+                    Review &amp; negotiate
+                  </Button>
+                </div>
+              )
+            })}
+          </CardContent>
+        </Card>
+      )}
+
       {/* Instruments List */}
       <Card className="bg-card border-border">
         <CardHeader>
@@ -1384,17 +1492,17 @@ export default function InstrumentsPage() {
                                 Owned by {MCC_HOLDING_OWNER} · you keep 25%
                               </span>
                             ) : null}
-                            {instrument.upgrade?.status === "proposed" ? (
+                            {isUpgradeOpen(instrument.upgrade) ? (
                               <button
                                 type="button"
                                 onClick={(e) => {
                                   e.stopPropagation()
-                                  setUpgradeTarget(instrument)
+                                  openUpgrade(instrument)
                                 }}
                                 className="mt-1.5 flex w-fit items-center gap-1 rounded-md border border-amber-500/40 bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-600 transition-colors hover:bg-amber-500/20 dark:text-amber-400"
                               >
-                                <Sparkles className="h-2.5 w-2.5" />
-                                Upgrade offer — review
+                                <Handshake className="h-2.5 w-2.5" />
+                                {instrument.upgrade?.customerCounterFaceValue ? "Upgrade offer — counter sent" : "Upgrade offer — negotiate"}
                               </button>
                             ) : instrument.blocked ? (
                               <span className="mt-1.5 inline-flex items-center gap-1 rounded-md border border-muted-foreground/30 bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
@@ -1415,14 +1523,14 @@ export default function InstrumentsPage() {
                               <ExternalLink className="mr-2 h-4 w-4" />
                               View Details
                             </DropdownMenuItem>
-                            {instrument.upgrade?.status === "proposed" && (
+                            {isUpgradeOpen(instrument.upgrade) && (
                               <>
                                 <DropdownMenuItem
-                                  onClick={() => setUpgradeTarget(instrument)}
+                                  onClick={() => openUpgrade(instrument)}
                                   className="text-amber-600 focus:text-amber-600 dark:text-amber-400"
                                 >
-                                  <Sparkles className="mr-2 h-4 w-4" />
-                                  Review upgrade offer
+                                  <Handshake className="mr-2 h-4 w-4" />
+                                  Review &amp; negotiate upgrade
                                 </DropdownMenuItem>
                                 <DropdownMenuSeparator />
                               </>
@@ -2728,30 +2836,32 @@ export default function InstrumentsPage() {
         </DialogContent>
       </Dialog>
 
-      <Dialog open={upgradeTarget !== null} onOpenChange={(o) => !o && !upgradeBusy && setUpgradeTarget(null)}>
-        <DialogContent className="sm:max-w-lg">
+      <Dialog open={upgradeTarget !== null} onOpenChange={(o) => !o && closeUpgrade()}>
+        <DialogContent className="flex max-h-[92dvh] flex-col gap-0 overflow-hidden p-0 sm:max-w-lg">
           {upgradeTarget?.upgrade &&
             (() => {
               const u = upgradeTarget.upgrade!
               const money = (v: number, ccy: string) =>
                 `${ccy} ${v.toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 2 })}`
+              const feePreview = u.fee > 0 ? u.fee : 0
               return (
                 <>
-                  <DialogHeader>
+                  <DialogHeader className="shrink-0 border-b p-4 pr-12">
                     <DialogTitle className="flex items-center gap-2">
-                      <Sparkles className="h-5 w-5 text-amber-500" />
-                      Transformation upgrade offer
+                      <Handshake className="h-5 w-5 text-amber-500" />
+                      Negotiate transformation upgrade
                     </DialogTitle>
-                    <DialogDescription>
-                      Your Administrator proposes to transform{" "}
+                    <DialogDescription className="text-pretty">
+                      The administrator proposes transforming{" "}
                       <span className="font-medium text-foreground">
                         {upgradeTarget.typeFull} ({upgradeTarget.id})
                       </span>{" "}
-                      into a fresh instrument from a reputable bank partner. Review the deal below.
+                      into a fresh instrument. Discuss the value, send a counter-offer, then confirm — no fee until you
+                      confirm.
                     </DialogDescription>
                   </DialogHeader>
 
-                  <div className="space-y-3 text-sm">
+                  <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-4 text-sm">
                     <div className="grid grid-cols-2 gap-3">
                       <div className="rounded-lg border bg-muted/40 p-3">
                         <p className="text-xs text-muted-foreground">Current</p>
@@ -2760,7 +2870,7 @@ export default function InstrumentsPage() {
                         <p className="mt-1 font-semibold">{money(upgradeTarget.faceValue, upgradeTarget.currency)}</p>
                       </div>
                       <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3">
-                        <p className="text-xs text-amber-600">Upgraded</p>
+                        <p className="text-xs text-amber-600">Proposed</p>
                         <p className="mt-1 font-medium text-foreground">{u.newTypeFull}</p>
                         <p className="text-xs text-muted-foreground">
                           {u.newIssuer}
@@ -2770,32 +2880,122 @@ export default function InstrumentsPage() {
                       </div>
                     </div>
 
+                    {u.customerCounterFaceValue ? (
+                      <div className="rounded-lg border border-amber-500/40 bg-amber-500/5 p-3 text-xs">
+                        <p className="font-medium text-foreground">Your latest counter-offer</p>
+                        <p className="mt-0.5 text-amber-600 dark:text-amber-400">
+                          {money(u.customerCounterFaceValue, u.newCurrency)} — awaiting the administrator's revision.
+                        </p>
+                        {u.customerCounterNote ? (
+                          <p className="mt-1 text-muted-foreground">"{u.customerCounterNote}"</p>
+                        ) : null}
+                      </div>
+                    ) : null}
+
                     <div className="flex items-center justify-between rounded-lg border p-3">
                       <span className="text-muted-foreground">
                         Expertise &amp; upgrade fee ({INSTRUMENT_UPGRADE_FEE_LABEL}, one-time)
                       </span>
-                      <span className="font-semibold text-foreground">{money(u.fee, u.feeCurrency)}</span>
+                      <span className="font-semibold text-foreground">{money(feePreview, u.feeCurrency)}</span>
                     </div>
-                    <p className="text-xs text-muted-foreground">
-                      The fee was charged from your Master Account when the upgrade started. Accepting issues the new
-                      instrument into your portfolio immediately. Declining unblocks the current instrument and refunds
-                      the fee.
+                    <p className="text-xs text-muted-foreground text-pretty">
+                      {u.feeCharged || u.status === "proposed"
+                        ? "The fee has already been charged. Confirming issues the new instrument immediately and retires the current one; declining refunds the fee and keeps your instrument active."
+                        : "No fee has been charged yet. The fee is taken from your Master Account only when you confirm the agreed deal, at which point the new instrument is issued and the current one retired. While you negotiate, your instrument stays fully usable."}
                     </p>
+
+                    {u.terms && (
+                      <div className="rounded-lg border border-border bg-muted/40 p-3 text-xs text-muted-foreground text-pretty">
+                        <span className="font-medium text-foreground">Terms &amp; agreements: </span>
+                        {u.terms}
+                      </div>
+                    )}
                     {u.note && (
-                      <div className="rounded-lg border border-border bg-muted/40 p-3 text-xs text-muted-foreground">
-                        <span className="font-medium text-foreground">Terms &amp; note: </span>
+                      <div className="rounded-lg border border-border bg-muted/40 p-3 text-xs text-muted-foreground text-pretty">
+                        <span className="font-medium text-foreground">Note from the administrator: </span>
                         {u.note}
                       </div>
                     )}
+
+                    {/* Counter-offer — only while still negotiating (not legacy proposed). */}
+                    {u.status === "negotiating" && (
+                      <div className="space-y-2 rounded-lg border border-border p-3">
+                        <Label className="text-xs font-medium text-foreground">
+                          Propose a different face value ({u.newCurrency})
+                        </Label>
+                        <Input
+                          inputMode="decimal"
+                          placeholder={`e.g. ${u.newFaceValue.toLocaleString("en-US")}`}
+                          value={counterValue}
+                          onChange={(e) => setCounterValue(e.target.value)}
+                        />
+                        <Textarea
+                          placeholder="Optional message to the administrator…"
+                          className="min-h-[60px] text-sm"
+                          value={counterNote}
+                          onChange={(e) => setCounterNote(e.target.value)}
+                        />
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="w-full"
+                          onClick={submitCounter}
+                          disabled={counterBusy || !counterValue.trim()}
+                        >
+                          {counterBusy ? "Sending…" : "Send counter-offer"}
+                        </Button>
+                      </div>
+                    )}
+
+                    {/* Discuss with the administrator (embedded Messenger). */}
+                    <div className="rounded-lg border border-border">
+                      <button
+                        type="button"
+                        onClick={() => setUpgradeDiscuss((v) => !v)}
+                        className="flex w-full items-center justify-between p-3 text-sm font-medium text-foreground"
+                      >
+                        <span className="flex items-center gap-2">
+                          <MessageSquare className="h-4 w-4 text-muted-foreground" />
+                          Discuss with the administrator
+                        </span>
+                        <ChevronDown className={cn("h-4 w-4 transition-transform", upgradeDiscuss && "rotate-180")} />
+                      </button>
+                      {upgradeDiscuss && (
+                        <div className="border-t p-2">
+                          <Messenger
+                            key={upgradeTarget.approvalId ?? upgradeTarget.id}
+                            scope={`instrument-upgrade-${upgradeTarget.approvalId ?? upgradeTarget.id}`}
+                            fetchConversations={listConversations}
+                            fetchThread={getThread}
+                            send={sendMessage}
+                            deleteMessage={deleteMessage}
+                            attachmentsEnabled
+                            hideConversationList
+                            initialThreadId={BANKEKA_ADMIN_ID}
+                            initialParticipant={{
+                              id: BANKEKA_ADMIN_ID,
+                              name: BANKEKA_ADMIN_LABEL,
+                              company: "",
+                              initials: BANKEKA_ADMIN_INITIALS,
+                              isAdmin: true,
+                            }}
+                          />
+                        </div>
+                      )}
+                    </div>
                   </div>
 
-                  <DialogFooter className="flex-col gap-2 sm:flex-row">
-                    <Button variant="outline" onClick={declineUpgrade} disabled={upgradeBusy}>
-                      {upgradeBusy ? "Working…" : "Decline & refund"}
+                  <DialogFooter className="shrink-0 flex-col gap-2 border-t p-4 sm:flex-row">
+                    <Button variant="outline" onClick={declineUpgrade} disabled={upgradeBusy || counterBusy}>
+                      {upgradeBusy ? "Working…" : "Decline offer"}
                     </Button>
-                    <Button onClick={acceptUpgrade} disabled={upgradeBusy} className="bg-amber-600 hover:bg-amber-700">
-                      <Sparkles className="mr-2 h-4 w-4" />
-                      {upgradeBusy ? "Working…" : "Accept & receive new instrument"}
+                    <Button
+                      onClick={acceptUpgrade}
+                      disabled={upgradeBusy || counterBusy}
+                      className="bg-amber-600 hover:bg-amber-700"
+                    >
+                      <Handshake className="mr-2 h-4 w-4" />
+                      {upgradeBusy ? "Working…" : "Confirm & accept deal"}
                     </Button>
                   </DialogFooter>
                 </>
