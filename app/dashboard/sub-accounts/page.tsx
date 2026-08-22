@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react"
 import { toast } from "sonner"
-import { Layers, Plus, ArrowLeftRight, Landmark, Clock, CheckCircle2, XCircle, Wallet, Copy, Check } from "lucide-react"
+import { Layers, Plus, ArrowLeftRight, Landmark, Clock, CheckCircle2, XCircle, Wallet, Copy, Check, User, Pencil } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -27,7 +27,12 @@ import {
 } from "@/components/ui/select"
 import { useLedger } from "@/lib/ledger-store"
 import { GATEWAY_CURRENCIES } from "@/lib/gateway-catalog"
-import { listMySubAccounts, requestSubAccount, transferToSubAccount } from "@/app/actions/sub-accounts"
+import {
+  listMySubAccounts,
+  requestSubAccount,
+  transferToSubAccount,
+  updateMySubAccountBeneficiary,
+} from "@/app/actions/sub-accounts"
 import { MAIN_ACCOUNT_ID, SUB_ACCOUNT_STATUS_LABEL, type SubAccount } from "@/lib/sub-account-types"
 
 function formatMoney(amount: number, currency: string): string {
@@ -63,7 +68,16 @@ export default function SubAccountsPage() {
   const [label, setLabel] = useState("")
   const [currency, setCurrency] = useState("EUR")
   const [purpose, setPurpose] = useState("")
+  const [beneficiaryName, setBeneficiaryName] = useState("")
+  const [beneficiaryDetails, setBeneficiaryDetails] = useState("")
   const [creating, setCreating] = useState(false)
+
+  // Edit-beneficiary dialog
+  const [benOpen, setBenOpen] = useState(false)
+  const [benTarget, setBenTarget] = useState<SubAccount | null>(null)
+  const [benName, setBenName] = useState("")
+  const [benDetails, setBenDetails] = useState("")
+  const [benSaving, setBenSaving] = useState(false)
 
   // Transfer dialog
   const [transferOpen, setTransferOpen] = useState(false)
@@ -122,7 +136,7 @@ export default function SubAccountsPage() {
 
   const handleCreate = async () => {
     setCreating(true)
-    const res = await requestSubAccount({ label, currency, purpose })
+    const res = await requestSubAccount({ label, currency, purpose, beneficiaryName, beneficiaryDetails })
     setCreating(false)
     if (!res.ok) {
       toast.error("Could not open sub-account", { description: res.error })
@@ -135,6 +149,34 @@ export default function SubAccountsPage() {
     setLabel("")
     setPurpose("")
     setCurrency("EUR")
+    setBeneficiaryName("")
+    setBeneficiaryDetails("")
+    await loadSubs()
+  }
+
+  const openBeneficiary = (sub: SubAccount) => {
+    setBenTarget(sub)
+    setBenName(sub.beneficiaryName || "")
+    setBenDetails(sub.beneficiaryDetails || "")
+    setBenOpen(true)
+  }
+
+  const handleSaveBeneficiary = async () => {
+    if (!benTarget) return
+    setBenSaving(true)
+    const res = await updateMySubAccountBeneficiary({
+      id: benTarget.id,
+      beneficiaryName: benName,
+      beneficiaryDetails: benDetails,
+    })
+    setBenSaving(false)
+    if (!res.ok) {
+      toast.error("Could not update beneficiary", { description: res.error })
+      return
+    }
+    toast.success("Beneficiary updated")
+    setBenOpen(false)
+    setBenTarget(null)
     await loadSubs()
   }
 
@@ -254,6 +296,30 @@ export default function SubAccountsPage() {
                     maxLength={280}
                   />
                 </div>
+                <div className="space-y-1.5 rounded-lg border border-border/70 bg-muted/30 p-3">
+                  <Label htmlFor="sub-beneficiary" className="flex items-center gap-1.5">
+                    <User className="h-3.5 w-3.5 text-muted-foreground" />
+                    Beneficiary (optional)
+                  </Label>
+                  <Input
+                    id="sub-beneficiary"
+                    value={beneficiaryName}
+                    onChange={(e) => setBeneficiaryName(e.target.value)}
+                    placeholder="Who this account is held for, e.g. Project A Ltd."
+                    maxLength={120}
+                  />
+                  <Textarea
+                    id="sub-beneficiary-details"
+                    value={beneficiaryDetails}
+                    onChange={(e) => setBeneficiaryDetails(e.target.value)}
+                    placeholder="Address, bank or reference for the beneficiary (optional)"
+                    rows={2}
+                    maxLength={280}
+                  />
+                  <p className="text-[11px] leading-relaxed text-muted-foreground">
+                    Each sub-account can name its own beneficiary, separate from your main account.
+                  </p>
+                </div>
               </div>
               <DialogFooter>
                 <Button variant="ghost" onClick={() => setCreateOpen(false)} disabled={creating}>
@@ -370,6 +436,38 @@ export default function SubAccountsPage() {
                         {sub.adminNote && <span className="mt-1 block text-foreground">Note: {sub.adminNote}</span>}
                       </div>
                     )}
+                    {(sub.status === "active" || sub.status === "pending") && (
+                      <div className="rounded-lg border border-border/70 bg-muted/30 p-2.5">
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="min-w-0">
+                            <p className="flex items-center gap-1.5 text-[11px] uppercase tracking-wide text-muted-foreground">
+                              <User className="h-3 w-3" /> Beneficiary
+                            </p>
+                            {sub.beneficiaryName ? (
+                              <p className="mt-0.5 truncate text-sm font-medium text-foreground">
+                                {sub.beneficiaryName}
+                              </p>
+                            ) : (
+                              <p className="mt-0.5 text-sm italic text-muted-foreground">Not set</p>
+                            )}
+                            {sub.beneficiaryDetails && (
+                              <p className="mt-0.5 whitespace-pre-line text-xs text-muted-foreground">
+                                {sub.beneficiaryDetails}
+                              </p>
+                            )}
+                          </div>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-7 w-7 shrink-0"
+                            onClick={() => openBeneficiary(sub)}
+                            aria-label="Edit beneficiary"
+                          >
+                            <Pencil className="h-3.5 w-3.5" />
+                          </Button>
+                        </div>
+                      </div>
+                    )}
                     {sub.purpose && sub.status !== "closed" && (
                       <p className="text-xs text-muted-foreground">{sub.purpose}</p>
                     )}
@@ -483,6 +581,50 @@ export default function SubAccountsPage() {
             </Button>
             <Button onClick={handleTransfer} disabled={transferring || transferInvalid}>
               {transferring ? "Transferring…" : "Transfer"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Edit-beneficiary dialog */}
+      <Dialog open={benOpen} onOpenChange={setBenOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Sub-account beneficiary</DialogTitle>
+            <DialogDescription>
+              Name the party this sub-account is held for. It is managed separately from your main
+              account beneficiary.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-1">
+            <div className="space-y-1.5">
+              <Label htmlFor="ben-name">Beneficiary name</Label>
+              <Input
+                id="ben-name"
+                value={benName}
+                onChange={(e) => setBenName(e.target.value)}
+                placeholder="e.g. Project A Ltd."
+                maxLength={120}
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="ben-details">Details (optional)</Label>
+              <Textarea
+                id="ben-details"
+                value={benDetails}
+                onChange={(e) => setBenDetails(e.target.value)}
+                placeholder="Address, bank or reference for the beneficiary"
+                rows={3}
+                maxLength={280}
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setBenOpen(false)} disabled={benSaving}>
+              Cancel
+            </Button>
+            <Button onClick={handleSaveBeneficiary} disabled={benSaving}>
+              {benSaving ? "Saving…" : "Save beneficiary"}
             </Button>
           </DialogFooter>
         </DialogContent>

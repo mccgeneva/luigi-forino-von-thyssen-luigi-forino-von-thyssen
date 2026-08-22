@@ -204,6 +204,12 @@ export function SubAccountsManager({ passcode }: { passcode: string }) {
                         {row.holderName} · {row.holderEmail}
                       </p>
                       {row.purpose && <p className="mt-1 text-sm text-foreground/80">Purpose: {row.purpose}</p>}
+                      {row.beneficiaryName && (
+                        <p className="mt-1 text-sm text-foreground/80">
+                          Beneficiary: {row.beneficiaryName}
+                          {row.beneficiaryDetails ? ` — ${row.beneficiaryDetails}` : ""}
+                        </p>
+                      )}
                       <p className="mt-1 text-xs text-muted-foreground">
                         Requested {new Date(row.createdAt).toLocaleString()}
                       </p>
