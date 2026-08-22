@@ -83,6 +83,27 @@ export interface SubAccount {
   closedAt?: string
 }
 
+/**
+ * Link that grants a VISITOR-tier user operational access to a single
+ * sub-account created by ANOTHER user. Set by an administrator. Exactly one per
+ * visitor (the visitor's id is the primary key). While linked, the visitor's
+ * whole dashboard is confined to that one sub-account: they can VIEW it, MOVE
+ * funds between it and the owner's main account, and request outgoing PAYMENTS
+ * from it (administrator-approved). All money movement posts to the OWNER's
+ * ledger, tagged to this sub-account's compartment.
+ */
+export interface VisitorSubLink {
+  /** The linked visitor's own user id (their login). One link per visitor. */
+  visitorUserId: string
+  /** The sub-account the visitor is linked to. */
+  subAccountId: string
+  /** The user who OWNS that sub-account (whose ledger the compartment lives on). */
+  ownerId: string
+  /** The administrator account id that created the link (audit). */
+  linkedBy?: string
+  linkedAt: string
+}
+
 export const SUB_ACCOUNT_STATUS_LABEL: Record<SubAccountStatus, string> = {
   pending: "Awaiting activation",
   active: "Active",

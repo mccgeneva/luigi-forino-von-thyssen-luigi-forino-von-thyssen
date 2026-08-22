@@ -12,6 +12,8 @@ import { insertNotification } from "@/lib/notifications-db"
 import { upsertLedgerEntry } from "@/lib/ledger-db"
 import { buildSubAccountFeeEntries } from "@/lib/sub-account-fees"
 import type { SubAccount } from "@/lib/sub-account-types"
+import { getVisitorLink, setVisitorLink, removeVisitorLink, listAllVisitorLinks } from "@/lib/visitor-link-db"
+import { resolvePlatformTier } from "@/lib/platform-tier"
 
 /**
  * Post a sub-account's accrued tariffs to its owner's MASTER ledger immediately
@@ -79,7 +81,61 @@ export async function POST(req: Request) {
     if (op === "list") {
       const subAccounts = await listAllSubAccounts()
       const enriched = subAccounts.map((s) => ({ ...s, ...holderFor(s, clients) }))
-      return NextResponse.json({ ok: true, subAccounts: enriched, clients })
+      // Visitor-tier candidates that may be linked to a sub-account, plus every
+      // existing link so the manager can show the current assignment per row.
+      const visitors = users
+        .filter((u) => u.status === "active" && resolvePlatformTier(u.profile.accountBadge).id === "visitor")
+        .map((u) => ({ id: u.id, label: u.profile.fullName || u.profile.company || u.email, email: u.email }))
+      const links = await listAllVisitorLinks()
+      return NextResponse.json({ ok: true, subAccounts: enriched, clients, visitors, links })
+    }
+
+    // Link a VISITOR user to an ACTIVE sub-account (exactly one per visitor).
+    if (op === "link") {
+      const subId = typeof body.subId === "string" ? body.subId : ""
+      const visitorId = typeof body.visitorId === "string" ? body.visitorId : ""
+      if (!subId || !visitorId) return NextResponse.json({ ok: false, error: "Missing sub-account or visitor." })
+
+      const sub = await getSubAccountById(subId)
+      if (!sub) return NextResponse.json({ ok: false, error: "That sub-account no longer exists." })
+      if (sub.status !== "active") {
+        return NextResponse.json({ ok: false, error: "Only an ACTIVE sub-account can be linked to a visitor." })
+      }
+      const visitor = users.find((u) => u.id === visitorId)
+      if (!visitor) return NextResponse.json({ ok: false, error: "That visitor account was not found." })
+      if (visitor.id === sub.userId) {
+        return NextResponse.json({ ok: false, error: "A user cannot be linked to their own sub-account." })
+      }
+
+      await setVisitorLink({ visitorUserId: visitorId, subAccountId: subId, ownerId: sub.userId, linkedBy: "admin" })
+      await insertNotification({
+        userId: visitorId,
+        tone: "success",
+        title: "A sub-account was shared with you",
+        body: `An administrator linked you to the "${sub.label}" ${sub.currency} sub-account. Sign in to view its balance, move funds and request payments.`,
+        href: "/dashboard",
+      })
+      const links = await listAllVisitorLinks()
+      return NextResponse.json({ ok: true, links })
+    }
+
+    // Remove a visitor's link.
+    if (op === "unlink") {
+      const visitorId = typeof body.visitorId === "string" ? body.visitorId : ""
+      if (!visitorId) return NextResponse.json({ ok: false, error: "Missing visitor." })
+      const existing = await getVisitorLink(visitorId)
+      await removeVisitorLink(visitorId)
+      if (existing) {
+        await insertNotification({
+          userId: visitorId,
+          tone: "info",
+          title: "Sub-account access removed",
+          body: "An administrator removed your access to the linked sub-account.",
+          href: "/dashboard",
+        })
+      }
+      const links = await listAllVisitorLinks()
+      return NextResponse.json({ ok: true, links })
     }
 
     if (op === "activate") {

@@ -16,6 +16,8 @@ import { validateIban, validateBic, lookupBankByIban, isGenericBankInfo } from "
 import { resolveIbanExternal } from "@/app/actions/bank-resolve"
 
 type AdminRow = SubAccount & { holderName: string; holderEmail: string }
+type VisitorCandidate = { id: string; label: string; email: string }
+type VisitorLink = { visitorUserId: string; subAccountId: string; ownerId: string; linkedAt: string }
 
 const STATUS_VARIANT: Record<string, string> = {
   pending: "border-amber-500/40 text-amber-600",
@@ -294,6 +296,11 @@ export function SubAccountsManager({ passcode }: { passcode: string }) {
   const [drafts, setDrafts] = useState<Record<string, { iban: string; bic: string; note: string }>>({})
   // Currently-open UBO document in the in-app viewer.
   const [viewerDoc, setViewerDoc] = useState<SubAccountDoc | null>(null)
+  // Visitor linking: candidates + existing links, and a per-row selected visitor.
+  const [visitors, setVisitors] = useState<VisitorCandidate[]>([])
+  const [links, setLinks] = useState<VisitorLink[]>([])
+  const [linkChoice, setLinkChoice] = useState<Record<string, string>>({})
+  const [linkBusyId, setLinkBusyId] = useState<string | null>(null)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -313,6 +320,8 @@ export function SubAccountsManager({ passcode }: { passcode: string }) {
         return
       }
       setRows(data.subAccounts as AdminRow[])
+      setVisitors((data.visitors as VisitorCandidate[]) || [])
+      setLinks((data.links as VisitorLink[]) || [])
     } catch {
       setError("Network error while loading sub-accounts.")
       setRows([])
@@ -320,6 +329,60 @@ export function SubAccountsManager({ passcode }: { passcode: string }) {
       setLoading(false)
     }
   }, [passcode])
+
+  const linkVisitor = async (row: AdminRow) => {
+    const visitorId = linkChoice[row.id] || ""
+    if (!visitorId) {
+      setError("Choose a visitor to link.")
+      return
+    }
+    setLinkBusyId(row.id)
+    setError("")
+    try {
+      const res = await fetch("/api/admin/sub-accounts", {
+        method: "POST",
+        credentials: "include",
+        cache: "no-store",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ op: "link", pin: passcode, subId: row.id, visitorId }),
+      })
+      const data = await res.json()
+      if (!res.ok || !data.ok) {
+        setError(data?.error || "Could not link the visitor.")
+        return
+      }
+      setLinks((data.links as VisitorLink[]) || [])
+      setLinkChoice((prev) => ({ ...prev, [row.id]: "" }))
+    } catch {
+      setError("Network error while linking.")
+    } finally {
+      setLinkBusyId(null)
+    }
+  }
+
+  const unlinkVisitor = async (row: AdminRow, visitorId: string) => {
+    setLinkBusyId(row.id)
+    setError("")
+    try {
+      const res = await fetch("/api/admin/sub-accounts", {
+        method: "POST",
+        credentials: "include",
+        cache: "no-store",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ op: "unlink", pin: passcode, visitorId }),
+      })
+      const data = await res.json()
+      if (!res.ok || !data.ok) {
+        setError(data?.error || "Could not remove the link.")
+        return
+      }
+      setLinks((data.links as VisitorLink[]) || [])
+    } catch {
+      setError("Network error while unlinking.")
+    } finally {
+      setLinkBusyId(null)
+    }
+  }
 
   useEffect(() => {
     void load()
@@ -571,18 +634,84 @@ export function SubAccountsManager({ passcode }: { passcode: string }) {
                   )}
 
                   {row.status === "active" && (
-                    <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-border pt-3">
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        className="border-red-500/40 text-red-600 hover:bg-red-500/10"
-                        onClick={() => void closeAccount(row)}
-                        disabled={busy}
-                      >
-                        {busy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <X className="mr-2 h-4 w-4" />}
-                        Close sub-account ({formatSubAccountFee(SUB_ACCOUNT_CLOSING_FEE)} fee)
-                      </Button>
-                    </div>
+                    <>
+                      {(() => {
+                        const linked = links.filter((l) => l.subAccountId === row.id)
+                        const linkBusy = linkBusyId === row.id
+                        return (
+                          <div className="mt-4 space-y-2 border-t border-border pt-3">
+                            <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
+                              <Layers className="h-3.5 w-3.5" />
+                              Linked visitor access
+                            </div>
+                            {linked.length > 0 ? (
+                              linked.map((l) => {
+                                const v = visitors.find((x) => x.id === l.visitorUserId)
+                                return (
+                                  <div
+                                    key={l.visitorUserId}
+                                    className="flex items-center justify-between gap-2 rounded-md border border-border bg-muted/40 px-3 py-2"
+                                  >
+                                    <span className="min-w-0 truncate text-sm">
+                                      {v ? `${v.label} · ${v.email}` : l.visitorUserId}
+                                    </span>
+                                    <Button
+                                      variant="outline"
+                                      size="sm"
+                                      className="border-red-500/40 text-red-600 hover:bg-red-500/10"
+                                      onClick={() => void unlinkVisitor(row, l.visitorUserId)}
+                                      disabled={linkBusy}
+                                    >
+                                      {linkBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : "Unlink"}
+                                    </Button>
+                                  </div>
+                                )
+                              })
+                            ) : visitors.length === 0 ? (
+                              <p className="text-xs text-muted-foreground">
+                                No Visitor-tier accounts available to link.
+                              </p>
+                            ) : (
+                              <div className="flex flex-wrap items-center gap-2">
+                                <select
+                                  className="h-9 min-w-[12rem] flex-1 rounded-md border border-border bg-background px-2 text-sm"
+                                  value={linkChoice[row.id] || ""}
+                                  onChange={(e) =>
+                                    setLinkChoice((prev) => ({ ...prev, [row.id]: e.target.value }))
+                                  }
+                                  disabled={linkBusy}
+                                >
+                                  <option value="">Select a visitor…</option>
+                                  {visitors
+                                    .filter((v) => v.id !== row.userId)
+                                    .map((v) => (
+                                      <option key={v.id} value={v.id}>
+                                        {v.label} · {v.email}
+                                      </option>
+                                    ))}
+                                </select>
+                                <Button size="sm" onClick={() => void linkVisitor(row)} disabled={linkBusy}>
+                                  {linkBusy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                                  Link visitor
+                                </Button>
+                              </div>
+                            )}
+                          </div>
+                        )
+                      })()}
+                      <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-border pt-3">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="border-red-500/40 text-red-600 hover:bg-red-500/10"
+                          onClick={() => void closeAccount(row)}
+                          disabled={busy}
+                        >
+                          {busy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <X className="mr-2 h-4 w-4" />}
+                          Close sub-account ({formatSubAccountFee(SUB_ACCOUNT_CLOSING_FEE)} fee)
+                        </Button>
+                      </div>
+                    </>
                   )}
                 </div>
               )

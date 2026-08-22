@@ -1,5 +1,7 @@
 import { redirect } from "next/navigation"
 import { getMyIdentity } from "@/app/actions/admin-users"
+import { getVisitorLink } from "@/lib/visitor-link-db"
+import { LinkedAccountShell } from "@/components/dashboard/linked-account-shell"
 import { DashboardSidebar } from "@/components/dashboard/sidebar"
 import { DashboardHeader } from "@/components/dashboard/header"
 import { MarketTicker } from "@/components/dashboard/market-ticker"
@@ -50,6 +52,18 @@ export default async function DashboardLayout({ children }: { children: React.Re
   // their own session cookie resolves to. No valid session → back to login.
   const identity = await getMyIdentity()
   if (!identity) redirect("/login?expired=expiry")
+
+  // A VISITOR linked to another user's sub-account is CONFINED to a single
+  // restricted view of that one compartment — no sidebar, no other dashboard
+  // sections, no shared providers. Whatever /dashboard/* route they navigate to
+  // renders only their linked sub-account. This is the authoritative gate; the
+  // link is resolved fresh per request from the server session.
+  const visitorLink = await getVisitorLink(identity.id)
+  if (visitorLink) {
+    const displayName =
+      (identity.kind === "dynamic" && (identity.profile.fullName || identity.profile.company)) || "there"
+    return <LinkedAccountShell displayName={displayName} />
+  }
 
   return (
     <CurrentUserProvider initialIdentity={identity}>
