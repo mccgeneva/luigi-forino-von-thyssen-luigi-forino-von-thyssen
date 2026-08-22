@@ -91,8 +91,11 @@ type Action = "reserve" | "lease" | "purchase"
 const ACTION_META: Record<Action, { label: string; rate: number; description: string }> = {
   reserve: {
     label: "Reserve",
-    rate: 0,
-    description: "Place a no-cost hold on this instrument. The desk is notified and an Administrator confirms availability before any fee applies.",
+    // Reserving/assigning an instrument costs 0.2% of face value, charged upfront.
+    // Same 0.2% source as the ISIN-tools "Assign" action.
+    rate: ACQUISITION_FEE_RATES.assign,
+    description:
+      "Reserve this instrument. A 0.2% fee on the face value applies upfront — your balance is checked before the request is sent, and the fee is charged only once an Administrator approves. Nothing is charged if it is declined.",
   },
   lease: {
     label: "Lease",
@@ -109,7 +112,9 @@ const ACTION_META: Record<Action, { label: string; rate: number; description: st
 const ACTIONS: Action[] = ["reserve", "lease", "purchase"]
 
 function ratePct(action: Action): string {
-  return `${(ACTION_META[action].rate * 100).toFixed(action === "reserve" ? 0 : 0)}%`
+  const pct = ACTION_META[action].rate * 100
+  // Show up to 2 decimals but trim trailing zeros (0.2% stays "0.2%", 4% stays "4%").
+  return `${Number(pct.toFixed(2))}%`
 }
 
 // --- Live OpenFIGI search result shape (subset of the API response) --------
@@ -365,21 +370,18 @@ export function InstrumentMarketplace() {
         action: `Requested ${actionLabel.toLowerCase()} of ${target.type} ${created.id} (${money(target.faceValue, target.currency)})`,
         category: "Bank Instruments",
         details: {
-          summary: `Client requested to ${actionLabel.toLowerCase()} a ${target.typeFull} (${target.type}) from ${target.bankName} with a face value of ${money(target.faceValue, target.currency)} (ISIN ${target.isin}${target.cusip ? `, CUSIP ${target.cusip}` : ""}, rated ${target.rating}). ${action === "reserve" ? "No-cost hold pending Administrator confirmation." : `Indicative ${actionLabel.toLowerCase()} fee = ${money(fee, target.currency)}.`} Awaiting Administrator approval — nothing executes automatically.`,
+          summary: `Client requested to ${actionLabel.toLowerCase()} a ${target.typeFull} (${target.type}) from ${target.bankName} with a face value of ${money(target.faceValue, target.currency)} (ISIN ${target.isin}${target.cusip ? `, CUSIP ${target.cusip}` : ""}, rated ${target.rating}). Upfront ${actionLabel.toLowerCase()} fee = ${money(fee, target.currency)}. Awaiting Administrator approval — nothing executes automatically.`,
           referenceId: created.id,
           instrumentType: `${target.type} — ${target.typeFull}`,
           faceValue: money(target.faceValue, target.currency),
           issuingBank: `${target.bankName} (${target.bankBic})`,
-          acquisition: `${actionLabel}${fee > 0 ? ` · fee ${money(fee, target.currency)}` : " · no-cost hold"}`,
+          acquisition: `${actionLabel} · fee ${money(fee, target.currency)}`,
           isin: target.isin,
         },
       })
 
       toast.success(`${actionLabel} request submitted`, {
-        description:
-          action === "reserve"
-            ? `${target.type} ${created.id} from ${target.bankName} is reserved pending Administrator confirmation. No fee is charged for a reservation.`
-            : `${target.type} ${created.id} from ${target.bankName} is pending Administrator approval. The ${money(fee, target.currency)} fee is deducted once approved; nothing is charged if it is declined.`,
+        description: `${target.type} ${created.id} from ${target.bankName} is pending Administrator approval. The ${money(fee, target.currency)} fee is deducted once approved; nothing is charged if it is declined.`,
       })
       setTarget(null)
     } finally {
@@ -693,7 +695,7 @@ export function InstrumentMarketplace() {
                     )}
                   >
                     <span className="block text-sm font-semibold">{ACTION_META[a].label}</span>
-                    <span className="block text-[11px]">{a === "reserve" ? "no fee" : ratePct(a)}</span>
+                    <span className="block text-[11px]">{ratePct(a)}</span>
                   </button>
                 ))}
               </div>
@@ -707,9 +709,9 @@ export function InstrumentMarketplace() {
                 </div>
                 <div className="flex items-center justify-between">
                   <span className="text-muted-foreground">
-                    {ACTION_META[action].label} fee{action === "reserve" ? "" : ` (${ratePct(action)})`}
+                    {ACTION_META[action].label} fee ({ratePct(action)})
                   </span>
-                  <span className="font-bold text-primary">{action === "reserve" ? "No cost" : money(fee, target.currency)}</span>
+                  <span className="font-bold text-primary">{money(fee, target.currency)}</span>
                 </div>
               </div>
 
@@ -841,7 +843,7 @@ function InstrumentCard({
               className={cn("flex-1 gap-1", a !== "reserve" && "bg-transparent")}
             >
               {ACTION_META[a].label}
-              {a !== "reserve" ? <span className="font-mono text-[10px] opacity-70">{ratePct(a)}</span> : null}
+              <span className="font-mono text-[10px] opacity-70">{ratePct(a)}</span>
             </Button>
           ))}
         </div>

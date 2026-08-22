@@ -508,7 +508,7 @@ export function IsinTools({
                   <SelectContent>
                     {ACQUIRE_ACTIONS.map((a) => (
                       <SelectItem key={a} value={a}>
-                        {ACQUISITION_ACTION_LABELS[a]} — {(ACQUISITION_FEE_RATES[a] * 100).toFixed(a === "assign" ? 1 : 0)}%
+                        {ACQUISITION_ACTION_LABELS[a]} — {(ACQUISITION_FEE_RATES[a] * 100).toFixed(0)}%
                       </SelectItem>
                     ))}
                   </SelectContent>
