@@ -9,6 +9,7 @@ import {
   listSubAccountsForUser,
   getSubAccountById,
   updateSubAccountBeneficiary,
+  dismissDeclinedSubAccounts,
 } from "@/lib/sub-account-db"
 import {
   readLedgerEntries,
@@ -226,6 +227,30 @@ export async function updateMySubAccountBeneficiary(input: {
   } catch (err) {
     console.log("[v0] updateMySubAccountBeneficiary failed:", (err as Error).message)
     return { ok: false, error: "Could not update the beneficiary. Please try again." }
+  }
+}
+
+/**
+ * Purge DECLINED (rejected) sub-account requests from the client's view. This
+ * only hides them for the owner — the administrator record is untouched. No
+ * money is involved; live/pending/active sub-accounts are never affected.
+ */
+export async function purgeDeclinedSubAccounts(): Promise<SubAccountResult<{ purged: number }>> {
+  const session = await resolveCurrentSession()
+  if (!session) return { ok: false, error: "Your session has expired. Please sign in again." }
+  try {
+    const purged = await dismissDeclinedSubAccounts(session.dataOwnerId)
+    if (purged > 0) {
+      await logActivity({
+        action: `Purged ${purged} declined sub-account request${purged === 1 ? "" : "s"} from view`,
+        category: "Accounts",
+        details: { summary: `Client hid ${purged} declined sub-account request(s) from their dashboard.` },
+      })
+    }
+    return { ok: true, data: { purged } }
+  } catch (err) {
+    console.log("[v0] purgeDeclinedSubAccounts failed:", (err as Error).message)
+    return { ok: false, error: "Could not purge declined requests. Please try again." }
   }
 }
 
