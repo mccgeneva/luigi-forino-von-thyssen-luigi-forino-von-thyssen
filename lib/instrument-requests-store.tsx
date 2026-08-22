@@ -38,6 +38,18 @@ export interface Instrument {
   assignable: boolean
   monetizable: boolean
   tradeType?: string
+  /**
+   * Structured acquisition action ("reserve" | "assign" | "lease" | "purchase").
+   * Present on records created after the ownership rule shipped; legacy records
+   * are inferred from `tradeType` by `isMccHeldInstrument`.
+   */
+  acquisitionAction?: string
+  /**
+   * Beneficial owner. Reserve/Assign acquisitions remain owned by
+   * "MCC HOLDING SA" (client is the assignee, 25% benefit share). An outright
+   * purchase is owned by the client. Undefined on legacy records → inferred.
+   */
+  owner?: string
   submittedAt?: string // ISO timestamp of the client request
   decidedAt?: string // ISO timestamp of approval/rejection
   decisionNote?: string // administrator note (e.g. rejection reason)
@@ -299,4 +311,21 @@ export function useInstrumentRequests() {
     throw new Error("useInstrumentRequests must be used within an InstrumentRequestsProvider")
   }
   return ctx
+}
+
+/**
+ * Whether an instrument remains owned by MCC HOLDING SA (client is the assignee,
+ * 75/25 benefit split applies to any investment return generated with it).
+ * Prefers the structured fields; falls back to the legacy `tradeType` string for
+ * records created before the ownership rule shipped. Reserve/assign → MCC-owned;
+ * a purchase transfers full ownership to the client.
+ */
+export function isMccHeldInstrument(inst: Pick<Instrument, "owner" | "acquisitionAction" | "tradeType">): boolean {
+  if (inst.owner) return inst.owner === "MCC HOLDING SA"
+  if (inst.acquisitionAction) {
+    return inst.acquisitionAction === "reserve" || inst.acquisitionAction === "assign"
+  }
+  const t = (inst.tradeType ?? "").toLowerCase()
+  if (t.includes("purchase")) return false
+  return t.includes("reserve") || t.includes("assign")
 }

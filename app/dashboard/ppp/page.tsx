@@ -53,6 +53,9 @@ import { cn } from "@/lib/utils"
 import { toast } from "sonner"
 import { useActivityLog } from "@/components/activity-tracker"
 import { usePPPRequests, type PPPRequest } from "@/lib/ppp-requests-store"
+import { useInstrumentRequests, isMccHeldInstrument } from "@/lib/instrument-requests-store"
+import { computeBenefitSplit } from "@/lib/benefit-split"
+import { MCC_HOLDING_OWNER, MCC_BENEFIT_SHARE, CLIENT_BENEFIT_SHARE } from "@/lib/instrument-marketplace"
 import { usePdfViewer } from "@/lib/pdf-viewer"
 import { generatePPPConfirmationPdf } from "@/lib/ppp-confirmation-pdf"
 import { Download } from "lucide-react"
@@ -218,10 +221,37 @@ export default function PPPPage() {
   const [amount, setAmount] = useState("")
   const [sourceOfFunds, setSourceOfFunds] = useState("")
   const [payoutAccount, setPayoutAccount] = useState("")
+  // Optional MCC HOLDING SA-owned instrument used to fund this investment. When
+  // set, the 75/25 benefit split applies to the returns. "" = none (own funds).
+  const [fundingInstrumentId, setFundingInstrumentId] = useState("")
   const [formError, setFormError] = useState<string | null>(null)
   const [detailInvestment, setDetailInvestment] = useState<PPPRequest | null>(null)
   const log = useActivityLog()
   const { requests, addRequest, hydrated } = usePPPRequests()
+  const { instruments } = useInstrumentRequests()
+
+  // Active, MCC HOLDING SA-owned instruments the client can nominate as the
+  // funding source. Using one triggers the 75% MCC / 25% client benefit split.
+  const mccOwnedInstruments = useMemo(
+    () => instruments.filter((i) => i.status === "active" && isMccHeldInstrument(i)),
+    [instruments],
+  )
+  const selectedFundingInstrument = useMemo(
+    () => mccOwnedInstruments.find((i) => i.id === fundingInstrumentId) ?? null,
+    [mccOwnedInstruments, fundingInstrumentId],
+  )
+
+  // Indicative 75/25 split preview for the apply dialog. Uses the LOWER bound of
+  // the program's expected-return range applied to the entered amount — purely
+  // illustrative; actual distributions follow the realised return.
+  const applyBenefitPreview = useMemo(() => {
+    if (!selectedFundingInstrument || !selectedProgram) return null
+    const principal = Number(amount.replace(/[^0-9.]/g, ""))
+    if (!Number.isFinite(principal) || principal <= 0) return null
+    const lowerPct = Number.parseFloat((selectedProgram.expectedReturn.match(/\d+(\.\d+)?/) ?? ["0"])[0])
+    if (!Number.isFinite(lowerPct) || lowerPct <= 0) return null
+    return computeBenefitSplit((principal * lowerPct) / 100)
+  }, [selectedFundingInstrument, selectedProgram, amount])
   const { show: showPdf } = usePdfViewer()
 
   // Administrator-published, bank-partner-sourced institutional yields. Only
@@ -294,6 +324,7 @@ export default function PPPPage() {
     setAmount("")
     setSourceOfFunds("")
     setPayoutAccount("")
+    setFundingInstrumentId("")
     setFormError(null)
   }
 
@@ -337,6 +368,16 @@ export default function PPPPage() {
       amount: numericAmount,
       sourceOfFunds: sourceLabels[sourceOfFunds] ?? sourceOfFunds,
       payoutAccount: payoutLabels[payoutAccount] ?? payoutAccount,
+      // If funded by an MCC HOLDING SA-owned instrument, record the 75/25 split
+      // so approved returns can be distributed accordingly.
+      ...(selectedFundingInstrument
+        ? {
+            fundingInstrumentId: selectedFundingInstrument.id,
+            fundingInstrumentLabel: `${selectedFundingInstrument.type} ${selectedFundingInstrument.id}`,
+            mccBenefitRate: MCC_BENEFIT_SHARE,
+            clientBenefitRate: CLIENT_BENEFIT_SHARE,
+          }
+        : {}),
     })
 
     log({
@@ -993,6 +1034,81 @@ export default function PPPPage() {
                 </SelectContent>
               </Select>
             </div>
+
+            {/* Optional MCC HOLDING SA-owned instrument as the funding source. */}
+            {mccOwnedInstruments.length > 0 ? (
+              <div className="grid gap-2">
+                <Label>Funding instrument (optional)</Label>
+                <Select
+                  value={fundingInstrumentId || "none"}
+                  onValueChange={(v) => setFundingInstrumentId(v === "none" ? "" : v)}
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder="None — own funds" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="none">None — own funds (no split)</SelectItem>
+                    {mccOwnedInstruments.map((inst) => (
+                      <SelectItem key={inst.id} value={inst.id}>
+                        {inst.type} {inst.id} · {formatMoney(inst.faceValue, inst.currency)}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <p className="text-[11px] leading-relaxed text-muted-foreground">
+                  Instruments owned by {MCC_HOLDING_OWNER} (acquired via reserve/assign) can fund this
+                  investment. Selecting one applies the benefit split below.
+                </p>
+              </div>
+            ) : null}
+
+            {/* 75 / 25 benefit-split disclosure — only when an MCC instrument is used. */}
+            {selectedFundingInstrument ? (
+              <div className="rounded-lg border border-primary/20 bg-primary/5 p-3">
+                <div className="flex items-center gap-2">
+                  <Lock className="h-4 w-4 shrink-0 text-primary" />
+                  <p className="text-sm font-medium text-foreground">
+                    Benefit split — {selectedFundingInstrument.type} {selectedFundingInstrument.id}
+                  </p>
+                </div>
+                <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
+                  This instrument is owned by {MCC_HOLDING_OWNER}; you are the assignee. Any return this
+                  investment generates is alienated <strong>{Math.round(MCC_BENEFIT_SHARE * 100)}% to{" "}
+                  {MCC_HOLDING_OWNER}</strong> and <strong>{Math.round(CLIENT_BENEFIT_SHARE * 100)}% to you</strong>,
+                  and the platform calculates and sends each share automatically.
+                </p>
+                {applyBenefitPreview ? (
+                  <div className="mt-2 space-y-1 border-t border-border/60 pt-2 text-xs">
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="text-muted-foreground">Indicative return ({selectedProgram?.expectedReturn})</span>
+                      <span className="font-medium text-foreground">
+                        {formatMoney(applyBenefitPreview.grossReturn, selectedProgram?.currency ?? "USD")}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="text-muted-foreground">{MCC_HOLDING_OWNER} (75%)</span>
+                      <span className="font-medium text-foreground">
+                        {formatMoney(applyBenefitPreview.mccShare, selectedProgram?.currency ?? "USD")}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="text-muted-foreground">You keep (25%)</span>
+                      <span className="font-semibold text-primary">
+                        {formatMoney(applyBenefitPreview.clientShare, selectedProgram?.currency ?? "USD")}
+                      </span>
+                    </div>
+                  </div>
+                ) : null}
+                <p className="mt-2 flex items-start gap-1.5 text-[11px] leading-relaxed text-muted-foreground">
+                  <Info className="mt-px h-3 w-3 shrink-0" />
+                  <span>
+                    You still bear 100% of the costs. Figures are indicative (based on the program&apos;s expected
+                    return) — actual distributions follow the realised return.
+                  </span>
+                </p>
+              </div>
+            ) : null}
+
             <div className="grid gap-2">
               <Label>Payout Account</Label>
               <Select value={payoutAccount} onValueChange={setPayoutAccount}>

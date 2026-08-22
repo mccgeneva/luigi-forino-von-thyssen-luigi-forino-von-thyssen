@@ -66,7 +66,7 @@ import { generateTablePdf, tablePdfFilename } from "@/lib/table-pdf"
 import { useHolderIdentity } from "@/lib/holder-identity"
 import { usePdfViewer } from "@/lib/pdf-viewer"
 import { toast } from "sonner"
-import { useInstrumentRequests, type Instrument } from "@/lib/instrument-requests-store"
+import { useInstrumentRequests, isMccHeldInstrument, type Instrument } from "@/lib/instrument-requests-store"
 import { useLedger } from "@/lib/ledger-store"
 import { removeMyLedgerEntry } from "@/app/actions/ledger"
 import { computeMonetizationEquity } from "@/lib/monetization-equity"
@@ -78,6 +78,8 @@ import {
   MARKET_INSTRUMENT_TYPES,
   ACQUISITION_ACTION_LABELS,
   ACQUISITION_FEE_RATES,
+  MCC_HOLDING_OWNER,
+  isMccOwnedAction,
 } from "@/lib/instrument-marketplace"
 import { resolveTransferRecipient } from "@/app/actions/transfers"
 import type { TransferDirectoryEntry } from "@/lib/users"
@@ -342,6 +344,10 @@ export default function InstrumentsPage() {
       assignable: typeMeta?.assignable ?? true,
       monetizable: typeMeta?.monetizable ?? true,
       tradeType: `${actionLabel} acquisition (ISIN lookup)`,
+      acquisitionAction: req.action,
+      // Assign keeps ownership with MCC HOLDING SA (client is assignee, 75/25
+      // benefit split); lease/purchase transfer ownership to the client.
+      owner: isMccOwnedAction(req.action) ? MCC_HOLDING_OWNER : undefined,
       ...ids,
       isin: req.isin,
       issuerBic: ids.issuerBic,
@@ -1239,6 +1245,12 @@ export default function InstrumentsPage() {
                             <p className="text-xs text-muted-foreground mt-1">
                               {instrument.typeFull}
                             </p>
+                            {isMccHeldInstrument(instrument) ? (
+                              <span className="mt-1.5 inline-flex items-center gap-1 rounded-md border border-primary/30 bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">
+                                <Lock className="h-2.5 w-2.5" />
+                                Owned by {MCC_HOLDING_OWNER} · you keep 25%
+                              </span>
+                            ) : null}
                           </div>
                         </div>
                         <DropdownMenu>
@@ -1530,6 +1542,12 @@ export default function InstrumentsPage() {
                           <p className="text-xs text-muted-foreground">
                             {instrument.issuer} • {instrument.purpose}
                           </p>
+                          {isMccHeldInstrument(instrument) ? (
+                            <span className="mt-1 inline-flex items-center gap-1 rounded-md border border-primary/30 bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">
+                              <Lock className="h-2.5 w-2.5" />
+                              Owned by {MCC_HOLDING_OWNER} · you keep 25%
+                            </span>
+                          ) : null}
                         </div>
                       </div>
                       <div className="flex items-center gap-6">
