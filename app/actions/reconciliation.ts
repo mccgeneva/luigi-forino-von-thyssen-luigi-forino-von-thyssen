@@ -1118,6 +1118,25 @@ export async function resolveReconciliationAdmin(
         decision: "Manually reconciled",
       },
     })
+
+    // Notify the account owner in the Bell — the admin just credited them
+    // manually, so the balance rose and they must be told (mirrors the
+    // auto-reconcile notification). Best-effort: never undo the credit.
+    try {
+      const creditedLabel = `${record.payment.currency} ${record.payment.amount.toLocaleString("en-US")}`
+      await insertNotification({
+        userId: account.userId,
+        tone: "success",
+        title: `Payment received — ${creditedLabel}`,
+        body: `You received ${creditedLabel} from ${record.payment.payer.trim()}${
+          record.payment.reference?.trim() ? ` (reference ${record.payment.reference.trim()})` : ""
+        }. The funds were credited to your Master Account.`,
+        href: "/dashboard",
+      })
+    } catch (err) {
+      console.log("[v0] resolveReconciliationAdmin notification failed:", (err as Error).message)
+    }
+
     return { ok: true, records: await readAllRecords(), lastId: record.id }
   } catch (err) {
     console.log("[v0] resolveReconciliationAdmin failed:", (err as Error).message)
