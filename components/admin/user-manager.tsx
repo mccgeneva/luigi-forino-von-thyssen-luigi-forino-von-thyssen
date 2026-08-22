@@ -1025,9 +1025,18 @@ export function UserManager() {
                 <Label htmlFor="um-password">Temporary password (optional)</Label>
                 <Input
                   id="um-password"
+                  type="text"
+                  autoComplete="off"
+                  autoCapitalize="off"
+                  autoCorrect="off"
+                  spellCheck={false}
+                  inputMode="text"
+                  data-1p-ignore
+                  data-lpignore="true"
                   placeholder="Auto-generated if blank"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
+                  className="font-mono text-base"
                 />
               </div>
             </div>
