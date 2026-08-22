@@ -23,6 +23,12 @@ export interface PaymentRequest {
   fee: number // 2% platform fee
   total: number // amount + fee
   payeeSource: string
+  /** Compartment the payment is remitted FROM. Absent/empty ⇒ the Main account.
+   *  When set, the debit (principal + fee) moves this sub-account's isolated
+   *  balance instead of the main balance. */
+  subAccountId?: string
+  /** Friendly label of the source compartment (denormalised for display/audit). */
+  subAccountLabel?: string
   status: PaymentRequestStatus
   submittedAt: string // ISO timestamp
   decidedAt?: string // ISO timestamp of approval/rejection
@@ -117,6 +123,8 @@ export function PaymentRequestsProvider({ children }: { children: React.ReactNod
         account: full.iban,
         reference: full.reference || full.uetr,
         category: "Outgoing Payment",
+        // Debit the chosen compartment (undefined ⇒ Main account).
+        subAccountId: full.subAccountId || undefined,
       },
     }).then(() => {
       // Re-pull from the server so the record carries its server id + status.

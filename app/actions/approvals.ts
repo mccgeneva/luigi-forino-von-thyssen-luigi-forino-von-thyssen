@@ -280,6 +280,45 @@ export async function submitApproval(input: SubmitApprovalInput): Promise<Submit
     }
   }
 
+  // When an outgoing payment is remitted FROM a specific sub-account
+  // compartment, the funds must come out of THAT compartment's isolated
+  // balance — so it must hold enough to cover the full debit (principal + fee)
+  // in the payment currency. `assertOwnerSolvent` only guards the aggregate
+  // (main + all compartments), so a compartment-scoped check is required here
+  // to stop one compartment overdrawing while another has funds. Absent a
+  // sub-account tag this is skipped and the main-account behaviour is unchanged.
+  if (input.kind === "payment" && input.ledgerEffect?.subAccountId && input.ledgerEffect.direction === "debit") {
+    try {
+      const subId = input.ledgerEffect.subAccountId
+      const cur = input.ledgerEffect.currency || input.currency || BASE_CURRENCY
+      const need = Number(input.ledgerEffect.amount) || 0
+      const ownerId = await resolveDataOwnerIdFor(session.id)
+      const rows = await readLedgerEntries(ownerId)
+      // Net balance of just this compartment in the payment currency: settled
+      // credits − settled debits − held debits tagged with this sub-account id.
+      const available = rows.reduce((sum, e) => {
+        if (e.currency !== cur || (e.subAccountId || undefined) !== subId) return sum
+        if (e.status === "hold") return e.direction === "debit" ? sum - e.amount : sum
+        return sum + (e.direction === "credit" ? e.amount : -e.amount)
+      }, 0)
+      if (need > available + 0.01) {
+        return {
+          ok: false,
+          error: `Insufficient funds in the selected sub-account. This transfer needs ${cur} ${need.toLocaleString(
+            "en-US",
+            { minimumFractionDigits: 2, maximumFractionDigits: 2 },
+          )} but only ${cur} ${Math.max(0, available).toLocaleString("en-US", {
+            minimumFractionDigits: 2,
+            maximumFractionDigits: 2,
+          })} is available in that compartment.`,
+        }
+      }
+    } catch (err) {
+      console.log("[v0] sub-account payment solvency guard failed:", (err as Error).message)
+      return { ok: false, error: "Your sub-account balance could not be verified. Please try again." }
+    }
+  }
+
   // A Sub-account's outgoing payments must clear a second gate: their Master's
   // consent (in addition to administrator approval). Detected here from the
   // authoritative session, so no client can opt out of the Master gate. Joint
@@ -1449,6 +1488,9 @@ function ledgerEntryForApproval(req: ApprovalRequest): LedgerEntry | null {
       category: settledByDelivery
         ? "Commodity Trade — Settled (Delivered)"
         : (fx.category ?? KIND_LABELS[req.kind]),
+      // Tag the debit/credit to a sub-account compartment when the client
+      // remitted the payment FROM one, so it moves only that isolated balance.
+      subAccountId: fx.subAccountId || undefined,
     }
   }
   // Fallback: credit the stored amount for known crediting kinds (e.g. a

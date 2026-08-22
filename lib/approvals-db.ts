@@ -52,6 +52,13 @@ export interface LedgerEffect {
   /** "completed" moves available balance immediately; "hold" pends it. */
   status?: "completed" | "hold"
   /**
+   * Sub-account compartment this effect posts against. Absent/empty ⇒ the
+   * user's MAIN account (default). When set, the ledger entry is tagged with
+   * this id so it moves ONLY that compartment's isolated balance — used when a
+   * client remits an outgoing payment FROM a specific sub-account.
+   */
+  subAccountId?: string
+  /**
    * Opt-in fund-availability gate for an immediate ("completed") DEBIT. Normally
    * only "hold" debits are pre-assessed (auto-reject if unfundable) and funded
    * via capped cross-currency FX. Setting `gate: true` makes a settled debit —
