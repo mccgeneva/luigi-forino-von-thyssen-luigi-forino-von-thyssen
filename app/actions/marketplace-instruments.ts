@@ -734,6 +734,55 @@ export async function setInstrumentAvailability(
 }
 
 // ---------------------------------------------------------------------------
+// Client: hold / release a marketplace instrument on request lifecycle.
+//
+// Each catalogue instrument is a UNIQUE, single-holder item. When a signed-in
+// client submits a reserve/lease/purchase request it is HELD (available=false)
+// so no one else can claim the same instrument; if the Administrator declines
+// (or the client cancels) it is RELEASED back to the marketplace. Session-gated
+// (any approved signed-in user) — NOT passcode-gated, since the client drives it.
+// ---------------------------------------------------------------------------
+export async function setInstrumentAvailabilityBySession(
+  id: string,
+  available: boolean,
+): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const user = await getSessionUser()
+    if (!user) return { ok: false, error: "Not signed in." }
+    await ensureTable()
+    await query(`UPDATE marketplace_instruments SET available = $2, updated_at = now() WHERE id = $1`, [
+      id,
+      available,
+    ])
+    return { ok: true }
+  } catch (err) {
+    return { ok: false, error: (err as Error).message }
+  }
+}
+
+/**
+ * Release a held marketplace instrument back to the catalogue by ISIN. Used when
+ * a client's reserve/lease/purchase request is declined or cancelled, so the
+ * unique instrument becomes available to others again. Session-gated.
+ */
+export async function releaseInstrumentByIsin(isin: string): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const user = await getSessionUser()
+    if (!user) return { ok: false, error: "Not signed in." }
+    const clean = (isin || "").trim()
+    if (!clean) return { ok: false, error: "Missing ISIN." }
+    await ensureTable()
+    await query(
+      `UPDATE marketplace_instruments SET available = true, updated_at = now() WHERE upper(isin) = upper($1)`,
+      [clean],
+    )
+    return { ok: true }
+  } catch (err) {
+    return { ok: false, error: (err as Error).message }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Admin: permanently remove an instrument.
 // ---------------------------------------------------------------------------
 export async function removeInstrument(passcode: string, id: string): Promise<MarketplaceResult> {

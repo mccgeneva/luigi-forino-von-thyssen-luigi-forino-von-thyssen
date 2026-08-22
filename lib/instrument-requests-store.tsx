@@ -5,6 +5,7 @@ import { buildInstrumentIdentifiers } from "@/lib/instrument-identifiers"
 import { mirrorSubmission, mapApprovalStatus, type ApprovalRecord } from "@/lib/approval-sync"
 import { useServerRequestList } from "@/lib/use-server-request-list"
 import { cancelMyApproval, transferMyInstrument, deleteMyInstrument } from "@/app/actions/approvals"
+import { releaseInstrumentByIsin } from "@/app/actions/marketplace-instruments"
 
 /**
  * Ensure an instrument carries the full identifier set. Records created before
@@ -241,6 +242,9 @@ export function InstrumentRequestsProvider({ children }: { children: React.React
         return i
       }),
     )
+    // Declined → release the held instrument back to the marketplace.
+    const rejectedIsin = instruments.find((i) => i.id === id)?.isin
+    if (rejectedIsin) void releaseInstrumentByIsin(rejectedIsin)
     return updated
   }
 
@@ -253,6 +257,9 @@ export function InstrumentRequestsProvider({ children }: { children: React.React
     if (target?.approvalId && target.status === "pending") {
       void cancelMyApproval(target.approvalId).then(() => void refresh())
     }
+    // A cancelled pending request releases the held instrument. An approved/
+    // active holding stays held (the client legitimately holds it).
+    if (target?.isin && target.status === "pending") void releaseInstrumentByIsin(target.isin)
   }
 
   const deleteInstrument: InstrumentRequestsContextValue["deleteInstrument"] = (id) => {
@@ -266,6 +273,9 @@ export function InstrumentRequestsProvider({ children }: { children: React.React
       const persist = target.status === "pending" ? cancelMyApproval : deleteMyInstrument
       void persist(target.approvalId).then(() => void refresh())
     }
+    // Dropping a still-pending request releases the held instrument back to the
+    // marketplace; an approved/active holding stays held.
+    if (target?.isin && target.status === "pending") void releaseInstrumentByIsin(target.isin)
   }
 
   const transferInstrument: InstrumentRequestsContextValue["transferInstrument"] = async (
