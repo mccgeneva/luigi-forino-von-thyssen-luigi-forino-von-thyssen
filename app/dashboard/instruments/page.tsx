@@ -77,6 +77,7 @@ import { buildInstrumentIdentifiers } from "@/lib/instrument-identifiers"
 import {
   MARKET_INSTRUMENT_TYPES,
   ACQUISITION_ACTION_LABELS,
+  ACQUISITION_FEE_RATES,
 } from "@/lib/instrument-marketplace"
 import { resolveTransferRecipient } from "@/app/actions/transfers"
 import type { TransferDirectoryEntry } from "@/lib/users"
@@ -541,6 +542,19 @@ export default function InstrumentsPage() {
   const canCoverMonetizeReserve =
     monetizeReserve <= 0 || monetizeReserveAvailable + 0.01 >= monetizeReserve
 
+  // Assign / Transfer fee: 0.2% of the instrument's face value, charged UPFRONT
+  // and IMMEDIATELY (the transfer moves the instrument on confirmation — there
+  // is no Administrator step). Verified against the client's balance in the
+  // instrument's own currency before the transfer is allowed to proceed.
+  const TRANSFER_FEE_RATE = ACQUISITION_FEE_RATES.assign // 0.2%
+  const transferFeeCurrency = actionTarget?.instrument.currency ?? "EUR"
+  const transferFee = actionTarget
+    ? Math.round(actionTarget.instrument.faceValue * TRANSFER_FEE_RATE)
+    : 0
+  const transferFeeAvailable = actionTarget ? balanceFor(transferFeeCurrency) : 0
+  const transferFeeShortfall = Math.max(0, transferFee - transferFeeAvailable)
+  const canCoverTransferFee = transferFee <= 0 || transferFeeAvailable + 0.01 >= transferFee
+
   const canSubmitMonetization =
     !!monetizeTarget &&
     Number.isFinite(monetizeAdvanceRate) &&
@@ -729,12 +743,35 @@ export default function InstrumentsPage() {
       })
       return
     }
+    // Upfront 0.2% fee, same-currency solvency gate. The transfer executes
+    // immediately, so the client must hold the fee in the instrument's currency
+    // BEFORE it moves; otherwise the operation is denied with an explanation.
+    if (!canCoverTransferFee) {
+      toast.error("Operation not possible — insufficient funds for the transfer fee", {
+        description: `Transferring ${instrument.id} carries a 0.2% fee of ${formatCurrency(transferFee, transferFeeCurrency)}, charged upfront in ${transferFeeCurrency}. You have ${formatCurrency(transferFeeAvailable, transferFeeCurrency)} available — short by ${formatCurrency(transferFeeShortfall, transferFeeCurrency)}. Fund your ${transferFeeCurrency} balance and try again.`,
+      })
+      return
+    }
     setTransferring(true)
     const res = await transferInstrument(instrument.approvalId, recipient.email)
     setTransferring(false)
     if (!res.ok) {
       toast.error("Transfer failed", { description: res.error })
       return
+    }
+    // Charge the 0.2% transfer fee immediately (deterministic id = idempotent).
+    if (transferFee > 0) {
+      addDebit({
+        id: `XFER-FEE-${instrument.approvalId}`,
+        amount: transferFee,
+        currency: transferFeeCurrency,
+        status: "completed",
+        date: new Date().toISOString(),
+        counterparty: `Instrument transfer fee — ${instrument.type} ${instrument.id}`,
+        reference: instrument.id,
+        category: "Instrument Transfer Fee",
+        comment: `0.2% assign/transfer fee on ${formatCurrency(instrument.faceValue, instrument.currency)} face value, charged upfront on transfer of ${instrument.type} ${instrument.id} to ${res.recipientName} (${recipient.email}).`,
+      })
     }
     logActivity({
       action: `Transferred ${instrument.type} ${instrument.id} (${formatCurrency(instrument.faceValue, instrument.currency)}) to ${res.recipientName}`,
@@ -1824,6 +1861,47 @@ export default function InstrumentsPage() {
                   </span>
                 </div>
               </div>
+
+              {/* Upfront 0.2% transfer fee + same-currency solvency status */}
+              <div
+                className={cn(
+                  "rounded-lg border p-3",
+                  canCoverTransferFee ? "border-primary/20 bg-primary/5" : "border-destructive/40 bg-destructive/10",
+                )}
+              >
+                <div className="flex items-center justify-between gap-3">
+                  <span className="text-sm text-muted-foreground">Transfer fee (0.2%, charged upfront)</span>
+                  <span className="text-base font-semibold text-foreground">
+                    {formatCurrency(transferFee, transferFeeCurrency)}
+                  </span>
+                </div>
+                <div className="mt-1 flex items-center justify-between gap-3 text-xs">
+                  <span className="text-muted-foreground">Available {transferFeeCurrency} balance</span>
+                  <span className={cn("font-medium", canCoverTransferFee ? "text-foreground" : "text-destructive")}>
+                    {formatCurrency(transferFeeAvailable, transferFeeCurrency)}
+                  </span>
+                </div>
+                {canCoverTransferFee ? (
+                  <p className="mt-2 flex items-start gap-1.5 text-[11px] leading-relaxed text-muted-foreground">
+                    <Lock className="mt-px h-3 w-3 shrink-0" />
+                    <span>
+                      This fee is deducted from your {transferFeeCurrency} balance the moment the transfer is confirmed.
+                    </span>
+                  </p>
+                ) : (
+                  <div className="mt-2 flex items-start gap-1.5 rounded-md border border-destructive/40 bg-destructive/10 p-2 text-[11px] leading-relaxed text-destructive">
+                    <AlertCircle className="mt-px h-3.5 w-3.5 shrink-0" />
+                    <span>
+                      <strong>Operation not possible.</strong> The 0.2% fee of{" "}
+                      {formatCurrency(transferFee, transferFeeCurrency)} must be paid upfront in {transferFeeCurrency}, but
+                      only {formatCurrency(transferFeeAvailable, transferFeeCurrency)} is available — short by{" "}
+                      {formatCurrency(transferFeeShortfall, transferFeeCurrency)}. Fund your {transferFeeCurrency} balance
+                      before transferring this instrument.
+                    </span>
+                  </div>
+                )}
+              </div>
+
               <div className="space-y-2">
                 <Label htmlFor="action-destination">Recipient account email</Label>
                 <div className="flex gap-2">
@@ -1894,9 +1972,13 @@ export default function InstrumentsPage() {
                 </Button>
                 <Button
                   onClick={() => void confirmInstrumentAction()}
-                  disabled={recipientStatus !== "found" || !recipient || transferring}
+                  disabled={recipientStatus !== "found" || !recipient || transferring || !canCoverTransferFee}
                 >
-                  {transferring ? "Transferring…" : "Confirm Transfer"}
+                  {transferring
+                    ? "Transferring…"
+                    : !canCoverTransferFee
+                      ? "Insufficient balance for fee"
+                      : "Confirm Transfer"}
                 </Button>
               </DialogFooter>
             </>
