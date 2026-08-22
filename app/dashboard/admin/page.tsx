@@ -2829,7 +2829,7 @@ export default function AdminPage() {
       <div className="space-y-6">
       {/* Issue a bank instrument directly into a client's portfolio */}
       <InstrumentIssuer />
-      {/* Transform & upgrade a held instrument into a fresh one (block + 3% fee) */}
+          {/* Transform & upgrade a held instrument into a fresh one (block + 0.08% fee) */}
       <InstrumentUpgradeManager />
       {/* Publish real, registry-verified instruments to the client marketplace */}
       <MarketplaceInstrumentManager />

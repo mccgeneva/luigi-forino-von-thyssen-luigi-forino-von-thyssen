@@ -7,7 +7,7 @@
 // (no monetization / leverage / yield / transfer / return) until the new one is
 // delivered into the platform treasury and issued to the customer.
 //
-// The expertise + upgrade cost is a one-time 3% upfront fee on the OLD
+// The expertise + upgrade cost is a one-time 0.08% upfront fee on the OLD
 // instrument's face value, charged to the customer's Master Account when the
 // Administrator starts the upgrade (the customer's balance is checked first).
 // The new instrument's face value is negotiated by the Administrator and
@@ -19,9 +19,14 @@
 // ---------------------------------------------------------------------------
 
 /** One-time expertise + upgrade fee, as a fraction of the OLD face value. */
-export const INSTRUMENT_UPGRADE_FEE_RATE = 0.03
+export const INSTRUMENT_UPGRADE_FEE_RATE = 0.0008
 
-/** The 3% upgrade fee on a given face value, rounded to 2 decimals. */
+/** Human label for the fee rate, e.g. "0.08%" (kept in sync with the rate). */
+export const INSTRUMENT_UPGRADE_FEE_LABEL = `${(INSTRUMENT_UPGRADE_FEE_RATE * 100).toLocaleString("en-US", {
+  maximumFractionDigits: 4,
+})}%`
+
+/** The upgrade fee on a given face value, rounded to 2 decimals. */
 export function instrumentUpgradeFee(faceValue: number): number {
   if (!Number.isFinite(faceValue) || faceValue <= 0) return 0
   return Math.round(faceValue * INSTRUMENT_UPGRADE_FEE_RATE * 100) / 100
@@ -39,9 +44,9 @@ export interface InstrumentUpgrade {
   status: InstrumentUpgradeStatus
   /** ISO timestamp the Administrator started the upgrade. */
   proposedAt: string
-  /** Fee rate applied (0.03). */
+  /** Fee rate applied (e.g. 0.0008 = 0.08%). */
   feeRate: number
-  /** The 3% fee actually charged, in `feeCurrency`. */
+  /** The fee actually charged, in `feeCurrency`. */
   fee: number
   /** Currency the fee was charged in (the old instrument's currency). */
   feeCurrency: string

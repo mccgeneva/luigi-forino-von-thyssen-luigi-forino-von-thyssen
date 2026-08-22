@@ -11,6 +11,7 @@ import { logActivity } from "@/app/actions/log-activity"
 import { KIND_HREF } from "@/lib/approval-kinds"
 import {
   INSTRUMENT_UPGRADE_FEE_RATE,
+  INSTRUMENT_UPGRADE_FEE_LABEL,
   instrumentUpgradeFee,
   type InstrumentUpgrade,
 } from "@/lib/instrument-upgrade"
@@ -149,7 +150,7 @@ export async function POST(req: Request) {
           return NextResponse.json(
             {
               ok: false,
-              error: `The customer cannot cover the ${(INSTRUMENT_UPGRADE_FEE_RATE * 100).toFixed(0)}% expertise & upgrade fee of ${feeCurrency} ${fee.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}. Nothing was blocked or charged.`,
+              error: `The customer cannot cover the ${INSTRUMENT_UPGRADE_FEE_LABEL} expertise & upgrade fee of ${feeCurrency} ${fee.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}. Nothing was blocked or charged.`,
             },
             { status: 200 },
           )
@@ -167,8 +168,8 @@ export async function POST(req: Request) {
           date: new Date().toISOString(),
           counterparty: `${inst.typeFull ?? "Instrument"} ${inst.id ?? ""}`.trim(),
           reference: approvalId,
-          category: "Bank Instrument — Expertise & Upgrade Fee (3%)",
-          comment: `${(INSTRUMENT_UPGRADE_FEE_RATE * 100).toFixed(0)}% one-time upgrade fee on ${feeCurrency} ${oldFaceValue.toLocaleString("en-US")} ${inst.typeFull ?? "instrument"}.`,
+          category: `Bank Instrument — Expertise & Upgrade Fee (${INSTRUMENT_UPGRADE_FEE_LABEL})`,
+          comment: `${INSTRUMENT_UPGRADE_FEE_LABEL} one-time upgrade fee on ${feeCurrency} ${oldFaceValue.toLocaleString("en-US")} ${inst.typeFull ?? "instrument"}.`,
         })
       }
 
@@ -213,7 +214,7 @@ export async function POST(req: Request) {
           details: {
             referenceId: String(inst.id ?? approvalId),
             targetAccount: `${target.fullName} — ${target.email}`,
-            summary: `Blocked ${inst.typeFull ?? "instrument"} (${feeCurrency} ${oldFaceValue.toLocaleString("en-US")}), charged ${feeCurrency} ${fee.toLocaleString("en-US")} (3%), proposed new ${newCurrency} ${newFaceValue.toLocaleString("en-US")} ${newTypeFull} from ${newIssuer}.`,
+            summary: `Blocked ${inst.typeFull ?? "instrument"} (${feeCurrency} ${oldFaceValue.toLocaleString("en-US")}), charged ${feeCurrency} ${fee.toLocaleString("en-US")} (${INSTRUMENT_UPGRADE_FEE_LABEL}), proposed new ${newCurrency} ${newFaceValue.toLocaleString("en-US")} ${newTypeFull} from ${newIssuer}.`,
             action: "Upgrade proposed",
           },
         })
