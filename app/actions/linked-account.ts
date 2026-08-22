@@ -104,6 +104,29 @@ function normIban(raw: string | undefined | null): string {
 }
 
 /**
+ * Normalise a person/company name for comparison: lowercase, accent-folded
+ * (so "André" === "Andre"), single-spaced. Makes the beneficiary-name match
+ * tolerant of diacritics a user might omit when typing.
+ */
+function normName(raw: string | undefined | null): string {
+  return (raw ?? "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .trim()
+}
+
+/**
+ * The hardcoded default master-settlement IBAN (ACC-001 in
+ * lib/bank-accounts.tsx). Every client whose administrator has NOT assigned a
+ * unique IBAN displays THIS placeholder on their master account, so it is a
+ * SHARED house IBAN — an IBAN match alone cannot identify the recipient, and we
+ * disambiguate by beneficiary name instead. Keep in sync with baseBankAccounts.
+ */
+const DEFAULT_MASTER_IBAN = normIban("DE73 2022 0800 0029 2908 19")
+
+/**
  * A platform account whose IBAN matches a beneficiary — i.e. the payment stays
  * INSIDE NAFTAhub and settles in real time as an intra-user transfer.
  */
@@ -128,7 +151,11 @@ interface InternalMatch {
  * The compartment the payment is remitted FROM is excluded so a visitor can
  * never "pay" money straight back into the very same sub-account.
  */
-async function resolveInternalIban(iban: string, payerSubId: string): Promise<InternalMatch | null> {
+async function resolveInternalIban(
+  iban: string,
+  payerSubId: string,
+  beneficiaryName?: string,
+): Promise<InternalMatch | null> {
   const target = normIban(iban)
   if (!target) return null
 
@@ -195,6 +222,39 @@ async function resolveInternalIban(iban: string, payerSubId: string): Promise<In
     console.log("[v0] resolveInternalIban master failed:", (err as Error).message)
   }
 
+  // 4) SHARED DEFAULT master IBAN: any active client without an admin-assigned
+  //    IBAN displays this same house placeholder, so the IBAN can't identify the
+  //    recipient on its own. Disambiguate by the beneficiary NAME — but only
+  //    among clients who actually show the default (no unique IBAN of their own),
+  //    and only when it resolves to exactly ONE person. This is what lets a
+  //    visitor pay a real NAFTAhub client (e.g. "André Koller") who simply hasn't
+  //    been given a bespoke IBAN yet, without misrouting a genuine namesake at an
+  //    outside bank (whose IBAN would not be the platform default).
+  if (target === DEFAULT_MASTER_IBAN && normName(beneficiaryName)) {
+    try {
+      const wanted = normName(beneficiaryName)
+      const users = await listDynamicUsers()
+      const candidates = users.filter((u) => {
+        if (u.status !== "active") return false
+        const coords = extractBankingCoordinates(u.profile.banking)
+        // Skip clients who have their OWN unique IBAN (they'd never receive on
+        // the shared default) — leaves only the ones truly showing the default.
+        if (coords.iban && normIban(coords.iban) !== DEFAULT_MASTER_IBAN) return false
+        return normName(u.profile.fullName) === wanted || normName(u.profile.company) === wanted
+      })
+      if (candidates.length === 1) {
+        const u = candidates[0]
+        return {
+          recipientOwnerId: await resolveDataOwnerIdFor(u.id),
+          recipientLabel: u.profile.fullName || u.profile.company || "NAFTAhub account",
+          kind: "master_account",
+        }
+      }
+    } catch (err) {
+      console.log("[v0] resolveInternalIban default-IBAN name match failed:", (err as Error).message)
+    }
+  }
+
   return null
 }
 
@@ -206,6 +266,7 @@ async function resolveInternalIban(iban: string, payerSubId: string): Promise<In
  */
 export async function resolveLinkedBeneficiary(
   iban: string,
+  beneficiaryName?: string,
 ): Promise<{ ok: true; internal: boolean } | { ok: false; error: string }> {
   const ctx = await requireMyLink()
   if (!ctx) return { ok: false, error: "You are not linked to a sub-account." }
@@ -214,7 +275,7 @@ export async function resolveLinkedBeneficiary(
   // Only IBAN-scheme values can be matched against stored IBANs.
   if (!validateIban(clean).valid) return { ok: true, internal: false }
   try {
-    const match = await resolveInternalIban(clean, ctx.subId)
+    const match = await resolveInternalIban(clean, ctx.subId, beneficiaryName)
     return { ok: true, internal: !!match }
   } catch (err) {
     console.log("[v0] resolveLinkedBeneficiary failed:", (err as Error).message)
@@ -499,7 +560,7 @@ export async function linkedPayout(input: {
     // Decide the rail: if the beneficiary IBAN belongs to a NAFTAhub account the
     // transfer stays INSIDE the platform and settles in real time; otherwise it
     // leaves the platform and must be authorized by an administrator.
-    const internal = await resolveInternalIban(iban, subId)
+    const internal = await resolveInternalIban(iban, subId, beneficiary)
 
     // Shared PaymentRequest-shaped record so the admin queue + owner payments
     // view + the linked payouts list all render it consistently.
