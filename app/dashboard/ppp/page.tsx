@@ -68,96 +68,12 @@ import { generatePPPConfirmationPdf } from "@/lib/ppp-confirmation-pdf"
 import { Download } from "lucide-react"
 import { getActiveInstitutionalYields } from "@/app/actions/institutional-yields"
 import { type InstitutionalYield } from "@/lib/institutional-yields-shared"
+import { PPP_PROGRAMS, applyProgramOverride, type BuiltInProgram } from "@/lib/ppp-programs"
+import { getYieldProgramOverrides } from "@/app/actions/yield-overrides"
 
-const programs = [
-  {
-    id: "PPP-MICRO-001",
-    name: "Micro Cap Program",
-    type: "micro",
-    minInvestment: 50000000,
-    maxInvestment: 100000000,
-    currency: "USD",
-    expectedReturn: "20-40%",
-    returnFrequency: "Monthly",
-    duration: "12 months",
-    status: "open",
-    spotsAvailable: 3,
-    totalSpots: 10,
-    riskLevel: "Medium",
-    description:
-      "Entry-level PPP designed for investors starting with $50M. Monthly returns with quarterly compounding options.",
-    requirements: [
-      "PRO or Avant-Garde account",
-      "Cash funds or AAA+ rated instruments",
-      "12-month commitment",
-    ],
-  },
-  {
-    id: "PPP-SMALL-002",
-    name: "Small Cap Program",
-    type: "small",
-    minInvestment: 100000000,
-    maxInvestment: 500000000,
-    currency: "USD",
-    expectedReturn: "40-60%",
-    returnFrequency: "Monthly",
-    duration: "40 banking weeks",
-    status: "open",
-    spotsAvailable: 5,
-    totalSpots: 8,
-    riskLevel: "Medium",
-    description:
-      "Standard PPP for qualified investors. Monthly distributions with reinvestment options available.",
-    requirements: [
-      "PRO or Avant-Garde account",
-      "Cash funds or Securities (BG/SBLC/MTN)",
-      "40-week commitment",
-    ],
-  },
-  {
-    id: "PPP-MID-003",
-    name: "Mid Cap Program",
-    type: "mid",
-    minInvestment: 500000000,
-    maxInvestment: 1000000000,
-    currency: "USD",
-    expectedReturn: "60-80%",
-    returnFrequency: "Monthly",
-    duration: "40 banking weeks",
-    status: "limited",
-    spotsAvailable: 2,
-    totalSpots: 5,
-    riskLevel: "Medium-Low",
-    description:
-      "Premium program for substantial investments. Enhanced returns with priority execution.",
-    requirements: [
-      "Avant-Garde account required",
-      "Verified source of funds",
-      "Joint venture agreement",
-    ],
-  },
-  {
-    id: "PPP-LARGE-004",
-    name: "Large Cap Program",
-    type: "large",
-    minInvestment: 1000000000,
-    maxInvestment: 5000000000,
-    currency: "USD",
-    expectedReturn: "80-100%",
-    returnFrequency: "Monthly",
-    duration: "40 banking weeks",
-    status: "invite",
-    spotsAvailable: 1,
-    totalSpots: 3,
-    riskLevel: "High",
-    description:
-      "Exclusive program for institutional investors and major funds. Maximum returns with dedicated trading desk.",
-    requirements: [
-      "Avant-Garde account",
-      "Direct relationship with trading desk",
-    ],
-  },
-]
+// The built-in programs now live in a shared module so the administrator can
+// hide / edit them (including their risk level) via the admin Program Controls.
+type Program = BuiltInProgram
 
 const currencySymbols: Record<string, string> = {
   USD: "$",
@@ -228,7 +144,7 @@ const applicationStatusConfig = {
 
 export default function PPPPage() {
   const [isApplyOpen, setIsApplyOpen] = useState(false)
-  const [selectedProgram, setSelectedProgram] = useState<typeof programs[0] | null>(null)
+  const [selectedProgram, setSelectedProgram] = useState<Program | null>(null)
   const [activeTab, setActiveTab] = useState("programs")
   const [amount, setAmount] = useState("")
   const [sourceOfFunds, setSourceOfFunds] = useState("")
@@ -296,6 +212,23 @@ export default function PPPPage() {
     { revalidateOnFocus: false },
   )
 
+  // Administrator overrides for the built-in programs. The admin can hide a
+  // program entirely or change any displayed parameter (including risk level)
+  // from the admin Program Controls. Merge the overrides onto the defaults and
+  // drop any the admin has hidden. Fails closed to the built-in defaults.
+  const { data: programOverrides = {} } = useSWR(
+    "yield-program-overrides",
+    () => getYieldProgramOverrides(),
+    { revalidateOnFocus: false },
+  )
+  const programs = useMemo<Program[]>(
+    () =>
+      PPP_PROGRAMS.map((p) => applyProgramOverride(p, programOverrides[p.id]))
+        .filter((p) => !p.hidden)
+        .map(({ hidden: _hidden, ...rest }) => rest),
+    [programOverrides],
+  )
+
   // Open the existing application dialog for a published institutional yield by
   // mapping it onto the program shape, so it flows through the SAME mandatory
   // Administrator approval workflow as the standard programs.
@@ -361,7 +294,7 @@ export default function PPPPage() {
     setFormError(null)
   }
 
-  const openApplyDialog = (program: typeof programs[0]) => {
+  const openApplyDialog = (program: Program) => {
     setSelectedProgram(program)
     resetForm()
     setIsApplyOpen(true)
