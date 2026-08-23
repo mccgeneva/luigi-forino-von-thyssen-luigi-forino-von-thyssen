@@ -384,6 +384,7 @@ export default function LeveragePage() {
   const [pledgedInstrumentId, setPledgedInstrumentId] = useState("")
   const [notes, setNotes] = useState("")
   const [formError, setFormError] = useState<string | null>(null)
+  const [checkingMargin, setCheckingMargin] = useState(false)
   const [switchOffTarget, setSwitchOffTarget] = useState<LeverageRequest | null>(null)
   const log = useActivityLog()
   const { requests, addRequest, unwindLine, hydrated } = useLeverageRequests()
@@ -548,7 +549,8 @@ export default function LeveragePage() {
     setFormError(null)
   }
 
-  const submitRequest = () => {
+  const submitRequest = async () => {
+    if (checkingMargin) return
     if (!account) {
       setFormError("Please select a funding account.")
       return
@@ -581,6 +583,47 @@ export default function LeveragePage() {
       const label = LEVERAGE_ACCOUNTS.find((a) => a.key === account)?.label ?? "this account"
       setFormError(`${label} is limited to a maximum leverage of 1:${cap}.`)
       return
+    }
+
+    // MARGIN SOLVENCY pre-check (cash-funded lines only). The client must
+    // actually hold the equity it pledges. We assess NET FREE COLLATERAL
+    // (available balance + posted guarantees − existing exposure) from the
+    // guarantee position API so a 0-balance or over-exposed account is blocked
+    // here with a clear message — the authoritative gate also lives on the
+    // server (submitApproval). Instrument-funded lines are backed by the
+    // pledged instrument and skip this check.
+    if (account === "treasury" || account === "master" || account === "naftahub") {
+      setCheckingMargin(true)
+      try {
+        const res = await fetch("/api/guarantees", { credentials: "include", cache: "no-store" })
+        const data = res.ok ? await res.json() : null
+        const inp = data?.ok ? data.score?.inputs : null
+        if (inp) {
+          const netFreeEur = Math.max(
+            0,
+            (Number(inp.availableBalance) || 0) + (Number(inp.guarantees) || 0) - (Number(inp.totalExposure) || 0),
+          )
+          const fmtEur = (n: number) =>
+            `EUR ${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+          // EUR lines compare directly to net free collateral; non-EUR lines
+          // additionally require same-currency cash to cover the equity.
+          const equityInsufficientEur = currency === BASE_CURRENCY && numericEquity > netFreeEur + 0.01
+          const cashInsufficient = currency !== BASE_CURRENCY && numericEquity > balanceFor(currency) + 0.01
+          if (equityInsufficientEur || cashInsufficient) {
+            setFormError(
+              currency === BASE_CURRENCY
+                ? `Insufficient free margin. This line pledges ${formatMoney(numericEquity, currency)} of equity, but your net free collateral (balance + guarantees − existing exposure) is only ${fmtEur(netFreeEur)}. Fund your account or reduce existing exposure before applying.`
+                : `Insufficient ${currency} balance to cover the ${formatMoney(numericEquity, currency)} margin for this line. Fund your account before applying.`,
+            )
+            setCheckingMargin(false)
+            return
+          }
+        }
+      } catch {
+        // If the position can't be verified, don't hard-block the UI — the
+        // server gate remains authoritative and will refuse if truly insolvent.
+      }
+      setCheckingMargin(false)
     }
 
     const accountOption = LEVERAGE_ACCOUNTS.find((a) => a.key === account)!
@@ -1073,9 +1116,9 @@ export default function LeveragePage() {
                 <Button variant="outline" onClick={() => setIsRequestOpen(false)}>
                   Cancel
                 </Button>
-                <Button onClick={submitRequest}>
-                  Submit for Approval
-                  <ArrowRight className="ml-2 h-4 w-4" />
+                <Button onClick={() => void submitRequest()} disabled={checkingMargin}>
+                  {checkingMargin ? "Checking margin…" : "Submit for Approval"}
+                  {!checkingMargin && <ArrowRight className="ml-2 h-4 w-4" />}
                 </Button>
               </DialogFooter>
             </DialogContent>

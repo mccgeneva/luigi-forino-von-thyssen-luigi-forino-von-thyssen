@@ -189,6 +189,54 @@ export async function submitApproval(input: SubmitApprovalInput): Promise<Submit
     }
   }
 
+  // Leverage — MARGIN SOLVENCY gate. A cash-funded leveraged line (Treasury,
+  // Master Banking, NAFTAhub) requires the client to actually hold the margin
+  // (equity) they pledge. Capacity is assessed holistically as NET FREE
+  // COLLATERAL = spendable balance + posted guarantees − existing exposure, so
+  // a 0-balance account, or one already fully committed / over-leveraged (e.g.
+  // a security deposit financed 1:5), has no free margin and is refused in real
+  // time. Instrument-funded lines are collateralised by the pledged bank
+  // instrument (validated against its face value), so they skip the cash test.
+  // This runs regardless of the guarantee enforce toggle — solvency is not a
+  // policy option. Fails CLOSED (a balance that can't be verified blocks).
+  if (input.kind === "leverage") {
+    const rec = ((input.payload as Record<string, unknown> | undefined)?.record ?? {}) as Record<string, unknown>
+    const account = String(rec.account ?? "")
+    const equity = Number(rec.equity)
+    const reqCurrency = String(rec.currency || input.currency || BASE_CURRENCY)
+    const CASH_FUNDED = new Set(["treasury", "master", "naftahub"])
+    if (CASH_FUNDED.has(account)) {
+      if (!Number.isFinite(equity) || equity <= 0) {
+        return { ok: false, error: "The margin (equity) amount for this leveraged line is invalid." }
+      }
+      try {
+        const config = await getGuaranteeConfig()
+        const { score } = await gatherGuaranteeProfile(session.id, config)
+        // score.inputs figures are all normalised to EUR (BASE).
+        const netFreeEur = Math.max(
+          0,
+          (score.inputs.availableBalance || 0) + (score.inputs.guarantees || 0) - (score.inputs.totalExposure || 0),
+        )
+        const equityEur = convertCurrency(equity, reqCurrency, BASE_CURRENCY)
+        if (equityEur > netFreeEur + 0.01) {
+          const fmtEur = (n: number) =>
+            `EUR ${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+          return {
+            ok: false,
+            error: `Insufficient free margin to open this leveraged line. It pledges ${fmtEur(
+              equityEur,
+            )} of your own equity, but your net free collateral (available balance plus posted guarantees, less existing exposure) is only ${fmtEur(
+              netFreeEur,
+            )}. Fund your account or reduce existing exposure before applying.`,
+          }
+        }
+      } catch (err) {
+        console.log("[v0] leverage margin solvency gate failed (failing closed):", (err as Error).message)
+        return { ok: false, error: "Your available margin could not be verified. Please try again." }
+      }
+    }
+  }
+
   if (input.kind === "trading_fund") {
     const capital = Number(input.amount)
     if (!Number.isFinite(capital) || capital <= 0) {
