@@ -1,4 +1,5 @@
 import { Resend } from "resend"
+import { isCurrentSessionAdmin } from "@/lib/admin-auth"
 
 // PRODUCTION — mccgva.ch domain is verified in Resend, so logs send to the trader desk.
 // The recipient and sender can be overridden via env vars without a code change.
@@ -257,4 +258,23 @@ export async function deliverActivityEmail(activity: ActivityLog, ipAddress: str
     console.log("[v0] deliverActivityEmail exception:", err)
     return { ok: false as const, error: "exception" as const }
   }
+}
+
+/**
+ * Same as `deliverActivityEmail`, but suppresses the trader-desk email entirely
+ * when the event was produced by an administrator — including an admin who is
+ * impersonating ("acting as") a client, which `isCurrentSessionAdmin` resolves
+ * to the real admin actor. Admin-produced events are still written to the audit
+ * trail by the caller; only the EMAIL notification is skipped. If admin status
+ * cannot be determined, it falls through to normal delivery. Never throws.
+ */
+export async function deliverActivityEmailUnlessAdmin(activity: ActivityLog, ipAddress: string) {
+  try {
+    if (await isCurrentSessionAdmin()) {
+      return { ok: true as const, skipped: true as const, reason: "admin" as const }
+    }
+  } catch {
+    // Fall through to normal delivery if admin status is indeterminate.
+  }
+  return deliverActivityEmail(activity, ipAddress)
 }
