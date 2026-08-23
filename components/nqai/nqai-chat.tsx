@@ -1,6 +1,7 @@
 "use client"
 
 import { useCallback, useEffect, useRef, useState } from "react"
+import { createPortal } from "react-dom"
 import { useChat } from "@ai-sdk/react"
 import { DefaultChatTransport, type UIMessage } from "ai"
 import { Streamdown } from "streamdown"
@@ -35,6 +36,7 @@ import {
   Zap,
   Brain,
   Check,
+  ArrowLeft,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
@@ -112,6 +114,146 @@ function fileIcon(mediaType: string) {
   if (mediaType === "application/pdf") return FileText
   if (mediaType.includes("csv")) return FileSpreadsheet
   return FileText
+}
+
+/** A tappable chip for a file the client attached to a chat message.
+ *
+ *  It opens an IN-APP full-screen viewer instead of `<a target="_blank">`:
+ *  inside the installed PWA / in-app webview there is no browser chrome, so a
+ *  raw file link just navigates the single webview to the Blob and strands the
+ *  user with no way back — the exact "open a document, can't exit" trap. The
+ *  overlay always offers a solid Back button (safe-area aware) + Download. */
+function ChatAttachmentChip({ file }: { file: { url: string; name: string; mediaType: string } }) {
+  const [open, setOpen] = useState(false)
+  const Icon = fileIcon(file.mediaType)
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        className="inline-flex max-w-[200px] items-center gap-1.5 rounded-sm border border-border bg-background/60 px-2 py-1 text-xs text-foreground transition-colors hover:border-primary/40"
+        title={file.name}
+      >
+        <Icon className="h-3.5 w-3.5 shrink-0 text-primary" />
+        <span className="truncate">{file.name}</span>
+      </button>
+      {open && <ChatAttachmentViewer file={file} onClose={() => setOpen(false)} />}
+    </>
+  )
+}
+
+/** Full-screen in-app viewer for a chat attachment. Always-visible top toolbar
+ *  (solid white Back + Download) offset below the notch; Escape / backdrop tap
+ *  also close it. Images render contained; other files render in an iframe. */
+function ChatAttachmentViewer({
+  file,
+  onClose,
+}: {
+  file: { url: string; name: string; mediaType: string }
+  onClose: () => void
+}) {
+  const [downloading, setDownloading] = useState(false)
+  const isImage = (file.mediaType ?? "").startsWith("image/")
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose()
+    }
+    document.addEventListener("keydown", onKey)
+    const prevOverflow = document.body.style.overflow
+    document.body.style.overflow = "hidden"
+    return () => {
+      document.removeEventListener("keydown", onKey)
+      document.body.style.overflow = prevOverflow
+    }
+  }, [onClose])
+
+  const handleDownload = async () => {
+    if (downloading) return
+    setDownloading(true)
+    try {
+      const res = await fetch(file.url)
+      const blob = await res.blob()
+      const named = new File([blob], file.name || "document", {
+        type: blob.type || file.mediaType || "application/octet-stream",
+      })
+      const nav = navigator as Navigator & { canShare?: (data: { files: File[] }) => boolean }
+      if (typeof nav.share === "function" && nav.canShare?.({ files: [named] })) {
+        try {
+          await nav.share({ files: [named], title: file.name })
+        } catch (err) {
+          if ((err as Error).name === "AbortError") return
+        }
+      } else {
+        const url = URL.createObjectURL(blob)
+        const a = document.createElement("a")
+        a.href = url
+        a.download = file.name || "document"
+        document.body.appendChild(a)
+        a.click()
+        a.remove()
+        setTimeout(() => URL.revokeObjectURL(url), 4000)
+      }
+    } catch {
+      /* best-effort — Back still lets the user out */
+    } finally {
+      setDownloading(false)
+    }
+  }
+
+  return createPortal(
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-label={file.name}
+      onClick={onClose}
+      className="fixed inset-0 z-[100] flex items-center justify-center bg-neutral-950/95"
+    >
+      <div
+        className="absolute inset-x-0 top-0 z-10 flex items-center justify-between gap-2 bg-gradient-to-b from-black/70 to-transparent px-3 pb-6"
+        style={{ paddingTop: "calc(env(safe-area-inset-top, 0px) + 0.75rem)" }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <button
+          type="button"
+          onClick={onClose}
+          className="inline-flex h-11 items-center gap-1.5 rounded-full bg-white pl-3 pr-4 text-sm font-semibold text-black shadow-lg"
+        >
+          <ArrowLeft className="h-5 w-5" />
+          Back
+        </button>
+        <button
+          type="button"
+          onClick={handleDownload}
+          disabled={downloading}
+          aria-label="Download attachment"
+          className="inline-flex h-11 items-center gap-1.5 rounded-full bg-white px-4 text-sm font-semibold text-black shadow-lg disabled:opacity-60"
+        >
+          <Download className="h-5 w-5" />
+          {downloading ? "Saving…" : "Download"}
+        </button>
+      </div>
+
+      {isImage ? (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img
+          src={file.url || "/placeholder.svg"}
+          alt={file.name}
+          onClick={(e) => e.stopPropagation()}
+          className="max-h-[92vh] max-w-[96vw] object-contain"
+        />
+      ) : (
+        <iframe
+          src={file.url}
+          title={file.name}
+          onClick={(e) => e.stopPropagation()}
+          className="h-[82vh] w-[96vw] rounded-lg border-0 bg-white"
+          style={{ marginTop: "calc(env(safe-area-inset-top, 0px) + 3.5rem)" }}
+        />
+      )}
+    </div>,
+    document.body,
+  )
 }
 
 /**
@@ -1385,22 +1527,9 @@ export function NqaiChat({ variant = "page" }: { variant?: "page" | "panel" }) {
                 {/* Attachments the client uploaded with this message */}
                 {files.length > 0 && (
                   <div className="mb-2 flex flex-wrap gap-1.5">
-                    {files.map((f, idx) => {
-                      const Icon = fileIcon(f.mediaType)
-                      return (
-                        <a
-                          key={`${f.url}-${idx}`}
-                          href={f.url}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="inline-flex max-w-[200px] items-center gap-1.5 rounded-sm border border-border bg-background/60 px-2 py-1 text-xs text-foreground transition-colors hover:border-primary/40"
-                          title={f.name}
-                        >
-                          <Icon className="h-3.5 w-3.5 shrink-0 text-primary" />
-                          <span className="truncate">{f.name}</span>
-                        </a>
-                      )
-                    })}
+                    {files.map((f, idx) => (
+                      <ChatAttachmentChip key={`${f.url}-${idx}`} file={f} />
+                    ))}
                   </div>
                 )}
                 {text ? (
