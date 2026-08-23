@@ -72,6 +72,7 @@ import {
 import { useInstrumentRequests } from "@/lib/instrument-requests-store"
 import { useLedger } from "@/lib/ledger-store"
 import { postedLeverageInterest } from "@/lib/leverage-financing"
+import { GuaranteeScoreCard } from "@/components/dashboard/guarantee-score-card"
 
 // Round to 2 dp for money settlement (mirrors the admin switch-off handler).
 function round2(n: number) {
@@ -736,6 +737,9 @@ export default function LeveragePage() {
           Up to 1:{MAX_LEVERAGE} Leverage
         </Badge>
       </div>
+
+      {/* Independent trust/risk score — reflects guarantees, leverage, exposure & payment history */}
+      <GuaranteeScoreCard />
 
       {/* Stats */}
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
