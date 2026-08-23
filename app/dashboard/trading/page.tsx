@@ -1236,17 +1236,23 @@ export default function TradingPage() {
                 <div className="grid gap-3 grid-cols-2 lg:grid-cols-4">
                   <div className="rounded-lg border border-border bg-secondary/30 p-4">
                     <p className="text-xs text-muted-foreground">Capital deployed (active)</p>
-                    <p className="mt-1 text-lg font-bold text-foreground">{formatEur(activeFundCapital)}</p>
+                    <p className="mt-1 text-base sm:text-lg font-bold tabular-nums leading-tight break-words text-foreground">
+                      {formatEur(activeFundCapital)}
+                    </p>
                     <p className="mt-0.5 text-[11px] text-muted-foreground">Debited from your master account</p>
                   </div>
                   <div className="rounded-lg border border-border bg-secondary/30 p-4">
                     <p className="text-xs text-muted-foreground">ROI matured to date</p>
-                    <p className="mt-1 text-lg font-bold text-green-500">{formatEur(totalRoiEarned)}</p>
+                    <p className="mt-1 text-base sm:text-lg font-bold tabular-nums leading-tight break-words text-green-500">
+                      {formatEur(totalRoiEarned)}
+                    </p>
                     <p className="mt-0.5 text-[11px] text-muted-foreground">Already credited to you</p>
                   </div>
                   <div className="rounded-lg border border-border bg-secondary/30 p-4">
                     <p className="text-xs text-muted-foreground">ROI still to be paid</p>
-                    <p className="mt-1 text-lg font-bold text-primary">{formatEur(totalRoiToBePaid)}</p>
+                    <p className="mt-1 text-base sm:text-lg font-bold tabular-nums leading-tight break-words text-primary">
+                      {formatEur(totalRoiToBePaid)}
+                    </p>
                     <p className="mt-0.5 text-[11px] text-muted-foreground">Scheduled before expiry</p>
                   </div>
                   <div className="rounded-lg border border-border bg-secondary/30 p-4">
@@ -1269,7 +1275,7 @@ export default function TradingPage() {
                         <div className="flex flex-wrap items-center justify-between gap-2">
                           <div className="flex items-center gap-2">
                             <span className="text-sm font-semibold text-foreground">
-                              {p.tokens} token{p.tokens === 1 ? "" : "s"}
+                              {p.tokens.toLocaleString("en-US")} token{p.tokens === 1 ? "" : "s"}
                             </span>
                             {p.status === "reserved" && (
                               <Badge variant="outline" className="border-amber-500/40 bg-amber-500/10 text-amber-600 text-[10px]">
@@ -1328,27 +1334,27 @@ export default function TradingPage() {
                                 <p className="inline-flex items-center gap-1 text-[11px] text-muted-foreground">
                                   <Wallet className="h-3 w-3" /> Capital started
                                 </p>
-                                <p className="mt-1 text-sm font-bold text-foreground">{formatEur(v.capitalStarted)}</p>
+                                <p className="mt-1 text-sm font-bold tabular-nums leading-tight break-words text-foreground">{formatEur(v.capitalStarted)}</p>
                               </div>
                               <div className="rounded-lg border border-border/60 bg-secondary/20 p-3">
                                 <p className="inline-flex items-center gap-1 text-[11px] text-muted-foreground">
                                   <ShieldCheck className="h-3 w-3" /> Value at maturity
                                 </p>
-                                <p className="mt-1 text-sm font-bold text-foreground">{formatEur(v.capitalAtMaturity)}</p>
+                                <p className="mt-1 text-sm font-bold tabular-nums leading-tight break-words text-foreground">{formatEur(v.capitalAtMaturity)}</p>
                                 <p className="mt-0.5 text-[10px] text-muted-foreground">Capital + full-term ROI</p>
                               </div>
                               <div className="rounded-lg border border-border/60 bg-secondary/20 p-3">
                                 <p className="inline-flex items-center gap-1 text-[11px] text-muted-foreground">
                                   <TrendingUp className="h-3 w-3" /> ROI matured
                                 </p>
-                                <p className="mt-1 text-sm font-bold text-green-500">{formatEur(v.roiMatured)}</p>
+                                <p className="mt-1 text-sm font-bold tabular-nums leading-tight break-words text-green-500">{formatEur(v.roiMatured)}</p>
                                 <p className="mt-0.5 text-[10px] text-muted-foreground">{v.monthsMatured} of {v.termMonths} months</p>
                               </div>
                               <div className="rounded-lg border border-border/60 bg-secondary/20 p-3">
                                 <p className="inline-flex items-center gap-1 text-[11px] text-muted-foreground">
                                   <Hourglass className="h-3 w-3" /> ROI to be paid
                                 </p>
-                                <p className="mt-1 text-sm font-bold text-primary">{formatEur(v.roiRemaining)}</p>
+                                <p className="mt-1 text-sm font-bold tabular-nums leading-tight break-words text-primary">{formatEur(v.roiRemaining)}</p>
                                 <p className="mt-0.5 text-[10px] text-muted-foreground">{v.monthsRemaining} month{v.monthsRemaining === 1 ? "" : "s"} left</p>
                               </div>
                               <div className="rounded-lg border border-border/60 bg-secondary/20 p-3">
@@ -1369,7 +1375,7 @@ export default function TradingPage() {
                                 <p className="inline-flex items-center gap-1 text-[11px] text-muted-foreground">
                                   <Percent className="h-3 w-3" /> Monthly ROI
                                 </p>
-                                <p className="mt-1 text-sm font-bold text-foreground">{formatEur(v.monthlyRoiAmount)}</p>
+                                <p className="mt-1 text-sm font-bold tabular-nums leading-tight break-words text-foreground">{formatEur(v.monthlyRoiAmount)}</p>
                                 <p className="mt-0.5 text-[10px] text-muted-foreground">{(v.monthlyRoiRate * 100).toFixed(0)}% per month</p>
                               </div>
                               <div className="rounded-lg border border-border/60 bg-secondary/20 p-3">
@@ -1500,7 +1506,7 @@ export default function TradingPage() {
                               <div className="flex flex-wrap items-center justify-between gap-2">
                                 <div className="flex items-center gap-2">
                                   <span className="text-sm font-semibold text-foreground">
-                                    {p.tokens} token{p.tokens === 1 ? "" : "s"}
+                                    {p.tokens.toLocaleString("en-US")} token{p.tokens === 1 ? "" : "s"}
                                   </span>
                                   <Badge
                                     variant="outline"
@@ -1517,19 +1523,19 @@ export default function TradingPage() {
                               <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
                                 <div>
                                   <p className="text-[10px] text-muted-foreground">Capital deployed</p>
-                                  <p className="mt-0.5 text-sm font-semibold text-foreground">
+                                  <p className="mt-0.5 text-sm font-semibold tabular-nums leading-tight break-words text-foreground">
                                     {formatEur(p.deployed)}
                                   </p>
                                 </div>
                                 <div>
                                   <p className="text-[10px] text-muted-foreground">ROI earned</p>
-                                  <p className="mt-0.5 text-sm font-semibold text-green-500">
+                                  <p className="mt-0.5 text-sm font-semibold tabular-nums leading-tight break-words text-green-500">
                                     {formatEur(p.roiEarned)}
                                   </p>
                                 </div>
                                 <div>
                                   <p className="text-[10px] text-muted-foreground">Capital returned</p>
-                                  <p className="mt-0.5 text-sm font-semibold text-foreground">
+                                  <p className="mt-0.5 text-sm font-semibold tabular-nums leading-tight break-words text-foreground">
                                     {formatEur(p.returned)}
                                   </p>
                                 </div>
@@ -1698,7 +1704,7 @@ export default function TradingPage() {
               </div>
 
               <Button className="w-full" size="lg" onClick={() => setApplyOpen(true)}>
-                Apply with {tokens} Tokens · {formatEur(capital)}
+                Apply with {tokens.toLocaleString("en-US")} Tokens · {formatEur(capital)}
                 <ArrowRight className="ml-2 h-4 w-4" />
               </Button>
               <p className="text-center text-[11px] text-muted-foreground text-pretty">
@@ -1858,7 +1864,7 @@ export default function TradingPage() {
             <div className="grid grid-cols-3 gap-3 rounded-lg border border-border bg-secondary/30 p-3 text-center">
               <div>
                 <p className="text-[11px] text-muted-foreground">Tokens</p>
-                <p className="text-base font-bold text-foreground">{tokens}</p>
+                <p className="text-base font-bold tabular-nums text-foreground">{tokens.toLocaleString("en-US")}</p>
               </div>
               <div>
                 <p className="text-[11px] text-muted-foreground">Capital</p>
