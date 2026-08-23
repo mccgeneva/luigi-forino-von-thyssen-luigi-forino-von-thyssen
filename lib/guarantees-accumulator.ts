@@ -22,9 +22,15 @@
  *   5. Track Record — a NEW/unproven account carries provisional risk that
  *      decays to zero as it seasons with clean standing. This is what stops a
  *      brand-new customer (no history, no posted collateral) scoring 0 and
- *      taking a first high-leverage line for free.
- *        seasoning = clamp(1 − accountAgeDays / seasoningDays)   (1=new, 0=seasoned)
- *        points    = newAccountRisk × seasoning
+ *      taking a first high-leverage line for free. BUT posted, UNENCUMBERED
+ *      guarantees accumulate to offset it: a new account that has put up real
+ *      capital (paid-in deposit + net balance, i.e. NOT borrowed collateral) is
+ *      not a thin-file risk. A financed deposit (e.g. a 1:5 lent deposit) nets
+ *      to ~zero equity and earns no offset.
+ *        seasoning        = clamp(1 − accountAgeDays / seasoningDays)  (1=new, 0=seasoned)
+ *        netEquity        = guarantees + availableBalance − totalExposure
+ *        guaranteeStrength= clamp(netEquity / provenCapital, 0, 1)     (1=fully proven)
+ *        points           = newAccountRisk × seasoning × (1 − guaranteeStrength)
  *
  * They are combined as a WEIGHTED SUM, then the SQUARE ROOT is the risk score:
  *        weightedSum = w1·f1 + w2·f2 + w3·f3 + w4·f4 + w5·f5
@@ -72,6 +78,13 @@ export interface GuaranteeConfig {
   newAccountRisk: number
   /** Days over which the new-account risk decays linearly to zero. */
   seasoningDays: number
+  /**
+   * Net equity (paid-in guarantees + balance − outstanding exposure, in EUR)
+   * at which a new account is considered fully proven by capital, fully
+   * cancelling the new-account risk. Borrowed/financed collateral nets out and
+   * earns no offset, so a leveraged deposit stays high risk.
+   */
+  provenCapital: number
   /** finalScore strictly above this is HIGH RISK (blocks new financing). */
   highRiskThreshold: number
   /** Risk-score points removed per full year of good standing. */
@@ -97,6 +110,7 @@ export const DEFAULT_GUARANTEE_CONFIG: GuaranteeConfig = {
   weightTrackRecord: 1,
   newAccountRisk: 144,
   seasoningDays: 365,
+  provenCapital: 250_000,
   highRiskThreshold: 10,
   ageCreditPerYear: 1.5,
   ageCreditMax: 6,
@@ -183,10 +197,17 @@ export function computeGuaranteeScore(inputs: GuaranteeInputs, config: Guarantee
   // 5. Track Record — provisional risk for a NEW/unproven account that decays
   // to zero as the account seasons. A fresh account (no history, no collateral)
   // must not sit at zero risk; it starts elevated and earns its way down.
+  // BUT real, UNENCUMBERED capital offsets it: net equity = posted guarantees +
+  // available balance − outstanding exposure. A financed deposit (borrowed
+  // collateral) nets out and earns no offset, so it stays high risk; a paid-in
+  // deposit / real balance proves the account and cancels the new-account risk.
   const seasoningDays = config.seasoningDays > 0 ? config.seasoningDays : 365
   const seasoning = clamp(1 - ageDays / seasoningDays, 0, 1)
   const newAccountRisk = Math.max(0, config.newAccountRisk || 0)
-  const fTrackRecord = clamp(newAccountRisk * seasoning, 0, FACTOR_SOFT_CAP)
+  const provenCapital = config.provenCapital > 0 ? config.provenCapital : 250_000
+  const netEquity = guarantees + available - totalExposure
+  const guaranteeStrength = clamp(netEquity / provenCapital, 0, 1)
+  const fTrackRecord = clamp(newAccountRisk * seasoning * (1 - guaranteeStrength), 0, FACTOR_SOFT_CAP)
 
   const factors: GuaranteeFactors = {
     securityDeposit: round2(fSecurityDeposit),

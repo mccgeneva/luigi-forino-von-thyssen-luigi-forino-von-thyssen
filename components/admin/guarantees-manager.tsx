@@ -181,6 +181,11 @@ export function GuaranteesManager({ passcode }: { passcode: string }) {
                 <Input type="number" min="1" step="1" value={config.seasoningDays} onChange={setNum("seasoningDays")} className="mt-1" />
                 <p className="mt-1 text-[11px] text-muted-foreground">Days over which the new-account risk decays to zero as the account builds a clean history.</p>
               </div>
+              <div className="sm:col-span-2">
+                <Label className="text-xs">Proven-capital threshold (EUR)</Label>
+                <Input type="number" min="1" step="1000" value={config.provenCapital} onChange={setNum("provenCapital")} className="mt-1" />
+                <p className="mt-1 text-[11px] text-muted-foreground">Net equity (paid-in guarantees + balance − outstanding exposure) that fully cancels the new-account risk. Borrowed/financed collateral nets out, so a leveraged deposit earns no offset and stays high risk.</p>
+              </div>
             </div>
           </div>
 
