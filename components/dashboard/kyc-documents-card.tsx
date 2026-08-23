@@ -6,6 +6,7 @@ import { FileText, ExternalLink, ArrowLeft, Download, X } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { KYC_DOCUMENT_LABELS, blobFileUrl, type KycDocument } from "@/lib/kyc-types"
+import { downloadFile } from "@/lib/download-file"
 
 /**
  * KYC documents list with an IN-APP viewer.
@@ -86,17 +87,15 @@ function DocumentViewer({ doc, onClose }: { doc: KycDocument; onClose: () => voi
           </p>
         </div>
         <div className="flex items-center gap-1">
-          <Button asChild variant="ghost" size="icon" className="min-h-11 min-w-11" title="Open in browser">
-            <a href={url} target="_blank" rel="noopener noreferrer">
-              <ExternalLink className="h-5 w-5" />
-              <span className="sr-only">Open in browser</span>
-            </a>
-          </Button>
-          <Button asChild variant="ghost" size="icon" className="min-h-11 min-w-11" title="Download">
-            <a href={blobFileUrl(doc.pathname)} download>
-              <Download className="h-5 w-5" />
-              <span className="sr-only">Download</span>
-            </a>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="min-h-11 min-w-11"
+            title="Download"
+            onClick={() => void downloadFile(blobFileUrl(doc.pathname), doc.label || KYC_DOCUMENT_LABELS[doc.type])}
+          >
+            <Download className="h-5 w-5" />
+            <span className="sr-only">Download</span>
           </Button>
           <Button variant="ghost" size="icon" onClick={onClose} className="min-h-11 min-w-11" title="Close">
             <X className="h-5 w-5" />

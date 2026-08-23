@@ -22,7 +22,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import { Loader2, Upload, Trash2, FileText, ImageIcon, ExternalLink, RefreshCw } from "lucide-react"
+import { Loader2, Upload, Trash2, FileText, ImageIcon, Download, RefreshCw } from "lucide-react"
+import { downloadFile } from "@/lib/download-file"
 import { ADMIN_PASSCODE } from "@/lib/admin-config"
 import {
   type UploadedKycDocument,
@@ -224,15 +225,14 @@ export function KycDocumentManager({ userId, account }: { userId: string; accoun
                     <img src={url || "/placeholder.svg"} alt={doc.label} className="h-full w-full object-cover" />
                   </button>
                 ) : (
-                  <a
-                    href={url}
-                    target="_blank"
-                    rel="noopener noreferrer"
+                  <button
+                    type="button"
+                    onClick={() => void downloadFile(url, doc.filename || doc.label)}
                     className="flex h-14 w-14 shrink-0 items-center justify-center overflow-hidden rounded-md border border-border bg-secondary"
-                    title="Open document"
+                    title="Download document"
                   >
                     <FileText className="h-6 w-6 text-muted-foreground" />
-                  </a>
+                  </button>
                 )}
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-1.5">
@@ -249,15 +249,14 @@ export function KycDocumentManager({ userId, account }: { userId: string; accoun
                   </p>
                 </div>
                 <div className="flex shrink-0 items-center gap-1">
-                  <a
-                    href={url}
-                    target="_blank"
-                    rel="noopener noreferrer"
+                  <button
+                    type="button"
+                    onClick={() => void downloadFile(url, doc.filename || doc.label)}
                     className="flex h-9 w-9 items-center justify-center rounded-md text-muted-foreground hover:bg-secondary hover:text-foreground"
-                    title="Open document"
+                    title="Download document"
                   >
-                    <ExternalLink className="h-4 w-4" />
-                  </a>
+                    <Download className="h-4 w-4" />
+                  </button>
                   <button
                     type="button"
                     onClick={() => void onDelete(doc)}

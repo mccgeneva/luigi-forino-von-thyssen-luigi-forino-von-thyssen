@@ -4,6 +4,7 @@ import { FileText, Download, Ship, ShieldCheck, ShieldAlert, ShieldQuestion, Anc
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { blobFileUrl } from "@/lib/kyc-types"
+import { downloadFile } from "@/lib/download-file"
 import { VESSEL_TYPE_LABELS, VESSEL_STATUS_LABELS, type Vessel } from "@/lib/spot-deals-shared"
 import { VesselLivePositionLine } from "@/components/dashboard/vessel-live-position"
 
@@ -221,15 +222,14 @@ function DocsCard({ docs }: { docs: DealDoc[] }) {
                 ) : null}
               </div>
               {pathname ? (
-                <a
-                  href={blobFileUrl(pathname)}
-                  target="_blank"
-                  rel="noreferrer"
+                <button
+                  type="button"
+                  onClick={() => void downloadFile(blobFileUrl(pathname), current?.fileName || `${doc.docType}.pdf`)}
                   className="inline-flex items-center gap-1 rounded-md border border-primary/30 px-2.5 py-1.5 text-xs font-medium text-primary transition-colors hover:bg-primary/10"
                 >
                   <Download className="h-3.5 w-3.5" />
-                  View PDF
-                </a>
+                  Download PDF
+                </button>
               ) : (
                 <span className="text-[11px] text-muted-foreground">Metadata only</span>
               )}

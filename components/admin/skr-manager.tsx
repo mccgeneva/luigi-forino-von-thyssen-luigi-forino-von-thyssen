@@ -71,6 +71,7 @@ import {
 import { creditSkrCollateralAdmin, reverseSkrCollateralAdmin } from "@/app/actions/treasury"
 import { upload } from "@vercel/blob/client"
 import { blobFileUrl } from "@/lib/kyc-types"
+import { downloadFile } from "@/lib/download-file"
 import { usePdfViewer } from "@/lib/pdf-viewer"
 import { generateSkrCertificate } from "@/lib/certificate-pdf"
 
@@ -1026,16 +1027,14 @@ export function SkrManager() {
                               <span className="shrink-0 text-[10px] text-muted-foreground">{doc.docType}</span>
                             </div>
                             {doc.pathname ? (
-                              <a
-                                href={blobFileUrl(doc.pathname)}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                download={doc.name}
+                              <button
+                                type="button"
+                                onClick={() => void downloadFile(blobFileUrl(doc.pathname!), doc.name)}
                                 className="inline-flex shrink-0 items-center gap-1 text-xs text-primary hover:underline"
                               >
                                 <Download className="h-3.5 w-3.5" />
                                 Download
-                              </a>
+                              </button>
                             ) : (
                               <span className="shrink-0 text-[10px] text-muted-foreground">Reference only</span>
                             )}
