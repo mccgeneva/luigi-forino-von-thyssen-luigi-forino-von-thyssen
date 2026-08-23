@@ -55,7 +55,7 @@ function formatDate(iso: string): string {
 }
 
 export function PortfolioOverview() {
-  const { totalIn, balanceFor, reservedFor, entries, currencies } = useLedger()
+  const { balanceFor, reservedFor, entries, currencies } = useLedger()
   const { instruments } = useInstrumentRequests()
   const { beneficiaries } = useBeneficiaries()
 
@@ -74,10 +74,6 @@ export function PortfolioOverview() {
     : []
   const reservedTotal = reservedEntries.reduce((sum, e) => sum + e.amount, 0)
 
-  // Total balance aggregates every currency the client holds, converted to EUR,
-  // so balances from currency exchanges (USD, GBP, etc.) are included too.
-  const totalBalance = totalIn("EUR")
-
   // Core multi-currency settlement accounts that make up the master account.
   // These are always displayed so the client sees the complete picture of every
   // currency balance the platform tracks, even those still at 0.00.
@@ -90,14 +86,32 @@ export function PortfolioOverview() {
     ...currencies.filter((c) => !CORE_CURRENCIES.includes(c)),
   ].filter((c, i, arr) => arr.indexOf(c) === i)
   const heldCurrencies = orderedCurrencies.length
-  const currencyBalances = orderedCurrencies.map((cur) => ({
-    currency: cur,
-    name: currencyNames[cur] || cur,
-    balance: balanceFor(cur),
-    formatted: formatMoney(balanceFor(cur), cur),
-    reserved: reservedFor(cur),
-    reservedFormatted: formatMoney(reservedFor(cur), cur),
-  }))
+  const currencyBalances = orderedCurrencies.map((cur) => {
+    // "Available" (spendable) balance. balanceFor already subtracts reserved
+    // holds, so when a reservation exceeds the settled cash in this currency —
+    // e.g. a large PENDING fund subscription that will be funded across
+    // currencies once an administrator approves it — balanceFor can turn
+    // negative. Available cash can never truly be below zero, so we clamp the
+    // DISPLAY to 0; the reserved line below still shows the full blocked amount.
+    // This is presentation only and does not change any money/solvency logic.
+    const available = Math.max(0, balanceFor(cur))
+    return {
+      currency: cur,
+      name: currencyNames[cur] || cur,
+      balance: available,
+      formatted: formatMoney(available, cur),
+      reserved: reservedFor(cur),
+      reservedFormatted: formatMoney(reservedFor(cur), cur),
+    }
+  })
+
+  // Total available across every currency, converted to EUR. Built from the
+  // clamped per-currency figures so an over-reserved currency can never drag
+  // the headline total negative.
+  const totalBalance = currencyBalances.reduce(
+    (sum, cb) => sum + convertCurrency(cb.balance, cb.currency, "EUR"),
+    0,
+  )
 
   // Volume received over the trailing 30 days, aggregating every currency's
   // completed credits into their EUR equivalent so the figure reflects the
