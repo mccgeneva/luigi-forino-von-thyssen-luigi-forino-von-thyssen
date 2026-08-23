@@ -28,13 +28,21 @@ export function GuaranteeScoreCard() {
 
   if (!data?.ok || !data.score) return null
 
-  const { score, highRiskThreshold, enforce } = data
-  const high = score.highRisk
+  const { score, enforce } = data
+  // Defensive: never trust the payload shape blindly — a missing/invalid
+  // threshold must not crash the whole dashboard section (it did once).
+  const highRiskThreshold =
+    typeof data.highRiskThreshold === "number" && Number.isFinite(data.highRiskThreshold)
+      ? data.highRiskThreshold
+      : 10
+  const finalScore = Number.isFinite(score.finalScore) ? score.finalScore : 0
+  const ageCredit = Number.isFinite(score.ageCredit) ? score.ageCredit : 0
+  const high = Boolean(score.highRisk)
 
   // Map the risk score onto a 0-100 bar relative to 2x the threshold so the
   // High-Risk line sits at the mid-point and is easy to read at a glance.
   const barMax = Math.max(highRiskThreshold * 2, 1)
-  const pct = Math.min(100, Math.max(0, (score.finalScore / barMax) * 100))
+  const pct = Math.min(100, Math.max(0, (finalScore / barMax) * 100))
 
   return (
     <Card className={cn("border-border bg-card", high && "border-destructive/40")}>
@@ -72,7 +80,7 @@ export function GuaranteeScoreCard() {
                   high ? "text-destructive" : "text-foreground",
                 )}
               >
-                {score.finalScore.toFixed(2)}
+                {finalScore.toFixed(2)}
               </p>
             </div>
             <p className="text-[11px] text-muted-foreground">
@@ -84,10 +92,10 @@ export function GuaranteeScoreCard() {
 
         {/* Factor breakdown */}
         <div className="grid gap-px overflow-hidden rounded-lg border border-border bg-border sm:grid-cols-2">
-          <Factor label="Security deposit coefficient" value={score.factors.securityDeposit} good />
-          <Factor label="Leverage load" value={score.factors.leverageLoad} />
-          <Factor label="Exposure factor" value={score.factors.exposure} />
-          <Factor label="Payment penalty" value={score.factors.paymentPenalty} />
+          <Factor label="Security deposit coefficient" value={score.factors?.securityDeposit} good />
+          <Factor label="Leverage load" value={score.factors?.leverageLoad} />
+          <Factor label="Exposure factor" value={score.factors?.exposure} />
+          <Factor label="Payment penalty" value={score.factors?.paymentPenalty} />
         </div>
 
         <div className="flex items-center justify-between rounded-lg border border-border bg-secondary/30 p-3">
@@ -95,7 +103,7 @@ export function GuaranteeScoreCard() {
             <TrendingUp className="h-3.5 w-3.5 text-primary" />
             Account history credit
           </span>
-          <span className="text-sm font-semibold text-foreground">−{score.ageCredit.toFixed(2)}</span>
+          <span className="text-sm font-semibold text-foreground">−{ageCredit.toFixed(2)}</span>
         </div>
 
         <p className="flex items-start gap-1.5 text-[11px] leading-relaxed text-muted-foreground text-pretty">
@@ -111,7 +119,8 @@ export function GuaranteeScoreCard() {
   )
 }
 
-function Factor({ label, value, good }: { label: string; value: number; good?: boolean }) {
+function Factor({ label, value, good }: { label: string; value?: number; good?: boolean }) {
+  const safe = typeof value === "number" && Number.isFinite(value) ? value : 0
   return (
     <div className="bg-card p-3">
       <p className="text-[11px] text-muted-foreground">{label}</p>
@@ -121,7 +130,7 @@ function Factor({ label, value, good }: { label: string; value: number; good?: b
           good ? "text-green-600 dark:text-green-500" : "text-foreground",
         )}
       >
-        {value.toFixed(2)}
+        {safe.toFixed(2)}
       </p>
     </div>
   )
