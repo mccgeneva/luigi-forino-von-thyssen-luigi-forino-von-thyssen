@@ -27,7 +27,6 @@ import {
   ShieldCheck,
   CalendarClock,
   CalendarDays,
-  Hourglass,
   Wallet,
   Percent,
   Flag,
@@ -356,10 +355,13 @@ export default function TradingPage() {
     .filter((p) => p.status === "active")
     .reduce((s, p) => s + p.deployed, 0)
   const totalRoiEarned = fundPositions.reduce((s, p) => s + p.roiEarned, 0)
-  // ROI still scheduled to be paid across positions that are still running.
-  const totalRoiToBePaid = positionViews
-    .filter((p) => p.view && !p.view.expired && p.status === "active")
-    .reduce((s, p) => s + (p.view?.roiRemaining ?? 0), 0)
+  // Only the NEXT scheduled monthly ROI across active positions that still have
+  // a payout pending. We deliberately do NOT project full-term ROI: the program
+  // can be terminated at any time, so promising a year of profit would be
+  // misleading — the customer only ever sees the next month's expected credit.
+  const nextMonthRoi = positionViews
+    .filter((p) => p.view && !p.view.expired && p.status === "active" && p.view.nextRoiDate)
+    .reduce((s, p) => s + (p.view?.monthlyRoiAmount ?? 0), 0)
   // Live positions (reserved + active) get the full lifecycle card; settled ones
   // are tucked into the "Archived NAFTAhub trades" folder below.
   const activePositions = positionViews.filter((p) => p.status !== "closed")
@@ -1263,14 +1265,14 @@ export default function TradingPage() {
                     <p className="mt-0.5 text-[11px] text-muted-foreground">Already credited to you</p>
                   </div>
                   <div className="rounded-lg border border-border bg-secondary/30 p-4">
-                    <p className="text-xs text-muted-foreground">ROI still to be paid</p>
+                    <p className="text-xs text-muted-foreground">Next month ROI</p>
                     <p
                       className="mt-1 text-lg font-bold tabular-nums leading-tight whitespace-nowrap text-primary"
-                      title={formatEur(totalRoiToBePaid)}
+                      title={formatEur(nextMonthRoi)}
                     >
-                      {formatEurCompact(totalRoiToBePaid)}
+                      {formatEurCompact(nextMonthRoi)}
                     </p>
-                    <p className="mt-0.5 text-[11px] text-muted-foreground">Scheduled before expiry</p>
+                    <p className="mt-0.5 text-[11px] text-muted-foreground">Only if active at next payout</p>
                   </div>
                   <div className="rounded-lg border border-border bg-secondary/30 p-4">
                     <p className="text-xs text-muted-foreground">Active positions</p>
@@ -1281,6 +1283,12 @@ export default function TradingPage() {
                     <p className="mt-0.5 text-[11px] text-muted-foreground">{TRADING_FUND_TERM_MONTHS}-month engagement</p>
                   </div>
                 </div>
+
+                <p className="text-[11px] leading-relaxed text-muted-foreground text-pretty">
+                  ROI accrues monthly and is credited only while a position stays active. The program may be terminated
+                  at any time, so only ROI already matured is yours — figures beyond the next scheduled payout are not
+                  guaranteed.
+                </p>
 
                 {/* Per-position lifecycle — live (reserved + active) positions */}
                 <div className="space-y-4">
@@ -1355,24 +1363,10 @@ export default function TradingPage() {
                               </div>
                               <div className="rounded-lg border border-border/60 bg-secondary/20 p-3">
                                 <p className="inline-flex items-center gap-1 text-[11px] text-muted-foreground">
-                                  <ShieldCheck className="h-3 w-3" /> Value at maturity
-                                </p>
-                                <p className="mt-1 text-sm font-bold tabular-nums leading-tight whitespace-nowrap text-foreground" title={formatEur(v.capitalAtMaturity)}>{formatEurCompact(v.capitalAtMaturity)}</p>
-                                <p className="mt-0.5 text-[10px] text-muted-foreground">Capital + full-term ROI</p>
-                              </div>
-                              <div className="rounded-lg border border-border/60 bg-secondary/20 p-3">
-                                <p className="inline-flex items-center gap-1 text-[11px] text-muted-foreground">
                                   <TrendingUp className="h-3 w-3" /> ROI matured
                                 </p>
                                 <p className="mt-1 text-sm font-bold tabular-nums leading-tight whitespace-nowrap text-green-500" title={formatEur(v.roiMatured)}>{formatEurCompact(v.roiMatured)}</p>
                                 <p className="mt-0.5 text-[10px] text-muted-foreground">{v.monthsMatured} of {v.termMonths} months</p>
-                              </div>
-                              <div className="rounded-lg border border-border/60 bg-secondary/20 p-3">
-                                <p className="inline-flex items-center gap-1 text-[11px] text-muted-foreground">
-                                  <Hourglass className="h-3 w-3" /> ROI to be paid
-                                </p>
-                                <p className="mt-1 text-sm font-bold tabular-nums leading-tight whitespace-nowrap text-primary" title={formatEur(v.roiRemaining)}>{formatEurCompact(v.roiRemaining)}</p>
-                                <p className="mt-0.5 text-[10px] text-muted-foreground">{v.monthsRemaining} month{v.monthsRemaining === 1 ? "" : "s"} left</p>
                               </div>
                               <div className="rounded-lg border border-border/60 bg-secondary/20 p-3">
                                 <p className="inline-flex items-center gap-1 text-[11px] text-muted-foreground">
@@ -1390,10 +1384,10 @@ export default function TradingPage() {
                               </div>
                               <div className="rounded-lg border border-border/60 bg-secondary/20 p-3">
                                 <p className="inline-flex items-center gap-1 text-[11px] text-muted-foreground">
-                                  <Percent className="h-3 w-3" /> Monthly ROI
+                                  <Percent className="h-3 w-3" /> Next month ROI
                                 </p>
-                                <p className="mt-1 text-sm font-bold tabular-nums leading-tight whitespace-nowrap text-foreground" title={formatEur(v.monthlyRoiAmount)}>{formatEurCompact(v.monthlyRoiAmount)}</p>
-                                <p className="mt-0.5 text-[10px] text-muted-foreground">{(v.monthlyRoiRate * 100).toFixed(0)}% per month</p>
+                                <p className="mt-1 text-sm font-bold tabular-nums leading-tight whitespace-nowrap text-primary" title={formatEur(v.monthlyRoiAmount)}>{formatEurCompact(v.monthlyRoiAmount)}</p>
+                                <p className="mt-0.5 text-[10px] text-muted-foreground">{(v.monthlyRoiRate * 100).toFixed(0)}% · only if active</p>
                               </div>
                               <div className="rounded-lg border border-border/60 bg-secondary/20 p-3">
                                 <p className="inline-flex items-center gap-1 text-[11px] text-muted-foreground">
