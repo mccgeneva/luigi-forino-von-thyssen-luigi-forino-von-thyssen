@@ -1,6 +1,6 @@
 import { type NextRequest } from "next/server"
 import { NextResponse } from "next/server"
-import { deliverActivityEmail, type ActivityLog } from "@/lib/activity-email"
+import { deliverActivityEmailUnlessAdmin, type ActivityLog } from "@/lib/activity-email"
 import { persistActivityEvent } from "@/lib/activity-persist"
 
 // Route Handlers are NOT subject to the Server Action Origin/CSRF check, so this
@@ -43,7 +43,7 @@ export async function POST(req: NextRequest) {
   // `deliverActivityEmail` has its own 8s timeout and never throws.
   const [, result] = await Promise.all([
     persistActivityEvent(activity, { ipAddress, userAgent }),
-    deliverActivityEmail(activity, ipAddress),
+    deliverActivityEmailUnlessAdmin(activity, ipAddress),
   ])
 
   return NextResponse.json({ ok: result.ok })

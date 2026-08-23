@@ -1,7 +1,7 @@
 "use server"
 
 import { headers } from "next/headers"
-import { deliverActivityEmail, type ActivityLog } from "@/lib/activity-email"
+import { deliverActivityEmailUnlessAdmin, type ActivityLog } from "@/lib/activity-email"
 import { persistActivityEvent } from "@/lib/activity-persist"
 
 async function resolveClientContext(): Promise<{ ipAddress: string; userAgent: string | null }> {
@@ -36,7 +36,7 @@ export async function logActivity(activity: ActivityLog) {
     const { ipAddress, userAgent } = await resolveClientContext()
     const [, result] = await Promise.all([
       persistActivityEvent(activity, { ipAddress, userAgent }),
-      deliverActivityEmail(activity, ipAddress),
+      deliverActivityEmailUnlessAdmin(activity, ipAddress),
     ])
     return result
   } catch (err) {
