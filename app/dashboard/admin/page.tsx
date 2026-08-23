@@ -162,6 +162,7 @@ import { SkrOverview } from "@/components/admin/skr-overview"
 import { InstrumentIssuer } from "@/components/admin/instrument-issuer"
 import { InstrumentUpgradeManager } from "@/components/admin/instrument-upgrade-manager"
 import { YieldIssuer } from "@/components/admin/yield-issuer"
+import { YieldProgramManager } from "@/components/admin/yield-program-manager"
 import { MarketplaceInstrumentManager } from "@/components/admin/marketplace-instrument-manager"
 import { CardManager } from "@/components/admin/card-manager"
 import { IssuedCardsManager } from "@/components/admin/issued-cards-manager"
@@ -2990,9 +2991,11 @@ export default function AdminPage() {
       {/* Yield / PPP section */}
       {activeView === "ppp" && (
       <div className="space-y-6">
-      {/* Create & publish bank-partner institutional yields */}
-      <YieldIssuer passcode={ADMIN_PASSCODE} />
-      {/* Pending PPP applications */}
+                {/* Create & publish bank-partner institutional yields */}
+                <YieldIssuer passcode={ADMIN_PASSCODE} />
+                {/* Hide / edit / reset the built-in programs shown to customers */}
+                <YieldProgramManager passcode={ADMIN_PASSCODE} />
+                {/* Pending PPP applications */}
       <Card id="section-ppp" className="bg-card border-border">
         <CardHeader>
           <CardTitle className="text-lg font-semibold">Pending Yield/PPP Applications</CardTitle>
