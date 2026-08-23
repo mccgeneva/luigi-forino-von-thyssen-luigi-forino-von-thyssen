@@ -514,6 +514,14 @@ export default function TradingPage() {
   const formatEur = (n: number) =>
     `€${n.toLocaleString("en-US", { maximumFractionDigits: 0 })}`
 
+  // Compact form for the large KPI/metric tiles so billion-scale figures fit on
+  // a single line instead of wrapping mid-number (e.g. "€2.98B"). Values under
+  // €1M keep full grouping. The exact amount is shown via the tile's title.
+  const formatEurCompact = (n: number) => {
+    if (Math.abs(n) < 1_000_000) return formatEur(n)
+    return `€${n.toLocaleString("en-US", { notation: "compact", maximumFractionDigits: 2 })}`
+  }
+
   const fmtDate = (d: Date | string) =>
     new Date(d).toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" })
 
@@ -1236,22 +1244,31 @@ export default function TradingPage() {
                 <div className="grid gap-3 grid-cols-2 lg:grid-cols-4">
                   <div className="rounded-lg border border-border bg-secondary/30 p-4">
                     <p className="text-xs text-muted-foreground">Capital deployed (active)</p>
-                    <p className="mt-1 text-base sm:text-lg font-bold tabular-nums leading-tight break-words text-foreground">
-                      {formatEur(activeFundCapital)}
+                    <p
+                      className="mt-1 text-lg font-bold tabular-nums leading-tight whitespace-nowrap text-foreground"
+                      title={formatEur(activeFundCapital)}
+                    >
+                      {formatEurCompact(activeFundCapital)}
                     </p>
                     <p className="mt-0.5 text-[11px] text-muted-foreground">Debited from your master account</p>
                   </div>
                   <div className="rounded-lg border border-border bg-secondary/30 p-4">
                     <p className="text-xs text-muted-foreground">ROI matured to date</p>
-                    <p className="mt-1 text-base sm:text-lg font-bold tabular-nums leading-tight break-words text-green-500">
-                      {formatEur(totalRoiEarned)}
+                    <p
+                      className="mt-1 text-lg font-bold tabular-nums leading-tight whitespace-nowrap text-green-500"
+                      title={formatEur(totalRoiEarned)}
+                    >
+                      {formatEurCompact(totalRoiEarned)}
                     </p>
                     <p className="mt-0.5 text-[11px] text-muted-foreground">Already credited to you</p>
                   </div>
                   <div className="rounded-lg border border-border bg-secondary/30 p-4">
                     <p className="text-xs text-muted-foreground">ROI still to be paid</p>
-                    <p className="mt-1 text-base sm:text-lg font-bold tabular-nums leading-tight break-words text-primary">
-                      {formatEur(totalRoiToBePaid)}
+                    <p
+                      className="mt-1 text-lg font-bold tabular-nums leading-tight whitespace-nowrap text-primary"
+                      title={formatEur(totalRoiToBePaid)}
+                    >
+                      {formatEurCompact(totalRoiToBePaid)}
                     </p>
                     <p className="mt-0.5 text-[11px] text-muted-foreground">Scheduled before expiry</p>
                   </div>
@@ -1334,27 +1351,27 @@ export default function TradingPage() {
                                 <p className="inline-flex items-center gap-1 text-[11px] text-muted-foreground">
                                   <Wallet className="h-3 w-3" /> Capital started
                                 </p>
-                                <p className="mt-1 text-sm font-bold tabular-nums leading-tight break-words text-foreground">{formatEur(v.capitalStarted)}</p>
+                                <p className="mt-1 text-sm font-bold tabular-nums leading-tight whitespace-nowrap text-foreground" title={formatEur(v.capitalStarted)}>{formatEurCompact(v.capitalStarted)}</p>
                               </div>
                               <div className="rounded-lg border border-border/60 bg-secondary/20 p-3">
                                 <p className="inline-flex items-center gap-1 text-[11px] text-muted-foreground">
                                   <ShieldCheck className="h-3 w-3" /> Value at maturity
                                 </p>
-                                <p className="mt-1 text-sm font-bold tabular-nums leading-tight break-words text-foreground">{formatEur(v.capitalAtMaturity)}</p>
+                                <p className="mt-1 text-sm font-bold tabular-nums leading-tight whitespace-nowrap text-foreground" title={formatEur(v.capitalAtMaturity)}>{formatEurCompact(v.capitalAtMaturity)}</p>
                                 <p className="mt-0.5 text-[10px] text-muted-foreground">Capital + full-term ROI</p>
                               </div>
                               <div className="rounded-lg border border-border/60 bg-secondary/20 p-3">
                                 <p className="inline-flex items-center gap-1 text-[11px] text-muted-foreground">
                                   <TrendingUp className="h-3 w-3" /> ROI matured
                                 </p>
-                                <p className="mt-1 text-sm font-bold tabular-nums leading-tight break-words text-green-500">{formatEur(v.roiMatured)}</p>
+                                <p className="mt-1 text-sm font-bold tabular-nums leading-tight whitespace-nowrap text-green-500" title={formatEur(v.roiMatured)}>{formatEurCompact(v.roiMatured)}</p>
                                 <p className="mt-0.5 text-[10px] text-muted-foreground">{v.monthsMatured} of {v.termMonths} months</p>
                               </div>
                               <div className="rounded-lg border border-border/60 bg-secondary/20 p-3">
                                 <p className="inline-flex items-center gap-1 text-[11px] text-muted-foreground">
                                   <Hourglass className="h-3 w-3" /> ROI to be paid
                                 </p>
-                                <p className="mt-1 text-sm font-bold tabular-nums leading-tight break-words text-primary">{formatEur(v.roiRemaining)}</p>
+                                <p className="mt-1 text-sm font-bold tabular-nums leading-tight whitespace-nowrap text-primary" title={formatEur(v.roiRemaining)}>{formatEurCompact(v.roiRemaining)}</p>
                                 <p className="mt-0.5 text-[10px] text-muted-foreground">{v.monthsRemaining} month{v.monthsRemaining === 1 ? "" : "s"} left</p>
                               </div>
                               <div className="rounded-lg border border-border/60 bg-secondary/20 p-3">
@@ -1375,7 +1392,7 @@ export default function TradingPage() {
                                 <p className="inline-flex items-center gap-1 text-[11px] text-muted-foreground">
                                   <Percent className="h-3 w-3" /> Monthly ROI
                                 </p>
-                                <p className="mt-1 text-sm font-bold tabular-nums leading-tight break-words text-foreground">{formatEur(v.monthlyRoiAmount)}</p>
+                                <p className="mt-1 text-sm font-bold tabular-nums leading-tight whitespace-nowrap text-foreground" title={formatEur(v.monthlyRoiAmount)}>{formatEurCompact(v.monthlyRoiAmount)}</p>
                                 <p className="mt-0.5 text-[10px] text-muted-foreground">{(v.monthlyRoiRate * 100).toFixed(0)}% per month</p>
                               </div>
                               <div className="rounded-lg border border-border/60 bg-secondary/20 p-3">
@@ -1523,20 +1540,29 @@ export default function TradingPage() {
                               <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
                                 <div>
                                   <p className="text-[10px] text-muted-foreground">Capital deployed</p>
-                                  <p className="mt-0.5 text-sm font-semibold tabular-nums leading-tight break-words text-foreground">
-                                    {formatEur(p.deployed)}
+                                  <p
+                                    className="mt-0.5 text-sm font-semibold tabular-nums leading-tight whitespace-nowrap text-foreground"
+                                    title={formatEur(p.deployed)}
+                                  >
+                                    {formatEurCompact(p.deployed)}
                                   </p>
                                 </div>
                                 <div>
                                   <p className="text-[10px] text-muted-foreground">ROI earned</p>
-                                  <p className="mt-0.5 text-sm font-semibold tabular-nums leading-tight break-words text-green-500">
-                                    {formatEur(p.roiEarned)}
+                                  <p
+                                    className="mt-0.5 text-sm font-semibold tabular-nums leading-tight whitespace-nowrap text-green-500"
+                                    title={formatEur(p.roiEarned)}
+                                  >
+                                    {formatEurCompact(p.roiEarned)}
                                   </p>
                                 </div>
                                 <div>
                                   <p className="text-[10px] text-muted-foreground">Capital returned</p>
-                                  <p className="mt-0.5 text-sm font-semibold tabular-nums leading-tight break-words text-foreground">
-                                    {formatEur(p.returned)}
+                                  <p
+                                    className="mt-0.5 text-sm font-semibold tabular-nums leading-tight whitespace-nowrap text-foreground"
+                                    title={formatEur(p.returned)}
+                                  >
+                                    {formatEurCompact(p.returned)}
                                   </p>
                                 </div>
                                 <div>
