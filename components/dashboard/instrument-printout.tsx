@@ -1,7 +1,8 @@
 "use client"
 
-import { Printer, ExternalLink, FileText } from "lucide-react"
+import { Printer, Download, FileText } from "lucide-react"
 import { Button } from "@/components/ui/button"
+import { downloadFile } from "@/lib/download-file"
 import {
   Dialog,
   DialogContent,
@@ -235,18 +236,47 @@ function buildReportHtml(i: MarketplaceInstrument): string {
       fmtDateTime(now),
     )} UTC</span></div>
   </div>
-</div>
-<script>window.onload=function(){setTimeout(function(){window.focus();window.print();},250);};</script>
+  </div>
 </body></html>`
 }
 
+/**
+ * Print the standalone report WITHOUT navigating away.
+ *
+ * Using `window.open("_blank")` inside the installed PWA / in-app webview just
+ * navigates the single webview to the written document — there is no browser
+ * chrome, so the user is stranded on the raw report with no way back. Instead we
+ * host the report in an offscreen iframe and print THAT: the OS print/share
+ * sheet appears (letting the user Save to Files / export a PDF), and the app
+ * itself never leaves the screen. If print is dismissed the user is still in the
+ * dialog.
+ */
 function printReport(i: MarketplaceInstrument) {
   const html = buildReportHtml(i)
-  const w = window.open("", "_blank", "width=880,height=1000")
-  if (!w) return
-  w.document.open()
-  w.document.write(html)
-  w.document.close()
+  const iframe = document.createElement("iframe")
+  iframe.setAttribute("aria-hidden", "true")
+  iframe.style.cssText = "position:fixed;right:0;bottom:0;width:0;height:0;border:0;opacity:0;"
+  const cleanup = () => {
+    window.setTimeout(() => iframe.remove(), 1000)
+  }
+  iframe.onload = () => {
+    try {
+      const win = iframe.contentWindow
+      if (!win) {
+        iframe.remove()
+        return
+      }
+      win.addEventListener("afterprint", cleanup)
+      win.focus()
+      win.print()
+      // Safety net in case afterprint never fires (e.g. print cancelled).
+      window.setTimeout(() => iframe.remove(), 60000)
+    } catch {
+      iframe.remove()
+    }
+  }
+  iframe.srcdoc = html
+  document.body.appendChild(iframe)
 }
 
 /* ---------------------------------------------------------------------------
@@ -435,11 +465,13 @@ export function InstrumentPrintout({
 
         <div className="flex flex-wrap items-center justify-end gap-2">
           {i.printoutUrl ? (
-            <Button asChild variant="outline" className="gap-1.5 bg-transparent">
-              <a href={i.printoutUrl} target="_blank" rel="noopener noreferrer">
-                <ExternalLink className="h-4 w-4" />
-                Source document
-              </a>
+            <Button
+              variant="outline"
+              className="gap-1.5 bg-transparent"
+              onClick={() => void downloadFile(i.printoutUrl!, `${i.type}-${i.isin}-source`)}
+            >
+              <Download className="h-4 w-4" />
+              Source document
             </Button>
           ) : null}
           <Button onClick={() => printReport(i)} className="gap-1.5">
