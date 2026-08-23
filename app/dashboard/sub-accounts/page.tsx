@@ -24,6 +24,7 @@ import {
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { MoneyInput } from "@/components/ui/money-input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { Badge } from "@/components/ui/badge"
@@ -938,13 +939,12 @@ export default function SubAccountsPage() {
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="transfer-amount">Amount</Label>
-              <Input
-                id="transfer-amount"
-                inputMode="decimal"
-                value={transferAmount}
-                onChange={(e) => setTransferAmount(e.target.value)}
-                placeholder="0.00"
-              />
+                <MoneyInput
+                  id="transfer-amount"
+                  value={transferAmount}
+                  onValueChange={setTransferAmount}
+                  placeholder="0.00"
+                />
               {transferAmount && sourceNeed > fromBalance + 0.001 && (
                 <p className="text-xs text-destructive">
                   {fromId === MAIN_ACCOUNT_ID

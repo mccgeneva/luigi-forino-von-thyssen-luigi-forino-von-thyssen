@@ -6,7 +6,7 @@ import { toast } from "sonner"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
+ import { MoneyInput } from "@/components/ui/money-input"
 import { cn } from "@/lib/utils"
 import {
   type TreasuryAccount,
@@ -174,10 +174,9 @@ export function FundDepositCard({
               <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-sm text-muted-foreground">
                 {currency}
               </span>
-              <Input
-                inputMode="decimal"
+              <MoneyInput
                 value={amount}
-                onChange={(e) => setAmount(e.target.value.replace(/[^0-9.]/g, ""))}
+                onValueChange={setAmount}
                 placeholder="0.00"
                 className="h-11 pl-12 text-base"
                 aria-label="Amount to apply to your security deposit"

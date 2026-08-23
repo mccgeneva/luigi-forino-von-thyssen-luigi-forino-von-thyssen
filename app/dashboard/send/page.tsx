@@ -18,7 +18,8 @@ import {
   FileText,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
+  import { Input } from "@/components/ui/input"
+  import { MoneyInput } from "@/components/ui/money-input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import {
@@ -503,7 +504,7 @@ export default function SendMoneyPage() {
 
       <div className="grid gap-6 lg:grid-cols-5">
         {/* Transfer form */}
-        <Card className="bg-card border-border lg:col-span-2">
+        <Card className="min-w-0 bg-card border-border lg:col-span-2">
           <CardHeader className="space-y-3">
             <CardTitle className="flex items-center gap-2 text-lg font-semibold">
               <Send className="h-5 w-5 text-primary" />
@@ -600,15 +601,11 @@ export default function SendMoneyPage() {
             <div className="grid grid-cols-3 gap-3">
               <div className="col-span-2 space-y-2">
                 <Label htmlFor="amount">Amount</Label>
-                <Input
+                <MoneyInput
                   id="amount"
-                  type="number"
-                  min="0"
-                  step="0.01"
-                  inputMode="decimal"
                   placeholder="0.00"
                   value={amount}
-                  onChange={(e) => setAmount(e.target.value)}
+                  onValueChange={setAmount}
                 />
               </div>
               <div className="space-y-2">
@@ -707,7 +704,7 @@ export default function SendMoneyPage() {
         </Card>
 
         {/* Unified history */}
-        <Card className="bg-card border-border lg:col-span-3">
+        <Card className="min-w-0 bg-card border-border lg:col-span-3">
           <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <CardTitle className="text-lg font-semibold">Transfer History</CardTitle>
             <div className="relative w-full sm:w-64">

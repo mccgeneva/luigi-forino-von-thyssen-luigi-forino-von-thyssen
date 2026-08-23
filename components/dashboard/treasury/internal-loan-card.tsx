@@ -16,7 +16,8 @@ import { toast } from "sonner"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
+ import { Input } from "@/components/ui/input"
+ import { MoneyInput } from "@/components/ui/money-input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { cn } from "@/lib/utils"
@@ -231,11 +232,10 @@ export function InternalLoanCard() {
                       <Label htmlFor={`repay-${loan.id}`} className="text-xs">
                         Repay from master balance
                       </Label>
-                      <Input
+                      <MoneyInput
                         id={`repay-${loan.id}`}
                         value={repayAmount}
-                        onChange={(e) => setRepayAmount(e.target.value)}
-                        inputMode="decimal"
+                        onValueChange={setRepayAmount}
                         placeholder="0.00"
                         className="mt-1"
                       />
@@ -263,11 +263,10 @@ export function InternalLoanCard() {
               <Label htmlFor="loan-amount" className="text-xs">
                 Amount
               </Label>
-              <Input
+              <MoneyInput
                 id="loan-amount"
                 value={amount}
-                onChange={(e) => setAmount(e.target.value)}
-                inputMode="decimal"
+                onValueChange={setAmount}
                 placeholder="e.g. 250,000"
                 className="mt-1"
               />
