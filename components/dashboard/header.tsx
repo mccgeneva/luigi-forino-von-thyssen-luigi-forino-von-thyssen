@@ -1,6 +1,7 @@
 "use client"
 
 import { useEffect, useState } from "react"
+import { createPortal } from "react-dom"
 import Link from "next/link"
 import useSWR from "swr"
 import { Bell, User, LogOut, Settings, HelpCircle, Menu, BookOpen, ShieldCheck, Cpu } from "lucide-react"
@@ -88,6 +89,12 @@ export function DashboardHeader() {
   const user = useCurrentUser()
   const isAdmin = useIsAdmin()
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
+  // Header dropdowns are controlled so we can dim/blur the rest of the screen
+  // while one is open — the open menu then reads as the single focused layer
+  // instead of competing with the busy dashboard behind it.
+  const [notifOpen, setNotifOpen] = useState(false)
+  const [userOpen, setUserOpen] = useState(false)
+  const anyMenuOpen = notifOpen || userOpen
 
   // Live notifications from the DB (cross-device). Polls so a decision made by
   // an admin shows up shortly after, even without a page reload.
@@ -128,6 +135,22 @@ export function DashboardHeader() {
   }
   return (
     <header className="sticky top-0 z-50 flex h-16 items-center justify-between border-b border-border bg-card px-4 md:px-6">
+      {/* Dimming backdrop shown while a header dropdown is open, so the menu is
+          the clear focus. Tapping it closes whichever menu is open. Rendered to
+          body at z-40 — below the z-50 menu content, above the page. */}
+      {anyMenuOpen &&
+        typeof document !== "undefined" &&
+        createPortal(
+          <div
+            aria-hidden="true"
+            onClick={() => {
+              setNotifOpen(false)
+              setUserOpen(false)
+            }}
+            className="fixed inset-0 z-40 bg-background/70 backdrop-blur-sm animate-in fade-in-0 duration-150"
+          />,
+          document.body,
+        )}
       {/* Mobile Menu */}
       <Sheet open={mobileMenuOpen} onOpenChange={setMobileMenuOpen}>
         <SheetTrigger asChild>
@@ -170,7 +193,7 @@ export function DashboardHeader() {
         <BankekaHeaderButton />
 
         {/* Notifications */}
-        <DropdownMenu>
+        <DropdownMenu open={notifOpen} onOpenChange={setNotifOpen} modal={false}>
           <DropdownMenuTrigger asChild>
             <Button variant="ghost" size="icon" className="relative">
               <Bell className="h-5 w-5" />
@@ -246,7 +269,7 @@ export function DashboardHeader() {
         </DropdownMenu>
 
         {/* User Menu */}
-        <DropdownMenu>
+        <DropdownMenu open={userOpen} onOpenChange={setUserOpen} modal={false}>
           <DropdownMenuTrigger asChild>
             <Button variant="ghost" className="gap-2 px-2">
               <Avatar className="h-8 w-8">
