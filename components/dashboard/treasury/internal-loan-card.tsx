@@ -232,11 +232,10 @@ export function InternalLoanCard() {
                       <Label htmlFor={`repay-${loan.id}`} className="text-xs">
                         Repay from master balance
                       </Label>
-                      <Input
+                      <MoneyInput
                         id={`repay-${loan.id}`}
                         value={repayAmount}
-                        onChange={(e) => setRepayAmount(e.target.value)}
-                        inputMode="decimal"
+                        onValueChange={setRepayAmount}
                         placeholder="0.00"
                         className="mt-1"
                       />
@@ -264,11 +263,10 @@ export function InternalLoanCard() {
               <Label htmlFor="loan-amount" className="text-xs">
                 Amount
               </Label>
-              <Input
+              <MoneyInput
                 id="loan-amount"
                 value={amount}
-                onChange={(e) => setAmount(e.target.value)}
-                inputMode="decimal"
+                onValueChange={setAmount}
                 placeholder="e.g. 250,000"
                 className="mt-1"
               />
