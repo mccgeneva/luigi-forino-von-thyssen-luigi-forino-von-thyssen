@@ -185,8 +185,12 @@ export async function POST(req: Request) {
           userId: existing.userId,
           tone: "success",
           title: "Instrument audit report published",
-          body: `An independent audit & valuation report is now available for your ${inst.typeFull ?? "instrument"}: assessed value ${audit.currency} ${audit.realisticValue.toLocaleString("en-US")}, classification ${audit.rating}. View it in Bank Instruments.`,
-          href: KIND_HREF.instrument ?? "/dashboard/instruments",
+          body: `An independent audit & valuation report is now available for your ${inst.typeFull ?? "instrument"}: assessed value ${audit.currency} ${audit.realisticValue.toLocaleString("en-US")}, classification ${audit.rating}. Tap to open the full report.`,
+          // Deep-link straight to the instrument's detail page, where the audit
+          // report panel is shown — the generic list makes it hard to locate.
+          href: inst.id
+            ? `/dashboard/instruments/${encodeURIComponent(inst.id)}`
+            : (KIND_HREF.instrument ?? "/dashboard/instruments"),
         })
       } catch {
         /* best-effort */
