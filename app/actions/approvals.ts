@@ -22,6 +22,9 @@ import {
   assessPaymentAgainstLimits,
   limitBlockMessage,
 } from "@/lib/account-limits-eval"
+import { getGuaranteeConfig } from "@/lib/guarantees-config-db"
+import { gatherGuaranteeProfile } from "@/lib/guarantees-profile"
+import { guaranteeBlockMessage } from "@/lib/guarantees-accumulator"
 import { planReservation, formatMoney, type ReservationPlan } from "@/lib/fund-reservation"
 import { cardFeeFor, formatCardFee, CARD_FEE_CURRENCY } from "@/lib/card-fees"
 import { buildTradingFundPosts, TRADING_FUND_MONTHLY_ROI, type TradingFundPauseWindow } from "@/lib/trading-fund"
@@ -157,6 +160,35 @@ export async function submitApproval(input: SubmitApprovalInput): Promise<Submit
   // authoritative check: the client UI also blocks it, but a UI-only guard is
   // bypassable by stale state or another device, so it must live here where
   // every mirrored submission passes.
+  // Guarantees Accumulator — HIGH-RISK gate. Opening NEW financing/exposure
+  // (leverage, monetization, project funding, treasury lending) is refused in
+  // real time while the account is classified High Risk. Risk-reducing actions
+  // (e.g. leverage_switchoff) are never blocked. Fails OPEN on any error — this
+  // is a policy control, not the solvency guard, so a transient failure must
+  // not block all financing.
+  const GUARANTEE_GATED_KINDS = new Set(["leverage", "monetization", "project_funding", "treasury_lending"])
+  if (GUARANTEE_GATED_KINDS.has(input.kind)) {
+    try {
+      const config = await getGuaranteeConfig()
+      if (config.enforce) {
+        const { score } = await gatherGuaranteeProfile(session.id, config)
+        if (score.highRisk) {
+          const productLabel =
+            input.kind === "leverage"
+              ? "leverage"
+              : input.kind === "monetization"
+                ? "instrument monetization"
+                : input.kind === "project_funding"
+                  ? "project funding"
+                  : "treasury financing"
+          return { ok: false, error: guaranteeBlockMessage(score, config.highRiskThreshold, productLabel) }
+        }
+      }
+    } catch (err) {
+      console.log("[v0] guarantees high-risk gate failed (failing open):", (err as Error).message)
+    }
+  }
+
   if (input.kind === "trading_fund") {
     const capital = Number(input.amount)
     if (!Number.isFinite(capital) || capital <= 0) {
