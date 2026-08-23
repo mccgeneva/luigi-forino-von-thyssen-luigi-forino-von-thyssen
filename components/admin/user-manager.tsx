@@ -64,6 +64,7 @@ import {
   KYC_DOCUMENT_LABELS,
   blobFileUrl,
 } from "@/lib/kyc-types"
+import { downloadFile } from "@/lib/download-file"
 
 const STATUS_META: Record<UserStatus, { label: string; className: string }> = {
   active: { label: "Active", className: "bg-green-500/10 text-green-400 border-green-500/30" },
@@ -883,11 +884,15 @@ export function UserManager() {
                       {kycResult.documents.length > 0 && (
                         <div className="flex flex-wrap gap-2">
                           {kycResult.documents.map((doc) => (
-                            <a
+                            <button
                               key={`${doc.type}-${doc.pageNumber}`}
-                              href={`${blobFileUrl(doc.pathname, ADMIN_PASSCODE)}#page=${doc.pageNumber}`}
-                              target="_blank"
-                              rel="noopener noreferrer"
+                              type="button"
+                              onClick={() =>
+                                void downloadFile(
+                                  blobFileUrl(doc.pathname, ADMIN_PASSCODE),
+                                  `${KYC_DOCUMENT_LABELS[doc.type]} p${doc.pageNumber}`,
+                                )
+                              }
                               className="group flex items-center gap-2 rounded-md border border-border bg-background px-2.5 py-1.5 transition-colors hover:border-primary"
                             >
                               <FileText className="h-4 w-4 shrink-0 text-muted-foreground group-hover:text-foreground" />
@@ -895,7 +900,7 @@ export function UserManager() {
                                 {KYC_DOCUMENT_LABELS[doc.type]}
                                 <span className="ml-1 text-muted-foreground/70">p.{doc.pageNumber}</span>
                               </span>
-                            </a>
+                            </button>
                           ))}
                         </div>
                       )}

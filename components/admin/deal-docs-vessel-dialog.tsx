@@ -32,12 +32,13 @@ import {
   ShieldCheck,
   ShieldAlert,
   ShieldQuestion,
-  ExternalLink,
-  Paperclip,
+  Download,
   FolderOpen,
+  Paperclip,
 } from "lucide-react"
-import { ADMIN_PASSCODE } from "@/lib/admin-config"
 import { blobFileUrl } from "@/lib/kyc-types"
+import { downloadFile } from "@/lib/download-file"
+import { ADMIN_PASSCODE } from "@/lib/admin-config"
 import { DEAL_DOC_TYPES } from "@/lib/commodity-deals-store"
 import {
   adminAddDealDocument,
@@ -397,14 +398,13 @@ export function DealDocsVesselDialog({
                       </div>
                       <div className="mt-2 flex flex-wrap items-center gap-1.5">
                         {v?.blobPathname ? (
-                          <a
-                            href={blobFileUrl(v.blobPathname, ADMIN_PASSCODE)}
-                            target="_blank"
-                            rel="noopener noreferrer"
+                          <button
+                            type="button"
+                            onClick={() => void downloadFile(blobFileUrl(v.blobPathname!, ADMIN_PASSCODE), v.fileName || "vessel-document.pdf")}
                             className="inline-flex h-8 items-center gap-1 rounded-md border border-border px-2 text-xs font-medium text-foreground hover:bg-muted"
                           >
-                            <ExternalLink className="h-3.5 w-3.5" /> View PDF
-                          </a>
+                            <Download className="h-3.5 w-3.5" /> Download PDF
+                          </button>
                         ) : null}
                         {doc.status !== "verified" && (
                           <Button
