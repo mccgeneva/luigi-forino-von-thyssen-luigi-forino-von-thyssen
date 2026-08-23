@@ -1,4 +1,5 @@
 import "server-only"
+import { query } from "@/lib/db"
 import { readLedgerEntries, availableByCurrency } from "@/lib/ledger-db"
 import { listApprovalsForUser } from "@/lib/approvals-db"
 import { resolveDataOwnerIdFor } from "@/lib/session-user"
@@ -123,9 +124,43 @@ export async function gatherGuaranteeProfile(userId: string, config: GuaranteeCo
     }
   }
 
+  // --- Treasury security-deposit financing (a LEVERAGED deposit) ---------
+  // The security deposit itself lives in `treasury_accounts` (keyed by the
+  // user), NOT as an approval. When the deposit is financed (e.g. 100k paid-in
+  // + 400k borrowed at 1:5) the borrowed `financed_amount` is real leverage on
+  // the account, and the `customer_contribution` is the user's own paid-in
+  // guarantee. Neither channel stacks with a `treasury_lending` approval (the
+  // system refuses financing an already-financed deposit), so this is additive.
+  let treasuryFinanced = 0
+  let treasuryContribution = 0
+  try {
+    const { rows } = await query<{
+      status: string
+      financed_amount: string | number | null
+      customer_contribution: string | number | null
+      currency: string | null
+    }>(
+      `SELECT status, financed_amount, customer_contribution, currency FROM treasury_accounts WHERE user_id = $1`,
+      [userId],
+    )
+    const t = rows[0]
+    if (t && t.status !== "none" && t.status !== "closed") {
+      const ccy = String(t.currency || BASE)
+      treasuryFinanced = toEur(num(t.financed_amount), ccy)
+      treasuryContribution = toEur(num(t.customer_contribution), ccy)
+      if (treasuryFinanced > 0) {
+        totalExposure += treasuryFinanced
+        leverageLoad += treasuryFinanced
+      }
+    }
+  } catch {
+    treasuryFinanced = 0
+    treasuryContribution = 0
+  }
+
   // --- Guarantees / collateral held -------------------------------------
-  // (a) Security-deposit ledger credits.
-  let guarantees = 0
+  // (a0) The user's own paid-in treasury security-deposit contribution.
+  let guarantees = treasuryContribution
   try {
     for (const e of ledgerEntries) {
       const cat = String(e.category ?? "").toLowerCase()
@@ -173,6 +208,8 @@ export async function gatherGuaranteeProfile(userId: string, config: GuaranteeCo
         if (principalEur > 0) monthlyFinancingCost += (principalEur * rate) / 12
       }
     }
+    // Financed treasury deposit carries the same treasury debit-interest rate.
+    if (treasuryFinanced > 0) monthlyFinancingCost += (treasuryFinanced * LEVERAGE_TREASURY_RATE) / 12
   } catch {
     /* noop */
   }
