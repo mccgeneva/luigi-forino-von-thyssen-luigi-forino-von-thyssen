@@ -104,7 +104,7 @@ export async function gatherGuaranteeProfile(userId: string, config: GuaranteeCo
   // --- Outstanding financing exposure -----------------------------------
   let totalExposure = 0
   let leverageLoad = 0
-  const financingKinds = ["leverage", "monetization", "project_funding", "treasury_lending"] as const
+  const financingKinds = ["leverage", "monetization", "project_funding", "treasury_lending", "internal_loan"] as const
   for (const kind of financingKinds) {
     try {
       const rows = await listApprovalsForUser(userId, kind)
@@ -160,7 +160,10 @@ export async function gatherGuaranteeProfile(userId: string, config: GuaranteeCo
   try {
     for (const kind of financingKinds) {
       const rows = await listApprovalsForUser(userId, kind)
-      const rate = kind === "leverage" || kind === "treasury_lending" ? LEVERAGE_TREASURY_RATE : MONETIZATION_FUNDING_RATE
+      const rate =
+        kind === "leverage" || kind === "treasury_lending" || kind === "internal_loan"
+          ? LEVERAGE_TREASURY_RATE
+          : MONETIZATION_FUNDING_RATE
       for (const row of rows) {
         if (row.status !== "approved") continue
         const payload = (row.payload ?? {}) as Record<string, unknown>

@@ -47,6 +47,9 @@ import {
 import { convertCurrency } from "@/lib/fx"
 import { insertNotification } from "@/lib/notifications-db"
 import { logActivity } from "@/app/actions/log-activity"
+import { getGuaranteeConfig } from "@/lib/guarantees-config-db"
+import { gatherGuaranteeProfile } from "@/lib/guarantees-profile"
+import { guaranteeBlockMessage } from "@/lib/guarantees-accumulator"
 import {
   readInternalLoanTerms,
   outstandingInternalLoan,
@@ -112,6 +115,21 @@ export async function applyForInternalLoan(input: {
   const purpose = (input.purpose || "").trim()
   const repaymentPlan = (input.repaymentPlan || "").trim()
   const collateralNote = (input.collateralNote || "").trim()
+
+  // Guarantees Accumulator — HIGH-RISK gate. An internal loan is new debt/
+  // exposure, so it is refused in real time while the account is classified
+  // High Risk. FAILS OPEN on any error (policy control, not the solvency guard).
+  try {
+    const config = await getGuaranteeConfig()
+    if (config.enforce) {
+      const { score } = await gatherGuaranteeProfile(session.id, config)
+      if (score.highRisk) {
+        return { ok: false, error: guaranteeBlockMessage(score, config.highRiskThreshold, "an internal loan") }
+      }
+    }
+  } catch (err) {
+    console.log("[v0] guarantees high-risk gate failed for internal loan (failing open):", (err as Error).message)
+  }
 
   try {
     // Persist the request through the shared approvals backbone. Note we do NOT
