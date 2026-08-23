@@ -29,7 +29,8 @@ import {
 } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
+ import { Input } from "@/components/ui/input"
+ import { MoneyInput } from "@/components/ui/money-input"
 import { Badge } from "@/components/ui/badge"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import {
@@ -910,14 +911,11 @@ export default function PaymentsPage() {
                 <div className="grid grid-cols-2 gap-4">
                   <div className="grid gap-2">
                     <Label htmlFor="amount">Amount *</Label>
-                    <Input
+                    <MoneyInput
                       id="amount"
                       placeholder="0.00"
-                      type="number"
-                      min="0"
-                      step="0.01"
                       value={payAmount}
-                      onChange={(e) => setPayAmount(e.target.value)}
+                      onValueChange={setPayAmount}
                       aria-invalid={liveTransfer.insufficient}
                       className={liveTransfer.insufficient ? "border-destructive focus-visible:ring-destructive" : undefined}
                     />

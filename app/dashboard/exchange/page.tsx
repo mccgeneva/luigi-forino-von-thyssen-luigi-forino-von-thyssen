@@ -21,6 +21,7 @@ import {
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { MoneyInput } from "@/components/ui/money-input"
 import { Badge } from "@/components/ui/badge"
 import { Label } from "@/components/ui/label"
 import {
@@ -359,9 +360,9 @@ export default function ExchangePage() {
                       ))}
                     </SelectContent>
                   </Select>
-                  <Input
+                  <MoneyInput
                     value={fromAmount}
-                    onChange={(e) => setFromAmount(e.target.value)}
+                    onValueChange={setFromAmount}
                     className="flex-1 text-lg font-mono"
                     placeholder="0.00"
                   />

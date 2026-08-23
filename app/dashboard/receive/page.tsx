@@ -4,7 +4,8 @@ import { useRef, useState } from "react"
 import { Copy, Check, Download, Share2, Landmark, Info, Wallet, ShieldCheck, ArrowDownLeft, Lock } from "lucide-react"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
+ import { Input } from "@/components/ui/input"
+ import { MoneyInput } from "@/components/ui/money-input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import {
@@ -355,14 +356,11 @@ export default function ReceiveFundsPage() {
             </div>
             <div className="grid gap-2">
               <Label htmlFor="rcv-amount">Amount</Label>
-              <Input
+              <MoneyInput
                 id="rcv-amount"
-                type="number"
-                min="0"
-                step="0.01"
                 placeholder="0.00"
                 value={rcvAmount}
-                onChange={(e) => setRcvAmount(e.target.value)}
+                onValueChange={setRcvAmount}
               />
             </div>
             <div className="grid gap-2">
@@ -454,14 +452,11 @@ export default function ReceiveFundsPage() {
             <div className="grid grid-cols-2 gap-4">
               <div className="grid gap-2">
                 <Label htmlFor="req-amount">Amount (optional)</Label>
-                <Input
+                <MoneyInput
                   id="req-amount"
-                  type="number"
-                  min="0"
-                  step="0.01"
                   placeholder="0.00"
                   value={reqAmount}
-                  onChange={(e) => setReqAmount(e.target.value)}
+                  onValueChange={setReqAmount}
                 />
               </div>
               <div className="grid gap-2">
