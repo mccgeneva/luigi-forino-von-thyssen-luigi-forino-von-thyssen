@@ -43,7 +43,10 @@ export function ImageLightbox({ src, alt, onClose }: { src: string; alt: string;
       onClick={onClose}
       className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/90 p-4"
     >
-      <div className="absolute right-4 top-4 z-10 flex gap-2">
+      <div
+        className="absolute right-4 z-10 flex gap-2"
+        style={{ top: "calc(env(safe-area-inset-top, 0px) + 1rem)" }}
+      >
         <a
           href={src}
           target="_blank"
