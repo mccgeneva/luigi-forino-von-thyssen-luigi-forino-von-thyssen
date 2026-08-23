@@ -19,9 +19,15 @@
  *        points = clamp(totalExposure / capacity × 100)
  *   4. Payment Penalty — auto-derived arrears.
  *        points = overdueCharges × penaltyPerOverdue
+ *   5. Track Record — a NEW/unproven account carries provisional risk that
+ *      decays to zero as it seasons with clean standing. This is what stops a
+ *      brand-new customer (no history, no posted collateral) scoring 0 and
+ *      taking a first high-leverage line for free.
+ *        seasoning = clamp(1 − accountAgeDays / seasoningDays)   (1=new, 0=seasoned)
+ *        points    = newAccountRisk × seasoning
  *
  * They are combined as a WEIGHTED SUM, then the SQUARE ROOT is the risk score:
- *        weightedSum = w1·f1 + w2·f2 + w3·f3 + w4·f4
+ *        weightedSum = w1·f1 + w2·f2 + w3·f3 + w4·f4 + w5·f5
  *        riskScore   = sqrt(weightedSum)
  *
  * The account earns a positive time credit that IMPROVES the result — it is
@@ -56,6 +62,16 @@ export interface GuaranteeConfig {
   weightExposure: number
   /** Weight on the Payment Penalty factor. */
   weightPaymentPenalty: number
+  /** Weight on the Track Record (new/unproven account) factor. */
+  weightTrackRecord: number
+  /**
+   * Provisional risk points a brand-new account starts with (before seasoning
+   * decay). Default 144 so a fresh account with no other stress scores
+   * sqrt(144)=12 — clearly above the default high-risk threshold of 10.
+   */
+  newAccountRisk: number
+  /** Days over which the new-account risk decays linearly to zero. */
+  seasoningDays: number
   /** finalScore strictly above this is HIGH RISK (blocks new financing). */
   highRiskThreshold: number
   /** Risk-score points removed per full year of good standing. */
@@ -78,6 +94,9 @@ export const DEFAULT_GUARANTEE_CONFIG: GuaranteeConfig = {
   weightLeverageLoad: 1,
   weightExposure: 1,
   weightPaymentPenalty: 1,
+  weightTrackRecord: 1,
+  newAccountRisk: 144,
+  seasoningDays: 365,
   highRiskThreshold: 10,
   ageCreditPerYear: 1.5,
   ageCreditMax: 6,
@@ -109,6 +128,7 @@ export interface GuaranteeFactors {
   leverageLoad: number
   exposure: number
   paymentPenalty: number
+  trackRecord: number
 }
 
 export type RiskBand = "low" | "moderate" | "high"
@@ -160,18 +180,28 @@ export function computeGuaranteeScore(inputs: GuaranteeInputs, config: Guarantee
   // 4. Payment Penalty — arrears.
   const fPaymentPenalty = clamp(overdue * config.penaltyPerOverdue, 0, PENALTY_SOFT_CAP)
 
+  // 5. Track Record — provisional risk for a NEW/unproven account that decays
+  // to zero as the account seasons. A fresh account (no history, no collateral)
+  // must not sit at zero risk; it starts elevated and earns its way down.
+  const seasoningDays = config.seasoningDays > 0 ? config.seasoningDays : 365
+  const seasoning = clamp(1 - ageDays / seasoningDays, 0, 1)
+  const newAccountRisk = Math.max(0, config.newAccountRisk || 0)
+  const fTrackRecord = clamp(newAccountRisk * seasoning, 0, FACTOR_SOFT_CAP)
+
   const factors: GuaranteeFactors = {
     securityDeposit: round2(fSecurityDeposit),
     leverageLoad: round2(fLeverageLoad),
     exposure: round2(fExposure),
     paymentPenalty: round2(fPaymentPenalty),
+    trackRecord: round2(fTrackRecord),
   }
 
   const weightedSum =
     config.weightSecurityDeposit * fSecurityDeposit +
     config.weightLeverageLoad * fLeverageLoad +
     config.weightExposure * fExposure +
-    config.weightPaymentPenalty * fPaymentPenalty
+    config.weightPaymentPenalty * fPaymentPenalty +
+    config.weightTrackRecord * fTrackRecord
 
   const riskScore = Math.sqrt(Math.max(0, weightedSum))
 

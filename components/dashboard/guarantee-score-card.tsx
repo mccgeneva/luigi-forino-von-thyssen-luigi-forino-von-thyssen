@@ -96,6 +96,7 @@ export function GuaranteeScoreCard() {
           <Factor label="Leverage load" value={score.factors?.leverageLoad} />
           <Factor label="Exposure factor" value={score.factors?.exposure} />
           <Factor label="Payment penalty" value={score.factors?.paymentPenalty} />
+          <Factor label="Track record (new account)" value={score.factors?.trackRecord} />
         </div>
 
         <div className="flex items-center justify-between rounded-lg border border-border bg-secondary/30 p-3">

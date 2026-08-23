@@ -30,6 +30,11 @@ async function ensureTable(): Promise<void> {
       updated_at              timestamptz NOT NULL DEFAULT now()
     )
   `)
+  // Track Record factor columns — added after the initial schema, so upsert
+  // them idempotently for existing deployments.
+  await query(`ALTER TABLE guarantee_config ADD COLUMN IF NOT EXISTS weight_track_record double precision NOT NULL DEFAULT 1`)
+  await query(`ALTER TABLE guarantee_config ADD COLUMN IF NOT EXISTS new_account_risk double precision NOT NULL DEFAULT 144`)
+  await query(`ALTER TABLE guarantee_config ADD COLUMN IF NOT EXISTS seasoning_days double precision NOT NULL DEFAULT 365`)
   ensured = true
 }
 
@@ -39,6 +44,9 @@ function rowToConfig(row: Record<string, unknown>): GuaranteeConfig {
     weightLeverageLoad: Number(row.weight_leverage_load),
     weightExposure: Number(row.weight_exposure),
     weightPaymentPenalty: Number(row.weight_payment_penalty),
+    weightTrackRecord: row.weight_track_record == null ? DEFAULT_GUARANTEE_CONFIG.weightTrackRecord : Number(row.weight_track_record),
+    newAccountRisk: row.new_account_risk == null ? DEFAULT_GUARANTEE_CONFIG.newAccountRisk : Number(row.new_account_risk),
+    seasoningDays: row.seasoning_days == null ? DEFAULT_GUARANTEE_CONFIG.seasoningDays : Number(row.seasoning_days),
     highRiskThreshold: Number(row.high_risk_threshold),
     ageCreditPerYear: Number(row.age_credit_per_year),
     ageCreditMax: Number(row.age_credit_max),
@@ -67,8 +75,9 @@ export async function saveGuaranteeConfig(input: GuaranteeConfig): Promise<void>
     `INSERT INTO guarantee_config (
        id, weight_security_deposit, weight_leverage_load, weight_exposure,
        weight_payment_penalty, high_risk_threshold, age_credit_per_year,
-       age_credit_max, penalty_per_overdue, target_coverage, enforce, updated_at
-     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11, now())
+       age_credit_max, penalty_per_overdue, target_coverage, enforce,
+       weight_track_record, new_account_risk, seasoning_days, updated_at
+     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14, now())
      ON CONFLICT (id) DO UPDATE SET
        weight_security_deposit = EXCLUDED.weight_security_deposit,
        weight_leverage_load    = EXCLUDED.weight_leverage_load,
@@ -80,6 +89,9 @@ export async function saveGuaranteeConfig(input: GuaranteeConfig): Promise<void>
        penalty_per_overdue     = EXCLUDED.penalty_per_overdue,
        target_coverage         = EXCLUDED.target_coverage,
        enforce                 = EXCLUDED.enforce,
+       weight_track_record     = EXCLUDED.weight_track_record,
+       new_account_risk        = EXCLUDED.new_account_risk,
+       seasoning_days          = EXCLUDED.seasoning_days,
        updated_at              = now()`,
     [
       GLOBAL_ID,
@@ -93,6 +105,9 @@ export async function saveGuaranteeConfig(input: GuaranteeConfig): Promise<void>
       input.penaltyPerOverdue,
       input.targetCoverage,
       input.enforce,
+      input.weightTrackRecord,
+      input.newAccountRisk,
+      input.seasoningDays,
     ],
   )
 }

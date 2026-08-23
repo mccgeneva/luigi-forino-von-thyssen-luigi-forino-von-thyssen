@@ -38,6 +38,9 @@ function sanitizeConfig(input: Partial<GuaranteeConfig> | undefined): GuaranteeC
     ageCreditMax: Math.max(0, numOr(c.ageCreditMax, DEFAULT_GUARANTEE_CONFIG.ageCreditMax)),
     penaltyPerOverdue: Math.max(0, numOr(c.penaltyPerOverdue, DEFAULT_GUARANTEE_CONFIG.penaltyPerOverdue)),
     targetCoverage: Math.max(0.1, numOr(c.targetCoverage, DEFAULT_GUARANTEE_CONFIG.targetCoverage)),
+    weightTrackRecord: Math.max(0, numOr(c.weightTrackRecord, DEFAULT_GUARANTEE_CONFIG.weightTrackRecord)),
+    newAccountRisk: Math.max(0, numOr(c.newAccountRisk, DEFAULT_GUARANTEE_CONFIG.newAccountRisk)),
+    seasoningDays: Math.max(1, numOr(c.seasoningDays, DEFAULT_GUARANTEE_CONFIG.seasoningDays)),
     enforce: c.enforce === undefined ? DEFAULT_GUARANTEE_CONFIG.enforce : !!c.enforce,
   }
 }

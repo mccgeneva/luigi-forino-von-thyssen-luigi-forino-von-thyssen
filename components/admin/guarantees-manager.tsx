@@ -143,7 +143,7 @@ export function GuaranteesManager({ passcode }: { passcode: string }) {
           {/* Weights */}
           <div>
             <p className="mb-2 text-sm font-semibold text-foreground">Factor weights</p>
-            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
               <div>
                 <Label className="text-xs">Security deposit</Label>
                 <Input type="number" min="0" step="0.1" value={config.weightSecurityDeposit} onChange={setNum("weightSecurityDeposit")} className="mt-1" />
@@ -159,6 +159,27 @@ export function GuaranteesManager({ passcode }: { passcode: string }) {
               <div>
                 <Label className="text-xs">Payment penalty</Label>
                 <Input type="number" min="0" step="0.1" value={config.weightPaymentPenalty} onChange={setNum("weightPaymentPenalty")} className="mt-1" />
+              </div>
+              <div>
+                <Label className="text-xs">Track record</Label>
+                <Input type="number" min="0" step="0.1" value={config.weightTrackRecord} onChange={setNum("weightTrackRecord")} className="mt-1" />
+              </div>
+            </div>
+          </div>
+
+          {/* New-account (thin-file) risk */}
+          <div>
+            <p className="mb-2 text-sm font-semibold text-foreground">New-account risk</p>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div>
+                <Label className="text-xs">New-account risk points</Label>
+                <Input type="number" min="0" step="1" value={config.newAccountRisk} onChange={setNum("newAccountRisk")} className="mt-1" />
+                <p className="mt-1 text-[11px] text-muted-foreground">Provisional risk a brand-new account starts with. 144 ⇒ risk score √144 = 12 (above the default 10 gate).</p>
+              </div>
+              <div>
+                <Label className="text-xs">Seasoning window (days)</Label>
+                <Input type="number" min="1" step="1" value={config.seasoningDays} onChange={setNum("seasoningDays")} className="mt-1" />
+                <p className="mt-1 text-[11px] text-muted-foreground">Days over which the new-account risk decays to zero as the account builds a clean history.</p>
               </div>
             </div>
           </div>
@@ -266,7 +287,7 @@ export function GuaranteesManager({ passcode }: { passcode: string }) {
                     </div>
 
                     {s && (
-                      <div className="mt-3 grid gap-px overflow-hidden rounded-md border border-border bg-border text-center sm:grid-cols-4">
+                      <div className="mt-3 grid gap-px overflow-hidden rounded-md border border-border bg-border text-center sm:grid-cols-5">
                         <div className="bg-card p-2">
                           <p className="text-[10px] text-muted-foreground">Security deposit</p>
                           <p className="text-xs font-semibold text-foreground tabular-nums">{s.factors.securityDeposit}</p>
@@ -282,6 +303,10 @@ export function GuaranteesManager({ passcode }: { passcode: string }) {
                         <div className="bg-card p-2">
                           <p className="text-[10px] text-muted-foreground">Payment penalty</p>
                           <p className="text-xs font-semibold text-foreground tabular-nums">{s.factors.paymentPenalty}</p>
+                        </div>
+                        <div className="bg-card p-2">
+                          <p className="text-[10px] text-muted-foreground">Track record</p>
+                          <p className="text-xs font-semibold text-foreground tabular-nums">{s.factors.trackRecord ?? 0}</p>
                         </div>
                       </div>
                     )}
