@@ -1,12 +1,14 @@
 "use client"
 
 import {
+  useEffect,
   useRef,
   useState,
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
 } from "react"
-import { MoreVertical, Trash2, FileText, Download, Landmark } from "lucide-react"
+import { createPortal } from "react-dom"
+import { MoreVertical, Trash2, FileText, Download, Landmark, ArrowLeft } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { MessageStatusIcon } from "./message-status"
 import type { BankekaAttachment } from "@/lib/bankeka-shared"
@@ -211,56 +213,182 @@ function formatBytes(n?: number): string {
 }
 
 /** A single attachment rendered inside a bubble: image → tappable preview,
- *  everything else → a compact file chip. Both open/download in a new tab. */
+ *  everything else → a compact file chip. Tapping opens an IN-APP full-screen
+ *  viewer with an explicit Back control.
+ *
+ *  We deliberately do NOT use `<a target="_blank">`: inside the installed PWA /
+ *  in-app webview there is no browser chrome, so a raw file link navigates the
+ *  single webview to the Blob and strands the user with no way back (the exact
+ *  "can't exit a document" trap). The overlay below always offers Back +
+ *  Download, high-contrast and clear of the notch. */
 function AttachmentChip({ attachment, outgoing }: { attachment: BankekaAttachment; outgoing: boolean }) {
+  const [open, setOpen] = useState(false)
   const isImage = (attachment.contentType ?? "").startsWith("image/")
+  const size = formatBytes(attachment.size)
 
-  if (isImage) {
-    return (
-      <a
-        href={attachment.url}
-        target="_blank"
-        rel="noopener noreferrer"
-        className="block overflow-hidden rounded-lg border border-black/10"
+  return (
+    <>
+      {isImage ? (
+        <button
+          type="button"
+          onClick={() => setOpen(true)}
+          aria-label={`Open ${attachment.name}`}
+          className="block w-full overflow-hidden rounded-lg border border-black/10"
+        >
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={attachment.url || "/placeholder.svg"}
+            alt={attachment.name}
+            className="max-h-52 w-full object-cover"
+            loading="lazy"
+          />
+        </button>
+      ) : (
+        <button
+          type="button"
+          onClick={() => setOpen(true)}
+          className={cn(
+            "flex w-full items-center gap-2 rounded-lg border px-2.5 py-2 text-left text-xs transition-colors",
+            outgoing
+              ? "border-primary-foreground/25 bg-primary-foreground/10 hover:bg-primary-foreground/20"
+              : "border-border bg-background/60 hover:bg-background",
+          )}
+        >
+          <span
+            className={cn(
+              "flex h-8 w-8 shrink-0 items-center justify-center rounded-md",
+              outgoing ? "bg-primary-foreground/20" : "bg-secondary",
+            )}
+          >
+            <FileText className="h-4 w-4" />
+          </span>
+          <span className="min-w-0 flex-1">
+            <span className="block truncate font-medium">{attachment.name}</span>
+            {size && <span className={cn("block", outgoing ? "text-primary-foreground/70" : "text-muted-foreground")}>{size}</span>}
+          </span>
+          <Download className={cn("h-4 w-4 shrink-0", outgoing ? "text-primary-foreground/70" : "text-muted-foreground")} />
+        </button>
+      )}
+      {open && <AttachmentViewer attachment={attachment} isImage={isImage} onClose={() => setOpen(false)} />}
+    </>
+  )
+}
+
+/** Full-screen in-app viewer for a message attachment. Always-visible top
+ *  toolbar (solid white Back + Download) with a safe-area top offset so the
+ *  controls stay high-contrast over any document and clear the notch. Escape or
+ *  a backdrop tap also closes it. */
+function AttachmentViewer({
+  attachment,
+  isImage,
+  onClose,
+}: {
+  attachment: BankekaAttachment
+  isImage: boolean
+  onClose: () => void
+}) {
+  const [downloading, setDownloading] = useState(false)
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose()
+    }
+    document.addEventListener("keydown", onKey)
+    const prevOverflow = document.body.style.overflow
+    document.body.style.overflow = "hidden"
+    return () => {
+      document.removeEventListener("keydown", onKey)
+      document.body.style.overflow = prevOverflow
+    }
+  }, [onClose])
+
+  // Save via the native share sheet on mobile (reliable inside the PWA webview),
+  // else an object-URL download on desktop — never a bare navigation.
+  const handleDownload = async () => {
+    if (downloading) return
+    setDownloading(true)
+    try {
+      const res = await fetch(attachment.url)
+      const blob = await res.blob()
+      const file = new File([blob], attachment.name || "document", {
+        type: blob.type || attachment.contentType || "application/octet-stream",
+      })
+      const nav = navigator as Navigator & { canShare?: (data: { files: File[] }) => boolean }
+      if (typeof nav.share === "function" && nav.canShare?.({ files: [file] })) {
+        try {
+          await nav.share({ files: [file], title: attachment.name })
+        } catch (err) {
+          if ((err as Error).name === "AbortError") return
+        }
+      } else {
+        const url = URL.createObjectURL(blob)
+        const a = document.createElement("a")
+        a.href = url
+        a.download = attachment.name || "document"
+        document.body.appendChild(a)
+        a.click()
+        a.remove()
+        setTimeout(() => URL.revokeObjectURL(url), 4000)
+      }
+    } catch {
+      /* best-effort — the Back control still lets the user out */
+    } finally {
+      setDownloading(false)
+    }
+  }
+
+  return createPortal(
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-label={attachment.name}
+      onClick={onClose}
+      className="fixed inset-0 z-[100] flex items-center justify-center bg-neutral-950/95"
+    >
+      <div
+        className="absolute inset-x-0 top-0 z-10 flex items-center justify-between gap-2 bg-gradient-to-b from-black/70 to-transparent px-3 pb-6"
+        style={{ paddingTop: "calc(env(safe-area-inset-top, 0px) + 0.75rem)" }}
+        onClick={(e) => e.stopPropagation()}
       >
-        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <button
+          type="button"
+          onClick={onClose}
+          className="inline-flex h-11 items-center gap-1.5 rounded-full bg-white pl-3 pr-4 text-sm font-semibold text-black shadow-lg"
+        >
+          <ArrowLeft className="h-5 w-5" />
+          Back
+        </button>
+        <button
+          type="button"
+          onClick={handleDownload}
+          disabled={downloading}
+          aria-label="Download attachment"
+          className="inline-flex h-11 items-center gap-1.5 rounded-full bg-white px-4 text-sm font-semibold text-black shadow-lg disabled:opacity-60"
+        >
+          <Download className="h-5 w-5" />
+          {downloading ? "Saving…" : "Download"}
+        </button>
+      </div>
+
+      {isImage ? (
+        // eslint-disable-next-line @next/next/no-img-element
         <img
           src={attachment.url || "/placeholder.svg"}
           alt={attachment.name}
-          className="max-h-52 w-full object-cover"
-          loading="lazy"
+          onClick={(e) => e.stopPropagation()}
+          className="max-h-[92vh] max-w-[96vw] object-contain"
         />
-      </a>
-    )
-  }
-
-  const size = formatBytes(attachment.size)
-  return (
-    <a
-      href={attachment.url}
-      target="_blank"
-      rel="noopener noreferrer"
-      className={cn(
-        "flex items-center gap-2 rounded-lg border px-2.5 py-2 text-xs transition-colors",
-        outgoing
-          ? "border-primary-foreground/25 bg-primary-foreground/10 hover:bg-primary-foreground/20"
-          : "border-border bg-background/60 hover:bg-background",
+      ) : (
+        <iframe
+          src={attachment.url}
+          title={attachment.name}
+          onClick={(e) => e.stopPropagation()}
+          className="h-[82vh] w-[96vw] rounded-lg border-0 bg-white"
+          style={{ marginTop: "calc(env(safe-area-inset-top, 0px) + 3.5rem)" }}
+        />
       )}
-    >
-      <span
-        className={cn(
-          "flex h-8 w-8 shrink-0 items-center justify-center rounded-md",
-          outgoing ? "bg-primary-foreground/20" : "bg-secondary",
-        )}
-      >
-        <FileText className="h-4 w-4" />
-      </span>
-      <span className="min-w-0 flex-1">
-        <span className="block truncate font-medium">{attachment.name}</span>
-        {size && <span className={cn("block", outgoing ? "text-primary-foreground/70" : "text-muted-foreground")}>{size}</span>}
-      </span>
-      <Download className={cn("h-4 w-4 shrink-0", outgoing ? "text-primary-foreground/70" : "text-muted-foreground")} />
-    </a>
+    </div>,
+    document.body,
   )
 }
 
