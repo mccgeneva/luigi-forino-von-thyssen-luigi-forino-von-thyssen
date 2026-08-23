@@ -149,7 +149,7 @@ const programs = [
     status: "invite",
     spotsAvailable: 1,
     totalSpots: 3,
-    riskLevel: "Low",
+    riskLevel: "High",
     description:
       "Exclusive program for institutional investors and major funds. Maximum returns with dedicated trading desk.",
     requirements: [
