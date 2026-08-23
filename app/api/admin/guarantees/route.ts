@@ -41,6 +41,7 @@ function sanitizeConfig(input: Partial<GuaranteeConfig> | undefined): GuaranteeC
     weightTrackRecord: Math.max(0, numOr(c.weightTrackRecord, DEFAULT_GUARANTEE_CONFIG.weightTrackRecord)),
     newAccountRisk: Math.max(0, numOr(c.newAccountRisk, DEFAULT_GUARANTEE_CONFIG.newAccountRisk)),
     seasoningDays: Math.max(1, numOr(c.seasoningDays, DEFAULT_GUARANTEE_CONFIG.seasoningDays)),
+    provenCapital: Math.max(1, numOr(c.provenCapital, DEFAULT_GUARANTEE_CONFIG.provenCapital)),
     enforce: c.enforce === undefined ? DEFAULT_GUARANTEE_CONFIG.enforce : !!c.enforce,
   }
 }

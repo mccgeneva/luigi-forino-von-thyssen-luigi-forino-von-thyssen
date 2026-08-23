@@ -111,9 +111,9 @@ export function GuaranteeScoreCard() {
           <Info className="mt-0.5 h-3 w-3 shrink-0" />
           {high
             ? enforce
-              ? "Your account is high risk, so new leverage, monetization, project funding and treasury financing are paused. Add security deposits/guarantees, reduce leverage or outstanding exposure, and clear any overdue charges to lower your score."
-              : "Your account is high risk. Add guarantees, reduce leverage/exposure or clear overdue charges to improve it."
-            : "This independent score reflects your guarantees, leverage, exposure and payment history. A longer clean history lowers it over time."}
+              ? "Your account is high risk, so new leverage, monetization, project funding and treasury financing are paused. Paid-in security deposits and unencumbered balance lower the score — borrowed/financed collateral does not, since it nets against the loan behind it. Reduce leverage or exposure and clear any overdue charges to lower your score."
+              : "Your account is high risk. Add paid-in guarantees or balance (borrowed collateral does not count), reduce leverage/exposure or clear overdue charges to improve it."
+            : "This independent score reflects your guarantees, leverage, exposure and payment history. Real paid-in capital and a longer clean history lower it over time."}
         </p>
       </CardContent>
     </Card>
