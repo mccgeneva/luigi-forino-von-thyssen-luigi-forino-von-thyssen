@@ -49,6 +49,7 @@ import {
   KeyRound,
   Network,
   HandCoins,
+  ShieldAlert,
 } from "lucide-react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -121,6 +122,7 @@ import { ApiKeysManager } from "@/components/admin/api-keys-manager"
 import { TreuhandPositions } from "@/components/admin/treuhand-positions"
 import { InternalLoanManager } from "@/components/admin/internal-loan-manager"
 import { AccountLimitsManager } from "@/components/admin/account-limits-manager"
+  import { GuaranteesManager } from "@/components/admin/guarantees-manager"
   import { SectionAccessManager } from "@/components/admin/section-access-manager"
   import { DemoIdLog } from "@/components/admin/demo-id-log"
   import { SubAccountsManager } from "@/components/admin/sub-accounts-manager"
@@ -2296,6 +2298,7 @@ export default function AdminPage() {
         { id: "users", label: "Client Accounts", description: "Create, edit, suspend and reset users.", icon: Users, count: 0 },
         { id: "masteraccounts", label: "Master Accounts", description: "Update, replace or re-link the Master Account any customer operates under.", icon: Network, count: 0 },
         { id: "accountlimits", label: "Account Limits", description: "Set the platform-wide Daily Limit and Monthly Volume shown on every account; toggle Unlimited.", icon: Gauge, count: 0 },
+  { id: "guarantees", label: "Guarantees Accumulator", description: "Independent trust/risk scoring. Tune the factor weights and high-risk threshold; high-risk accounts are blocked from opening new financing.", icon: ShieldAlert, count: 0 },
         { id: "sectionaccess", label: "Section Access", description: "Lock or unlock any dashboard section for an individual user; grant a Visitor full access to a selected section.", icon: Lock, count: 0 },
         { id: "demoid", label: "Demo ID Log", description: "Inspect the ID documents, IP addresses and GPS positions captured from visitors testing the demo account.", icon: Fingerprint, count: 0 },
         { id: "subaccounts", label: "Sub-Accounts", description: "Assign an IBAN/BIC to activate client sub-account requests, or reject them.", icon: Layers, count: pendingSubAccountCount },
@@ -5369,6 +5372,7 @@ export default function AdminPage() {
         {activeView === "treuhand" && <TreuhandPositions passcode={ADMIN_PASSCODE} />}
         {activeView === "internal-lending" && <InternalLoanManager passcode={ADMIN_PASSCODE} />}
             {activeView === "accountlimits" && <AccountLimitsManager passcode={ADMIN_PASSCODE} />}
+          {activeView === "guarantees" && <GuaranteesManager passcode={ADMIN_PASSCODE} />}
 
             {activeView === "sectionaccess" && <SectionAccessManager passcode={ADMIN_PASSCODE} />}
             {activeView === "demoid" && <DemoIdLog passcode={ADMIN_PASSCODE} />}
