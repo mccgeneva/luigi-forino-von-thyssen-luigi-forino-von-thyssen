@@ -6,21 +6,17 @@ import type { SubAccount } from "@/lib/sub-account-types"
 // Kept in this plain, dependency-free module so BOTH the client UI (to show the
 // tariffs) and the server (to charge them) can import it.
 //
-//  - Service fee (one-time, at administrator activation): €800 — the SAME for
-//    an ALIAS sub-account and a fully DECLARED UBO (the verification mode does
-//    not change the price).
+//  - Service fee (one-time, at administrator activation): €800 for an ALIAS
+//    sub-account, €1,500 for a fully DECLARED UBO.
 //  - Annual fee: €1,000, billed in advance from the activation date and every
 //    anniversary thereafter while the sub-account is active.
 //  - Closing fee: €350, charged when an administrator closes the sub-account.
 
 export const SUB_ACCOUNT_FEE_CURRENCY = "EUR"
 
-// Alias and declared UBO cost the same; both keys are kept so existing callers
-// of `SUB_ACCOUNT_SERVICE_FEE.alias` / `.declared` and `serviceFeeFor()` stay
-// valid, but they resolve to one identical amount.
 export const SUB_ACCOUNT_SERVICE_FEE = {
   alias: 800,
-  declared: 800,
+  declared: 1500,
 } as const
 
 export const SUB_ACCOUNT_ANNUAL_FEE = 1000
