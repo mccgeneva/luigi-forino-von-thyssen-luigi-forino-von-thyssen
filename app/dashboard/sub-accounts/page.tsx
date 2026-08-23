@@ -636,9 +636,11 @@ export default function SubAccountsPage() {
                 <div className="space-y-1 rounded-lg border border-border/70 bg-muted/30 p-3 text-[11px] leading-relaxed">
                   <p className="font-medium text-foreground">Tariffs (applied to your Master Account)</p>
                   <div className="flex items-center justify-between text-muted-foreground">
-                    <span>Service fee {isDeclared ? "(declared UBO)" : "(alias)"}</span>
+                    <span>Service fee {uboMode === "declared" ? "(declared UBO)" : "(alias)"}</span>
                     <span className="font-medium text-foreground">
-                      {formatSubAccountFee(isDeclared ? SUB_ACCOUNT_SERVICE_FEE.declared : SUB_ACCOUNT_SERVICE_FEE.alias)}
+                      {formatSubAccountFee(
+                        uboMode === "declared" ? SUB_ACCOUNT_SERVICE_FEE.declared : SUB_ACCOUNT_SERVICE_FEE.alias,
+                      )}
                     </span>
                   </div>
                   <div className="flex items-center justify-between text-muted-foreground">
