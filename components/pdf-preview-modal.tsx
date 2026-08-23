@@ -134,9 +134,33 @@ export function PdfPreviewModal({ doc, filename, title, exportDisabled = false, 
     document.body.appendChild(frame)
   }
 
-  const handleOpenTab = () => {
-    if (exportDisabled) return
-    if (blobUrl) window.open(blobUrl, "_blank")
+  const handleOpenTab = async () => {
+    if (exportDisabled || !blobUrl) return
+    // On mobile — especially the installed PWA / in-app webview — there is no
+    // browser chrome, so `window.open(blobUrl, "_blank")` navigates the single
+    // webview to the raw PDF and strands the user with no way back. Use the
+    // native share sheet instead (preview / Save to Files) so the app itself
+    // never leaves the screen. Desktop keeps the real new-tab behaviour.
+    if (isMobile) {
+      try {
+        const blob = doc.output("blob")
+        const file = new File([blob], downloadName, { type: "application/pdf" })
+        const nav = navigator as Navigator & { canShare?: (data: { files: File[] }) => boolean }
+        if (typeof nav.share === "function" && nav.canShare?.({ files: [file] })) {
+          try {
+            await nav.share({ files: [file], title: title || downloadName })
+          } catch (err) {
+            if ((err as Error).name === "AbortError") return
+          }
+          return
+        }
+      } catch {
+        /* fall through to a named download — never a bare navigation */
+      }
+      handleDownload()
+      return
+    }
+    window.open(blobUrl, "_blank", "noopener,noreferrer")
   }
 
   return (
@@ -238,8 +262,9 @@ export function PdfPreviewModal({ doc, filename, title, exportDisabled = false, 
           )}
         </div>
 
-        {/* Actions */}
-        <div className="flex items-center justify-between gap-2 border-t border-border px-4 py-3 sm:px-6">
+        {/* Actions — wrap on small screens so no button is ever pushed
+            off-screen; on mobile the action buttons share the row evenly. */}
+        <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border px-4 py-3 sm:px-6">
           <Button variant="ghost" size="sm" onClick={onClose} className="min-h-11 shrink-0">
             <X className="mr-1.5 h-4 w-4" aria-hidden />
             Close
@@ -250,23 +275,34 @@ export function PdfPreviewModal({ doc, filename, title, exportDisabled = false, 
               <span className="text-pretty">Exports disabled on the demo account</span>
             </p>
           ) : (
-            <div className="flex items-center justify-end gap-2">
+            <div className="flex flex-1 basis-full flex-wrap items-center justify-end gap-2 sm:basis-auto">
               <Button
                 variant="outline"
                 size="sm"
                 onClick={handleOpenTab}
                 disabled={!blobUrl}
-                className="min-h-11"
+                className="min-h-11 flex-1 sm:flex-none"
               >
                 <ExternalLink className="mr-1.5 h-4 w-4" aria-hidden />
                 <span className="hidden sm:inline">Open in tab</span>
                 <span className="sm:hidden">Open</span>
               </Button>
-              <Button variant="outline" size="sm" onClick={handlePrint} disabled={!blobUrl} className="min-h-11">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handlePrint}
+                disabled={!blobUrl}
+                className="min-h-11 flex-1 sm:flex-none"
+              >
                 <Printer className="mr-1.5 h-4 w-4" aria-hidden />
                 Print
               </Button>
-              <Button size="sm" onClick={handleDownload} disabled={!blobUrl} className="min-h-11">
+              <Button
+                size="sm"
+                onClick={handleDownload}
+                disabled={!blobUrl}
+                className="min-h-11 flex-1 sm:flex-none"
+              >
                 <Download className="mr-1.5 h-4 w-4" aria-hidden />
                 Download
               </Button>
