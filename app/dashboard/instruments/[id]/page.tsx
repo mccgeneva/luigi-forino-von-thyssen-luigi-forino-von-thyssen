@@ -3,7 +3,7 @@
 import { useMemo } from "react"
 import Link from "next/link"
 import { useParams, useRouter } from "next/navigation"
-import { ArrowLeft, Download, FileText, CheckCircle2, Clock, XCircle, AlertCircle, Ban } from "lucide-react"
+import { ArrowLeft, Download, FileText, CheckCircle2, Clock, XCircle, AlertCircle, Ban, ShieldCheck } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -11,6 +11,7 @@ import { cn } from "@/lib/utils"
 import { toast } from "sonner"
 import { useInstrumentRequests, type Instrument } from "@/lib/instrument-requests-store"
 import { generateInstrumentCertificate } from "@/lib/certificate-pdf"
+import { riskScoreTone } from "@/lib/instrument-audit"
 
 const typeColors: Record<string, string> = {
   SBLC: "bg-blue-500/10 text-blue-400 border-blue-500/20",
@@ -228,6 +229,82 @@ export default function InstrumentDetailPage() {
               ))}
             </div>
           </div>
+
+          {instrument.audit && (
+            <div>
+              <p className="mb-2 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                <ShieldCheck className="h-3.5 w-3.5 text-primary" />
+                Independent Audit &amp; Valuation
+              </p>
+              <div className="space-y-3 rounded-lg border border-primary/30 bg-primary/5 p-4">
+                {/* Realistic assessed value clearly distinguished from face value */}
+                <div className="grid gap-px overflow-hidden rounded-lg border border-border bg-border sm:grid-cols-2">
+                  <div className="bg-card p-3">
+                    <p className="text-xs text-muted-foreground">Stated face value</p>
+                    <p className="mt-0.5 text-sm font-medium text-muted-foreground line-through decoration-muted-foreground/40">
+                      {formatCurrency(instrument.audit.faceValue, instrument.audit.currency)}
+                    </p>
+                  </div>
+                  <div className="bg-card p-3">
+                    <p className="text-xs text-muted-foreground">Realistic assessed value</p>
+                    <p className="mt-0.5 text-sm font-bold text-foreground">
+                      {formatCurrency(instrument.audit.realisticValue, instrument.audit.currency)}
+                    </p>
+                    <p className="text-[10px] text-muted-foreground">
+                      {(instrument.audit.realisticPct * 100).toFixed(1)}% of stated face
+                    </p>
+                  </div>
+                </div>
+
+                <div className="grid gap-px overflow-hidden rounded-lg border border-border bg-border sm:grid-cols-2">
+                  <div className="bg-card p-3">
+                    <p className="text-xs text-muted-foreground">Risk score</p>
+                    <p
+                      className={cn(
+                        "mt-0.5 text-sm font-bold",
+                        riskScoreTone(instrument.audit.riskScore) === "positive"
+                          ? "text-green-600 dark:text-green-500"
+                          : riskScoreTone(instrument.audit.riskScore) === "neutral"
+                            ? "text-amber-600 dark:text-amber-500"
+                            : "text-red-600 dark:text-red-500",
+                      )}
+                    >
+                      {instrument.audit.riskScore}/100
+                    </p>
+                  </div>
+                  <div className="bg-card p-3">
+                    <p className="text-xs text-muted-foreground">Classification rating</p>
+                    <p className="mt-0.5 text-sm font-bold text-foreground">{instrument.audit.rating}</p>
+                  </div>
+                  <div className="bg-card p-3">
+                    <p className="text-xs text-muted-foreground">Valid for monetization</p>
+                    <p className="mt-0.5 text-sm font-medium text-foreground">
+                      {instrument.audit.monetizationEligible
+                        ? `Up to ${(instrument.audit.allowedMonetizationPct * 100).toFixed(0)}% LTV`
+                        : "Not eligible"}
+                    </p>
+                  </div>
+                  <div className="bg-card p-3">
+                    <p className="text-xs text-muted-foreground">PPI insurance for trade</p>
+                    <p className="mt-0.5 text-sm font-medium text-foreground">
+                      {instrument.audit.ppiRequired ? "Required" : "Not required"}
+                    </p>
+                  </div>
+                </div>
+
+                {instrument.audit.summary && (
+                  <p className="text-xs leading-relaxed text-muted-foreground text-pretty">{instrument.audit.summary}</p>
+                )}
+                <p className="text-[10px] text-muted-foreground">
+                  Independent assessment · engine {instrument.audit.engineVersion}
+                  {instrument.audit.publishedAt
+                    ? ` · published ${new Date(instrument.audit.publishedAt).toLocaleDateString()}`
+                    : ""}
+                  . Assessed value is an independent estimate and may differ from the stated face value.
+                </p>
+              </div>
+            </div>
+          )}
 
           <div className="flex flex-col gap-2 sm:flex-row">
             <Button className="w-full" onClick={() => downloadCertificate(instrument)}>
