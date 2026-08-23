@@ -7,6 +7,7 @@ import { useServerRequestList } from "@/lib/use-server-request-list"
 import { cancelMyApproval, transferMyInstrument, deleteMyInstrument } from "@/app/actions/approvals"
 import { releaseInstrumentByIsin } from "@/app/actions/marketplace-instruments"
 import { type InstrumentUpgrade, upgradeBlocksInstrument } from "@/lib/instrument-upgrade"
+import { type InstrumentAudit, isAuditPublished } from "@/lib/instrument-audit"
 
 /**
  * Ensure an instrument carries the full identifier set. Records created before
@@ -87,6 +88,12 @@ export interface Instrument {
   blocked?: boolean
   /** The pending/decided transformation-upgrade deal, if any. */
   upgrade?: InstrumentUpgrade
+  /**
+   * Published independent audit & valuation report, if any. Only a PUBLISHED
+   * audit is ever surfaced to the client (drafts / rejected audits are held
+   * back server-side by the materializer).
+   */
+  audit?: InstrumentAudit
 }
 
 /**
@@ -105,6 +112,7 @@ function instrumentFromApproval(rec: ApprovalRecord): Instrument | null {
         issuedByAdmin?: boolean
         transferredTo?: string
         upgrade?: InstrumentUpgrade
+        audit?: InstrumentAudit
       }
     | undefined
   const base = p?.issuedByAdmin ? p?.instrument : (p?.record ?? p?.instrument)
@@ -118,6 +126,9 @@ function instrumentFromApproval(rec: ApprovalRecord): Instrument | null {
   // Only the legacy fee-charged `proposed` flow blocks the old instrument;
   // a `negotiating` deal leaves it fully usable while the value is discussed.
   const upgrade = p?.upgrade
+  // Only a PUBLISHED audit is exposed to the client; drafts and rejected audits
+  // remain internal to the administrator.
+  const audit = isAuditPublished(p?.audit) ? p?.audit : undefined
   return ensureIdentifiers({
     ...base,
     approvalId: rec.id,
@@ -125,6 +136,7 @@ function instrumentFromApproval(rec: ApprovalRecord): Instrument | null {
     decidedAt: rec.decidedAt ?? base.decidedAt,
     decisionNote: rec.decisionNote ?? base.decisionNote,
     upgrade,
+    audit,
     blocked: upgradeBlocksInstrument(upgrade) || base.blocked || undefined,
   })
 }

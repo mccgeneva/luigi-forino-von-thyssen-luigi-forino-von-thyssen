@@ -160,7 +160,8 @@ import { FundBlockManager } from "@/components/admin/fund-block-manager"
 import { SkrManager } from "@/components/admin/skr-manager"
 import { SkrOverview } from "@/components/admin/skr-overview"
 import { InstrumentIssuer } from "@/components/admin/instrument-issuer"
-import { InstrumentUpgradeManager } from "@/components/admin/instrument-upgrade-manager"
+  import { InstrumentUpgradeManager } from "@/components/admin/instrument-upgrade-manager"
+  import { InstrumentAuditManager } from "@/components/admin/instrument-audit-manager"
 import { YieldIssuer } from "@/components/admin/yield-issuer"
 import { YieldProgramManager } from "@/components/admin/yield-program-manager"
 import { MarketplaceInstrumentManager } from "@/components/admin/marketplace-instrument-manager"
@@ -2832,6 +2833,8 @@ export default function AdminPage() {
       <InstrumentIssuer />
           {/* Transform & upgrade a held instrument into a fresh one (block + 0.08% fee) */}
       <InstrumentUpgradeManager />
+      {/* Independent audit engine: valuation, risk rating & monetization assessment */}
+      <InstrumentAuditManager />
       {/* Publish real, registry-verified instruments to the client marketplace */}
       <MarketplaceInstrumentManager />
       {/* Pending instrument requests */}

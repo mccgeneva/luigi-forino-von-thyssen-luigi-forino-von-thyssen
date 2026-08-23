@@ -77,6 +77,7 @@ import { useHolderIdentity } from "@/lib/holder-identity"
 import { usePdfViewer } from "@/lib/pdf-viewer"
 import { toast } from "sonner"
 import { useInstrumentRequests, isMccHeldInstrument, type Instrument } from "@/lib/instrument-requests-store"
+import { riskScoreTone } from "@/lib/instrument-audit"
 import { useLedger } from "@/lib/ledger-store"
 import { removeMyLedgerEntry } from "@/app/actions/ledger"
 import { computeMonetizationEquity } from "@/lib/monetization-equity"
@@ -1510,6 +1511,12 @@ export default function InstrumentsPage() {
                                 Blocked — upgrade in progress
                               </span>
                             ) : null}
+                            {instrument.audit ? (
+                              <span className="mt-1.5 inline-flex w-fit items-center gap-1 rounded-md border border-primary/30 bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">
+                                <ShieldCheck className="h-2.5 w-2.5" />
+                                Audited · {instrument.audit.rating}
+                              </span>
+                            ) : null}
                           </div>
                         </div>
                         <DropdownMenu>
@@ -2126,6 +2133,89 @@ export default function InstrumentsPage() {
                     </div>
                   ))}
               </div>
+
+              {viewTarget.audit && (
+                <div className="space-y-3 rounded-lg border border-primary/30 bg-primary/5 p-4">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <p className="flex items-center gap-1.5 text-sm font-semibold text-foreground">
+                      <ShieldCheck className="h-4 w-4 text-primary" />
+                      Independent Audit &amp; Valuation
+                    </p>
+                    <Badge variant="outline" className="text-[10px]">
+                      Certified · {viewTarget.audit.rating}
+                    </Badge>
+                  </div>
+
+                  {/* Realistic value clearly distinguished from face value */}
+                  <div className="grid gap-px overflow-hidden rounded-lg border border-border bg-border sm:grid-cols-2">
+                    <div className="bg-card p-3">
+                      <p className="text-xs text-muted-foreground">Stated face value</p>
+                      <p className="mt-0.5 text-sm font-medium text-muted-foreground line-through decoration-muted-foreground/40">
+                        {formatCurrency(viewTarget.audit.faceValue, viewTarget.audit.currency)}
+                      </p>
+                    </div>
+                    <div className="bg-card p-3">
+                      <p className="text-xs text-muted-foreground">Realistic assessed value</p>
+                      <p className="mt-0.5 text-sm font-bold text-foreground">
+                        {formatCurrency(viewTarget.audit.realisticValue, viewTarget.audit.currency)}
+                      </p>
+                      <p className="text-[10px] text-muted-foreground">
+                        {(viewTarget.audit.realisticPct * 100).toFixed(1)}% of stated face
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="grid gap-px overflow-hidden rounded-lg border border-border bg-border sm:grid-cols-2">
+                    <div className="bg-card p-3">
+                      <p className="text-xs text-muted-foreground">Risk score</p>
+                      <p
+                        className={cn(
+                          "mt-0.5 text-sm font-bold",
+                          riskScoreTone(viewTarget.audit.riskScore) === "positive"
+                            ? "text-green-600 dark:text-green-500"
+                            : riskScoreTone(viewTarget.audit.riskScore) === "neutral"
+                              ? "text-amber-600 dark:text-amber-500"
+                              : "text-red-600 dark:text-red-500",
+                        )}
+                      >
+                        {viewTarget.audit.riskScore}/100
+                      </p>
+                    </div>
+                    <div className="bg-card p-3">
+                      <p className="text-xs text-muted-foreground">Classification rating</p>
+                      <p className="mt-0.5 text-sm font-bold text-foreground">{viewTarget.audit.rating}</p>
+                    </div>
+                    <div className="bg-card p-3">
+                      <p className="text-xs text-muted-foreground">Valid for monetization</p>
+                      <p className="mt-0.5 text-sm font-medium text-foreground">
+                        {viewTarget.audit.monetizationEligible
+                          ? `Up to ${(viewTarget.audit.allowedMonetizationPct * 100).toFixed(0)}% LTV`
+                          : "Not eligible"}
+                      </p>
+                    </div>
+                    <div className="bg-card p-3">
+                      <p className="text-xs text-muted-foreground">PPI insurance for trade</p>
+                      <p className="mt-0.5 text-sm font-medium text-foreground">
+                        {viewTarget.audit.ppiRequired ? "Required" : "Not required"}
+                      </p>
+                    </div>
+                  </div>
+
+                  {viewTarget.audit.summary && (
+                    <p className="text-xs leading-relaxed text-muted-foreground text-pretty">
+                      {viewTarget.audit.summary}
+                    </p>
+                  )}
+                  <p className="text-[10px] text-muted-foreground">
+                    Independent assessment · engine {viewTarget.audit.engineVersion}
+                    {viewTarget.audit.publishedAt
+                      ? ` · published ${new Date(viewTarget.audit.publishedAt).toLocaleDateString()}`
+                      : ""}
+                    . Assessed value is an independent estimate and may differ from the stated face value.
+                  </p>
+                </div>
+              )}
+
               <DialogFooter>
                 <Button variant="outline" onClick={() => setViewTarget(null)}>
                   Close
