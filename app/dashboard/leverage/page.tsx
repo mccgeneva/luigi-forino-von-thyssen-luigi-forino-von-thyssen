@@ -22,6 +22,8 @@ import {
   Power,
   PiggyBank,
   Hourglass,
+  Loader2,
+  X,
 } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -390,7 +392,8 @@ export default function LeveragePage() {
   const [feeAcknowledged, setFeeAcknowledged] = useState(false)
   const [switchOffTarget, setSwitchOffTarget] = useState<LeverageRequest | null>(null)
   const log = useActivityLog()
-  const { requests, addRequest, unwindLine, hydrated } = useLeverageRequests()
+  const { requests, addRequest, unwindLine, withdrawLine, hydrated } = useLeverageRequests()
+  const [withdrawingId, setWithdrawingId] = useState<string | null>(null)
   const { instruments } = useInstrumentRequests()
   const { addDebit, balanceFor, totalIn, entries: ledgerEntries } = useLedger()
 
@@ -1496,13 +1499,50 @@ export default function LeveragePage() {
                       })()}
 
                     {req.status === "pending" && (
-                      <div className="flex items-start gap-2 rounded-lg border border-yellow-500/20 bg-yellow-500/10 p-3 text-sm text-yellow-500">
-                        <Clock className="mt-0.5 h-4 w-4 shrink-0" />
-                        <span>
-                          Awaiting Administrator approval. On activation, {formatMoney(req.borrowedAmount, req.currency)}{" "}
-                          of borrowed funds is credited to your balance and {(debitInterestRateFor(req.leverageRatio) * 100).toFixed(2)}%
-                          annual debit interest begins.
-                        </span>
+                      <div className="space-y-3">
+                        <div className="flex items-start gap-2 rounded-lg border border-yellow-500/20 bg-yellow-500/10 p-3 text-sm text-yellow-500">
+                          <Clock className="mt-0.5 h-4 w-4 shrink-0" />
+                          <span>
+                            Awaiting Administrator review. Your audit &amp; PPI charges are only{" "}
+                            <span className="font-medium">reserved (held)</span> — nothing is debited unless an
+                            administrator reviews the line. Withdraw now to release the reservation in full. On
+                            activation, {formatMoney(req.borrowedAmount, req.currency)} of borrowed funds is credited to
+                            your balance and {(debitInterestRateFor(req.leverageRatio) * 100).toFixed(2)}% annual debit
+                            interest begins.
+                          </span>
+                        </div>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          disabled={withdrawingId === req.id}
+                          onClick={async () => {
+                            setWithdrawingId(req.id)
+                            const ok = await withdrawLine(req.id)
+                            setWithdrawingId(null)
+                            if (ok) {
+                              toast.success("Application withdrawn", {
+                                description:
+                                  "Your pending leverage application was withdrawn and all reserved charges released — nothing was charged.",
+                              })
+                            } else {
+                              toast.error("Could not withdraw", {
+                                description: "This application could not be withdrawn. Please try again.",
+                              })
+                            }
+                          }}
+                        >
+                          {withdrawingId === req.id ? (
+                            <>
+                              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                              Withdrawing…
+                            </>
+                          ) : (
+                            <>
+                              <X className="mr-2 h-4 w-4" />
+                              Withdraw application
+                            </>
+                          )}
+                        </Button>
                       </div>
                     )}
 
