@@ -2836,6 +2836,52 @@ export async function adminDecideApproval(
       }
     }
 
+    // A REJECTED leverage line: the audit & compliance fee is non-refundable
+    // (the Treasury partner already performed and billed the review), but the
+    // PPI insurance premium is FULLY REFUNDED — no cover ever attaches to a line
+    // that was declined. Credit back the exact PPI debit posted at application
+    // (`LEV-PPI-<id>`) to the Master Account, idempotently (deterministic
+    // `LEV-PPI-REFUND-<id>` id so re-running a rejection never double-refunds).
+    if (updated.kind === "leverage" && decision === "rejected") {
+      try {
+        const lp = (updated.payload ?? {}) as Record<string, unknown>
+        const lrec = (lp.record ?? {}) as Record<string, unknown>
+        const equity = Number(lrec.equity)
+        const ratio = Number(lrec.leverageRatio)
+        const feeCurrency = String(lrec.currency || updated.currency || BASE_CURRENCY)
+        const charges = leverageApplicationCharges(equity, ratio)
+        if (charges.ppi > 0) {
+          const ownerId = await resolveDataOwnerIdFor(updated.userId)
+          await upsertLedgerEntry(ownerId, {
+            id: `LEV-PPI-REFUND-${updated.id}`,
+            direction: "credit",
+            amount: charges.ppi,
+            currency: feeCurrency,
+            status: "completed",
+            date: new Date().toISOString(),
+            counterparty: "MCC Capital — Payment Protection Insurance",
+            bank: "MCC Capital",
+            reference: updated.id,
+            comment: `Full refund of the PPI insurance premium for declined leverage application ${updated.id} — no cover attaches to a rejected line. (The audit & compliance fee remains non-refundable.)`,
+            category: "Leverage PPI Refund",
+          })
+          try {
+            await insertNotification({
+              userId: ownerId,
+              tone: "info",
+              title: "PPI insurance premium refunded",
+              body: `Your leverage application (${updated.id}) was declined, so the ${feeCurrency} ${charges.ppi.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} PPI insurance premium has been fully refunded to your Master Account. The audit & compliance fee remains non-refundable.`,
+              href: "/dashboard/leverage",
+            })
+          } catch {
+            // notification is non-critical
+          }
+        }
+      } catch (err) {
+        console.log("[v0] leverage PPI refund on reject failed:", (err as Error).message)
+      }
+    }
+
     // Notify the owning client.
     const label = KIND_LABELS[updated.kind]
     const awaitingMaster = updated.status === "awaiting_master"
