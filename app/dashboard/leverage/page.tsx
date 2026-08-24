@@ -72,6 +72,8 @@ import {
 import { useInstrumentRequests } from "@/lib/instrument-requests-store"
 import { useLedger } from "@/lib/ledger-store"
 import { postedLeverageInterest } from "@/lib/leverage-financing"
+import { leverageAuditFee } from "@/lib/leverage-audit-fee"
+import { Checkbox } from "@/components/ui/checkbox"
 import { GuaranteeScoreCard } from "@/components/dashboard/guarantee-score-card"
 
 // Round to 2 dp for money settlement (mirrors the admin switch-off handler).
@@ -385,11 +387,12 @@ export default function LeveragePage() {
   const [notes, setNotes] = useState("")
   const [formError, setFormError] = useState<string | null>(null)
   const [checkingMargin, setCheckingMargin] = useState(false)
+  const [feeAcknowledged, setFeeAcknowledged] = useState(false)
   const [switchOffTarget, setSwitchOffTarget] = useState<LeverageRequest | null>(null)
   const log = useActivityLog()
   const { requests, addRequest, unwindLine, hydrated } = useLeverageRequests()
   const { instruments } = useInstrumentRequests()
-  const { addDebit, balanceFor, entries: ledgerEntries } = useLedger()
+  const { addDebit, balanceFor, totalIn, entries: ledgerEntries } = useLedger()
 
   // Active bank instruments the client can pledge as collateral when funding a
   // leverage line from "Bank Instruments". Only approved/active instruments
@@ -510,6 +513,9 @@ export default function LeveragePage() {
   // Risk-based rate for the chosen ratio (higher leverage → lower rate).
   const projectedAnnualRate = debitInterestRateFor(numericRatio)
   const projectedAnnualInterest = projectedBorrowed * projectedAnnualRate
+  // Upfront audit & compliance fee (0.001% × multiplier × buying power), charged
+  // to the Master Account on confirmation whether the line is accepted or not.
+  const auditFee = leverageAuditFee(numericEquity, numericRatio)
 
   // When the funding category changes, clamp the chosen ratio to that
   // category's ceiling so an out-of-range value can never be submitted.
@@ -547,6 +553,7 @@ export default function LeveragePage() {
     setPledgedInstrumentId("")
     setNotes("")
     setFormError(null)
+    setFeeAcknowledged(false)
   }
 
   const submitRequest = async () => {
@@ -583,6 +590,26 @@ export default function LeveragePage() {
       const label = LEVERAGE_ACCOUNTS.find((a) => a.key === account)?.label ?? "this account"
       setFormError(`${label} is limited to a maximum leverage of 1:${cap}.`)
       return
+    }
+
+    // AUDIT & COMPLIANCE FEE — the client must acknowledge the non-refundable
+    // cost, and the Master Account must be able to cover it in the line's
+    // currency, else the operation is denied. The server (submitApproval) is
+    // authoritative and also charges the fee on confirmation.
+    if (auditFee > 0) {
+      if (!feeAcknowledged) {
+        setFormError(
+          `Please confirm you accept the ${formatMoney2(auditFee, currency)} audit & compliance fee before submitting.`,
+        )
+        return
+      }
+      const available = totalIn(currency)
+      if (auditFee > available + 0.01) {
+        setFormError(
+          `This application carries a non-refundable ${formatMoney2(auditFee, currency)} audit & compliance fee, but your Master Account has only ${formatMoney2(Math.max(0, available), currency)} available. Fund your account and try again.`,
+        )
+        return
+      }
     }
 
     // MARGIN SOLVENCY pre-check (cash-funded lines only). The client must
@@ -1104,6 +1131,34 @@ export default function LeveragePage() {
                   </div>
                 </div>
 
+                {/* Audit & compliance fee — charged immediately on confirmation */}
+                <div className="rounded-lg border border-orange-500/30 bg-orange-500/5 p-3">
+                  <div className="flex items-center justify-between text-sm">
+                    <span className="flex items-center gap-1 font-medium text-foreground">
+                      <ShieldCheck className="h-4 w-4 text-orange-400" />
+                      Audit &amp; compliance fee
+                    </span>
+                    <span className="font-bold text-orange-400">{formatMoney2(auditFee, currency)}</span>
+                  </div>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    0.001% × 1:{numericRatio} × {formatMoney(projectedBuyingPower, currency)} buying power. Covers audit,
+                    compliance checks and verification with the Treasury bank partner. Charged to your Master Account
+                    immediately on confirmation and is <span className="font-medium text-foreground">non-refundable</span>{" "}
+                    whether the line is accepted or rejected.
+                  </p>
+                  <label className="mt-3 flex cursor-pointer items-start gap-2 text-xs text-foreground">
+                    <Checkbox
+                      checked={feeAcknowledged}
+                      onCheckedChange={(v) => setFeeAcknowledged(v === true)}
+                      className="mt-0.5"
+                    />
+                    <span>
+                      I confirm and take responsibility for the {formatMoney2(auditFee, currency)} audit &amp; compliance
+                      fee, charged immediately to my Master Account.
+                    </span>
+                  </label>
+                </div>
+
                 {formError && (
                   <div className="flex items-center gap-2 rounded-lg border border-red-500/20 bg-red-500/10 p-3 text-sm text-red-400">
                     <AlertTriangle className="h-4 w-4 shrink-0" />
@@ -1116,7 +1171,10 @@ export default function LeveragePage() {
                 <Button variant="outline" onClick={() => setIsRequestOpen(false)}>
                   Cancel
                 </Button>
-                <Button onClick={() => void submitRequest()} disabled={checkingMargin}>
+                <Button
+                  onClick={() => void submitRequest()}
+                  disabled={checkingMargin || (auditFee > 0 && !feeAcknowledged)}
+                >
                   {checkingMargin ? "Checking margin…" : "Submit for Approval"}
                   {!checkingMargin && <ArrowRight className="ml-2 h-4 w-4" />}
                 </Button>
