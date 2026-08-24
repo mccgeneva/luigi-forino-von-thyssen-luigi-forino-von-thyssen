@@ -44,3 +44,50 @@ export function leverageAuditFee(equity: number, ratio: number): number {
   const buyingPower = equity * ratio
   return round2(LEVERAGE_AUDIT_FEE_RATE * ratio * buyingPower)
 }
+
+/**
+ * Payment Protection Insurance (PPI) premium.
+ *
+ * A leveraged position is insured at the platform-standard 1% rate, applied to
+ * the FULL buying power (the leveraged position being protected). Charged to
+ * the Master Account together with the audit fee on confirmation.
+ *
+ * Worked example: €100,000 equity at 1:10 → buying power €1,000,000 →
+ *     PPI = 1% × 1,000,000 = €10,000.00
+ */
+export const LEVERAGE_PPI_RATE = 0.01
+
+/**
+ * Compute the PPI premium for a leverage application (1% of buying power).
+ * Returns 0 for any non-finite or non-positive input.
+ */
+export function leveragePpiPremium(equity: number, ratio: number): number {
+  if (!Number.isFinite(equity) || !Number.isFinite(ratio)) return 0
+  if (equity <= 0 || ratio <= 0) return 0
+  const buyingPower = equity * ratio
+  return round2(LEVERAGE_PPI_RATE * buyingPower)
+}
+
+/** The full set of upfront charges for a leverage application. */
+export interface LeverageApplicationCharges {
+  /** Buying power the charges are based on (equity × ratio). */
+  buyingPower: number
+  /** Audit & compliance / Treasury-partner verification fee. */
+  auditFee: number
+  /** Payment Protection Insurance premium. */
+  ppi: number
+  /** Combined amount debited to the Master Account on confirmation. */
+  total: number
+}
+
+/**
+ * Compute the complete upfront cost of a leverage application: the audit &
+ * compliance fee plus the PPI premium, both charged immediately to the Master
+ * Account on confirmation whether the line is accepted or rejected.
+ */
+export function leverageApplicationCharges(equity: number, ratio: number): LeverageApplicationCharges {
+  const auditFee = leverageAuditFee(equity, ratio)
+  const ppi = leveragePpiPremium(equity, ratio)
+  const buyingPower = Number.isFinite(equity) && Number.isFinite(ratio) && equity > 0 && ratio > 0 ? equity * ratio : 0
+  return { buyingPower, auditFee, ppi, total: round2(auditFee + ppi) }
+}
