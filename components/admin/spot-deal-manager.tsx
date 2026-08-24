@@ -156,6 +156,8 @@ const emptyVessel: Vessel = {
 function VesselCatalogue({ onVesselsChanged }: { onVesselsChanged: (v: Vessel[]) => void }) {
   const [vessels, setVessels] = useState<Vessel[]>([])
   const [search, setSearch] = useState("")
+  const [searching, setSearching] = useState(false)
+  const resultsRef = useRef<HTMLDivElement | null>(null)
   const [loading, setLoading] = useState(true)
   const [editTarget, setEditTarget] = useState<Vessel | null>(null)
   const [form, setForm] = useState<Vessel>({ ...emptyVessel })
@@ -279,9 +281,22 @@ function VesselCatalogue({ onVesselsChanged }: { onVesselsChanged: (v: Vessel[])
   // public registry + compliance) and add it, so searching an IMO actually
   // surfaces the vessel the way the admin expects.
   const runSearch = async () => {
-    const found = await load(searchedImo || search.trim())
-    if (searchedImo && Array.isArray(found) && found.length === 0 && !importing) {
-      await handleImport(searchedImo)
+    if (searching) return
+    setSearching(true)
+    try {
+      const found = await load(searchedImo || search.trim())
+      if (searchedImo && Array.isArray(found) && found.length === 0 && !importing) {
+        await handleImport(searchedImo)
+      }
+      // The results / empty-state render several cards below the search box, so
+      // on mobile a search updates content that's off-screen and looks like
+      // "nothing happened". Scroll the results region into view so the admin
+      // always sees the outcome of pressing Search.
+      requestAnimationFrame(() => {
+        resultsRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })
+      })
+    } finally {
+      setSearching(false)
     }
   }
   const openEdit = (v: Vessel) => {
@@ -416,9 +431,13 @@ function VesselCatalogue({ onVesselsChanged }: { onVesselsChanged: (v: Vessel[])
                 />
               </div>
             </div>
-            <Button variant="outline" onClick={runSearch} className="shrink-0">
-              <Search className="mr-1.5 h-4 w-4" />
-              Search
+            <Button variant="outline" onClick={runSearch} disabled={searching || loading} className="shrink-0">
+              {searching || loading ? (
+                <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
+              ) : (
+                <Search className="mr-1.5 h-4 w-4" />
+              )}
+              {searching ? "Searching…" : "Search"}
             </Button>
             <Button onClick={() => openCreate(searchedImo)} className="shrink-0">
               <Plus className="mr-1.5 h-4 w-4" />
@@ -482,6 +501,10 @@ function VesselCatalogue({ onVesselsChanged }: { onVesselsChanged: (v: Vessel[])
               Import
             </Button>
           </div>
+
+          {/* Scroll anchor so pressing Search brings the results/empty-state
+              into view (they otherwise sit below the provider/import cards). */}
+          <div ref={resultsRef} className="scroll-mt-4" aria-hidden />
 
           {loading ? (
             <div className="flex items-center justify-center py-10 text-muted-foreground">
