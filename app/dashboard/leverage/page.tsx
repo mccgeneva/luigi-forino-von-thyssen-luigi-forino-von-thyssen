@@ -526,6 +526,14 @@ export default function LeveragePage() {
   const auditFee = applicationCharges.auditFee
   const ppiPremium = applicationCharges.ppi
   const totalUpfrontCharge = applicationCharges.total
+  // Same-currency available balance used to gate the upfront charges. When the
+  // account cannot cover the full total but CAN cover the (small, non-refundable)
+  // audit fee, the client is offered a PPI cost APPEAL instead of a hard refusal:
+  // the PPI is reserved as a temporary hold pending admin review of a reduced cost.
+  const availableForCharges = totalIn(currency)
+  const canAffordCharges = totalUpfrontCharge <= 0 || totalUpfrontCharge <= availableForCharges + 0.01
+  const canAffordAuditOnly = auditFee <= availableForCharges + 0.01
+  const canAppealPpi = !canAffordCharges && canAffordAuditOnly && ppiPremium > 0
 
   // When the funding category changes, clamp the chosen ratio to that
   // category's ceiling so an out-of-range value can never be submitted.
@@ -566,7 +574,8 @@ export default function LeveragePage() {
     setFeeAcknowledged(false)
   }
 
-  const submitRequest = async () => {
+  const submitRequest = async (opts?: { appeal?: boolean }) => {
+    const appeal = opts?.appeal === true
     if (checkingMargin) return
     if (!account) {
       setFormError("Please select a funding account.")
@@ -615,9 +624,26 @@ export default function LeveragePage() {
         return
       }
       const available = totalIn(currency)
-      if (totalUpfrontCharge > available + 0.01) {
+      if (appeal) {
+        // PPI APPEAL: the audit & compliance fee is still charged now, so the
+        // account must at least cover that; the PPI is reserved as a temporary
+        // hold pending admin review (available may go negative — the controlled
+        // exception). The server (submitApproval) is authoritative.
+        if (auditFee > available + 0.01) {
+          setFormError(
+            `Even under an appeal, the ${formatMoney2(auditFee, currency)} audit & compliance fee is charged immediately, but your Master Account has only ${formatMoney2(Math.max(0, available), currency)} available. Fund at least this amount and try again.`,
+          )
+          return
+        }
+      } else if (totalUpfrontCharge > available + 0.01) {
+        // Not enough for the full charges — refuse the normal submit and let the
+        // fee card surface the "Make Appeal / Negotiate Costs" path instead.
         setFormError(
-          `This application carries non-refundable charges of ${formatMoney2(totalUpfrontCharge, currency)} (${formatMoney2(auditFee, currency)} audit & compliance + ${formatMoney2(ppiPremium, currency)} PPI), but your Master Account has only ${formatMoney2(Math.max(0, available), currency)} available. Fund your account and try again.`,
+          `This application carries non-refundable charges of ${formatMoney2(totalUpfrontCharge, currency)} (${formatMoney2(auditFee, currency)} audit & compliance + ${formatMoney2(ppiPremium, currency)} PPI), but your Master Account has only ${formatMoney2(Math.max(0, available), currency)} available.${
+            canAppealPpi
+              ? " If you cannot fund the full PPI now, use “Make Appeal / Negotiate Costs” to request a reduced PPI from the administrator."
+              : " Fund your account and try again."
+          }`,
         )
         return
       }
@@ -682,6 +708,9 @@ export default function LeveragePage() {
       pledgedInstrumentId: account === "instruments" ? selectedInstrument?.id : undefined,
       pledgedInstrumentLabel: account === "instruments" ? pledgedLabel : undefined,
       notes: notes.trim() || undefined,
+      // PPI appeal: reserve the PPI as a temporary hold pending admin review.
+      ppiAppeal: appeal || undefined,
+      appealPpiOriginal: appeal ? ppiPremium : undefined,
     })
 
     log({
@@ -701,8 +730,10 @@ export default function LeveragePage() {
         submittedAt: new Date().toLocaleString("en-GB"),
       },
     })
-    toast.success("Leverage request submitted", {
-      description: `Your 1:${numericRatio} line on the ${accountOption.label} is pending Administrator approval.`,
+    toast.success(appeal ? "PPI appeal submitted" : "Leverage request submitted", {
+      description: appeal
+        ? `Your 1:${numericRatio} line is pending Administrator review. The ${formatMoney2(auditFee, currency)} audit fee was charged and the ${formatMoney2(ppiPremium, currency)} PPI is temporarily reserved pending a reduced-cost decision.`
+        : `Your 1:${numericRatio} line on the ${accountOption.label} is pending Administrator approval.`,
     })
     resetForm()
     setIsRequestOpen(false)
@@ -1193,6 +1224,37 @@ export default function LeveragePage() {
                       compliance &amp; PPI charges, debited immediately to my Master Account.
                     </span>
                   </label>
+
+                  {/* Insufficient funds for the PPI → appeal / negotiate path */}
+                  {!canAffordCharges && (
+                    <div className="mt-4 rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-xs leading-relaxed">
+                      <div className="flex items-center gap-2 text-amber-500">
+                        <AlertTriangle className="h-4 w-4 shrink-0" />
+                        <span className="font-semibold">Insufficient funds for the PPI premium</span>
+                      </div>
+                      {canAppealPpi ? (
+                        <p className="mt-2 text-muted-foreground">
+                          Your Master Account has{" "}
+                          <span className="font-medium text-foreground">
+                            {formatMoney2(Math.max(0, availableForCharges), currency)}
+                          </span>{" "}
+                          available — enough for the {formatMoney2(auditFee, currency)} audit fee but not the full{" "}
+                          {formatMoney2(ppiPremium, currency)} PPI premium. You can{" "}
+                          <span className="font-medium text-foreground">appeal to the administrator</span> for a reduced
+                          PPI cost. The audit fee is charged now; the PPI is{" "}
+                          <span className="font-medium text-foreground">temporarily reserved (held)</span> — your
+                          available balance may go negative for this amount only — until the administrator approves a
+                          lower cost or declines the appeal.
+                        </p>
+                      ) : (
+                        <p className="mt-2 text-muted-foreground">
+                          Your Master Account cannot cover the {formatMoney2(auditFee, currency)} non-refundable audit
+                          &amp; compliance fee, which is always charged upfront. Please fund at least this amount before
+                          applying or appealing.
+                        </p>
+                      )}
+                    </div>
+                  )}
                 </div>
 
                 {formError && (
