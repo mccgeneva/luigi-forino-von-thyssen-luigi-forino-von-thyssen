@@ -71,8 +71,10 @@ import {
   adminShareCommodityDeal,
   adminSetCommodityDealHold,
   adminDeleteCommodityDeal,
+  adminAdjustLeveragePpi,
   type DealHoldState,
 } from "@/app/actions/approvals"
+import { leverageApplicationCharges } from "@/lib/leverage-audit-fee"
 import {
   getClientFinancialSnapshotAdmin,
   type ClientFinancialSnapshot,
@@ -122,6 +124,35 @@ function fundingRecord(req: ApprovalRequest): ProjectFundingRequest | null {
   if (req.kind !== "project_funding") return null
   const rec = (req.payload as { record?: ProjectFundingRequest } | undefined)?.record
   return rec && typeof rec === "object" && rec.id ? rec : null
+}
+
+/** PPI picture for a leverage application: the original premium charged at
+ *  application, any admin-negotiated premium, and the resulting refund. Returns
+ *  null for non-leverage requests or when there is no PPI to negotiate. */
+function leveragePpiInfo(req: ApprovalRequest): {
+  currency: string
+  original: number
+  negotiated: number | null
+  refund: number
+} | null {
+  if (req.kind !== "leverage") return null
+  const rec = ((req.payload as { record?: Record<string, unknown> } | undefined)?.record ?? {}) as Record<
+    string,
+    unknown
+  >
+  const equity = Number(rec.equity)
+  const ratio = Number(rec.leverageRatio)
+  const original = leverageApplicationCharges(equity, ratio).ppi
+  if (!(original > 0)) return null
+  const currency = String(rec.currency || req.currency || "EUR")
+  const neg = Number(rec.negotiatedPpi)
+  const negotiated = Number.isFinite(neg) && neg >= 0 ? neg : null
+  const refund = negotiated == null ? 0 : Math.round((original - negotiated + Number.EPSILON) * 100) / 100
+  return { currency, original, negotiated, refund }
+}
+
+function formatMoney2(amount: number, currency: string): string {
+  return `${currency} ${amount.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 }
 
 function formatFileSize(bytes?: number): string {
@@ -535,6 +566,56 @@ export function PendingApprovals({ initialKind }: { initialKind?: ApprovalKind }
     setRejectTarget({ id, bulk: false })
   }
 
+  // PPI negotiation dialog (leverage). The admin agrees a lower PPI premium; the
+  // exceeded amount is refunded to the client's Master Account immediately.
+  const [ppiTarget, setPpiTarget] = useState<{
+    id: string
+    label: string
+    currency: string
+    original: number
+    negotiated: number | null
+  } | null>(null)
+  const [ppiValue, setPpiValue] = useState("")
+  const [ppiNote, setPpiNote] = useState("")
+
+  const openPpiNegotiate = (req: ApprovalRequest, info: NonNullable<ReturnType<typeof leveragePpiInfo>>) => {
+    setPpiValue((info.negotiated ?? info.original).toFixed(2))
+    setPpiNote("")
+    setPpiTarget({
+      id: req.id,
+      label: req.title,
+      currency: info.currency,
+      original: info.original,
+      negotiated: info.negotiated,
+    })
+  }
+
+  const confirmPpiNegotiate = async () => {
+    if (!ppiTarget) return
+    const newPpi = Number(ppiValue)
+    if (!Number.isFinite(newPpi) || newPpi < 0) {
+      toast.error("Enter a valid negotiated PPI amount.")
+      return
+    }
+    if (newPpi > ppiTarget.original + 0.01) {
+      toast.error(`The negotiated PPI cannot exceed the ${formatMoney2(ppiTarget.original, ppiTarget.currency)} originally charged.`)
+      return
+    }
+    setActing(true)
+    const res = await adminAdjustLeveragePpi(ADMIN_PASSCODE, ppiTarget.id, newPpi, ppiNote.trim() || undefined)
+    setActing(false)
+    if (!res.ok) {
+      toast.error(res.error)
+      return
+    }
+    const refund = Math.round((ppiTarget.original - newPpi + Number.EPSILON) * 100) / 100
+    toast.success(
+      `PPI set to ${formatMoney2(newPpi, ppiTarget.currency)}. ${formatMoney2(refund, ppiTarget.currency)} refunded to the client's Master Account.`,
+    )
+    setPpiTarget(null)
+    mutate()
+  }
+
   // Open (or continue) the negotiation with the AES applicant. For a pending
   // application not yet discussed, this stamps discussionOpenedAt server-side and
   // notifies the applicant, then opens the inline Bankeka thread.
@@ -862,6 +943,11 @@ export function PendingApprovals({ initialKind }: { initialKind?: ApprovalKind }
               // activation. Approve is gated until a discussion is opened.
               const funding = fundingRecord(req)
               const fundingNeedsDiscussion = !!funding && !funding.discussionOpenedAt
+              // Leverage PPI negotiation is available while the line is pending
+              // or already approved (a special arrangement can be granted at any
+              // point before/at approval).
+              const ppi = leveragePpiInfo(req)
+              const canNegotiatePpi = !!ppi && (req.status === "pending" || req.status === "approved")
               // A shared read-only copy is a recipient-owned mirror of another
               // client's deal. It must never expose admin management actions —
               // documents, vessel, sharing and delivery are managed on the
@@ -943,6 +1029,29 @@ export function PendingApprovals({ initialKind }: { initialKind?: ApprovalKind }
                       {req.summary && <p className="text-xs text-muted-foreground text-pretty">{req.summary}</p>}
                       {req.kind === "commodity_amendment" && <AmendmentDiff payload={req.payload} />}
                       {funding && <FundingDocuments docs={funding.uploadedDocuments} />}
+                      {ppi && (
+                        <div className="mt-1.5 rounded-md border border-orange-500/30 bg-orange-500/5 p-2.5">
+                          <div className="mb-1 flex items-center gap-1.5 text-[11px] font-medium text-orange-600 dark:text-orange-400">
+                            <Handshake className="h-3.5 w-3.5" />
+                            PPI insurance premium
+                          </div>
+                          <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
+                            <span className="text-muted-foreground">Charged:</span>
+                            <span className={ppi.negotiated != null ? "text-muted-foreground line-through" : "font-medium text-foreground"}>
+                              {formatMoney2(ppi.original, ppi.currency)}
+                            </span>
+                            {ppi.negotiated != null && (
+                              <>
+                                <ArrowRight className="h-3 w-3 shrink-0 text-muted-foreground" />
+                                <span className="font-medium text-foreground">{formatMoney2(ppi.negotiated, ppi.currency)}</span>
+                                <span className="text-emerald-600 dark:text-emerald-400">
+                                  ({formatMoney2(ppi.refund, ppi.currency)} refunded)
+                                </span>
+                              </>
+                            )}
+                          </div>
+                        </div>
+                      )}
                       <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1 text-[11px] text-muted-foreground">
                         <span>
                           {clientLabel(req.userId)} · submitted {formatDate(req.createdAt)}
@@ -979,6 +1088,18 @@ export function PendingApprovals({ initialKind }: { initialKind?: ApprovalKind }
                           {funding.discussionOpenedAt ? "Continue discussion" : "Discuss"}
                         </Button>
                       )}
+                      {canNegotiatePpi && ppi && (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="h-8 gap-1 text-orange-600"
+                          disabled={acting}
+                          onClick={() => openPpiNegotiate(req, ppi)}
+                          title="Negotiate a lower PPI insurance premium — the exceeded amount is refunded to the client's Master Account."
+                        >
+                          <Handshake className="h-3.5 w-3.5" /> Negotiate PPI
+                        </Button>
+                      )}
                       <Button
                         size="sm"
                         variant="outline"
@@ -1001,6 +1122,20 @@ export function PendingApprovals({ initialKind }: { initialKind?: ApprovalKind }
                         onClick={() => openReject(req.id)}
                       >
                         <X className="h-3.5 w-3.5" /> Reject
+                      </Button>
+                    </div>
+                  )}
+                  {canNegotiatePpi && ppi && req.status === "approved" && (
+                    <div className="flex shrink-0 flex-wrap items-center justify-end gap-1.5">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-8 gap-1 text-orange-600"
+                        disabled={acting}
+                        onClick={() => openPpiNegotiate(req, ppi)}
+                        title="Negotiate a lower PPI insurance premium — the exceeded amount is refunded to the client's Master Account."
+                      >
+                        <Handshake className="h-3.5 w-3.5" /> Negotiate PPI
                       </Button>
                     </div>
                   )}
@@ -1292,6 +1427,78 @@ export function PendingApprovals({ initialKind }: { initialKind?: ApprovalKind }
             <Button variant="destructive" onClick={confirmReject} disabled={acting || !rejectReason.trim()}>
               {acting ? <Loader2 className="mr-1 h-4 w-4 animate-spin" /> : <X className="mr-1 h-4 w-4" />}
               Confirm rejection
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Negotiate leverage PPI premium dialog */}
+      <Dialog open={ppiTarget !== null} onOpenChange={(o) => !o && !acting && setPpiTarget(null)}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Handshake className="h-4 w-4 text-orange-500" />
+              Negotiate PPI premium
+            </DialogTitle>
+            <DialogDescription className="text-pretty">
+              Agree a special, lower PPI insurance premium for this leverage line. The exceeded amount is refunded to
+              the client&apos;s Master Account immediately, and only the agreed premium remains charged. The client is
+              notified of the special treatment.
+            </DialogDescription>
+          </DialogHeader>
+          {ppiTarget && (
+            <div className="space-y-3">
+              <div className="rounded-md border border-border bg-muted/30 p-3 text-sm">
+                <div className="flex items-center justify-between">
+                  <span className="text-muted-foreground">Original premium charged</span>
+                  <span className="font-mono font-medium tabular-nums text-foreground">
+                    {formatMoney2(ppiTarget.original, ppiTarget.currency)}
+                  </span>
+                </div>
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="ppi-new">New agreed premium ({ppiTarget.currency})</Label>
+                <Input
+                  id="ppi-new"
+                  type="number"
+                  inputMode="decimal"
+                  min={0}
+                  max={ppiTarget.original}
+                  step="0.01"
+                  value={ppiValue}
+                  onChange={(e) => setPpiValue(e.target.value)}
+                  className="text-base md:text-sm"
+                  autoFocus
+                />
+              </div>
+              <div className="flex items-center justify-between rounded-md border border-emerald-500/30 bg-emerald-500/5 px-3 py-2 text-sm">
+                <span className="text-muted-foreground">Refunded to Master Account</span>
+                <span className="font-mono font-semibold tabular-nums text-emerald-600 dark:text-emerald-400">
+                  {formatMoney2(
+                    Math.max(0, Math.round((ppiTarget.original - (Number(ppiValue) || 0) + Number.EPSILON) * 100) / 100),
+                    ppiTarget.currency,
+                  )}
+                </span>
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="ppi-note">Note (optional)</Label>
+                <Textarea
+                  id="ppi-note"
+                  value={ppiNote}
+                  onChange={(e) => setPpiNote(e.target.value)}
+                  placeholder="Reason for the special arrangement…"
+                  className="min-h-16 text-base md:text-sm"
+                />
+              </div>
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setPpiTarget(null)} disabled={acting}>
+              Cancel
+            </Button>
+            <Button onClick={confirmPpiNegotiate} disabled={acting} className="gap-1">
+              {acting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Handshake className="h-4 w-4" />}
+              Apply &amp; refund
             </Button>
           </DialogFooter>
         </DialogContent>

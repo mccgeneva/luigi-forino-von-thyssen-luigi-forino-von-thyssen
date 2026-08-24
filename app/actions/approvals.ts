@@ -2850,19 +2850,26 @@ export async function adminDecideApproval(
         const ratio = Number(lrec.leverageRatio)
         const feeCurrency = String(lrec.currency || updated.currency || BASE_CURRENCY)
         const charges = leverageApplicationCharges(equity, ratio)
-        if (charges.ppi > 0) {
+        // If the admin already NEGOTIATED the PPI down, the excess was refunded
+        // at that time (`LEV-PPI-ADJUST-<id>`), so on reject only the remaining
+        // NET premium is returned — total refunded across both = the original.
+        const negotiated = Number(lrec.negotiatedPpi)
+        const effectivePpi = Number.isFinite(negotiated) && negotiated >= 0 ? negotiated : charges.ppi
+        if (effectivePpi > 0) {
           const ownerId = await resolveDataOwnerIdFor(updated.userId)
+          const fmtPpi = (n: number) =>
+            `${feeCurrency} ${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
           await upsertLedgerEntry(ownerId, {
             id: `LEV-PPI-REFUND-${updated.id}`,
             direction: "credit",
-            amount: charges.ppi,
+            amount: effectivePpi,
             currency: feeCurrency,
             status: "completed",
             date: new Date().toISOString(),
             counterparty: "MCC Capital — Payment Protection Insurance",
             bank: "MCC Capital",
             reference: updated.id,
-            comment: `Full refund of the PPI insurance premium for declined leverage application ${updated.id} — no cover attaches to a rejected line. (The audit & compliance fee remains non-refundable.)`,
+            comment: `Refund of the PPI insurance premium (${fmtPpi(effectivePpi)}) for declined leverage application ${updated.id} — no cover attaches to a rejected line. (The audit & compliance fee remains non-refundable.)`,
             category: "Leverage PPI Refund",
           })
           try {
@@ -2870,7 +2877,7 @@ export async function adminDecideApproval(
               userId: ownerId,
               tone: "info",
               title: "PPI insurance premium refunded",
-              body: `Your leverage application (${updated.id}) was declined, so the ${feeCurrency} ${charges.ppi.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} PPI insurance premium has been fully refunded to your Master Account. The audit & compliance fee remains non-refundable.`,
+              body: `Your leverage application (${updated.id}) was declined, so the ${fmtPpi(effectivePpi)} PPI insurance premium has been fully refunded to your Master Account. The audit & compliance fee remains non-refundable.`,
               href: "/dashboard/leverage",
             })
           } catch {
@@ -3355,6 +3362,123 @@ export async function adminRevokeCommodityDeal(
   } catch (err) {
     console.log("[v0] adminRevokeCommodityDeal failed:", (err as Error).message)
     return { ok: false, error: "The deal could not be revoked. Please try again." }
+  }
+}
+
+/**
+ * Administrator NEGOTIATES the PPI insurance premium on a leverage application.
+ *
+ * At application the client was charged PPI = 0.75% of buying power. The admin
+ * can agree a LOWER premium as a special arrangement: the EXCEEDED amount
+ * (original − negotiated) is immediately refunded to the client's Master
+ * Account, so only the agreed premium stays charged and matures. The refund is
+ * a single upsert row (`LEV-PPI-ADJUST-<id>`), so re-negotiating simply updates
+ * the refund to the new difference (never stacks). The client is notified of
+ * the special treatment. The negotiated value is persisted on the record so the
+ * reject-refund path knows the effective (net) premium to return.
+ */
+export async function adminAdjustLeveragePpi(
+  passcode: string,
+  id: string,
+  newPpi: number,
+  note?: string,
+): Promise<DecideResult> {
+  if (!(await adminOk(passcode))) return { ok: false, error: "Administrator authorization failed." }
+  try {
+    const existing = await getApprovalById(id)
+    if (!existing) return { ok: false, error: "Leverage application not found." }
+    if (existing.kind !== "leverage") {
+      return { ok: false, error: "PPI can only be negotiated on a leverage application." }
+    }
+
+    const payload = (existing.payload ?? {}) as Record<string, unknown>
+    const record = (payload.record ?? {}) as Record<string, unknown>
+    const equity = Number(record.equity)
+    const ratio = Number(record.leverageRatio)
+    const feeCurrency = String(record.currency || existing.currency || BASE_CURRENCY)
+    const originalPpi = leverageApplicationCharges(equity, ratio).ppi
+    if (!(originalPpi > 0)) {
+      return { ok: false, error: "This application has no PPI premium to negotiate." }
+    }
+
+    const round2 = (n: number) => Math.round((n + Number.EPSILON) * 100) / 100
+    const negotiated = round2(Number(newPpi))
+    if (!Number.isFinite(negotiated) || negotiated < 0) {
+      return { ok: false, error: "Enter a valid negotiated PPI amount." }
+    }
+    const fmt = (n: number) =>
+      `${feeCurrency} ${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+    if (negotiated > originalPpi + 0.01) {
+      return { ok: false, error: `The negotiated PPI cannot exceed the ${fmt(originalPpi)} originally charged.` }
+    }
+
+    const refund = round2(originalPpi - negotiated)
+    const ownerId = await resolveDataOwnerIdFor(existing.userId)
+
+    // Single refund row — upsert overwrites the amount on re-negotiation, so the
+    // net PPI charged always equals the latest negotiated figure.
+    await upsertLedgerEntry(ownerId, {
+      id: `LEV-PPI-ADJUST-${id}`,
+      direction: "credit",
+      amount: refund,
+      currency: feeCurrency,
+      status: "completed",
+      date: new Date().toISOString(),
+      counterparty: "MCC Capital — Payment Protection Insurance",
+      bank: "MCC Capital",
+      reference: id,
+      comment: `Negotiated PPI adjustment for leverage application ${id}: premium reduced from ${fmt(originalPpi)} to ${fmt(negotiated)} — ${fmt(refund)} refunded to the Master Account.${note?.trim() ? ` (${note.trim()})` : ""}`,
+      category: "Leverage PPI Adjustment",
+    })
+
+    const updated = await updateApprovalPayload(id, {
+      ...payload,
+      record: {
+        ...record,
+        ppiOriginal: originalPpi,
+        negotiatedPpi: negotiated,
+        ppiRefund: refund,
+        ppiNegotiatedAt: new Date().toISOString(),
+      },
+    })
+    if (!updated) return { ok: false, error: "The leverage application could not be updated." }
+
+    try {
+      await insertNotification({
+        userId: existing.userId,
+        tone: "success",
+        title: "Special treatment — PPI premium reduced",
+        body: `As a special arrangement, MCC Capital has renegotiated the PPI insurance premium on your leverage application (${id}) from ${fmt(originalPpi)} to ${fmt(negotiated)}. The ${fmt(refund)} difference has been refunded to your Master Account; only the agreed ${fmt(negotiated)} premium remains charged and matures.`,
+        href: "/dashboard/leverage",
+      })
+    } catch (err) {
+      console.log("[v0] leverage PPI adjust notification failed:", (err as Error).message)
+    }
+
+    try {
+      const target = await resolveAccountProfileById(existing.userId)
+      await logActivity({
+        action: `Administrator negotiated the PPI premium on leverage application ${id} for ${target.fullName} (${fmt(originalPpi)} → ${fmt(negotiated)}, ${fmt(refund)} refunded)`,
+        category: "Administration / Approvals",
+        user: "Administrator",
+        details: {
+          referenceId: id,
+          targetAccount: `${target.fullName} — ${target.email}`,
+          summary: existing.summary || existing.title,
+          originalPpi: fmt(originalPpi),
+          negotiatedPpi: fmt(negotiated),
+          refunded: fmt(refund),
+          reason: note?.trim() || "(none)",
+        },
+      })
+    } catch (err) {
+      console.log("[v0] leverage PPI adjust activity log failed:", (err as Error).message)
+    }
+
+    return { ok: true, request: updated }
+  } catch (err) {
+    console.log("[v0] adminAdjustLeveragePpi failed:", (err as Error).message)
+    return { ok: false, error: "The PPI could not be adjusted. Please try again." }
   }
 }
 
