@@ -16,7 +16,7 @@ import { mapApprovalStatus, type ApprovalRecord } from "@/lib/approval-sync"
 import { useCurrentUser } from "@/lib/use-current-user"
 import { getMyMasterBanking, type MyMasterBanking } from "@/app/actions/admin-users"
   import { type AccountLimits } from "@/app/actions/account-limits"
-import { validateIban } from "@/lib/iban-swift"
+import { validateIban, lookupBankByIban, isGenericBankInfo, type BankInfo } from "@/lib/iban-swift"
 import { useGateway, reconciledTotal, type GatewayAccount } from "@/lib/gateway-store"
 import { ACCOUNT_TYPES } from "@/lib/gateway-catalog"
 import type { ProfileItem } from "@/lib/users"
@@ -238,7 +238,7 @@ export function getFlagEmoji(countryCode: string): string {
     CH: "🇨🇭",
     DE: "🇩🇪",
     US: "🇺🇸",
-    GB: "🇬🇧",
+    GB: "🇬����",
     FR: "🇫🇷",
     SG: "🇸🇬",
     JP: "🇯🇵",
@@ -455,6 +455,31 @@ export function useBankAccounts(): BankAccount[] {
       ? resolvedMaster
       : extractMasterBanking(currentUser.banking)
 
+  // Resolve the bank identity (name / BIC / city / street address) FROM the
+  // master IBAN so every displayed coordinate stays consistent with the IBAN's
+  // country. Without this the master card kept the hardcoded German-branch
+  // address, SWIFT and name (ACC-001 defaults) even when the admin set, e.g., a
+  // Luxembourg IBAN — showing a München/Germany address on a LU account.
+  const [masterBankInfo, setMasterBankInfo] = useState<BankInfo | null>(null)
+  useEffect(() => {
+    let cancelled = false
+    const iban = masterBanking.iban
+    if (!iban || !validateIban(iban).valid) {
+      setMasterBankInfo(null)
+      return
+    }
+    lookupBankByIban(iban)
+      .then((info) => {
+        if (!cancelled) setMasterBankInfo(info)
+      })
+      .catch(() => {
+        if (!cancelled) setMasterBankInfo(null)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [masterBanking.iban])
+
   // Account limits (Daily Limit / Monthly Volume) set by the administrator.
   // Resolved server-side to this user's EFFECTIVE limits: their per-user
   // override if the admin set one, otherwise the platform-wide default. Each
@@ -526,21 +551,44 @@ export function useBankAccounts(): BankAccount[] {
     // coordinates are overridden — the currency and live ledger balances are
     // left untouched, so the master settlement balance model is unaffected.
     const iban = masterBanking.iban || account.iban
-    const swift = masterBanking.swift || account.swift
-    const bankName = masterBanking.bankName || account.bankName
     // Keep the country/flag consistent with an admin-set IBAN.
     const ibanCheck = masterBanking.iban ? validateIban(masterBanking.iban) : null
     const country = (ibanCheck?.valid ? ibanCheck.countryName : account.country) || account.country
     const countryCode = (ibanCheck?.valid ? ibanCheck.countryCode : account.countryCode) || account.countryCode
+    // When the admin set an IBAN in a DIFFERENT country than the ACC-001
+    // defaults (Germany), the hardcoded German SWIFT / bank name / München
+    // address must NOT survive — they would contradict the IBAN. Prefer explicit
+    // admin values, then the bank resolved FROM the IBAN, and only fall back to
+    // the base account's coordinates when the IBAN country still matches it.
+    const ibanCountryChanged = !!(ibanCheck?.valid && ibanCheck.countryCode && ibanCheck.countryCode !== account.countryCode)
+    // Only use the resolved bank as a real identity (name / BIC / street) when it
+    // is a confident directory match — a generic IBAN-structure fallback carries
+    // no usable name/address and must not be shown.
+    const resolvedBank = masterBankInfo && !isGenericBankInfo(masterBankInfo) ? masterBankInfo : null
+    const swift = masterBanking.swift || resolvedBank?.bic || (ibanCountryChanged ? "" : account.swift)
+    const bankName =
+      masterBanking.bankName ||
+      resolvedBank?.name ||
+      (ibanCountryChanged ? `Master Settlement Account (${country})` : account.bankName)
+    // Build a branch address consistent with the IBAN. Use the resolved bank's
+    // street address when known, otherwise at least the IBAN's country — never
+    // the hardcoded München/Germany line on a non-German IBAN.
+    const resolvedAddress = resolvedBank
+      ? [resolvedBank.address, [resolvedBank.postalCode, resolvedBank.city].filter(Boolean).join(" "), resolvedBank.country]
+          .filter((part) => part && part.trim())
+          .join(", ")
+      : ""
+    const branchAddress = resolvedAddress || (ibanCountryChanged ? country : account.branchAddress)
 
     return {
       ...account,
       iban,
       swift,
       bankName,
-      bankLogo: masterBanking.bankName ? bankMonogram(masterBanking.bankName) : account.bankLogo,
+      bankLogo: bankName ? bankMonogram(bankName) : account.bankLogo,
       country,
       countryCode,
+      branchAddress,
       balance: available + reserved,
       availableBalance: available,
       reservedBalance: reserved,
