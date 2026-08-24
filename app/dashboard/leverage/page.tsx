@@ -1269,13 +1269,29 @@ export default function LeveragePage() {
                 <Button variant="outline" onClick={() => setIsRequestOpen(false)}>
                   Cancel
                 </Button>
-                <Button
-                  onClick={() => void submitRequest()}
-                  disabled={checkingMargin || (totalUpfrontCharge > 0 && !feeAcknowledged)}
-                >
-                  {checkingMargin ? "Checking margin…" : "Submit for Approval"}
-                  {!checkingMargin && <ArrowRight className="ml-2 h-4 w-4" />}
-                </Button>
+                {canAppealPpi ? (
+                  // Can't fund the full PPI but can cover the audit fee → appeal.
+                  <Button
+                    onClick={() => void submitRequest({ appeal: true })}
+                    disabled={checkingMargin || !feeAcknowledged}
+                    className="bg-amber-500 text-amber-950 hover:bg-amber-500/90"
+                  >
+                    {checkingMargin ? "Checking margin…" : "Make Appeal / Negotiate Costs"}
+                    {!checkingMargin && <ArrowRight className="ml-2 h-4 w-4" />}
+                  </Button>
+                ) : (
+                  <Button
+                    onClick={() => void submitRequest()}
+                    disabled={
+                      checkingMargin ||
+                      (totalUpfrontCharge > 0 && !feeAcknowledged) ||
+                      (totalUpfrontCharge > 0 && !canAffordCharges)
+                    }
+                  >
+                    {checkingMargin ? "Checking margin…" : "Submit for Approval"}
+                    {!checkingMargin && <ArrowRight className="ml-2 h-4 w-4" />}
+                  </Button>
+                )}
               </DialogFooter>
             </DialogContent>
           </Dialog>
