@@ -442,6 +442,13 @@ export default function LeveragePage() {
   const activeLines = myRequests.filter(
     (r) => r.status === "approved" || r.status === "switchoff_pending",
   )
+  // Count of lines that are still live or in-flight — pending approval, active,
+  // or active with a switch-off queued. This DELIBERATELY excludes terminal
+  // states (closed / rejected / cancelled) so the "My Trading Lines" tab badge
+  // reflects only lines that still matter; a closed deal must not keep counting.
+  const liveLineCount = myRequests.filter(
+    (r) => r.status === "pending" || r.status === "approved" || r.status === "switchoff_pending",
+  ).length
   // Active lines can be in different currencies (USD, EUR, GBP, CHF). We can't
   // add across currencies, so totals are grouped per currency and each stat
   // card lists every currency it holds a balance in.
@@ -870,7 +877,7 @@ export default function LeveragePage() {
           <TabsTrigger value="request">Request Leverage</TabsTrigger>
           <TabsTrigger value="lines">
             My Trading Lines
-            {myRequests.length > 0 && (
+            {liveLineCount > 0 && (
               <Badge
                 variant="outline"
                 className={cn(
@@ -880,7 +887,7 @@ export default function LeveragePage() {
                     : "bg-primary/10 text-primary border-primary/20",
                 )}
               >
-                {myRequests.length}
+                {liveLineCount}
               </Badge>
             )}
           </TabsTrigger>
