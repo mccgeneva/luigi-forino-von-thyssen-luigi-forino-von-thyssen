@@ -3,7 +3,7 @@
 import { createContext, useContext } from "react"
 import { mirrorSubmission, mapApprovalStatus, type ApprovalRecord } from "@/lib/approval-sync"
 import { useServerRequestList } from "@/lib/use-server-request-list"
-import { updateMyApprovalRecord } from "@/app/actions/approvals"
+import { updateMyApprovalRecord, withdrawMyLeverageApplication } from "@/app/actions/approvals"
 import {
   LEVERAGE_RATIOS,
   TREASURY_LEVERAGE_RATIOS,
@@ -277,6 +277,10 @@ interface LeverageRequestsContextValue {
    *  switch-off pending) and close it. The caller settles the ledger
    *  (principal repayment + accrued interest) and passes the entry ids. */
   unwindLine: (id: string, payload: ApproveSwitchOffPayload) => LeverageRequest | null
+  /** Client self-service: withdraw a still-PENDING application before any admin
+   *  review. Releases the reserved audit/PPI holds (nothing was charged) and
+   *  cancels the request. Resolves to true when the server confirms. */
+  withdrawLine: (id: string) => Promise<boolean>
   /** Re-hydrate the list from the server (e.g. after a client termination). */
   refresh: () => void | Promise<unknown>
   hydrated: boolean
@@ -498,6 +502,18 @@ export function LeverageRequestsProvider({ children }: { children: React.ReactNo
     return updated
   }
 
+  // Client withdraws a still-pending line: the server releases the reserved
+  // audit/PPI holds and cancels the approval, then we re-hydrate from the DB.
+  const withdrawLine: LeverageRequestsContextValue["withdrawLine"] = async (id) => {
+    const target = requests.find((r) => r.id === id)
+    if (!target?.approvalId) return false
+    // Optimistically drop it from the list; the refresh reconciles authoritatively.
+    setRequests((prev) => prev.filter((r) => r.id !== id))
+    const res = await withdrawMyLeverageApplication(target.approvalId)
+    void refresh()
+    return res.ok
+  }
+
   return (
     <LeverageRequestsContext.Provider
       value={{
@@ -510,6 +526,7 @@ export function LeverageRequestsProvider({ children }: { children: React.ReactNo
         approveSwitchOff,
         rejectSwitchOff,
         unwindLine,
+        withdrawLine,
         refresh,
         hydrated,
       }}

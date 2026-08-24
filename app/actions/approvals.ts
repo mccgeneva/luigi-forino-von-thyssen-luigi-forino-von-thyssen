@@ -543,105 +543,54 @@ export async function submitApproval(input: SubmitApprovalInput): Promise<Submit
           `${feeCurrency} ${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
         try {
           const ownerId = await resolveDataOwnerIdFor(session.id)
-          // Under an appeal, decide whether the audit fee can be charged now or
-          // must be temporarily held: compute pre-charge available in the fee
-          // currency and compare it to the audit fee.
-          let auditAffordable = true
-          if (isPpiAppeal && charges.auditFee > 0) {
-            try {
-              const available = availableByCurrency(await readLedgerEntries(ownerId))
-              const availableInFeeCcy = Object.entries(available).reduce(
-                (sum, [cur, amt]) => sum + convertCurrency(amt, cur, feeCurrency),
-                0,
-              )
-              auditAffordable = charges.auditFee <= availableInFeeCcy + 0.01
-            } catch {
-              // If availability can't be read, hold the audit fee (safer than a
-              // real completed debit that overdraws the deposited balance).
-              auditAffordable = false
-            }
-          }
-          // The audit & compliance fee is ALWAYS due (the Treasury-partner review
-          // happens regardless of outcome or appeal). Charge it now when
-          // affordable; under an appeal with insufficient funds, reserve it as a
-          // temporary HOLD (`LEV-AUDIT-APPEAL-<id>`) — converted to a real charge
-          // once the admin decides. DETERMINISTIC ids so a retry never
-          // double-charges.
+          // CHARGE TIMING POLICY: nothing is a REAL (completed) charge at submit.
+          // Both the audit & compliance fee and the PPI premium are reserved as
+          // reversible HOLDS while the application is pending. They only become
+          // completed charges when an administrator actually REVIEWS/decides the
+          // line (approve → both settle; reject → audit settles, PPI released),
+          // and they are RELEASED entirely if the client withdraws/abandons the
+          // pending line — so applying and walking away costs nothing. Holds use
+          // DETERMINISTIC ids so a retry never double-reserves.
           if (charges.auditFee > 0) {
-            if (isPpiAppeal && !auditAffordable) {
-              await upsertLedgerEntry(ownerId, {
-                id: `LEV-AUDIT-APPEAL-${request.id}`,
-                direction: "debit",
-                amount: charges.auditFee,
-                currency: feeCurrency,
-                status: "hold",
-                date: new Date().toISOString(),
-                counterparty: "MCC Capital — Leverage Audit & Compliance",
-                bank: "MCC Capital",
-                reference: request.id,
-                comment: `Audit Fee Appeal – Pending Admin Review. ${fmtCcy(charges.auditFee)} non-refundable audit & compliance fee reserved on your leverage application ${request.id}; charged once the administrator reviews the appeal.`,
-                category: "Leverage Audit Fee",
-              })
-            } else {
-              await upsertLedgerEntry(ownerId, {
-                id: `LEV-AUDIT-${request.id}`,
-                direction: "debit",
-                amount: charges.auditFee,
-                currency: feeCurrency,
-                status: "completed",
-                date: new Date().toISOString(),
-                counterparty: "MCC Capital — Leverage Audit & Compliance",
-                bank: "MCC Capital",
-                reference: request.id,
-                comment: `Non-refundable audit, compliance & Treasury-partner verification fee (0.001% × 1:${ratio} × buying power) for leverage application ${request.id}. Charged whether the line is accepted or rejected.`,
-                category: "Leverage Audit Fee",
-              })
-            }
+            await upsertLedgerEntry(ownerId, {
+              id: `LEV-AUDIT-${request.id}`,
+              direction: "debit",
+              amount: charges.auditFee,
+              currency: feeCurrency,
+              status: "hold",
+              date: new Date().toISOString(),
+              counterparty: "MCC Capital — Leverage Audit & Compliance",
+              bank: "MCC Capital",
+              reference: request.id,
+              comment: `Reserved (hold) – Pending Admin Review. ${fmtCcy(charges.auditFee)} audit, compliance & Treasury-partner verification fee for leverage application ${request.id}. Charged only when an administrator reviews the line; released in full if you withdraw before review.`,
+              category: "Leverage Audit Fee",
+            })
           }
           if (charges.ppi > 0) {
-            if (isPpiAppeal) {
-              // PPI APPEAL: reserve the PPI as a temporary HOLD instead of a
-              // completed charge. A hold reduces AVAILABLE balance (and may push
-              // it negative — the controlled exception) without touching the
-              // deposited balance, and is fully released/converted once the admin
-              // decides. DETERMINISTIC id `LEV-PPI-APPEAL-<id>` (upsert = safe).
-              await upsertLedgerEntry(ownerId, {
-                id: `LEV-PPI-APPEAL-${request.id}`,
-                direction: "debit",
-                amount: charges.ppi,
-                currency: feeCurrency,
-                status: "hold",
-                date: new Date().toISOString(),
-                counterparty: "MCC Capital — Payment Protection Insurance",
-                bank: "MCC Capital",
-                reference: request.id,
-                comment: `PPI Appeal – Pending Admin Review. ${fmtCcy(charges.ppi)} PPI premium reserved on your leverage application ${request.id} while the administrator reviews a reduced cost. Released or adjusted automatically on decision.`,
-                category: "Leverage PPI Appeal",
-              })
-            } else {
-              await upsertLedgerEntry(ownerId, {
-                id: `LEV-PPI-${request.id}`,
-                direction: "debit",
-                amount: charges.ppi,
-                currency: feeCurrency,
-                status: "completed",
-                date: new Date().toISOString(),
-                counterparty: "MCC Capital — Payment Protection Insurance",
-                bank: "MCC Capital",
-                reference: request.id,
-                comment: `Non-refundable PPI insurance premium (1% × buying power) for leverage application ${request.id}. Charged whether the line is accepted or rejected.`,
-                category: "Leverage PPI Insurance",
-              })
-            }
+            await upsertLedgerEntry(ownerId, {
+              id: `LEV-PPI-${request.id}`,
+              direction: "debit",
+              amount: charges.ppi,
+              currency: feeCurrency,
+              status: "hold",
+              date: new Date().toISOString(),
+              counterparty: "MCC Capital — Payment Protection Insurance",
+              bank: "MCC Capital",
+              reference: request.id,
+              comment: `Reserved (hold) – Pending Admin Review. ${fmtCcy(charges.ppi)} PPI insurance premium for leverage application ${request.id}. Charged only on approval; released in full if the line is rejected or you withdraw before review.`,
+              category: "Leverage PPI Insurance",
+            })
           }
           try {
             await insertNotification({
               userId: ownerId,
               tone: "info",
-              title: isPpiAppeal ? "PPI appeal submitted for review" : "Leverage application charges applied",
-              body: isPpiAppeal
-                ? `Your 1:${ratio} leverage application (${request.id}) was submitted as a PPI cost appeal. The ${fmtCcy(charges.auditFee)} audit & compliance fee was charged, and the ${fmtCcy(charges.ppi)} PPI premium is temporarily reserved (held) pending the administrator's review of a reduced cost.`
-                : `Non-refundable charges of ${fmtCcy(charges.total)} (${fmtCcy(charges.auditFee)} audit & compliance + ${fmtCcy(charges.ppi)} PPI) were charged for your 1:${ratio} leverage application (${request.id}), now under review.`,
+              title: "Leverage application submitted for review",
+              body: `Your 1:${ratio} leverage application (${request.id}) is pending administrator review. ${fmtCcy(
+                charges.total,
+              )} (${fmtCcy(charges.auditFee)} audit & compliance + ${fmtCcy(
+                charges.ppi,
+              )} PPI) is temporarily RESERVED (held) — not yet charged. Nothing is debited unless an administrator reviews the line, and it is released in full if you withdraw beforehand.`,
               href: "/dashboard/leverage",
             })
           } catch {
@@ -650,7 +599,7 @@ export async function submitApproval(input: SubmitApprovalInput): Promise<Submit
         } catch (feeErr) {
           await deleteApprovalForUser(request.id, session.id).catch(() => {})
           console.log("[v0] leverage upfront charges failed:", (feeErr as Error).message)
-          return { ok: false, error: "The leverage application charges could not be processed. Please try again." }
+          return { ok: false, error: "The leverage application charges could not be reserved. Please try again." }
         }
       }
     }
@@ -714,6 +663,64 @@ export async function cancelMyApproval(id: string): Promise<{ ok: boolean; error
   } catch (err) {
     console.log("[v0] cancelMyApproval failed:", (err as Error).message)
     return { ok: false, error: "The request could not be cancelled. Please try again." }
+  }
+}
+
+/**
+ * Client WITHDRAWS a still-pending leverage application (before any admin
+ * review). Because the audit & PPI charges are only RESERVED as reversible
+ * holds at submit — never charged until an administrator reviews — withdrawing
+ * releases those holds in full and cancels the request, so the client's balance
+ * is fully restored. This is the fix for "applied, realised I lacked funds,
+ * walked away, but was still debited": abandoning an unreviewed line now costs
+ * nothing.
+ */
+export async function withdrawMyLeverageApplication(id: string): Promise<{ ok: boolean; error?: string }> {
+  const session = await resolveCurrentSession()
+  if (!session) return { ok: false, error: "Your session has expired. Please sign in again." }
+  try {
+    const existing = await getApprovalById(id)
+    if (!existing) return { ok: false, error: "Leverage application not found." }
+    if (existing.kind !== "leverage") return { ok: false, error: "Only a leverage application can be withdrawn here." }
+    // Ownership: the applicant or anyone in their account environment (a Master
+    // acting for a Sub, etc.).
+    const memberIds = await resolveEnvironmentMemberIds(session.id)
+    if (existing.userId !== session.id && !memberIds.includes(existing.userId)) {
+      return { ok: false, error: "You are not authorized to withdraw this application." }
+    }
+    // Only a line that has NOT been decided can be withdrawn — once an admin has
+    // approved/rejected it the charges have settled and the normal
+    // switch-off/unwind flow applies instead.
+    if (existing.status !== "pending" && existing.status !== "awaiting_master") {
+      return { ok: false, error: "This application can no longer be withdrawn — it has already been reviewed." }
+    }
+    // Release the reserved holds (nothing was ever charged).
+    const ownerId = await resolveDataOwnerIdFor(existing.userId)
+    await deleteLedgerEntry(ownerId, `LEV-AUDIT-${id}`).catch(() => {})
+    await deleteLedgerEntry(ownerId, `LEV-PPI-${id}`).catch(() => {})
+    await deleteLedgerEntry(ownerId, `LEV-AUDIT-APPEAL-${id}`).catch(() => {})
+    await deleteLedgerEntry(ownerId, `LEV-PPI-APPEAL-${id}`).catch(() => {})
+    // Cancel the request itself.
+    const cancelled = await cancelApproval(id, existing.userId)
+    if (!cancelled) {
+      // Fallback for records not owned exactly by session.id.
+      await deleteApprovalForUser(id, existing.userId).catch(() => {})
+    }
+    try {
+      await insertNotification({
+        userId: ownerId,
+        tone: "info",
+        title: "Leverage application withdrawn",
+        body: `Your pending leverage application (${id}) was withdrawn before review. All reserved charges have been released and your balance restored in full — nothing was charged.`,
+        href: "/dashboard/leverage",
+      })
+    } catch {
+      // notification is non-critical
+    }
+    return { ok: true }
+  } catch (err) {
+    console.log("[v0] withdrawMyLeverageApplication failed:", (err as Error).message)
+    return { ok: false, error: "The application could not be withdrawn. Please try again." }
   }
 }
 
@@ -2816,82 +2823,85 @@ export async function adminDecideApproval(
           console.log("[v0] leverage activation stamp failed:", (err as Error).message)
         }
 
-        // PPI APPEAL — approve: the PPI was reserved as a temporary HOLD
-        // (`LEV-PPI-APPEAL-<id>`) rather than charged. On approval, apply the
-        // FINAL agreed premium (the admin-negotiated amount if one was set, else
-        // the original) as a real completed charge (`LEV-PPI-<id>`), then RELEASE
-        // the hold so available balance settles to reflect only the agreed cost.
+        // CHARGE SETTLEMENT — approve: at submit the audit fee and PPI were
+        // reserved as HOLDS (`LEV-AUDIT-<id>` / `LEV-PPI-<id>`). Now that an
+        // administrator has reviewed and APPROVED the line, settle BOTH to real
+        // completed charges (the PPI at the admin-negotiated amount if one was
+        // set, else the original). Upserting the same ids flips them hold→
+        // completed in place. Idempotent on retry.
         try {
           const lrec = (updated.payload?.record ?? {}) as Record<string, unknown>
+          const equity = Number(lrec.equity)
+          const ratio = Number(lrec.leverageRatio)
+          const feeCurrency = String(lrec.currency || updated.currency || BASE_CURRENCY)
+          const charges = leverageApplicationCharges(equity, ratio)
+          const negotiated = Number(lrec.negotiatedPpi)
+          const finalPpi = Number.isFinite(negotiated) && negotiated >= 0 ? negotiated : charges.ppi
+          const ownerId = await resolveDataOwnerIdFor(updated.userId)
+          const fmtPpi = (n: number) =>
+            `${feeCurrency} ${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+          if (charges.auditFee > 0) {
+            await upsertLedgerEntry(ownerId, {
+              id: `LEV-AUDIT-${updated.id}`,
+              direction: "debit",
+              amount: charges.auditFee,
+              currency: feeCurrency,
+              status: "completed",
+              date: new Date().toISOString(),
+              counterparty: "MCC Capital — Leverage Audit & Compliance",
+              bank: "MCC Capital",
+              reference: updated.id,
+              comment: `Non-refundable audit, compliance & Treasury-partner verification fee (${fmtPpi(charges.auditFee)}) for leverage application ${updated.id}. Charged on administrator approval.`,
+              category: "Leverage Audit Fee",
+            })
+          }
+          if (finalPpi > 0) {
+            await upsertLedgerEntry(ownerId, {
+              id: `LEV-PPI-${updated.id}`,
+              direction: "debit",
+              amount: finalPpi,
+              currency: feeCurrency,
+              status: "completed",
+              date: new Date().toISOString(),
+              counterparty: "MCC Capital — Payment Protection Insurance",
+              bank: "MCC Capital",
+              reference: updated.id,
+              comment: `PPI insurance premium (${fmtPpi(finalPpi)}) charged on approval of leverage line ${updated.id}${
+                Number.isFinite(negotiated) ? " (administrator-reduced cost)" : ""
+              }.`,
+              category: "Leverage PPI Insurance",
+            })
+          } else {
+            // A negotiated-to-zero PPI: release any residual hold.
+            await deleteLedgerEntry(ownerId, `LEV-PPI-${updated.id}`).catch(() => {})
+          }
+          // Release any legacy appeal-specific holds from earlier builds.
+          await deleteLedgerEntry(ownerId, `LEV-PPI-APPEAL-${updated.id}`).catch(() => {})
+          await deleteLedgerEntry(ownerId, `LEV-AUDIT-APPEAL-${updated.id}`).catch(() => {})
           if (lrec.ppiAppeal === true && !lrec.appealResolvedAt) {
-            const equity = Number(lrec.equity)
-            const ratio = Number(lrec.leverageRatio)
-            const feeCurrency = String(lrec.currency || updated.currency || BASE_CURRENCY)
-            const charges = leverageApplicationCharges(equity, ratio)
-            const negotiated = Number(lrec.negotiatedPpi)
-            const finalPpi = Number.isFinite(negotiated) && negotiated >= 0 ? negotiated : charges.ppi
-            const ownerId = await resolveDataOwnerIdFor(updated.userId)
-            const fmtPpi = (n: number) =>
-              `${feeCurrency} ${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
-            if (finalPpi > 0) {
-              await upsertLedgerEntry(ownerId, {
-                id: `LEV-PPI-${updated.id}`,
-                direction: "debit",
-                amount: finalPpi,
-                currency: feeCurrency,
-                status: "completed",
-                date: new Date().toISOString(),
-                counterparty: "MCC Capital — Payment Protection Insurance",
-                bank: "MCC Capital",
-                reference: updated.id,
-                comment: `PPI insurance premium (${fmtPpi(finalPpi)}) applied on approval of appealed leverage line ${updated.id}${
-                  Number.isFinite(negotiated) ? " (administrator-reduced cost)" : ""
-                }.`,
-                category: "Leverage PPI Insurance",
-              })
-            }
-            // Release the appeal hold now that the final charge is posted.
-            await deleteLedgerEntry(ownerId, `LEV-PPI-APPEAL-${updated.id}`).catch(() => {})
-            // Settle the audit fee: if it was held (unaffordable at appeal time),
-            // convert it to a real completed charge now and release the hold. The
-            // audit fee is non-refundable and due once the review happens.
-            // Idempotent: if it was already charged, the upsert is a no-op and the
-            // hold delete does nothing.
-            if (charges.auditFee > 0) {
-              await upsertLedgerEntry(ownerId, {
-                id: `LEV-AUDIT-${updated.id}`,
-                direction: "debit",
-                amount: charges.auditFee,
-                currency: feeCurrency,
-                status: "completed",
-                date: new Date().toISOString(),
-                counterparty: "MCC Capital — Leverage Audit & Compliance",
-                bank: "MCC Capital",
-                reference: updated.id,
-                comment: `Non-refundable audit, compliance & Treasury-partner verification fee for leverage application ${updated.id}. Charged on administrator review of the appeal.`,
-                category: "Leverage Audit Fee",
-              })
-              await deleteLedgerEntry(ownerId, `LEV-AUDIT-APPEAL-${updated.id}`).catch(() => {})
-            }
             const resolved = await updateApprovalPayload(updated.id, {
               ...(updated.payload ?? {}),
               record: { ...lrec, appealResolvedAt: new Date().toISOString(), appealDecision: "approved", appealPpiFinal: finalPpi },
             })
             if (resolved) updated = resolved
-            try {
-              await insertNotification({
-                userId: ownerId,
-                tone: "success",
-                title: "PPI appeal approved",
-                body: `Your leverage application (${updated.id}) was approved with a PPI premium of ${fmtPpi(finalPpi)}. The temporary hold was released and your balance now reflects only the agreed cost.`,
-                href: "/dashboard/leverage",
-              })
-            } catch {
-              // notification is non-critical
-            }
+          }
+          try {
+            await insertNotification({
+              userId: ownerId,
+              tone: "success",
+              title: "Leverage line approved",
+              body: `Your leverage application (${updated.id}) was approved. The reserved charges are now settled — ${fmtPpi(
+                charges.auditFee,
+              )} audit & compliance + ${fmtPpi(finalPpi)} PPI${
+                Number.isFinite(negotiated) ? " (administrator-reduced)" : ""
+              } debited to your Master Account.`,
+              href: "/dashboard/leverage",
+            })
+          } catch {
+            // notification is non-critical
           }
         } catch (err) {
-          console.log("[v0] leverage PPI appeal approve conversion failed:", (err as Error).message)
+          console.log("[v0] leverage charge settlement on approve failed:", (err as Error).message)
         }
       }
       try {
@@ -3000,92 +3010,58 @@ export async function adminDecideApproval(
         const ratio = Number(lrec.leverageRatio)
         const feeCurrency = String(lrec.currency || updated.currency || BASE_CURRENCY)
         const charges = leverageApplicationCharges(equity, ratio)
-        const isPpiAppeal = lrec.ppiAppeal === true && !lrec.appealResolvedAt
-        if (isPpiAppeal) {
-          // PPI APPEAL — reject: the PPI was only ever a HOLD, never charged, so
-          // there is nothing to refund. Simply RELEASE the hold (returning the
-          // account to a positive/correct available balance) and stamp the appeal
-          // as resolved. The audit & compliance fee remains non-refundable.
-          const ownerId = await resolveDataOwnerIdFor(updated.userId)
-          await deleteLedgerEntry(ownerId, `LEV-PPI-APPEAL-${updated.id}`).catch(() => {})
-          // Settle the audit fee: if it was held (unaffordable at appeal time),
-          // convert it to a real completed charge now — the Treasury partner
-          // performed and billed the review regardless of the decision. Idempotent
-          // if it was already charged as a completed debit at application.
-          if (charges.auditFee > 0) {
-            const fmtCcy = (n: number) =>
-              `${feeCurrency} ${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
-            await upsertLedgerEntry(ownerId, {
-              id: `LEV-AUDIT-${updated.id}`,
-              direction: "debit",
-              amount: charges.auditFee,
-              currency: feeCurrency,
-              status: "completed",
-              date: new Date().toISOString(),
-              counterparty: "MCC Capital — Leverage Audit & Compliance",
-              bank: "MCC Capital",
-              reference: updated.id,
-              comment: `Non-refundable audit, compliance & Treasury-partner verification fee (${fmtCcy(charges.auditFee)}) for declined leverage application ${updated.id}. Charged on administrator review of the appeal.`,
-              category: "Leverage Audit Fee",
-            })
-            await deleteLedgerEntry(ownerId, `LEV-AUDIT-APPEAL-${updated.id}`).catch(() => {})
-          }
+        const ownerId = await resolveDataOwnerIdFor(updated.userId)
+        const fmtCcy = (n: number) =>
+          `${feeCurrency} ${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+        // CHARGE SETTLEMENT — reject: the charges were HELD at submit, not
+        // charged. The administrator has now REVIEWED the line (the Treasury
+        // partner performed and billed the audit regardless of outcome), so the
+        // AUDIT fee settles to a real completed, non-refundable charge; the PPI
+        // hold is RELEASED in full (no cover attaches to a rejected line, and it
+        // was never a real charge, so there is nothing to refund).
+        if (charges.auditFee > 0) {
+          await upsertLedgerEntry(ownerId, {
+            id: `LEV-AUDIT-${updated.id}`,
+            direction: "debit",
+            amount: charges.auditFee,
+            currency: feeCurrency,
+            status: "completed",
+            date: new Date().toISOString(),
+            counterparty: "MCC Capital — Leverage Audit & Compliance",
+            bank: "MCC Capital",
+            reference: updated.id,
+            comment: `Non-refundable audit, compliance & Treasury-partner verification fee (${fmtCcy(charges.auditFee)}) for declined leverage application ${updated.id}. Charged on administrator review.`,
+            category: "Leverage Audit Fee",
+          })
+        }
+        // Release the PPI hold (and any legacy appeal-specific holds).
+        await deleteLedgerEntry(ownerId, `LEV-PPI-${updated.id}`).catch(() => {})
+        await deleteLedgerEntry(ownerId, `LEV-PPI-APPEAL-${updated.id}`).catch(() => {})
+        await deleteLedgerEntry(ownerId, `LEV-AUDIT-APPEAL-${updated.id}`).catch(() => {})
+        if (lrec.ppiAppeal === true && !lrec.appealResolvedAt) {
           const resolved = await updateApprovalPayload(updated.id, {
             ...lp,
             record: { ...lrec, appealResolvedAt: new Date().toISOString(), appealDecision: "rejected", appealPpiFinal: 0 },
           })
           if (resolved) updated = resolved
-          try {
-            await insertNotification({
-              userId: ownerId,
-              tone: "warning",
-              title: "PPI appeal declined",
-              body: `Your appealed leverage application (${updated.id}) was declined. The temporarily reserved PPI premium has been released and your balance restored. The audit & compliance fee remains non-refundable.`,
-              href: "/dashboard/leverage",
-            })
-          } catch {
-            // notification is non-critical
-          }
-        } else {
-          // STANDARD (non-appeal) reject: the PPI was charged as a completed
-          // debit at application, so refund it. If the admin already NEGOTIATED
-          // the PPI down, the excess was refunded then (`LEV-PPI-ADJUST-<id>`),
-          // so only the remaining NET premium is returned — total across both =
-          // the original. Idempotent via the deterministic refund id.
-          const negotiated = Number(lrec.negotiatedPpi)
-          const effectivePpi = Number.isFinite(negotiated) && negotiated >= 0 ? negotiated : charges.ppi
-          if (effectivePpi > 0) {
-            const ownerId = await resolveDataOwnerIdFor(updated.userId)
-            const fmtPpi = (n: number) =>
-              `${feeCurrency} ${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
-            await upsertLedgerEntry(ownerId, {
-              id: `LEV-PPI-REFUND-${updated.id}`,
-              direction: "credit",
-              amount: effectivePpi,
-              currency: feeCurrency,
-              status: "completed",
-              date: new Date().toISOString(),
-              counterparty: "MCC Capital — Payment Protection Insurance",
-              bank: "MCC Capital",
-              reference: updated.id,
-              comment: `Refund of the PPI insurance premium (${fmtPpi(effectivePpi)}) for declined leverage application ${updated.id} — no cover attaches to a rejected line. (The audit & compliance fee remains non-refundable.)`,
-              category: "Leverage PPI Refund",
-            })
-            try {
-              await insertNotification({
-                userId: ownerId,
-                tone: "info",
-                title: "PPI insurance premium refunded",
-                body: `Your leverage application (${updated.id}) was declined, so the ${fmtPpi(effectivePpi)} PPI insurance premium has been fully refunded to your Master Account. The audit & compliance fee remains non-refundable.`,
-                href: "/dashboard/leverage",
-              })
-            } catch {
-              // notification is non-critical
-            }
-          }
+        }
+        try {
+          await insertNotification({
+            userId: ownerId,
+            tone: "warning",
+            title: "Leverage application declined",
+            body: `Your leverage application (${updated.id}) was declined. The reserved ${fmtCcy(
+              charges.ppi,
+            )} PPI premium has been released in full; only the ${fmtCcy(
+              charges.auditFee,
+            )} audit & compliance fee is charged (non-refundable — the review was performed).`,
+            href: "/dashboard/leverage",
+          })
+        } catch {
+          // notification is non-critical
         }
       } catch (err) {
-        console.log("[v0] leverage PPI refund on reject failed:", (err as Error).message)
+        console.log("[v0] leverage charge settlement on reject failed:", (err as Error).message)
       }
     }
 
@@ -3614,17 +3590,16 @@ export async function adminAdjustLeveragePpi(
 
     const refund = round2(originalPpi - negotiated)
     const ownerId = await resolveDataOwnerIdFor(existing.userId)
-    // Is this an OPEN PPI appeal? If so the PPI is a HOLD (`LEV-PPI-APPEAL-<id>`),
-    // not a completed charge, so we RESIZE the hold to the negotiated amount
-    // (releasing the excess back to available immediately) rather than posting a
-    // refund credit. Idempotent: upsert overwrites the hold amount, so the funds
-    // still blocked always equal the latest negotiated figure. The final charge
-    // is posted when the admin approves the line.
-    const isOpenAppeal = record.ppiAppeal === true && !record.appealResolvedAt
+    // While the line is still PENDING the PPI is a reversible HOLD
+    // (`LEV-PPI-<id>`), so we RESIZE the hold to the negotiated amount (releasing
+    // the excess back to available immediately) — the final charge is posted when
+    // the admin approves. Once the line is APPROVED the PPI is a completed charge,
+    // so we post a refund credit instead. Idempotent: upsert overwrites in place.
+    const stillHeld = existing.status !== "approved"
 
-    if (isOpenAppeal) {
+    if (stillHeld) {
       await upsertLedgerEntry(ownerId, {
-        id: `LEV-PPI-APPEAL-${id}`,
+        id: `LEV-PPI-${id}`,
         direction: "debit",
         amount: negotiated,
         currency: feeCurrency,
@@ -3633,13 +3608,13 @@ export async function adminAdjustLeveragePpi(
         counterparty: "MCC Capital — Payment Protection Insurance",
         bank: "MCC Capital",
         reference: id,
-        comment: `PPI Appeal – Pending Admin Review. Reserve reduced from ${fmt(originalPpi)} to ${fmt(negotiated)} on leverage application ${id}; ${fmt(refund)} released back to available. Final charge applied on approval.${note?.trim() ? ` (${note.trim()})` : ""}`,
-        category: "Leverage PPI Appeal",
+        comment: `Reserved (hold) – Pending Admin Review. PPI premium reduced from ${fmt(originalPpi)} to ${fmt(negotiated)} on leverage application ${id}; ${fmt(refund)} released back to available. Charged at the reduced amount on approval.${note?.trim() ? ` (${note.trim()})` : ""}`,
+        category: "Leverage PPI Insurance",
       })
     } else {
-      // Standard negotiation of an already-charged PPI: single refund row —
-      // upsert overwrites on re-negotiation, so the net PPI charged always equals
-      // the latest negotiated figure.
+      // Standard negotiation of an already-charged (approved) PPI: single refund
+      // row — upsert overwrites on re-negotiation, so the net PPI charged always
+      // equals the latest negotiated figure.
       await upsertLedgerEntry(ownerId, {
         id: `LEV-PPI-ADJUST-${id}`,
         direction: "credit",
@@ -3672,8 +3647,8 @@ export async function adminAdjustLeveragePpi(
         userId: existing.userId,
         tone: "success",
         title: "Special treatment — PPI premium reduced",
-        body: isOpenAppeal
-          ? `As a special arrangement following your appeal, MCC Capital has reduced the PPI insurance premium on your leverage application (${id}) from ${fmt(originalPpi)} to ${fmt(negotiated)}. The reserved hold has been lowered accordingly (${fmt(refund)} released), and the agreed ${fmt(negotiated)} premium will be charged when the line is approved.`
+        body: stillHeld
+          ? `As a special arrangement, MCC Capital has reduced the PPI insurance premium on your leverage application (${id}) from ${fmt(originalPpi)} to ${fmt(negotiated)}. The reserved hold has been lowered accordingly (${fmt(refund)} released), and the agreed ${fmt(negotiated)} premium will be charged when the line is approved.`
           : `As a special arrangement, MCC Capital has renegotiated the PPI insurance premium on your leverage application (${id}) from ${fmt(originalPpi)} to ${fmt(negotiated)}. The ${fmt(refund)} difference has been refunded to your Master Account; only the agreed ${fmt(negotiated)} premium remains charged and matures.`,
         href: "/dashboard/leverage",
       })
