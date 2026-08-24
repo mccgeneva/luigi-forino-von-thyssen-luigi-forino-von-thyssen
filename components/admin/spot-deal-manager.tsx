@@ -966,6 +966,11 @@ function CreateDeal({
   const locked = Boolean(lockedVesselImo)
   const [form, setForm] = useState(() => ({ ...emptyDealForm, vesselImo: lockedVesselImo ?? "" }))
   const [submitting, setSubmitting] = useState(false)
+  // Administrator override: when on, Step 3 offers EVERY vessel in the catalogue
+  // (not just those whose type is compatible with the chosen product), so the
+  // desk can force, e.g., DOVE onto an EN590 diesel deal. Off by default so the
+  // normal flow still steers to compliant tankers.
+  const [forceVessel, setForceVessel] = useState(false)
 
   const set = <K extends keyof typeof form>(key: K, value: (typeof form)[K]) =>
     setForm((p) => ({ ...p, [key]: value }))
@@ -984,6 +989,15 @@ function CreateDeal({
   const compatibleVessels = useMemo(
     () => vessels.filter((v) => compatibleTypes.includes(v.type)),
     [vessels, compatibleTypes],
+  )
+  // With the override on, offer the whole catalogue; otherwise only compatible.
+  const vesselOptions = useMemo(
+    () => (forceVessel ? vessels : compatibleVessels),
+    [forceVessel, vessels, compatibleVessels],
+  )
+  // Is the currently selected vessel outside the product's compatible types?
+  const selectedIncompatible = Boolean(
+    selectedVessel && form.productId && !compatibleTypes.includes(selectedVessel.type),
   )
 
   // When locked to a specific vessel, only offer products that vessel can legally
@@ -1314,21 +1328,67 @@ function CreateDeal({
             </div>
           ) : (
             <>
+              {/* Administrator override — force any vessel regardless of the
+                  product's compatible tanker types (e.g. put DOVE on an EN590
+                  diesel deal). */}
+              {productChosen && (
+                <button
+                  type="button"
+                  onClick={() => setForceVessel((v) => !v)}
+                  className={cn(
+                    "flex items-center justify-between gap-2 rounded-lg border px-3 py-2 text-left transition-colors",
+                    forceVessel
+                      ? "border-amber-500/50 bg-amber-500/10"
+                      : "border-dashed border-border bg-muted/20 hover:border-border/80",
+                  )}
+                >
+                  <span className="flex items-center gap-2">
+                    <ShieldAlert className={cn("h-4 w-4 shrink-0", forceVessel ? "text-amber-600" : "text-muted-foreground")} />
+                    <span className="text-xs">
+                      <span className="font-medium">Force any vessel (override compatibility)</span>
+                      <span className="block text-muted-foreground">
+                        {forceVessel
+                          ? "On — every vessel in the catalogue is selectable."
+                          : "Off — only tankers compatible with this product are listed."}
+                      </span>
+                    </span>
+                  </span>
+                  <span
+                    className={cn(
+                      "relative h-5 w-9 shrink-0 rounded-full transition-colors",
+                      forceVessel ? "bg-amber-500" : "bg-muted-foreground/30",
+                    )}
+                  >
+                    <span
+                      className={cn(
+                        "absolute top-0.5 h-4 w-4 rounded-full bg-background transition-all",
+                        forceVessel ? "left-4" : "left-0.5",
+                      )}
+                    />
+                  </span>
+                </button>
+              )}
               <Select value={form.vesselImo} onValueChange={handleVessel} disabled={!productChosen}>
                 <SelectTrigger>
                   <SelectValue placeholder={productChosen ? "Select a compatible vessel" : "Choose a product to enable"} />
                 </SelectTrigger>
                 <SelectContent>
-                  {compatibleVessels.length === 0 ? (
+                  {vesselOptions.length === 0 ? (
                     <div className="px-2 py-4 text-center text-xs text-muted-foreground">
-                      No compatible vessels in the catalogue for this product.
+                      {forceVessel
+                        ? "No vessels in the catalogue yet."
+                        : "No compatible vessels for this product — enable “Force any vessel” to pick one anyway."}
                     </div>
                   ) : (
-                    compatibleVessels.map((v) => (
-                      <SelectItem key={v.imo} value={v.imo}>
-                        {v.name} — IMO {v.imo} ({VESSEL_TYPE_LABELS[v.type]})
-                      </SelectItem>
-                    ))
+                    vesselOptions.map((v) => {
+                      const incompatible = !compatibleTypes.includes(v.type)
+                      return (
+                        <SelectItem key={v.imo} value={v.imo}>
+                          {v.name} — IMO {v.imo} ({VESSEL_TYPE_LABELS[v.type]})
+                          {incompatible ? " · off-spec" : ""}
+                        </SelectItem>
+                      )
+                    })
                   )}
                 </SelectContent>
               </Select>
@@ -1338,6 +1398,16 @@ function CreateDeal({
                   {selectedVessel.capacityUnit} · {VESSEL_STATUS_LABELS[selectedVessel.status]} ·{" "}
                   {selectedVessel.location || "—"}
                   {selectedVessel.cargo ? ` · carrying ${selectedVessel.cargo}` : ""}
+                </p>
+              )}
+              {selectedIncompatible && (
+                <p className="flex items-start gap-1.5 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-400">
+                  <ShieldAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                  <span>
+                    Forced assignment: {selectedVessel?.name} ({VESSEL_TYPE_LABELS[selectedVessel!.type]}) is not a
+                    standard carrier for {form.product || "this product"}. The deal will still publish — confirm this is
+                    intentional.
+                  </span>
                 </p>
               )}
               {/* Inline path to add a vessel without leaving the deal form — the
