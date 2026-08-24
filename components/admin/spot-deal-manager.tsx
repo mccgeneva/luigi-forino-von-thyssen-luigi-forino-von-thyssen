@@ -178,14 +178,16 @@ function VesselCatalogue({ onVesselsChanged }: { onVesselsChanged: (v: Vessel[])
   const providerConnected = Boolean(provider?.connected)
 
   const load = useCallback(
-    async (term?: string) => {
+    async (term?: string): Promise<Vessel[] | null> => {
       setLoading(true)
       try {
         const res = await listVesselsAdmin(ADMIN_PASSCODE, term)
         if (res.ok) {
           setVessels(res.vessels)
           onVesselsChanged(res.vessels)
+          return res.vessels
         }
+        return null
       } finally {
         setLoading(false)
       }
@@ -272,8 +274,16 @@ function VesselCatalogue({ onVesselsChanged }: { onVesselsChanged: (v: Vessel[])
 
   // Run a catalogue search. When the term resolves to a 7-digit IMO we query by
   // the bare digits so it matches the stored `imo` even if the admin typed an
-  // "IMO " prefix or extra spacing.
-  const runSearch = () => load(searchedImo || search.trim())
+  // "IMO " prefix or extra spacing. If that IMO isn't in the catalogue yet, we
+  // don't dead-end on an empty result — we RESOLVE it live (Datadocked / free
+  // public registry + compliance) and add it, so searching an IMO actually
+  // surfaces the vessel the way the admin expects.
+  const runSearch = async () => {
+    const found = await load(searchedImo || search.trim())
+    if (searchedImo && Array.isArray(found) && found.length === 0 && !importing) {
+      await handleImport(searchedImo)
+    }
+  }
   const openEdit = (v: Vessel) => {
     setForm({ ...v, vesselClass: v.vesselClass ?? "", flag: v.flag ?? "", cargo: v.cargo ?? "" })
     setEditTarget(v)
