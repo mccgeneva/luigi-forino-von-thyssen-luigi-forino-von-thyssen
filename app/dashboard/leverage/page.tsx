@@ -1204,12 +1204,14 @@ export default function LeveragePage() {
 
                   <p className="mt-3 text-xs leading-relaxed text-muted-foreground">
                     Audit fee is 0.001% × 1:{numericRatio} of the {formatMoney(projectedBuyingPower, currency)} buying
-                    power (audit, compliance &amp; Treasury-partner verification); PPI is 0.75% of buying power. Both are
-                    debited to your Master Account immediately on confirmation. The audit &amp; compliance fee is{" "}
-                    <span className="font-medium text-foreground">non-refundable</span> whether the line is accepted or
-                    rejected. If the application is{" "}
-                    <span className="font-medium text-foreground">rejected, the PPI premium is fully refunded</span>{" "}
-                    automatically to your Master Account.
+                    power (audit, compliance &amp; Treasury-partner verification); PPI is 0.75% of buying power. On
+                    submission both are only{" "}
+                    <span className="font-medium text-foreground">reserved (held)</span> on your Master Account — not
+                    charged. They are debited{" "}
+                    <span className="font-medium text-foreground">only if the administrator approves</span> the line. If
+                    the application is{" "}
+                    <span className="font-medium text-foreground">rejected — or you withdraw it — nothing is charged</span>{" "}
+                    and every reserved amount is released in full.
                   </p>
 
                   <label className="mt-4 flex cursor-pointer items-start gap-3 border-t border-orange-500/20 pt-3 text-xs leading-relaxed text-foreground">
@@ -1221,7 +1223,8 @@ export default function LeveragePage() {
                     <span>
                       I confirm and take responsibility for the{" "}
                       <span className="font-semibold">{formatMoney2(totalUpfrontCharge, currency)}</span> in audit,
-                      compliance &amp; PPI charges, debited immediately to my Master Account.
+                      compliance &amp; PPI charges — reserved on my Master Account now and debited only if the line is
+                      approved (released in full if it is rejected or I withdraw it).
                     </span>
                   </label>
 
