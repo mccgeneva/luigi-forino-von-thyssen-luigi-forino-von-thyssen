@@ -303,15 +303,31 @@ export async function listConversations(): Promise<BankekaConversation[]> {
 export async function getThread(otherId: string): Promise<ThreadResult | null> {
   const me = await requireSessionId()
   if (!me || !otherId || otherId === me) return null
-  // A private conversation is real-user ↔ real-user. If the client targets the
-  // legacy synthetic admin id, resolve it to the real operator of record so the
-  // thread is with an actual account (the synthetic id is broadcast-only now).
-  const resolvedOther = otherId === BANKEKA_ADMIN_ID ? (await getOperatorOfRecord())?.id ?? null : otherId
-  if (!resolvedOther || resolvedOther === me) return null
+
+  // The synthetic admin id is the client's BROADCAST inbox — one-way official
+  // announcements from "MCC Capital · Administration". Opening it must show
+  // those broadcast messages, keyed to the [me, mcc_admin] pair. Previously this
+  // REDIRECTED to the real operator's (usually empty) two-way thread, so the
+  // list showed the broadcast preview but tapping it opened a blank
+  // "No messages yet" screen under the operator's real name. Return the actual
+  // broadcast thread instead and mark it read (clearing the unread dot). A reply
+  // still routes to the real operator via sendMessage's own redirect.
+  if (otherId === BANKEKA_ADMIN_ID) {
+    try {
+      await markThreadRead(me, BANKEKA_ADMIN_ID)
+      const rows = await getThreadMessages(me, BANKEKA_ADMIN_ID)
+      const participant = await resolveClientParticipant(BANKEKA_ADMIN_ID)
+      return { participant, messages: rows.map((r) => toMessage(r, me)) }
+    } catch {
+      return null
+    }
+  }
+
+  if (otherId === me) return null
   try {
-    await markThreadRead(me, resolvedOther)
-    const rows = await getThreadMessages(me, resolvedOther)
-    const participant = await resolveClientParticipant(resolvedOther)
+    await markThreadRead(me, otherId)
+    const rows = await getThreadMessages(me, otherId)
+    const participant = await resolveClientParticipant(otherId)
     return { participant, messages: rows.map((r) => toMessage(r, me)) }
   } catch {
     return null
