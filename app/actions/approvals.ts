@@ -28,6 +28,7 @@ import { guaranteeBlockMessage } from "@/lib/guarantees-accumulator"
 import { planReservation, formatMoney, type ReservationPlan } from "@/lib/fund-reservation"
 import { cardFeeFor, formatCardFee, CARD_FEE_CURRENCY } from "@/lib/card-fees"
 import { leverageApplicationCharges } from "@/lib/leverage-audit-fee"
+import { computeMonetizationEquity } from "@/lib/monetization-equity"
 import { buildTradingFundPosts, TRADING_FUND_MONTHLY_ROI, type TradingFundPauseWindow } from "@/lib/trading-fund"
 import { buildPppRoiPosts, yieldCancellationPenalty, YIELD_EARLY_CANCELLATION_PENALTY_RATE } from "@/lib/ppp-yield"
 import {
@@ -3479,6 +3480,143 @@ export async function adminAdjustLeveragePpi(
   } catch (err) {
     console.log("[v0] adminAdjustLeveragePpi failed:", (err as Error).message)
     return { ok: false, error: "The PPI could not be adjusted. Please try again." }
+  }
+}
+
+/**
+ * Administrator NEGOTIATES the monetization reserve (blocked equity deposit +
+ * PPI) on a monetization request.
+ *
+ * At submission the client BLOCKED a reserve = equity deposit + PPI, held on
+ * their Master Account as `MON-RSV-<localId>` (a debit-hold, not a spend). The
+ * admin can agree a LOWER reserve as a special arrangement: the EXCEEDED amount
+ * (original − negotiated) is released back to available immediately, and only
+ * the agreed reserve stays blocked as collateral. Because `upsertLedgerEntry`
+ * overwrites the amount on conflict, we simply re-post the SAME hold id at the
+ * negotiated amount — idempotent and cross-device. The negotiated value is
+ * persisted on the record and the client is notified of the special treatment.
+ */
+export async function adminAdjustMonetizationReserve(
+  passcode: string,
+  id: string,
+  newReserve: number,
+  note?: string,
+): Promise<DecideResult> {
+  if (!(await adminOk(passcode))) return { ok: false, error: "Administrator authorization failed." }
+  try {
+    const existing = await getApprovalById(id)
+    if (!existing) return { ok: false, error: "Monetization request not found." }
+    if (existing.kind !== "monetization") {
+      return { ok: false, error: "The reserve can only be negotiated on a monetization request." }
+    }
+
+    const payload = (existing.payload ?? {}) as Record<string, unknown>
+    const record = (payload.record ?? {}) as Record<string, unknown>
+    const localId = String(record.id || "")
+    if (!localId) return { ok: false, error: "This monetization request is missing its reserve reference." }
+
+    // Reproduce the ORIGINAL reserve from the record: advance = grossProceeds,
+    // LTV = advanceRatePercent (the exact inputs the client used to quote it).
+    const advance = Number(record.grossProceeds)
+    const ltv = Number(record.advanceRatePercent)
+    const reserveCurrency = String(record.currency || existing.currency || BASE_CURRENCY)
+    const originalReserve = computeMonetizationEquity(advance, ltv).totalUpfront
+    if (!(originalReserve > 0)) {
+      return { ok: false, error: "This monetization request has no reserve to negotiate." }
+    }
+
+    const round2 = (n: number) => Math.round((n + Number.EPSILON) * 100) / 100
+    const negotiated = round2(Number(newReserve))
+    if (!Number.isFinite(negotiated) || negotiated < 0) {
+      return { ok: false, error: "Enter a valid negotiated reserve amount." }
+    }
+    const fmt = (n: number) =>
+      `${reserveCurrency} ${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+    if (negotiated > originalReserve + 0.01) {
+      return { ok: false, error: `The negotiated reserve cannot exceed the ${fmt(originalReserve)} originally blocked.` }
+    }
+
+    const released = round2(originalReserve - negotiated)
+    const ownerId = await resolveDataOwnerIdFor(existing.userId)
+
+    // Preserve the original hold's display fields (title/reference/date) so the
+    // client's Reserved-funds view keeps its identity; only the amount changes.
+    let holdDate = new Date().toISOString()
+    let holdCounterparty = `Monetization equity + PPI — ${localId}`
+    let holdReference = localId
+    try {
+      const rows = await readLedgerEntries(ownerId)
+      const current = rows.find((e) => e.id === `MON-RSV-${localId}`)
+      if (current?.date) holdDate = current.date
+      if (current?.counterparty) holdCounterparty = current.counterparty
+      if (current?.reference) holdReference = current.reference
+    } catch {
+      // non-critical — keep the fallback display fields
+    }
+
+    // Shrink the hold in place — frees the excess back to available instantly.
+    await upsertLedgerEntry(ownerId, {
+      id: `MON-RSV-${localId}`,
+      direction: "debit",
+      amount: negotiated,
+      currency: reserveCurrency,
+      status: "hold",
+      date: holdDate,
+      counterparty: holdCounterparty,
+      bank: "MCC Capital",
+      reference: holdReference,
+      comment: `Negotiated reserve for monetization ${localId}: blocked collateral reduced from ${fmt(originalReserve)} to ${fmt(negotiated)} — ${fmt(released)} released back to your available balance.${note?.trim() ? ` (${note.trim()})` : ""}`,
+      category: "Monetization Reserve",
+    })
+
+    const updated = await updateApprovalPayload(id, {
+      ...payload,
+      record: {
+        ...record,
+        reserveOriginal: originalReserve,
+        negotiatedReserve: negotiated,
+        reserveReleased: released,
+        reserveNegotiatedAt: new Date().toISOString(),
+      },
+    })
+    if (!updated) return { ok: false, error: "The monetization request could not be updated." }
+
+    try {
+      await insertNotification({
+        userId: existing.userId,
+        tone: "success",
+        title: "Special treatment — monetization reserve reduced",
+        body: `As a special arrangement, MCC Capital has renegotiated the blocked reserve on your monetization (${localId}) from ${fmt(originalReserve)} to ${fmt(negotiated)}. The ${fmt(released)} difference has been released back to your available balance; only the agreed ${fmt(negotiated)} remains blocked as collateral.`,
+        href: "/dashboard/instruments",
+      })
+    } catch (err) {
+      console.log("[v0] monetization reserve adjust notification failed:", (err as Error).message)
+    }
+
+    try {
+      const target = await resolveAccountProfileById(existing.userId)
+      await logActivity({
+        action: `Administrator negotiated the monetization reserve on ${localId} for ${target.fullName} (${fmt(originalReserve)} → ${fmt(negotiated)}, ${fmt(released)} released)`,
+        category: "Administration / Approvals",
+        user: "Administrator",
+        details: {
+          referenceId: id,
+          targetAccount: `${target.fullName} — ${target.email}`,
+          summary: existing.summary || existing.title,
+          originalReserve: fmt(originalReserve),
+          negotiatedReserve: fmt(negotiated),
+          released: fmt(released),
+          reason: note?.trim() || "(none)",
+        },
+      })
+    } catch (err) {
+      console.log("[v0] monetization reserve adjust activity log failed:", (err as Error).message)
+    }
+
+    return { ok: true, request: updated }
+  } catch (err) {
+    console.log("[v0] adminAdjustMonetizationReserve failed:", (err as Error).message)
+    return { ok: false, error: "The reserve could not be adjusted. Please try again." }
   }
 }
 
