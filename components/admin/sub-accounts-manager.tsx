@@ -8,7 +8,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { Badge } from "@/components/ui/badge"
-import { Layers, Check, X, Loader2, RefreshCw, Search, ShieldCheck, ShieldAlert, FileText, ArrowLeft, Download, UserPlus } from "lucide-react"
+import { Layers, Check, X, Loader2, RefreshCw, Search, ShieldCheck, ShieldAlert, FileText, ArrowLeft, Download, UserPlus, Trash2 } from "lucide-react"
 import type { SubAccount, SubAccountDoc } from "@/lib/sub-account-types"
 import { blobFileUrl } from "@/lib/kyc-types"
 import { serviceFeeFor, formatSubAccountFee, SUB_ACCOUNT_ANNUAL_FEE, SUB_ACCOUNT_CLOSING_FEE } from "@/lib/sub-account-fees"
@@ -684,6 +684,38 @@ export function SubAccountsManager({ passcode }: { passcode: string }) {
     }
   }
 
+  // Remove a handled TERMINAL (closed / rejected) request from the manager.
+  const dismiss = async (row: AdminRow) => {
+    if (
+      !window.confirm(
+        `Remove the ${row.status} sub-account "${row.label}" from the list? This clears it from the manager (the record is kept for audit).`,
+      )
+    ) {
+      return
+    }
+    setBusyId(row.id)
+    setError("")
+    try {
+      const res = await fetch("/api/admin/sub-accounts", {
+        method: "POST",
+        credentials: "include",
+        cache: "no-store",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ op: "dismiss", pin: passcode, id: row.id }),
+      })
+      const data = await res.json()
+      if (!res.ok || !data.ok) {
+        setError(data?.error || "Could not remove the request.")
+        return
+      }
+      await load()
+    } catch {
+      setError("Network error while removing.")
+    } finally {
+      setBusyId(null)
+    }
+  }
+
   const setConvertDraft = (id: string, patch: Partial<ConvertDraft>) =>
     setConvertDrafts((prev) => {
       const current = prev[id] || { visitorId: "", iban: "", bic: "", bankName: "", note: "" }
@@ -970,16 +1002,49 @@ export function SubAccountsManager({ passcode }: { passcode: string }) {
                           note: "",
                         }
                       return (
-                        <ConvertPanel
-                          row={row}
-                          draft={convDraft}
-                          setDraft={setConvertDraft}
-                          visitors={visitors}
-                          busy={convertBusyId === row.id}
-                          onConvert={() => void convertToStandalone(row, convDraft)}
-                        />
+                        <>
+                          <ConvertPanel
+                            row={row}
+                            draft={convDraft}
+                            setDraft={setConvertDraft}
+                            visitors={visitors}
+                            busy={convertBusyId === row.id}
+                            onConvert={() => void convertToStandalone(row, convDraft)}
+                          />
+                          <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-border pt-3">
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="text-muted-foreground hover:text-destructive"
+                              onClick={() => void dismiss(row)}
+                              disabled={busy}
+                            >
+                              {busy ? (
+                                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                              ) : (
+                                <Trash2 className="mr-2 h-4 w-4" />
+                              )}
+                              Remove from list
+                            </Button>
+                          </div>
+                        </>
                       )
                     })()}
+
+                  {row.status === "rejected" && (
+                    <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-border pt-3">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="text-muted-foreground hover:text-destructive"
+                        onClick={() => void dismiss(row)}
+                        disabled={busy}
+                      >
+                        {busy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Trash2 className="mr-2 h-4 w-4" />}
+                        Remove from list
+                      </Button>
+                    </div>
+                  )}
                 </div>
               )
             })}

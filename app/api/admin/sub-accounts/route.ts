@@ -12,6 +12,7 @@ import {
   rejectSubAccount,
   closeSubAccount,
   getSubAccountById,
+  dismissSubAccountForAdmin,
 } from "@/lib/sub-account-db"
 import { insertNotification } from "@/lib/notifications-db"
 import { upsertLedgerEntry } from "@/lib/ledger-db"
@@ -320,6 +321,21 @@ export async function POST(req: Request) {
         href: "/dashboard/sub-accounts",
       })
       return NextResponse.json({ ok: true, subAccount: updated })
+    }
+
+    // Administrator: remove a handled TERMINAL (closed / rejected) request from
+    // the manager. Soft delete — preserved for audit, just no longer listed.
+    if (op === "dismiss") {
+      const id = typeof body.id === "string" ? body.id : ""
+      if (!id) return NextResponse.json({ ok: false, error: "Missing sub-account id." })
+      const dismissed = await dismissSubAccountForAdmin(id)
+      if (!dismissed) {
+        return NextResponse.json({
+          ok: false,
+          error: "Only a closed or declined request can be removed from the list.",
+        })
+      }
+      return NextResponse.json({ ok: true, subAccount: dismissed })
     }
 
     return NextResponse.json({ ok: false, error: "Unknown operation." }, { status: 400 })
