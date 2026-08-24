@@ -2270,6 +2270,38 @@ export async function reconcileMyApprovedCredits(): Promise<{ ok: boolean; appli
       }
     }
 
+    // Leverage charges on the ledger, driven off the approval status (no
+    // scheduler — runs on every ledger read, self-healing/cross-device). A
+    // leverage application only ever COSTS the client when it is APPROVED; while
+    // PENDING the audit fee + PPI are reversible HOLDS, and a REJECTED/CANCELLED
+    // line must cost NOTHING. So for any rejected/cancelled leverage line, delete
+    // every associated charge id (hold OR completed) — this releases pending
+    // holds and REFUNDS any audit/PPI that a past build wrongly settled as a
+    // completed debit on rejection. Deterministic ids keep it idempotent, and it
+    // never touches an approved line's real charges.
+    const leverageReqs = mine.filter(
+      (r) => r.kind === "leverage" && (r.status === "rejected" || r.status === "cancelled"),
+    )
+    for (const req of leverageReqs) {
+      const ownerId = await resolveDataOwnerIdFor(req.userId)
+      const rows = await loadOwnerRows(ownerId)
+      const chargeIds = [
+        `LEV-AUDIT-${req.id}`,
+        `LEV-PPI-${req.id}`,
+        `LEV-AUDIT-APPEAL-${req.id}`,
+        `LEV-PPI-APPEAL-${req.id}`,
+        `LEV-PPI-REFUND-${req.id}`,
+        `LEV-PPI-ADJUST-${req.id}`,
+      ]
+      for (const cid of chargeIds) {
+        if (rows.has(cid)) {
+          await deleteLedgerEntry(ownerId, cid)
+          rows.delete(cid)
+          applied += 1
+        }
+      }
+    }
+
     // Yield / PPP automatic ROI on the ledger. Once an application is APPROVED,
     // the program pays ROI in arrears on its cycle (weekly / monthly / …): each
     // matured period is CREDITED to the master account. When the investment is
@@ -2996,48 +3028,26 @@ export async function adminDecideApproval(
       }
     }
 
-    // A REJECTED leverage line: the audit & compliance fee is non-refundable
-    // (the Treasury partner already performed and billed the review), but the
-    // PPI insurance premium is FULLY REFUNDED — no cover ever attaches to a line
-    // that was declined. Credit back the exact PPI debit posted at application
-    // (`LEV-PPI-<id>`) to the Master Account, idempotently (deterministic
-    // `LEV-PPI-REFUND-<id>` id so re-running a rejection never double-refunds).
+    // A REJECTED leverage line COSTS THE CLIENT NOTHING. At submit the audit &
+    // compliance fee and the PPI premium were only RESERVED as reversible holds
+    // (never charged); on rejection BOTH are RELEASED IN FULL. If a past build
+    // had already settled the audit fee into a completed debit, deleting the same
+    // deterministic id (`LEV-AUDIT-<id>`) here REFUNDS it. Any legacy offsetting
+    // PPI refund credit (`LEV-PPI-REFUND-<id>`) is also removed so releasing the
+    // PPI debit can't net to a double refund. The reconciler mirrors this so an
+    // already-rejected line self-heals on the next ledger read, cross-device.
     if (updated.kind === "leverage" && decision === "rejected") {
       try {
         const lp = (updated.payload ?? {}) as Record<string, unknown>
         const lrec = (lp.record ?? {}) as Record<string, unknown>
-        const equity = Number(lrec.equity)
-        const ratio = Number(lrec.leverageRatio)
-        const feeCurrency = String(lrec.currency || updated.currency || BASE_CURRENCY)
-        const charges = leverageApplicationCharges(equity, ratio)
         const ownerId = await resolveDataOwnerIdFor(updated.userId)
-        const fmtCcy = (n: number) =>
-          `${feeCurrency} ${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
-        // CHARGE SETTLEMENT — reject: the charges were HELD at submit, not
-        // charged. The administrator has now REVIEWED the line (the Treasury
-        // partner performed and billed the audit regardless of outcome), so the
-        // AUDIT fee settles to a real completed, non-refundable charge; the PPI
-        // hold is RELEASED in full (no cover attaches to a rejected line, and it
-        // was never a real charge, so there is nothing to refund).
-        if (charges.auditFee > 0) {
-          await upsertLedgerEntry(ownerId, {
-            id: `LEV-AUDIT-${updated.id}`,
-            direction: "debit",
-            amount: charges.auditFee,
-            currency: feeCurrency,
-            status: "completed",
-            date: new Date().toISOString(),
-            counterparty: "MCC Capital — Leverage Audit & Compliance",
-            bank: "MCC Capital",
-            reference: updated.id,
-            comment: `Non-refundable audit, compliance & Treasury-partner verification fee (${fmtCcy(charges.auditFee)}) for declined leverage application ${updated.id}. Charged on administrator review.`,
-            category: "Leverage Audit Fee",
-          })
-        }
-        // Release the PPI hold (and any legacy appeal-specific holds).
+        // Release / refund every leverage charge tied to this application.
+        await deleteLedgerEntry(ownerId, `LEV-AUDIT-${updated.id}`).catch(() => {})
         await deleteLedgerEntry(ownerId, `LEV-PPI-${updated.id}`).catch(() => {})
-        await deleteLedgerEntry(ownerId, `LEV-PPI-APPEAL-${updated.id}`).catch(() => {})
         await deleteLedgerEntry(ownerId, `LEV-AUDIT-APPEAL-${updated.id}`).catch(() => {})
+        await deleteLedgerEntry(ownerId, `LEV-PPI-APPEAL-${updated.id}`).catch(() => {})
+        await deleteLedgerEntry(ownerId, `LEV-PPI-REFUND-${updated.id}`).catch(() => {})
+        await deleteLedgerEntry(ownerId, `LEV-PPI-ADJUST-${updated.id}`).catch(() => {})
         if (lrec.ppiAppeal === true && !lrec.appealResolvedAt) {
           const resolved = await updateApprovalPayload(updated.id, {
             ...lp,
@@ -3050,18 +3060,14 @@ export async function adminDecideApproval(
             userId: ownerId,
             tone: "warning",
             title: "Leverage application declined",
-            body: `Your leverage application (${updated.id}) was declined. The reserved ${fmtCcy(
-              charges.ppi,
-            )} PPI premium has been released in full; only the ${fmtCcy(
-              charges.auditFee,
-            )} audit & compliance fee is charged (non-refundable — the review was performed).`,
+            body: `Your leverage application (${updated.id}) was declined. No charge applies — all reserved audit, compliance and PPI amounts have been released in full and your balance restored.`,
             href: "/dashboard/leverage",
           })
         } catch {
           // notification is non-critical
         }
       } catch (err) {
-        console.log("[v0] leverage charge settlement on reject failed:", (err as Error).message)
+        console.log("[v0] leverage charge release on reject failed:", (err as Error).message)
       }
     }
 
