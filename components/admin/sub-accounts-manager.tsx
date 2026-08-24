@@ -485,6 +485,10 @@ export function SubAccountsManager({ passcode }: { passcode: string }) {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState("")
   const [query, setQuery] = useState("")
+  // Terminal (closed / rejected) requests are hidden from the default view so a
+  // handled account never clutters the list permanently; this toggle reveals
+  // them (e.g. to run the convert-to-standalone flow on a closed sub-account).
+  const [showHandled, setShowHandled] = useState(false)
   const [busyId, setBusyId] = useState<string | null>(null)
   // Per-row editable IBAN/BIC/note inputs for activation.
   const [drafts, setDrafts] = useState<Record<string, { iban: string; bic: string; note: string }>>({})
@@ -763,17 +767,24 @@ export function SubAccountsManager({ passcode }: { passcode: string }) {
     }
   }
 
+  const isHandled = (status: string) => status === "closed" || status === "rejected"
+
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase()
-    if (!q) return rows
-    return rows.filter((r) =>
+    // Hide terminal (closed / rejected) rows unless the admin opts to show them.
+    // A search query always searches across everything so a handled account can
+    // still be found by name/IBAN even when the toggle is off.
+    const base = showHandled || q ? rows : rows.filter((r) => !isHandled(r.status))
+    if (!q) return base
+    return base.filter((r) =>
       [r.holderName, r.holderEmail, r.label, r.iban, r.currency, r.purpose].some((v) =>
         (v || "").toLowerCase().includes(q),
       ),
     )
-  }, [rows, query])
+  }, [rows, query, showHandled])
 
   const pendingCount = rows.filter((r) => r.status === "pending").length
+  const handledCount = rows.filter((r) => isHandled(r.status)).length
 
   return (
     <Card>
@@ -808,6 +819,16 @@ export function SubAccountsManager({ passcode }: { passcode: string }) {
           <Badge variant="outline" className="border-amber-500/40 text-amber-600">
             {pendingCount} pending
           </Badge>
+          {handledCount > 0 && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setShowHandled((v) => !v)}
+              className="text-muted-foreground"
+            >
+              {showHandled ? "Hide" : "Show"} closed / declined ({handledCount})
+            </Button>
+          )}
         </div>
 
         {error && (
@@ -821,7 +842,13 @@ export function SubAccountsManager({ passcode }: { passcode: string }) {
             <Loader2 className="mr-2 h-5 w-5 animate-spin" /> Loading…
           </div>
         ) : filtered.length === 0 ? (
-          <p className="py-10 text-center text-sm text-muted-foreground">No sub-account requests found.</p>
+          <p className="py-10 text-center text-sm text-muted-foreground">
+            {!showHandled && !query.trim() && handledCount > 0
+              ? `No open sub-account requests. ${handledCount} closed / declined ${
+                  handledCount === 1 ? "request is" : "requests are"
+                } hidden — use “Show closed / declined” above to view them.`
+              : "No sub-account requests found."}
+          </p>
         ) : (
           <div className="space-y-3">
             {filtered.map((row) => {
