@@ -921,11 +921,14 @@ function CreateDeal({
   vessels,
   onCreated,
   lockedVesselImo,
+  onManageVessels,
 }: {
   vessels: Vessel[]
   onCreated: () => void
   /** When set, the deal is locked to this vessel (used by the vessel ops workspace). */
   lockedVesselImo?: string
+  /** Jump to the Vessels tab so the admin can add/import a vessel to the catalogue. */
+  onManageVessels?: () => void
 }) {
   const locked = Boolean(lockedVesselImo)
   const [form, setForm] = useState(() => ({ ...emptyDealForm, vesselImo: lockedVesselImo ?? "" }))
@@ -1303,6 +1306,28 @@ function CreateDeal({
                   {selectedVessel.location || "—"}
                   {selectedVessel.cargo ? ` · carrying ${selectedVessel.cargo}` : ""}
                 </p>
+              )}
+              {/* Inline path to add a vessel without leaving the deal form — the
+                  catalogue is managed on the Vessels tab, so surface it here
+                  (this is where admins expect "add a new vessel"). */}
+              {onManageVessels && (
+                <div className="flex items-center justify-between gap-2 rounded-lg border border-dashed border-border bg-muted/30 px-3 py-2">
+                  <p className="text-xs text-muted-foreground">
+                    {productChosen && compatibleVessels.length === 0
+                      ? "No vessel here fits this product? Add or import one by IMO."
+                      : "Vessel not in the list? Add or import it by IMO."}
+                  </p>
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    size="sm"
+                    className="shrink-0"
+                    onClick={onManageVessels}
+                  >
+                    <Plus className="mr-1.5 h-4 w-4" />
+                    Add vessel
+                  </Button>
+                </div>
               )}
             </>
           )}
@@ -1752,6 +1777,9 @@ function VesselOperations({ vessel, onClose }: { vessel: Vessel | null; onClose:
 export function SpotDealManager() {
   const [vessels, setVessels] = useState<Vessel[]>([])
   const [refreshKey, setRefreshKey] = useState(0)
+  // Controlled tab so the Create form can jump the admin to the Vessels tab to
+  // add/import a vessel to the catalogue.
+  const [tab, setTab] = useState("deals")
   const bump = useCallback(() => setRefreshKey((k) => k + 1), [])
 
   // Load the catalogue at the top level so the Create tab has vessels to choose
@@ -1770,7 +1798,7 @@ export function SpotDealManager() {
   }, [])
 
   return (
-    <Tabs defaultValue="deals" className="w-full">
+    <Tabs value={tab} onValueChange={setTab} className="w-full">
       <TabsList className="grid w-full grid-cols-3">
         <TabsTrigger value="deals" className="gap-1.5">
           <Tag className="h-4 w-4" />
@@ -1787,7 +1815,7 @@ export function SpotDealManager() {
       </TabsList>
 
       <TabsContent value="deals" className="mt-4">
-        <CreateDeal vessels={vessels} onCreated={bump} />
+        <CreateDeal vessels={vessels} onCreated={bump} onManageVessels={() => setTab("vessels")} />
       </TabsContent>
 
       <TabsContent value="published" className="mt-4">
