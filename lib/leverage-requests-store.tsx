@@ -133,6 +133,20 @@ export interface LeverageRequest {
   interestEntryId?: string // ledger entry id for the interest settlement debit
   // Audit trail of admin ratio modifications applied to the active line.
   modifications?: LeverageModification[]
+  // ── PPI appeal / cost-negotiation flow ──────────────────────────────────
+  // Set when the client could not afford the PPI premium and submitted an
+  // appeal. The PPI is reserved as a HOLD ("PPI Appeal – Pending Admin Review")
+  // that may push available balance temporarily negative, pending admin review.
+  ppiAppeal?: boolean
+  appealPpiOriginal?: number // PPI premium quoted at appeal time
+  appealPpiFinal?: number // final applied PPI once admin decides
+  appealResolvedAt?: string // when the appeal hold was converted/released
+  appealDecision?: "approved" | "rejected"
+  // Admin PPI negotiation audit trail (also used by the non-appeal refund path).
+  ppiOriginal?: number
+  negotiatedPpi?: number
+  ppiRefund?: number
+  ppiNegotiatedAt?: string
 }
 
 // A single admin adjustment of an active line's leverage ratio. Interest that
