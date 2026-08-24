@@ -48,17 +48,18 @@ export function leverageAuditFee(equity: number, ratio: number): number {
 /**
  * Payment Protection Insurance (PPI) premium.
  *
- * A leveraged position is insured at the platform-standard 1% rate, applied to
- * the FULL buying power (the leveraged position being protected). Charged to
- * the Master Account together with the audit fee on confirmation.
+ * A leveraged position is insured at 0.1% of the FULL buying power (the
+ * leveraged position being protected) — a leverage-specific rate set 10× lower
+ * than the platform-standard 1% PPI to keep leverage affordable. Charged to the
+ * Master Account together with the audit fee on confirmation.
  *
  * Worked example: €100,000 equity at 1:10 → buying power €1,000,000 →
- *     PPI = 1% × 1,000,000 = €10,000.00
+ *     PPI = 0.1% × 1,000,000 = €1,000.00
  */
-export const LEVERAGE_PPI_RATE = 0.01
+export const LEVERAGE_PPI_RATE = 0.001
 
 /**
- * Compute the PPI premium for a leverage application (1% of buying power).
+ * Compute the PPI premium for a leverage application (0.1% of buying power).
  * Returns 0 for any non-finite or non-positive input.
  */
 export function leveragePpiPremium(equity: number, ratio: number): number {
