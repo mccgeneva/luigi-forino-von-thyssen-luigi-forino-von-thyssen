@@ -1166,7 +1166,7 @@ export default function LeveragePage() {
 
                   <p className="mt-3 text-xs leading-relaxed text-muted-foreground">
                     Audit fee is 0.001% × 1:{numericRatio} of the {formatMoney(projectedBuyingPower, currency)} buying
-                    power (audit, compliance &amp; Treasury-partner verification); PPI is 0.1% of buying power. Both are
+                    power (audit, compliance &amp; Treasury-partner verification); PPI is 0.75% of buying power. Both are
                     debited to your Master Account immediately on confirmation and are{" "}
                     <span className="font-medium text-foreground">non-refundable</span> whether the line is accepted or
                     rejected.
