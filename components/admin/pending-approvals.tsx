@@ -72,9 +72,11 @@ import {
   adminSetCommodityDealHold,
   adminDeleteCommodityDeal,
   adminAdjustLeveragePpi,
+  adminAdjustMonetizationReserve,
   type DealHoldState,
 } from "@/app/actions/approvals"
 import { leverageApplicationCharges } from "@/lib/leverage-audit-fee"
+import { computeMonetizationEquity } from "@/lib/monetization-equity"
 import {
   getClientFinancialSnapshotAdmin,
   type ClientFinancialSnapshot,
@@ -153,6 +155,32 @@ function leveragePpiInfo(req: ApprovalRequest): {
 
 function formatMoney2(amount: number, currency: string): string {
   return `${currency} ${amount.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+}
+
+/** Reserve picture for a monetization request: the original blocked reserve
+ *  (equity deposit + PPI), any admin-negotiated reserve, and the released
+ *  excess. Returns null for non-monetization requests or when there is no
+ *  reserve to negotiate. */
+function monetizationReserveInfo(req: ApprovalRequest): {
+  currency: string
+  original: number
+  negotiated: number | null
+  released: number
+} | null {
+  if (req.kind !== "monetization") return null
+  const rec = ((req.payload as { record?: Record<string, unknown> } | undefined)?.record ?? {}) as Record<
+    string,
+    unknown
+  >
+  const advance = Number(rec.grossProceeds)
+  const ltv = Number(rec.advanceRatePercent)
+  const original = computeMonetizationEquity(advance, ltv).totalUpfront
+  if (!(original > 0)) return null
+  const currency = String(rec.currency || req.currency || "EUR")
+  const neg = Number(rec.negotiatedReserve)
+  const negotiated = Number.isFinite(neg) && neg >= 0 ? neg : null
+  const released = negotiated == null ? 0 : Math.round((original - negotiated + Number.EPSILON) * 100) / 100
+  return { currency, original, negotiated, released }
 }
 
 function formatFileSize(bytes?: number): string {
@@ -616,6 +644,57 @@ export function PendingApprovals({ initialKind }: { initialKind?: ApprovalKind }
     mutate()
   }
 
+  // Reserve negotiation dialog (monetization). The admin agrees a lower blocked
+  // reserve; the exceeded amount is released back to the client's available
+  // balance immediately, and only the agreed reserve stays blocked.
+  const [resTarget, setResTarget] = useState<{
+    id: string
+    label: string
+    currency: string
+    original: number
+    negotiated: number | null
+  } | null>(null)
+  const [resValue, setResValue] = useState("")
+  const [resNote, setResNote] = useState("")
+
+  const openResNegotiate = (req: ApprovalRequest, info: NonNullable<ReturnType<typeof monetizationReserveInfo>>) => {
+    setResValue((info.negotiated ?? info.original).toFixed(2))
+    setResNote("")
+    setResTarget({
+      id: req.id,
+      label: req.title,
+      currency: info.currency,
+      original: info.original,
+      negotiated: info.negotiated,
+    })
+  }
+
+  const confirmResNegotiate = async () => {
+    if (!resTarget) return
+    const newRes = Number(resValue)
+    if (!Number.isFinite(newRes) || newRes < 0) {
+      toast.error("Enter a valid negotiated reserve amount.")
+      return
+    }
+    if (newRes > resTarget.original + 0.01) {
+      toast.error(`The negotiated reserve cannot exceed the ${formatMoney2(resTarget.original, resTarget.currency)} originally blocked.`)
+      return
+    }
+    setActing(true)
+    const res = await adminAdjustMonetizationReserve(ADMIN_PASSCODE, resTarget.id, newRes, resNote.trim() || undefined)
+    setActing(false)
+    if (!res.ok) {
+      toast.error(res.error)
+      return
+    }
+    const released = Math.round((resTarget.original - newRes + Number.EPSILON) * 100) / 100
+    toast.success(
+      `Reserve set to ${formatMoney2(newRes, resTarget.currency)}. ${formatMoney2(released, resTarget.currency)} released to the client's available balance.`,
+    )
+    setResTarget(null)
+    mutate()
+  }
+
   // Open (or continue) the negotiation with the AES applicant. For a pending
   // application not yet discussed, this stamps discussionOpenedAt server-side and
   // notifies the applicant, then opens the inline Bankeka thread.
@@ -948,6 +1027,10 @@ export function PendingApprovals({ initialKind }: { initialKind?: ApprovalKind }
               // point before/at approval).
               const ppi = leveragePpiInfo(req)
               const canNegotiatePpi = !!ppi && (req.status === "pending" || req.status === "approved")
+              // Monetization reserve negotiation — release the excess of the
+              // blocked equity+PPI reserve; available while pending or approved.
+              const mon = monetizationReserveInfo(req)
+              const canNegotiateReserve = !!mon && (req.status === "pending" || req.status === "approved")
               // A shared read-only copy is a recipient-owned mirror of another
               // client's deal. It must never expose admin management actions —
               // documents, vessel, sharing and delivery are managed on the
@@ -1052,6 +1135,29 @@ export function PendingApprovals({ initialKind }: { initialKind?: ApprovalKind }
                           </div>
                         </div>
                       )}
+                      {mon && (
+                        <div className="mt-1.5 rounded-md border border-orange-500/30 bg-orange-500/5 p-2.5">
+                          <div className="mb-1 flex items-center gap-1.5 text-[11px] font-medium text-orange-600 dark:text-orange-400">
+                            <Handshake className="h-3.5 w-3.5" />
+                            Blocked reserve (equity + PPI)
+                          </div>
+                          <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
+                            <span className="text-muted-foreground">Blocked:</span>
+                            <span className={mon.negotiated != null ? "text-muted-foreground line-through" : "font-medium text-foreground"}>
+                              {formatMoney2(mon.original, mon.currency)}
+                            </span>
+                            {mon.negotiated != null && (
+                              <>
+                                <ArrowRight className="h-3 w-3 shrink-0 text-muted-foreground" />
+                                <span className="font-medium text-foreground">{formatMoney2(mon.negotiated, mon.currency)}</span>
+                                <span className="text-emerald-600 dark:text-emerald-400">
+                                  ({formatMoney2(mon.released, mon.currency)} released)
+                                </span>
+                              </>
+                            )}
+                          </div>
+                        </div>
+                      )}
                       <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1 text-[11px] text-muted-foreground">
                         <span>
                           {clientLabel(req.userId)} · submitted {formatDate(req.createdAt)}
@@ -1100,6 +1206,18 @@ export function PendingApprovals({ initialKind }: { initialKind?: ApprovalKind }
                           <Handshake className="h-3.5 w-3.5" /> Negotiate PPI
                         </Button>
                       )}
+                      {canNegotiateReserve && mon && (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="h-8 gap-1 text-orange-600"
+                          disabled={acting}
+                          onClick={() => openResNegotiate(req, mon)}
+                          title="Negotiate a lower blocked reserve — the exceeded amount is released back to the client's available balance."
+                        >
+                          <Handshake className="h-3.5 w-3.5" /> Negotiate reserve
+                        </Button>
+                      )}
                       <Button
                         size="sm"
                         variant="outline"
@@ -1136,6 +1254,20 @@ export function PendingApprovals({ initialKind }: { initialKind?: ApprovalKind }
                         title="Negotiate a lower PPI insurance premium — the exceeded amount is refunded to the client's Master Account."
                       >
                         <Handshake className="h-3.5 w-3.5" /> Negotiate PPI
+                      </Button>
+                    </div>
+                  )}
+                  {canNegotiateReserve && mon && req.status === "approved" && (
+                    <div className="flex shrink-0 flex-wrap items-center justify-end gap-1.5">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-8 gap-1 text-orange-600"
+                        disabled={acting}
+                        onClick={() => openResNegotiate(req, mon)}
+                        title="Negotiate a lower blocked reserve — the exceeded amount is released back to the client's available balance."
+                      >
+                        <Handshake className="h-3.5 w-3.5" /> Negotiate reserve
                       </Button>
                     </div>
                   )}
@@ -1499,6 +1631,78 @@ export function PendingApprovals({ initialKind }: { initialKind?: ApprovalKind }
             <Button onClick={confirmPpiNegotiate} disabled={acting} className="gap-1">
               {acting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Handshake className="h-4 w-4" />}
               Apply &amp; refund
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Negotiate monetization reserve dialog */}
+      <Dialog open={resTarget !== null} onOpenChange={(o) => !o && !acting && setResTarget(null)}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Handshake className="h-4 w-4 text-orange-500" />
+              Negotiate blocked reserve
+            </DialogTitle>
+            <DialogDescription className="text-pretty">
+              Agree a special, lower blocked reserve (equity deposit + PPI) for this monetization. The exceeded amount
+              is released back to the client&apos;s available balance immediately, and only the agreed reserve stays
+              blocked as collateral. The client is notified of the special treatment.
+            </DialogDescription>
+          </DialogHeader>
+          {resTarget && (
+            <div className="space-y-3">
+              <div className="rounded-md border border-border bg-muted/30 p-3 text-sm">
+                <div className="flex items-center justify-between">
+                  <span className="text-muted-foreground">Originally blocked</span>
+                  <span className="font-mono font-medium tabular-nums text-foreground">
+                    {formatMoney2(resTarget.original, resTarget.currency)}
+                  </span>
+                </div>
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="res-new">New agreed reserve ({resTarget.currency})</Label>
+                <Input
+                  id="res-new"
+                  type="number"
+                  inputMode="decimal"
+                  min={0}
+                  max={resTarget.original}
+                  step="0.01"
+                  value={resValue}
+                  onChange={(e) => setResValue(e.target.value)}
+                  className="text-base md:text-sm"
+                  autoFocus
+                />
+              </div>
+              <div className="flex items-center justify-between rounded-md border border-emerald-500/30 bg-emerald-500/5 px-3 py-2 text-sm">
+                <span className="text-muted-foreground">Released to available balance</span>
+                <span className="font-mono font-semibold tabular-nums text-emerald-600 dark:text-emerald-400">
+                  {formatMoney2(
+                    Math.max(0, Math.round((resTarget.original - (Number(resValue) || 0) + Number.EPSILON) * 100) / 100),
+                    resTarget.currency,
+                  )}
+                </span>
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="res-note">Note (optional)</Label>
+                <Textarea
+                  id="res-note"
+                  value={resNote}
+                  onChange={(e) => setResNote(e.target.value)}
+                  placeholder="Reason for the special arrangement…"
+                  className="min-h-16 text-base md:text-sm"
+                />
+              </div>
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setResTarget(null)} disabled={acting}>
+              Cancel
+            </Button>
+            <Button onClick={confirmResNegotiate} disabled={acting} className="gap-1">
+              {acting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Handshake className="h-4 w-4" />}
+              Apply &amp; release
             </Button>
           </DialogFooter>
         </DialogContent>
