@@ -27,6 +27,7 @@ import { gatherGuaranteeProfile } from "@/lib/guarantees-profile"
 import { guaranteeBlockMessage } from "@/lib/guarantees-accumulator"
 import { planReservation, formatMoney, type ReservationPlan } from "@/lib/fund-reservation"
 import { cardFeeFor, formatCardFee, CARD_FEE_CURRENCY } from "@/lib/card-fees"
+import { leverageAuditFee } from "@/lib/leverage-audit-fee"
 import { buildTradingFundPosts, TRADING_FUND_MONTHLY_ROI, type TradingFundPauseWindow } from "@/lib/trading-fund"
 import { buildPppRoiPosts, yieldCancellationPenalty, YIELD_EARLY_CANCELLATION_PENALTY_RATE } from "@/lib/ppp-yield"
 import {
@@ -233,6 +234,47 @@ export async function submitApproval(input: SubmitApprovalInput): Promise<Submit
       } catch (err) {
         console.log("[v0] leverage margin solvency gate failed (failing closed):", (err as Error).message)
         return { ok: false, error: "Your available margin could not be verified. Please try again." }
+      }
+    }
+  }
+
+  // Leverage — AUDIT & COMPLIANCE FEE solvency gate. EVERY leverage application
+  // (cash- OR instrument-funded) triggers an audit/compliance review and a
+  // verification handshake with the Treasury bank partner, who bills the
+  // platform whether the line is ACCEPTED or REJECTED. The fee (0.001% ×
+  // multiplier × buying power) is therefore charged to the Master Account the
+  // moment the client confirms the application. If the Master Account cannot
+  // cover it, the whole operation is denied here so no request is ever created
+  // without its fee. Charged in the line's own currency. Fails CLOSED.
+  if (input.kind === "leverage") {
+    const rec = ((input.payload as Record<string, unknown> | undefined)?.record ?? {}) as Record<string, unknown>
+    const equity = Number(rec.equity)
+    const ratio = Number(rec.leverageRatio)
+    const feeCurrency = String(rec.currency || input.currency || BASE_CURRENCY)
+    const fee = leverageAuditFee(equity, ratio)
+    if (fee > 0) {
+      try {
+        const ownerId = await resolveDataOwnerIdFor(session.id)
+        const available = availableByCurrency(await readLedgerEntries(ownerId))
+        const availableInFeeCcy = Object.entries(available).reduce(
+          (sum, [cur, amt]) => sum + convertCurrency(amt, cur, feeCurrency),
+          0,
+        )
+        if (fee > availableInFeeCcy + 0.01) {
+          const fmt = (n: number) =>
+            `${feeCurrency} ${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+          return {
+            ok: false,
+            error: `This leverage application carries a non-refundable audit & compliance fee of ${fmt(
+              fee,
+            )} (0.001% × 1:${ratio} × ${fmt(equity * ratio)} buying power), charged whether the line is accepted or rejected. Your Master Account has only ${fmt(
+              Math.max(0, availableInFeeCcy),
+            )} available, so the operation was denied. Please fund your account and try again.`,
+          }
+        }
+      } catch (err) {
+        console.log("[v0] leverage audit fee solvency gate failed (failing closed):", (err as Error).message)
+        return { ok: false, error: "Your available balance could not be verified. Please try again." }
       }
     }
   }
@@ -467,6 +509,53 @@ export async function submitApproval(input: SubmitApprovalInput): Promise<Submit
         await deleteApprovalForUser(request.id, session.id).catch(() => {})
         console.log("[v0] card issuance fee charge failed:", (feeErr as Error).message)
         return { ok: false, error: "The card issuance fee could not be processed. Please try again." }
+      }
+    }
+
+    // Charge the leverage audit & compliance fee to the Master Account. The
+    // solvency gate above already verified affordability; here we post the debit
+    // with a DETERMINISTIC id (`LEV-AUDIT-<approvalId>`) so a retry can never
+    // double-charge. This cost is incurred by the platform from the Treasury
+    // partner regardless of the eventual accept/reject decision, so it is taken
+    // now. If the debit fails we roll back the just-created request.
+    if (input.kind === "leverage") {
+      const rec = ((input.payload as Record<string, unknown> | undefined)?.record ?? {}) as Record<string, unknown>
+      const equity = Number(rec.equity)
+      const ratio = Number(rec.leverageRatio)
+      const feeCurrency = String(rec.currency || input.currency || BASE_CURRENCY)
+      const fee = leverageAuditFee(equity, ratio)
+      if (fee > 0) {
+        try {
+          const ownerId = await resolveDataOwnerIdFor(session.id)
+          await upsertLedgerEntry(ownerId, {
+            id: `LEV-AUDIT-${request.id}`,
+            direction: "debit",
+            amount: fee,
+            currency: feeCurrency,
+            status: "completed",
+            date: new Date().toISOString(),
+            counterparty: "MCC Capital — Leverage Audit & Compliance",
+            bank: "MCC Capital",
+            reference: request.id,
+            comment: `Non-refundable audit, compliance & Treasury-partner verification fee (0.001% × 1:${ratio} × buying power) for leverage application ${request.id}. Charged whether the line is accepted or rejected.`,
+            category: "Leverage Audit Fee",
+          })
+          try {
+            await insertNotification({
+              userId: ownerId,
+              tone: "info",
+              title: "Leverage audit fee charged",
+              body: `A non-refundable audit & compliance fee of ${feeCurrency} ${fee.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} was charged for your 1:${ratio} leverage application (${request.id}), now under review.`,
+              href: "/dashboard/leverage",
+            })
+          } catch {
+            // notification is non-critical
+          }
+        } catch (feeErr) {
+          await deleteApprovalForUser(request.id, session.id).catch(() => {})
+          console.log("[v0] leverage audit fee charge failed:", (feeErr as Error).message)
+          return { ok: false, error: "The leverage audit fee could not be processed. Please try again." }
+        }
       }
     }
 
