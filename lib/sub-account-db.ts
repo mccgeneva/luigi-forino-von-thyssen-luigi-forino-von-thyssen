@@ -63,6 +63,11 @@ async function ensureTable(): Promise<void> {
   // without affecting the administrator record. Owner-scoped, persisted so the
   // purge holds across devices.
   await query(`ALTER TABLE sub_accounts ADD COLUMN IF NOT EXISTS dismissed_at timestamptz`)
+  // Administrator-side dismissal: the admin can remove a TERMINAL (closed /
+  // rejected) request from the admin manager once handled. Kept SEPARATE from
+  // the client `dismissed_at` so a client purge never hides a row from the admin
+  // and vice-versa.
+  await query(`ALTER TABLE sub_accounts ADD COLUMN IF NOT EXISTS admin_dismissed_at timestamptz`)
   ensured = true
 }
 
@@ -176,13 +181,36 @@ export async function getSubAccountById(id: string): Promise<SubAccount | null> 
   return rows[0] ? rowToSubAccount(rows[0]) : null
 }
 
-/** Every sub-account across all users, optionally filtered by status. Admin use. */
+/** Every sub-account across all users, optionally filtered by status. Admin use.
+ *  Rows the admin has dismissed (handled terminal requests) are excluded. */
 export async function listAllSubAccounts(status?: SubAccountStatus): Promise<SubAccount[]> {
   await ensureTable()
   const { rows } = status
-    ? await query(`SELECT * FROM sub_accounts WHERE status = $1 ORDER BY created_at DESC`, [status])
-    : await query(`SELECT * FROM sub_accounts ORDER BY created_at DESC`)
+    ? await query(
+        `SELECT * FROM sub_accounts WHERE status = $1 AND admin_dismissed_at IS NULL ORDER BY created_at DESC`,
+        [status],
+      )
+    : await query(`SELECT * FROM sub_accounts WHERE admin_dismissed_at IS NULL ORDER BY created_at DESC`)
   return rows.map(rowToSubAccount)
+}
+
+/**
+ * Administrator: remove a TERMINAL (closed / rejected) sub-account from the
+ * admin manager. Soft delete via `admin_dismissed_at` — the row is preserved
+ * for audit but no longer listed. Guarded so live/pending/active rows can never
+ * be dismissed (they must be resolved first). Returns the row, or null if it
+ * was not in a dismissible state.
+ */
+export async function dismissSubAccountForAdmin(id: string): Promise<SubAccount | null> {
+  await ensureTable()
+  const { rows } = await query(
+    `UPDATE sub_accounts
+        SET admin_dismissed_at = now()
+      WHERE id = $1 AND status IN ('closed','rejected') AND admin_dismissed_at IS NULL
+      RETURNING *`,
+    [id],
+  )
+  return rows[0] ? rowToSubAccount(rows[0]) : null
 }
 
 /**
