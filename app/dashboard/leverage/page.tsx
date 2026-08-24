@@ -72,7 +72,7 @@ import {
 import { useInstrumentRequests } from "@/lib/instrument-requests-store"
 import { useLedger } from "@/lib/ledger-store"
 import { postedLeverageInterest } from "@/lib/leverage-financing"
-import { leverageAuditFee } from "@/lib/leverage-audit-fee"
+import { leverageApplicationCharges } from "@/lib/leverage-audit-fee"
 import { Checkbox } from "@/components/ui/checkbox"
 import { GuaranteeScoreCard } from "@/components/dashboard/guarantee-score-card"
 
@@ -513,9 +513,12 @@ export default function LeveragePage() {
   // Risk-based rate for the chosen ratio (higher leverage → lower rate).
   const projectedAnnualRate = debitInterestRateFor(numericRatio)
   const projectedAnnualInterest = projectedBorrowed * projectedAnnualRate
-  // Upfront audit & compliance fee (0.001% × multiplier × buying power), charged
-  // to the Master Account on confirmation whether the line is accepted or not.
-  const auditFee = leverageAuditFee(numericEquity, numericRatio)
+  // Upfront charges (audit & compliance fee + PPI premium), charged together to
+  // the Master Account on confirmation whether the line is accepted or not.
+  const applicationCharges = leverageApplicationCharges(numericEquity, numericRatio)
+  const auditFee = applicationCharges.auditFee
+  const ppiPremium = applicationCharges.ppi
+  const totalUpfrontCharge = applicationCharges.total
 
   // When the funding category changes, clamp the chosen ratio to that
   // category's ceiling so an out-of-range value can never be submitted.
@@ -592,21 +595,22 @@ export default function LeveragePage() {
       return
     }
 
-    // AUDIT & COMPLIANCE FEE — the client must acknowledge the non-refundable
-    // cost, and the Master Account must be able to cover it in the line's
-    // currency, else the operation is denied. The server (submitApproval) is
-    // authoritative and also charges the fee on confirmation.
-    if (auditFee > 0) {
+    // UPFRONT CHARGES — the client must acknowledge the non-refundable audit &
+    // compliance fee plus the PPI premium, and the Master Account must be able
+    // to cover the COMBINED total in the line's currency, else the operation is
+    // denied. The server (submitApproval) is authoritative and charges both on
+    // confirmation.
+    if (totalUpfrontCharge > 0) {
       if (!feeAcknowledged) {
         setFormError(
-          `Please confirm you accept the ${formatMoney2(auditFee, currency)} audit & compliance fee before submitting.`,
+          `Please confirm you accept the ${formatMoney2(totalUpfrontCharge, currency)} audit, compliance & PPI charges before submitting.`,
         )
         return
       }
       const available = totalIn(currency)
-      if (auditFee > available + 0.01) {
+      if (totalUpfrontCharge > available + 0.01) {
         setFormError(
-          `This application carries a non-refundable ${formatMoney2(auditFee, currency)} audit & compliance fee, but your Master Account has only ${formatMoney2(Math.max(0, available), currency)} available. Fund your account and try again.`,
+          `This application carries non-refundable charges of ${formatMoney2(totalUpfrontCharge, currency)} (${formatMoney2(auditFee, currency)} audit & compliance + ${formatMoney2(ppiPremium, currency)} PPI), but your Master Account has only ${formatMoney2(Math.max(0, available), currency)} available. Fund your account and try again.`,
         )
         return
       }
@@ -1131,30 +1135,53 @@ export default function LeveragePage() {
                   </div>
                 </div>
 
-                {/* Audit & compliance fee — charged immediately on confirmation */}
-                <div className="rounded-lg border border-orange-500/30 bg-orange-500/5 p-3">
-                  <div className="flex items-center justify-between text-sm">
-                    <span className="flex items-center gap-1 font-medium text-foreground">
-                      <ShieldCheck className="h-4 w-4 text-orange-400" />
-                      Audit &amp; compliance fee
-                    </span>
-                    <span className="font-bold text-orange-400">{formatMoney2(auditFee, currency)}</span>
+                {/* Upfront charges — audit & compliance fee + PPI, charged immediately on confirmation */}
+                <div className="rounded-lg border border-orange-500/30 bg-orange-500/5 p-4">
+                  <div className="flex items-center gap-2">
+                    <ShieldCheck className="h-4 w-4 shrink-0 text-orange-400" />
+                    <span className="text-sm font-semibold text-foreground">Upfront application charges</span>
                   </div>
-                  <p className="mt-1 text-xs text-muted-foreground">
-                    0.001% × 1:{numericRatio} × {formatMoney(projectedBuyingPower, currency)} buying power. Covers audit,
-                    compliance checks and verification with the Treasury bank partner. Charged to your Master Account
-                    immediately on confirmation and is <span className="font-medium text-foreground">non-refundable</span>{" "}
-                    whether the line is accepted or rejected.
+
+                  {/* Itemized, right-aligned breakdown */}
+                  <div className="mt-3 space-y-2 text-sm">
+                    <div className="flex items-baseline justify-between gap-4">
+                      <span className="text-muted-foreground">Audit &amp; compliance fee</span>
+                      <span className="font-mono font-medium tabular-nums text-foreground">
+                        {formatMoney2(auditFee, currency)}
+                      </span>
+                    </div>
+                    <div className="flex items-baseline justify-between gap-4">
+                      <span className="text-muted-foreground">PPI insurance premium</span>
+                      <span className="font-mono font-medium tabular-nums text-foreground">
+                        {formatMoney2(ppiPremium, currency)}
+                      </span>
+                    </div>
+                    <div className="flex items-baseline justify-between gap-4 border-t border-orange-500/20 pt-2">
+                      <span className="font-semibold text-foreground">Total charged now</span>
+                      <span className="font-mono text-base font-bold tabular-nums text-orange-400">
+                        {formatMoney2(totalUpfrontCharge, currency)}
+                      </span>
+                    </div>
+                  </div>
+
+                  <p className="mt-3 text-xs leading-relaxed text-muted-foreground">
+                    Audit fee is 0.001% × 1:{numericRatio} of the {formatMoney(projectedBuyingPower, currency)} buying
+                    power (audit, compliance &amp; Treasury-partner verification); PPI is 1% of buying power. Both are
+                    debited to your Master Account immediately on confirmation and are{" "}
+                    <span className="font-medium text-foreground">non-refundable</span> whether the line is accepted or
+                    rejected.
                   </p>
-                  <label className="mt-3 flex cursor-pointer items-start gap-2 text-xs text-foreground">
+
+                  <label className="mt-4 flex cursor-pointer items-start gap-3 border-t border-orange-500/20 pt-3 text-xs leading-relaxed text-foreground">
                     <Checkbox
                       checked={feeAcknowledged}
                       onCheckedChange={(v) => setFeeAcknowledged(v === true)}
-                      className="mt-0.5"
+                      className="mt-0.5 shrink-0"
                     />
                     <span>
-                      I confirm and take responsibility for the {formatMoney2(auditFee, currency)} audit &amp; compliance
-                      fee, charged immediately to my Master Account.
+                      I confirm and take responsibility for the{" "}
+                      <span className="font-semibold">{formatMoney2(totalUpfrontCharge, currency)}</span> in audit,
+                      compliance &amp; PPI charges, debited immediately to my Master Account.
                     </span>
                   </label>
                 </div>
@@ -1173,7 +1200,7 @@ export default function LeveragePage() {
                 </Button>
                 <Button
                   onClick={() => void submitRequest()}
-                  disabled={checkingMargin || (auditFee > 0 && !feeAcknowledged)}
+                  disabled={checkingMargin || (totalUpfrontCharge > 0 && !feeAcknowledged)}
                 >
                   {checkingMargin ? "Checking margin…" : "Submit for Approval"}
                   {!checkingMargin && <ArrowRight className="ml-2 h-4 w-4" />}
