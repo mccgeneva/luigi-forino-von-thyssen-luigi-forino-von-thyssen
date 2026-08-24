@@ -253,16 +253,16 @@ export async function submitApproval(input: SubmitApprovalInput): Promise<Submit
     const equity = Number(rec.equity)
     const ratio = Number(rec.leverageRatio)
     const feeCurrency = String(rec.currency || input.currency || BASE_CURRENCY)
-    // PPI APPEAL EXCEPTION: when the client cannot afford the PPI premium and
-    // submits an appeal, the PPI is reserved as a temporary HOLD (see the charge
-    // block below) that may push available balance negative pending admin
-    // review. The combined-total gate is therefore RELAXED for an appeal — but
-    // the small, non-refundable audit & compliance fee is still charged now, so
-    // the account must at least cover THAT. This is the only case where a
-    // leverage application is allowed through without full upfront funding.
+    // PPI APPEAL EXCEPTION: when the client cannot afford the upfront charges and
+    // submits an appeal, the charges are reserved as temporary HOLDS (see the
+    // charge block below) that may push available balance negative pending admin
+    // review — the audit fee is charged if affordable, otherwise held, and the
+    // PPI is always held. So an appeal has NO upfront affordability requirement
+    // at all (never a dead end). Only the NORMAL submit must cover the full
+    // combined total. Fails CLOSED (a balance that can't be verified blocks).
     const isPpiAppeal = rec.ppiAppeal === true
     const charges = leverageApplicationCharges(equity, ratio)
-    const requiredNow = isPpiAppeal ? charges.auditFee : charges.total
+    const requiredNow = isPpiAppeal ? 0 : charges.total
     if (requiredNow > 0) {
       try {
         const ownerId = await resolveDataOwnerIdFor(session.id)
@@ -276,19 +276,13 @@ export async function submitApproval(input: SubmitApprovalInput): Promise<Submit
             `${feeCurrency} ${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
           return {
             ok: false,
-            error: isPpiAppeal
-              ? `Even under a PPI appeal, the ${fmt(
-                  charges.auditFee,
-                )} non-refundable audit & compliance fee is charged immediately, but your Master Account has only ${fmt(
-                  Math.max(0, availableInFeeCcy),
-                )} available. Please fund at least this amount and try again.`
-              : `This leverage application carries non-refundable charges of ${fmt(
-                  charges.total,
-                )} (${fmt(charges.auditFee)} audit & compliance + ${fmt(
-                  charges.ppi,
-                )} PPI, based on ${fmt(charges.buyingPower)} buying power), charged whether the line is accepted or rejected. Your Master Account has only ${fmt(
-                  Math.max(0, availableInFeeCcy),
-                )} available, so the operation was denied. Please fund your account and try again.`,
+            error: `This leverage application carries non-refundable charges of ${fmt(
+              charges.total,
+            )} (${fmt(charges.auditFee)} audit & compliance + ${fmt(
+              charges.ppi,
+            )} PPI, based on ${fmt(charges.buyingPower)} buying power), charged whether the line is accepted or rejected. Your Master Account has only ${fmt(
+              Math.max(0, availableInFeeCcy),
+            )} available, so the operation was denied. Please fund your account or submit a PPI cost appeal.`,
           }
         }
       } catch (err) {
@@ -549,23 +543,60 @@ export async function submitApproval(input: SubmitApprovalInput): Promise<Submit
           `${feeCurrency} ${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
         try {
           const ownerId = await resolveDataOwnerIdFor(session.id)
-          // The audit & compliance fee is ALWAYS charged now (the Treasury-partner
-          // review happens regardless of outcome or appeal). DETERMINISTIC id so a
-          // retry can never double-charge.
+          // Under an appeal, decide whether the audit fee can be charged now or
+          // must be temporarily held: compute pre-charge available in the fee
+          // currency and compare it to the audit fee.
+          let auditAffordable = true
+          if (isPpiAppeal && charges.auditFee > 0) {
+            try {
+              const available = availableByCurrency(await readLedgerEntries(ownerId))
+              const availableInFeeCcy = Object.entries(available).reduce(
+                (sum, [cur, amt]) => sum + convertCurrency(amt, cur, feeCurrency),
+                0,
+              )
+              auditAffordable = charges.auditFee <= availableInFeeCcy + 0.01
+            } catch {
+              // If availability can't be read, hold the audit fee (safer than a
+              // real completed debit that overdraws the deposited balance).
+              auditAffordable = false
+            }
+          }
+          // The audit & compliance fee is ALWAYS due (the Treasury-partner review
+          // happens regardless of outcome or appeal). Charge it now when
+          // affordable; under an appeal with insufficient funds, reserve it as a
+          // temporary HOLD (`LEV-AUDIT-APPEAL-<id>`) — converted to a real charge
+          // once the admin decides. DETERMINISTIC ids so a retry never
+          // double-charges.
           if (charges.auditFee > 0) {
-            await upsertLedgerEntry(ownerId, {
-              id: `LEV-AUDIT-${request.id}`,
-              direction: "debit",
-              amount: charges.auditFee,
-              currency: feeCurrency,
-              status: "completed",
-              date: new Date().toISOString(),
-              counterparty: "MCC Capital — Leverage Audit & Compliance",
-              bank: "MCC Capital",
-              reference: request.id,
-              comment: `Non-refundable audit, compliance & Treasury-partner verification fee (0.001% × 1:${ratio} × buying power) for leverage application ${request.id}. Charged whether the line is accepted or rejected.`,
-              category: "Leverage Audit Fee",
-            })
+            if (isPpiAppeal && !auditAffordable) {
+              await upsertLedgerEntry(ownerId, {
+                id: `LEV-AUDIT-APPEAL-${request.id}`,
+                direction: "debit",
+                amount: charges.auditFee,
+                currency: feeCurrency,
+                status: "hold",
+                date: new Date().toISOString(),
+                counterparty: "MCC Capital — Leverage Audit & Compliance",
+                bank: "MCC Capital",
+                reference: request.id,
+                comment: `Audit Fee Appeal – Pending Admin Review. ${fmtCcy(charges.auditFee)} non-refundable audit & compliance fee reserved on your leverage application ${request.id}; charged once the administrator reviews the appeal.`,
+                category: "Leverage Audit Fee",
+              })
+            } else {
+              await upsertLedgerEntry(ownerId, {
+                id: `LEV-AUDIT-${request.id}`,
+                direction: "debit",
+                amount: charges.auditFee,
+                currency: feeCurrency,
+                status: "completed",
+                date: new Date().toISOString(),
+                counterparty: "MCC Capital — Leverage Audit & Compliance",
+                bank: "MCC Capital",
+                reference: request.id,
+                comment: `Non-refundable audit, compliance & Treasury-partner verification fee (0.001% × 1:${ratio} × buying power) for leverage application ${request.id}. Charged whether the line is accepted or rejected.`,
+                category: "Leverage Audit Fee",
+              })
+            }
           }
           if (charges.ppi > 0) {
             if (isPpiAppeal) {
@@ -2821,6 +2852,27 @@ export async function adminDecideApproval(
             }
             // Release the appeal hold now that the final charge is posted.
             await deleteLedgerEntry(ownerId, `LEV-PPI-APPEAL-${updated.id}`).catch(() => {})
+            // Settle the audit fee: if it was held (unaffordable at appeal time),
+            // convert it to a real completed charge now and release the hold. The
+            // audit fee is non-refundable and due once the review happens.
+            // Idempotent: if it was already charged, the upsert is a no-op and the
+            // hold delete does nothing.
+            if (charges.auditFee > 0) {
+              await upsertLedgerEntry(ownerId, {
+                id: `LEV-AUDIT-${updated.id}`,
+                direction: "debit",
+                amount: charges.auditFee,
+                currency: feeCurrency,
+                status: "completed",
+                date: new Date().toISOString(),
+                counterparty: "MCC Capital — Leverage Audit & Compliance",
+                bank: "MCC Capital",
+                reference: updated.id,
+                comment: `Non-refundable audit, compliance & Treasury-partner verification fee for leverage application ${updated.id}. Charged on administrator review of the appeal.`,
+                category: "Leverage Audit Fee",
+              })
+              await deleteLedgerEntry(ownerId, `LEV-AUDIT-APPEAL-${updated.id}`).catch(() => {})
+            }
             const resolved = await updateApprovalPayload(updated.id, {
               ...(updated.payload ?? {}),
               record: { ...lrec, appealResolvedAt: new Date().toISOString(), appealDecision: "approved", appealPpiFinal: finalPpi },
@@ -2956,6 +3008,28 @@ export async function adminDecideApproval(
           // as resolved. The audit & compliance fee remains non-refundable.
           const ownerId = await resolveDataOwnerIdFor(updated.userId)
           await deleteLedgerEntry(ownerId, `LEV-PPI-APPEAL-${updated.id}`).catch(() => {})
+          // Settle the audit fee: if it was held (unaffordable at appeal time),
+          // convert it to a real completed charge now — the Treasury partner
+          // performed and billed the review regardless of the decision. Idempotent
+          // if it was already charged as a completed debit at application.
+          if (charges.auditFee > 0) {
+            const fmtCcy = (n: number) =>
+              `${feeCurrency} ${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+            await upsertLedgerEntry(ownerId, {
+              id: `LEV-AUDIT-${updated.id}`,
+              direction: "debit",
+              amount: charges.auditFee,
+              currency: feeCurrency,
+              status: "completed",
+              date: new Date().toISOString(),
+              counterparty: "MCC Capital — Leverage Audit & Compliance",
+              bank: "MCC Capital",
+              reference: updated.id,
+              comment: `Non-refundable audit, compliance & Treasury-partner verification fee (${fmtCcy(charges.auditFee)}) for declined leverage application ${updated.id}. Charged on administrator review of the appeal.`,
+              category: "Leverage Audit Fee",
+            })
+            await deleteLedgerEntry(ownerId, `LEV-AUDIT-APPEAL-${updated.id}`).catch(() => {})
+          }
           const resolved = await updateApprovalPayload(updated.id, {
             ...lp,
             record: { ...lrec, appealResolvedAt: new Date().toISOString(), appealDecision: "rejected", appealPpiFinal: 0 },
