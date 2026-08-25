@@ -10,7 +10,14 @@ import { Badge } from "@/components/ui/badge"
 import { cn } from "@/lib/utils"
 import { toast } from "sonner"
 import { ADMIN_PASSCODE } from "@/lib/admin-config"
-import type { AdminUserView, AdminUsersResult, MasterBankProfile, MasterBankProfileResult } from "@/app/actions/admin-users"
+import type {
+  AdminUserView,
+  AdminUsersResult,
+  MasterBankProfile,
+  MasterBankProfileResult,
+  CurrencyBankAccount,
+} from "@/app/actions/admin-users"
+import { MANAGED_BANK_CURRENCIES } from "@/lib/managed-bank-currencies"
 import { relationshipLabel } from "@/lib/account-hierarchy"
 import { validateIban, validateBic, lookupBankByIban, isGenericBankInfo } from "@/lib/iban-swift"
 import { resolveIbanExternal } from "@/app/actions/bank-resolve"
@@ -71,6 +78,8 @@ export function MasterAccountManager() {
   const [swift, setSwift] = useState("")
   const [bankName, setBankName] = useState("")
   const [currency, setCurrency] = useState("")
+  // Per-currency settlement accounts (USD / GBP / CHF …), keyed by currency.
+  const [currencyAccounts, setCurrencyAccounts] = useState<Record<string, CurrencyBankAccount>>({})
   const [saving, setSaving] = useState(false)
   const [bankLookingUp, setBankLookingUp] = useState(false)
 
@@ -100,6 +109,22 @@ export function MasterAccountManager() {
     setSwift(p.swift || "")
     setBankName(p.bankName || "")
     setCurrency(p.accountCurrency || "")
+    // Seed an editable field set for each managed currency (USD/GBP/CHF …),
+    // pre-filled from anything already on file.
+    const seeded: Record<string, CurrencyBankAccount> = {}
+    for (const cur of MANAGED_BANK_CURRENCIES) seeded[cur] = { currency: cur }
+    for (const acct of p.currencyAccounts ?? []) {
+      seeded[acct.currency] = { currency: acct.currency, iban: acct.iban, swift: acct.swift, bankName: acct.bankName }
+    }
+    setCurrencyAccounts(seeded)
+  }
+
+  // Update one field of a per-currency settlement account.
+  const updateCurrencyField = (cur: string, field: "iban" | "swift" | "bankName", value: string) => {
+    setCurrencyAccounts((prev) => ({
+      ...prev,
+      [cur]: { ...(prev[cur] ?? { currency: cur }), currency: cur, [field]: value },
+    }))
   }
 
   const selectCustomer = async (u: AdminUserView) => {
@@ -224,6 +249,40 @@ export function MasterAccountManager() {
     }
   }
 
+  // Validate each per-currency account: IBAN & SWIFT well-formed, and same
+  // country when both are present. `invalidCurrencies` blocks saving.
+  const currencyIssues = useMemo(() => {
+    const issues: Record<string, string> = {}
+    for (const cur of Object.keys(currencyAccounts)) {
+      const acct = currencyAccounts[cur]
+      const ib = acct.iban?.trim()
+      const sw = acct.swift?.trim()
+      const ibc = ib ? validateIban(ib) : null
+      const swc = sw ? validateBic(sw) : null
+      if (ibc && !ibc.valid) issues[cur] = ibc.error || "Invalid IBAN"
+      else if (swc && !swc.valid) issues[cur] = swc.error || "Invalid SWIFT/BIC"
+      else if (ibc?.valid && swc?.valid && ibc.countryCode !== swc.countryCode)
+        issues[cur] = `IBAN country (${ibc.countryCode}) and SWIFT/BIC country (${swc.countryCode}) don't match.`
+    }
+    return issues
+  }, [currencyAccounts])
+  const hasCurrencyIssues = Object.keys(currencyIssues).length > 0
+
+  const currencyAccountsDirty = useMemo(() => {
+    if (!profile) return false
+    const original: Record<string, CurrencyBankAccount> = {}
+    for (const a of profile.currencyAccounts ?? []) original[a.currency] = a
+    return Object.keys(currencyAccounts).some((cur) => {
+      const a = currencyAccounts[cur]
+      const o = original[cur]
+      return (
+        (a.iban ?? "").trim() !== (o?.iban ?? "") ||
+        (a.swift ?? "").trim() !== (o?.swift ?? "") ||
+        (a.bankName ?? "").trim() !== (o?.bankName ?? "")
+      )
+    })
+  }, [profile, currencyAccounts])
+
   const dirty = useMemo(() => {
     if (!profile) return false
     return (
@@ -231,11 +290,13 @@ export function MasterAccountManager() {
       iban.trim() !== (profile.iban || "") ||
       swift.trim() !== (profile.swift || "") ||
       bankName.trim() !== (profile.bankName || "") ||
-      currency.trim() !== (profile.accountCurrency || "")
+      currency.trim() !== (profile.accountCurrency || "") ||
+      currencyAccountsDirty
     )
-  }, [profile, email, iban, swift, bankName, currency])
+  }, [profile, email, iban, swift, bankName, currency, currencyAccountsDirty])
 
-  const canSave = !!profile && dirty && !ibanInvalid && !bicInvalid && !countryMismatch && !saving
+  const canSave =
+    !!profile && dirty && !ibanInvalid && !bicInvalid && !countryMismatch && !hasCurrencyIssues && !saving
 
   const handleSave = async () => {
     if (!profile || !selectedId) return
@@ -249,6 +310,12 @@ export function MasterAccountManager() {
         swift: swift.trim(),
         bankName: bankName.trim(),
         accountCurrency: currency.trim(),
+        currencyAccounts: Object.values(currencyAccounts).map((a) => ({
+          currency: a.currency,
+          iban: (a.iban ?? "").trim(),
+          swift: (a.swift ?? "").trim(),
+          bankName: (a.bankName ?? "").trim(),
+        })),
         adminName: "Administrator",
       },
     })
@@ -477,7 +544,71 @@ export function MasterAccountManager() {
                   <p className="text-[11px] text-muted-foreground">
                     Fields are pre-filled with the account&apos;s current details. Enter an IBAN to auto-fill any empty
                     SWIFT/BIC, bank name and currency; anything you type yourself is kept. Clearing a field removes it.
+                    This is the primary <span className="font-medium text-foreground">EUR</span> master account.
                   </p>
+                </div>
+
+                {/* Additional per-currency settlement accounts (USD / GBP / CHF …) */}
+                <div className="space-y-3 rounded-lg border border-border bg-secondary/20 p-3">
+                  <div className="flex items-center gap-2">
+                    <Landmark className="h-4 w-4 text-primary" />
+                    <p className="text-sm font-medium text-foreground">Currency settlement accounts</p>
+                  </div>
+                  <p className="text-[11px] text-muted-foreground">
+                    Insert the bank account coordinates for each additional currency. Each one reflects into the
+                    client&apos;s dedicated {MANAGED_BANK_CURRENCIES.join(" / ")} account in their accounts overview.
+                    Leave a currency blank to omit it.
+                  </p>
+                  {MANAGED_BANK_CURRENCIES.map((cur) => {
+                    const acct = currencyAccounts[cur] ?? { currency: cur }
+                    const issue = currencyIssues[cur]
+                    return (
+                      <div key={cur} className="space-y-2 rounded-md border border-border/70 bg-background/40 p-3">
+                        <div className="flex items-center gap-2">
+                          <Badge variant="outline" className="font-mono text-[11px]">
+                            {cur}
+                          </Badge>
+                          <span className="text-xs text-muted-foreground">settlement account</span>
+                        </div>
+                        <div className="grid gap-3 sm:grid-cols-2">
+                          <div className="space-y-1.5">
+                            <Label htmlFor={`ma-${cur}-iban`}>IBAN</Label>
+                            <Input
+                              id={`ma-${cur}-iban`}
+                              value={acct.iban ?? ""}
+                              onChange={(e) => updateCurrencyField(cur, "iban", e.target.value.toUpperCase())}
+                              placeholder={`${cur} account IBAN`}
+                              autoComplete="off"
+                              spellCheck={false}
+                              className={cn("font-mono", issue && "border-red-500/60 focus-visible:ring-red-500/30")}
+                            />
+                          </div>
+                          <div className="space-y-1.5">
+                            <Label htmlFor={`ma-${cur}-swift`}>SWIFT / BIC</Label>
+                            <Input
+                              id={`ma-${cur}-swift`}
+                              value={acct.swift ?? ""}
+                              onChange={(e) => updateCurrencyField(cur, "swift", e.target.value.toUpperCase())}
+                              placeholder={`${cur} bank SWIFT/BIC`}
+                              autoComplete="off"
+                              spellCheck={false}
+                              className={cn("font-mono", issue && "border-red-500/60 focus-visible:ring-red-500/30")}
+                            />
+                          </div>
+                          <div className="space-y-1.5 sm:col-span-2">
+                            <Label htmlFor={`ma-${cur}-bank`}>Bank name</Label>
+                            <Input
+                              id={`ma-${cur}-bank`}
+                              value={acct.bankName ?? ""}
+                              onChange={(e) => updateCurrencyField(cur, "bankName", e.target.value)}
+                              placeholder={`e.g. ${cur} settlement bank`}
+                            />
+                          </div>
+                        </div>
+                        {issue && <p className="text-[11px] text-red-400">{issue}</p>}
+                      </div>
+                    )
+                  })}
                 </div>
 
                 <Button onClick={handleSave} disabled={!canSave} className="w-full sm:w-auto">
