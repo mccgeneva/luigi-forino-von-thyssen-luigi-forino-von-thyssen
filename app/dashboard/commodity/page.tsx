@@ -220,13 +220,22 @@ const emptyDeal = {
   notes: "",
 }
 
+// Canonical selling entity for every FCO. The seller is always MCC Oil & Gas —
+// pre-filling these fixed coordinates prevents the address ever absorbing an
+// email (or other mismapped data) and saves the trader re-typing them.
+const MCC_OIL_GAS_SELLER = {
+  name: "MCC Oil & Gas",
+  address: "Rue du Rhône 8, 1204 Geneva, Switzerland",
+  email: "sales@mccoilgas.com",
+}
+
 // Editable Full Corporate Offer draft. Only the commercial/party fields are
 // editable — the transaction procedure and key conditions (incl. "no upfront
 // fee to trade") are enforced by the PDF generator and never editable here.
 const emptyFco: FcoInput = {
-  sellerName: "",
-  sellerAddress: "",
-  sellerEmail: "",
+  sellerName: MCC_OIL_GAS_SELLER.name,
+  sellerAddress: MCC_OIL_GAS_SELLER.address,
+  sellerEmail: MCC_OIL_GAS_SELLER.email,
   sellerAttn: "",
   buyerName: "",
   buyerAddress: "",
@@ -482,7 +491,16 @@ export default function CommodityTradingPage() {
     const savedDeal = readDraft<typeof emptyDeal>(DEAL_DRAFT_KEY)
     if (savedDeal) setForm({ ...emptyDeal, ...savedDeal })
     const savedFco = readDraft<FcoInput>(FCO_DRAFT_KEY)
-    if (savedFco) setFco({ ...emptyFco, ...savedFco })
+    if (savedFco)
+      setFco({
+        ...emptyFco,
+        ...savedFco,
+        // Seller is a fixed entity — always restore the canonical coordinates,
+        // never a stale/mistyped saved seller (e.g. an email in the address).
+        sellerName: MCC_OIL_GAS_SELLER.name,
+        sellerAddress: MCC_OIL_GAS_SELLER.address,
+        sellerEmail: MCC_OIL_GAS_SELLER.email,
+      })
     draftRestored.current = true
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
@@ -763,7 +781,11 @@ export default function CommodityTradingPage() {
 
       setFco((prev) => ({
         ...prev,
-        sellerName: sellerDefault || prev.sellerName,
+        // Seller is always MCC Oil & Gas — never take the seller identity from
+        // the buyer's LOI/ICPO.
+        sellerName: MCC_OIL_GAS_SELLER.name,
+        sellerAddress: MCC_OIL_GAS_SELLER.address,
+        sellerEmail: MCC_OIL_GAS_SELLER.email,
         buyerName: g("buyerName") || prev.buyerName,
         buyerAddress: g("buyerAddress") || prev.buyerAddress,
         buyerRegNo: g("buyerRegNo") || prev.buyerRegNo,
@@ -2964,7 +2986,7 @@ function DocumentModule({
                 <SelectContent>
                   {deals.length === 0 ? (
                     <SelectItem value="none" disabled>
-                      No deals — create one in Deal Workflow
+                      No deals �� create one in Deal Workflow
                     </SelectItem>
                   ) : (
                     deals.map((d) => (
