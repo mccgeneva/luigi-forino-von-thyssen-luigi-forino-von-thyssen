@@ -400,10 +400,22 @@ export default function ExchangePage() {
                       ))}
                     </SelectContent>
                   </Select>
+                  {/* Computed display only — you type in "You Send". Kept fully
+                      non-interactive so iOS never grabs focus and pops the
+                      Copy/AutoFill menu with no keyboard ("where's the keyboard?"). */}
                   <Input
                     value={toAmount}
                     readOnly
-                    className="flex-1 text-lg font-mono bg-secondary"
+                    tabIndex={-1}
+                    inputMode="none"
+                    aria-readonly
+                    autoComplete="off"
+                    data-1p-ignore
+                    data-lpignore="true"
+                    data-form-type="other"
+                    onMouseDown={(e) => e.preventDefault()}
+                    onFocus={(e) => e.currentTarget.blur()}
+                    className="flex-1 text-lg font-mono bg-secondary cursor-default pointer-events-none"
                     placeholder="0.00"
                   />
                 </div>
