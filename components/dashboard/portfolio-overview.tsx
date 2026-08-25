@@ -87,14 +87,18 @@ export function PortfolioOverview() {
   ].filter((c, i, arr) => arr.indexOf(c) === i)
   const heldCurrencies = orderedCurrencies.length
   const currencyBalances = orderedCurrencies.map((cur) => {
-    // "Available" (spendable) balance. balanceFor already subtracts reserved
-    // holds, so when a reservation exceeds the settled cash in this currency —
-    // e.g. a large PENDING fund subscription that will be funded across
-    // currencies once an administrator approves it — balanceFor can turn
-    // negative. Available cash can never truly be below zero, so we clamp the
-    // DISPLAY to 0; the reserved line below still shows the full blocked amount.
-    // This is presentation only and does not change any money/solvency logic.
-    const available = Math.max(0, balanceFor(cur))
+    // balanceFor = settled (completed credits − debits) − reserved holds.
+    const raw = balanceFor(cur)
+    const reserved = reservedFor(cur)
+    // settled = the real cash position, independent of pending holds.
+    const settled = raw + reserved
+    // Only clamp the display to 0 when the negativity is caused by a PENDING
+    // reservation (settled cash is still ≥ 0 but a hold exceeds it — e.g. a large
+    // fund subscription awaiting approval). A genuinely overdrawn balance
+    // (settled < 0) is a REAL figure and MUST be shown — clamping it to 0 hid
+    // the deficit and made currency exchanges look like they "didn't reflect"
+    // because the balance stayed pinned at 0.00 while the true balance changed.
+    const available = settled < 0 ? raw : Math.max(0, raw)
     return {
       currency: cur,
       name: currencyNames[cur] || cur,
