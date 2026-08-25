@@ -849,18 +849,23 @@ export default function CommodityTradingPage() {
     const quantityStr = form.quantityAmount.trim()
       ? `${form.quantityAmount.trim()} ${form.quantityUnit.toUpperCase()}`
       : ""
+    // The deal form (page 1) is the source of truth for the commercial fields,
+    // so the CURRENT form value wins and only falls back to the existing FCO
+    // draft when the form field is empty. This prevents a stale/earlier draft
+    // price (e.g. an LOI-imported unit price) overriding a fresh page-1 edit.
+    // The seller is the fixed MCC entity, so it keeps the canonical draft value.
     setFco((prev) => ({
       ...prev,
       sellerName: prev.sellerName || form.sellerName.trim() || user.company?.trim() || user.fullName?.trim() || "",
-      buyerName: prev.buyerName || form.buyerName.trim(),
-      product: prev.product || form.commodity.trim(),
+      buyerName: form.buyerName.trim() || prev.buyerName,
+      product: form.commodity.trim() || prev.product,
       currency: form.currency,
-      deliveryTerm: prev.deliveryTerm || form.tradeStructure,
-      trialQuantity: prev.trialQuantity || quantityStr,
-      unitPrice: prev.unitPrice || leadingNumber(form.unitPrice),
-      trialCargoValue: prev.trialCargoValue || leadingNumber(form.approxValue),
-      originCountry: prev.originCountry || form.originCountry.trim(),
-      destinationCountry: prev.destinationCountry || form.destinationCountry.trim(),
+      deliveryTerm: form.tradeStructure || prev.deliveryTerm,
+      trialQuantity: quantityStr || prev.trialQuantity,
+      unitPrice: leadingNumber(form.unitPrice) || prev.unitPrice,
+      trialCargoValue: leadingNumber(form.approxValue) || prev.trialCargoValue,
+      originCountry: form.originCountry.trim() || prev.originCountry,
+      destinationCountry: form.destinationCountry.trim() || prev.destinationCountry,
     }))
     setShowFco(true)
   }
@@ -2004,7 +2009,7 @@ export default function CommodityTradingPage() {
                   // (never a read-only / shared-for-reference copy).
                   const canManage = !deal.readOnly && !deal.shared
                   // Terms are directly editable while the deal is NOT approved
-                  // (approved deals hold reserved funds → use amendment instead),
+                  // (approved deals hold reserved funds �� use amendment instead),
                   // not delivered, and not frozen.
                   const canEditTerms =
                     canManage && !deal.delivered && held !== "frozen" && deal.status !== "approved"
