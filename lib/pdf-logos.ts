@@ -15,7 +15,7 @@
 import type { jsPDF } from "jspdf"
 import { BRAND } from "@/lib/pdf-core"
 
-export type PdfBrand = "capital" | "petroli" | "naftahub"
+export type PdfBrand = "capital" | "petroli" | "naftahub" | "fco"
 
 interface LogoEntry {
   dataUrl: string
@@ -27,6 +27,7 @@ const LOGO_SRC: Record<PdfBrand, string> = {
   capital: "/logos/mcc-capital.jpeg",
   petroli: "/logos/mcc-petroli.jpeg",
   naftahub: "/logos/naftahub.jpeg",
+  fco: "/logos/fco.png",
 }
 
 /** Display name + tagline for each brand, used for the letterhead text. */
@@ -34,6 +35,7 @@ export const BRAND_LABELS: Record<PdfBrand, { name: string; tagline: string }> =
   capital: { name: "MCC Capital", tagline: "MCC Banking & Trade Platform" },
   petroli: { name: "MCC Petroli", tagline: "Arabian Emirates Crude Oil" },
   naftahub: { name: "NAFTAhub", tagline: "Global Commodity Trade Platform" },
+  fco: { name: "NAFTAhub", tagline: "Full Corporate Offer" },
 }
 
 const cache = new Map<PdfBrand, LogoEntry>()
