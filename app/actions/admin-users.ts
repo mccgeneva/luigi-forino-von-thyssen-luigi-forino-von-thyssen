@@ -30,6 +30,8 @@ import {
 import type { SerializableUserProfile, SerializableProfileItem, AccountRelationship } from "@/lib/profile-types"
 import { effectiveRelationship } from "@/lib/account-hierarchy"
 import { validateIban, validateBic } from "@/lib/iban-swift"
+import { extractCurrencyBankingCoordinates, currenciesWithBankingRows } from "@/lib/banking-coordinates"
+import { MANAGED_BANK_CURRENCIES } from "@/lib/managed-bank-currencies"
 import type { KycDocument, KycPassportMeta } from "@/lib/kyc-types"
 import type { SectionAccessMap } from "@/lib/dashboard-sections"
 
@@ -71,7 +73,11 @@ function extractBankingCoordinates(banking: SerializableProfileItem[] | undefine
   accountCurrency?: string
 } {
   const rows = banking ?? []
-  const find = (test: (label: string) => boolean) => rows.find((r) => test(r.label.toLowerCase()))?.value?.trim()
+  // Skip currency-prefixed rows ("USD IBAN", …) so a per-currency settlement
+  // account never shadows the primary (master / EUR) coordinates.
+  const isCurrencyPrefixed = (l: string) => /^(usd|gbp|chf|eur|jpy|aud|cad|sgd|hkd|aed)\s+/.test(l)
+  const find = (test: (label: string) => boolean) =>
+    rows.find((r) => !isCurrencyPrefixed(r.label.toLowerCase()) && test(r.label.toLowerCase()))?.value?.trim()
   const iban = find((l) => l.includes("iban"))
   const swift = find((l) => l.includes("swift") || l.includes("bic"))
   const accountCurrency = find((l) => l.includes("currency"))
@@ -689,6 +695,19 @@ export async function changeMasterAccount(input: ChangeMasterInput): Promise<Mas
 // sub/joint), the details of the resolved MASTER are shown and edited, because
 // that is the bank account the customer actually operates under.
 
+/** Additional per-currency settlement accounts an administrator can insert on
+ *  the master account (EUR is the primary account, edited via the top-level
+ *  iban/swift/bankName fields). Each reflects into the client's currency
+ *  settlement account card in the accounts overview. The managed-currency list
+ *  itself (`MANAGED_BANK_CURRENCIES`) lives in `lib/banking-coordinates.ts` — a
+ *  plain module — because a "use server" file may only export async functions. */
+export interface CurrencyBankAccount {
+  currency: string
+  iban?: string
+  swift?: string
+  bankName?: string
+}
+
 export interface MasterBankProfile {
   /** The account the admin selected. */
   selectedId: string
@@ -705,6 +724,26 @@ export interface MasterBankProfile {
   iban?: string
   swift?: string
   accountCurrency?: string
+  /** Per-currency settlement accounts (USD / GBP / CHF …) on file. */
+  currencyAccounts: CurrencyBankAccount[]
+}
+
+/** Read the managed per-currency settlement accounts (USD / GBP / CHF …) from a
+ *  profile's banking rows. Always returns an entry for each managed currency
+ *  (blank when nothing is on file) plus any other currency that already has
+ *  rows, so the admin editor can render an editable field set for the standard
+ *  currencies while preserving anything unusual already stored. */
+function readCurrencyBankAccounts(banking: SerializableProfileItem[] | undefined): CurrencyBankAccount[] {
+  const present = new Set<string>([...MANAGED_BANK_CURRENCIES, ...currenciesWithBankingRows(banking)])
+  return [...present].map((currency) => {
+    const c = extractCurrencyBankingCoordinates(banking ?? [], currency)
+    return {
+      currency,
+      ...(c.iban ? { iban: c.iban } : {}),
+      ...(c.bic ? { swift: c.bic } : {}),
+      ...(c.bankName ? { bankName: c.bankName } : {}),
+    }
+  })
 }
 
 /** Resolve the master account record for a given account id: the account itself
@@ -744,6 +783,7 @@ export async function getMasterBankProfileAdmin(passcode: string, userId: string
         isSelf: master.id === selected.id,
         relationship: effectiveRelationship(selected.profile.relationship),
         ...coords,
+        currencyAccounts: readCurrencyBankAccounts(master.profile.banking),
       },
     }
   } catch (err) {
@@ -777,6 +817,8 @@ export interface UpdateMasterBankInput {
   iban?: string
   swift?: string
   accountCurrency?: string
+  /** Additional per-currency settlement accounts (USD / GBP / CHF …). */
+  currencyAccounts?: CurrencyBankAccount[]
   adminName?: string
 }
 
@@ -848,6 +890,58 @@ export async function updateMasterBankProfileAdmin(input: UpdateMasterBankInput)
       }
     }
 
+    // Additional per-currency settlement accounts (USD / GBP / CHF …). Each is
+    // stored under "<CCY> …" labels so it never collides with the primary
+    // (EUR / master) coordinates and reflects into that currency's settlement
+    // account card in the client's accounts overview.
+    for (const acct of input.currencyAccounts ?? []) {
+      const cur = acct.currency.trim().toUpperCase()
+      if (!cur || cur === "EUR") continue // EUR is the primary account above.
+      const pre = `${cur.toLowerCase()} `
+      const ibanMatch = (l: string) => l.startsWith(pre) && l.includes("iban")
+      const swiftMatch = (l: string) => l.startsWith(pre) && (l.includes("swift") || l.includes("bic"))
+      const bankMatch = (l: string) =>
+        l.startsWith(pre) && l.includes("bank") && !l.includes("iban") && !l.includes("swift") && !l.includes("bic")
+
+      if (acct.iban !== undefined) {
+        const raw = acct.iban.trim()
+        if (raw) {
+          const c = validateIban(raw)
+          if (!c.valid) return { ok: false, error: `${cur} IBAN is not valid: ${c.error}` }
+          upsertBankingRow(rows, ibanMatch, `${cur} IBAN`, c.formatted)
+        } else {
+          upsertBankingRow(rows, ibanMatch, `${cur} IBAN`, "")
+        }
+      }
+      if (acct.swift !== undefined) {
+        const raw = acct.swift.trim()
+        if (raw) {
+          const c = validateBic(raw)
+          if (!c.valid) return { ok: false, error: `${cur} SWIFT / BIC is not valid: ${c.error}` }
+          upsertBankingRow(rows, swiftMatch, `${cur} SWIFT / BIC`, c.normalized)
+        } else {
+          upsertBankingRow(rows, swiftMatch, `${cur} SWIFT / BIC`, "")
+        }
+      }
+      if (acct.bankName !== undefined) {
+        upsertBankingRow(rows, bankMatch, `${cur} Bank`, acct.bankName)
+      }
+
+      // Integrity guard: this currency's IBAN and SWIFT/BIC must share a country.
+      const curIban = rows.find((r) => ibanMatch(r.label.toLowerCase()))?.value
+      const curSwift = rows.find((r) => swiftMatch(r.label.toLowerCase()))?.value
+      if (curIban && curSwift) {
+        const ic = validateIban(curIban)
+        const bc = validateBic(curSwift)
+        if (ic.valid && bc.valid && ic.countryCode !== bc.countryCode) {
+          return {
+            ok: false,
+            error: `The ${cur} account's IBAN country (${ic.countryCode}) and SWIFT/BIC country (${bc.countryCode}) don't match — correct one of them before saving.`,
+          }
+        }
+      }
+    }
+
     // Optional login-email change — guarded against collisions with any OTHER account.
     let nextEmail = master.email
     if (input.email !== undefined) {
@@ -899,6 +993,7 @@ export async function updateMasterBankProfileAdmin(input: UpdateMasterBankInput)
         isSelf: rec.id === input.userId,
         relationship: effectiveRelationship(resolved.selected.profile.relationship),
         ...after,
+        currencyAccounts: readCurrencyBankAccounts(rec.profile.banking),
       },
     }
   } catch (err) {
@@ -1034,6 +1129,9 @@ export interface MyMasterBanking {
   iban?: string
   swift?: string
   accountCurrency?: string
+  /** Per-currency settlement accounts (USD / GBP / CHF …) keyed by currency,
+   *  so the client overview can overlay each currency's own coordinates. */
+  currencies?: Record<string, { bankName?: string; iban?: string; swift?: string }>
 }
 
 export async function getMyMasterBanking(): Promise<MyMasterBanking> {
@@ -1046,7 +1144,20 @@ export async function getMyMasterBanking(): Promise<MyMasterBanking> {
     const ownerId = session.dataOwnerId || session.id
     const rec = await getDynamicUserById(ownerId)
     if (!rec) return {}
-    return extractBankingCoordinates(rec.profile.banking)
+    const primary = extractBankingCoordinates(rec.profile.banking)
+    // Fold in every per-currency settlement account on file.
+    const currencies: Record<string, { bankName?: string; iban?: string; swift?: string }> = {}
+    for (const cur of currenciesWithBankingRows(rec.profile.banking)) {
+      const c = extractCurrencyBankingCoordinates(rec.profile.banking ?? [], cur)
+      if (c.iban || c.bic || c.bankName) {
+        currencies[cur] = {
+          ...(c.bankName ? { bankName: c.bankName } : {}),
+          ...(c.iban ? { iban: c.iban } : {}),
+          ...(c.bic ? { swift: c.bic } : {}),
+        }
+      }
+    }
+    return { ...primary, ...(Object.keys(currencies).length ? { currencies } : {}) }
   } catch {
     return {}
   }

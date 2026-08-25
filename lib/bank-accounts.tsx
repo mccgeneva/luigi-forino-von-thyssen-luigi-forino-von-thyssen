@@ -263,7 +263,11 @@ function extractMasterBanking(banking: ProfileItem[] | undefined): {
   swift?: string
 } {
   const rows = banking ?? []
-  const find = (test: (label: string) => boolean) => rows.find((r) => test(r.label.toLowerCase()))?.value?.trim()
+  // Skip currency-prefixed rows ("USD IBAN", …) so a per-currency settlement
+  // account never shadows the primary (master / EUR) coordinates.
+  const isCurrencyPrefixed = (l: string) => /^(usd|gbp|chf|eur|jpy|aud|cad|sgd|hkd|aed)\s+/.test(l)
+  const find = (test: (label: string) => boolean) =>
+    rows.find((r) => !isCurrencyPrefixed(r.label.toLowerCase()) && test(r.label.toLowerCase()))?.value?.trim()
   const iban = find((l) => l.includes("iban"))
   const swift = find((l) => l.includes("swift") || l.includes("bic"))
   const bankName = find((l) => l.includes("bank") && !l.includes("iban") && !l.includes("swift") && !l.includes("bic"))
@@ -596,7 +600,13 @@ export function useBankAccounts(): BankAccount[] {
   })
 
   const baseCurrencies = new Set(baseBankAccounts.map((a) => a.currency))
-  const extraCurrencyAccounts = currencies
+  // Every currency to surface a settlement account for: any the client holds a
+  // ledger balance in, PLUS any the administrator configured bank coordinates
+  // for (so an inserted USD/GBP/CHF account appears even before it is funded).
+  const settlementCurrencies = Array.from(
+    new Set<string>([...currencies, ...Object.keys(resolvedMaster?.currencies ?? {})]),
+  )
+  const extraCurrencyAccounts = settlementCurrencies
     .filter((cur) => !baseCurrencies.has(cur) && currencyAccountMeta[cur])
     .map((cur) => {
       const meta = currencyAccountMeta[cur]
@@ -604,17 +614,28 @@ export function useBankAccounts(): BankAccount[] {
       // the reserved amount back so reserved funds surface per currency.
       const available = balanceFor(cur)
       const reserved = reservedFor(cur)
+      // Overlay the admin-configured per-currency bank coordinates (IBAN /
+      // SWIFT / bank name) when present, so this currency's dedicated
+      // settlement account reflects exactly what the administrator inserted in
+      // the Master Account panel. Falls back to the default branch meta.
+      const coords = resolvedMaster?.currencies?.[cur]
+      const coordIbanCheck = coords?.iban ? validateIban(coords.iban) : null
+      const iban = coords?.iban || "—"
+      const bankName = coords?.bankName || meta.bankName
+      const swift = coords?.swift || meta.swift
+      const country = (coordIbanCheck?.valid ? coordIbanCheck.countryName : meta.country) || meta.country
+      const countryCode = (coordIbanCheck?.valid ? coordIbanCheck.countryCode : meta.countryCode) || meta.countryCode
       return {
         id: `ACC-${cur}`,
-        bankName: meta.bankName,
-        bankLogo: meta.bankLogo,
-        country: meta.country,
-        countryCode: meta.countryCode,
+        bankName,
+        bankLogo: coords?.bankName ? bankMonogram(bankName) : meta.bankLogo,
+        country,
+        countryCode,
         rating: "A",
         accountName: "MCC Capital",
         accountNumber: `${cur}-2908 19`,
-        iban: "—",
-        swift: meta.swift,
+        iban,
+        swift,
         currency: cur,
         balance: available + reserved,
         availableBalance: available,
@@ -628,7 +649,7 @@ export function useBankAccounts(): BankAccount[] {
         relationship: "Business Banking",
         contactPerson: "MCC Client Services",
         contactEmail: "admin@mccgva.ch",
-        branchAddress: meta.country,
+        branchAddress: country,
         beneficiaryAddress: "Rue du Rhone 14, 1204 Geneva, Switzerland",
       }
     })

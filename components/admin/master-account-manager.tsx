@@ -10,10 +10,25 @@ import { Badge } from "@/components/ui/badge"
 import { cn } from "@/lib/utils"
 import { toast } from "sonner"
 import { ADMIN_PASSCODE } from "@/lib/admin-config"
-import type { AdminUserView, AdminUsersResult, MasterBankProfile, MasterBankProfileResult } from "@/app/actions/admin-users"
+import type {
+  AdminUserView,
+  AdminUsersResult,
+  MasterBankProfile,
+  MasterBankProfileResult,
+  CurrencyBankAccount,
+} from "@/app/actions/admin-users"
+import { MANAGED_BANK_CURRENCIES } from "@/lib/managed-bank-currencies"
 import { relationshipLabel } from "@/lib/account-hierarchy"
 import { validateIban, validateBic, lookupBankByIban, isGenericBankInfo } from "@/lib/iban-swift"
 import { resolveIbanExternal } from "@/app/actions/bank-resolve"
+
+// Additional per-currency settlement accounts the admin can insert alongside
+// the primary (EUR) master account edited by the fields above. Kept as a local
+// const because a "use server" module can't export a plain value.
+const MANAGED_CURRENCIES = ["USD", "GBP", "CHF"] as const
+type CurrencyForm = Record<string, { iban: string; swift: string; bankName: string }>
+const emptyCurrencyForm = (): CurrencyForm =>
+  Object.fromEntries(MANAGED_CURRENCIES.map((c) => [c, { iban: "", swift: "", bankName: "" }]))
 
 // Default account currency for an IBAN's country code (ISO 3166 → ISO 4217).
 // Eurozone members all map to EUR; non-euro markets map to their own currency.
@@ -71,6 +86,8 @@ export function MasterAccountManager() {
   const [swift, setSwift] = useState("")
   const [bankName, setBankName] = useState("")
   const [currency, setCurrency] = useState("")
+  // Per-currency settlement accounts (USD / GBP / CHF …), keyed by currency.
+  const [currencyAccounts, setCurrencyAccounts] = useState<Record<string, CurrencyBankAccount>>({})
   const [saving, setSaving] = useState(false)
   const [bankLookingUp, setBankLookingUp] = useState(false)
 
@@ -100,6 +117,17 @@ export function MasterAccountManager() {
     setSwift(p.swift || "")
     setBankName(p.bankName || "")
     setCurrency(p.accountCurrency || "")
+    // Seed an editable field set for each managed currency (USD/GBP/CHF …),
+    // pre-filled from anything already on file.
+    const seeded: Record<string, CurrencyBankAccount> = {}
+    for (const cur of MANAGED_BANK_CURRENCIES) seeded[cur] = { currency: cur }
+    for (const acct of p.currencyAccounts ?? []) {
+      seeded[acct.currency] = { currency: acct.currency, iban: acct.iban, swift: acct.swift, bankName: acct.bankName }
+    }
+    setCurrencyAccounts(seeded)
+  }
+    }
+    setCurrencyAccounts(next)
   }
 
   const selectCustomer = async (u: AdminUserView) => {
