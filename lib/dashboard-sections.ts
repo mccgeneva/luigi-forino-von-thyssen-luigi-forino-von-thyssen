@@ -97,8 +97,9 @@ const SECTION_BY_KEY = new Map(DASHBOARD_SECTIONS.map((s) => [s.key, s]))
 /**
  * Sections a Visitor (pre-subscription) account may fully use WITHOUT any admin
  * override: payments in/out, the NQAi console, Bankeka Messenger, the overview,
- * and Plans (so they can actually upgrade). Everything else is tier-locked for a
- * Visitor unless an administrator explicitly unlocks it.
+ * their own bank accounts (so they can view their per-currency IBAN/SWIFT
+ * details) and Plans (so they can actually upgrade). Everything else is
+ * tier-locked for a Visitor unless an administrator explicitly unlocks it.
  */
 export const VISITOR_ALLOWED_KEYS: ReadonlySet<string> = new Set([
   "overview",
@@ -106,6 +107,7 @@ export const VISITOR_ALLOWED_KEYS: ReadonlySet<string> = new Set([
   "bankeka",
   "payments",
   "send",
+  "accounts",
   "plans",
 ])
 
