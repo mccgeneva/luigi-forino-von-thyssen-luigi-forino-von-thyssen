@@ -137,7 +137,7 @@ export function generateFcoPdf(input: FcoInput): GeneratedPdf {
     // Adopted brand logo at the top-left of every page (on a white panel so it
     // stays crisp against the dark band). Falls back to the gold "M" badge if
     // the logo cache is cold.
-    const markW = drawBrandMark(doc, "fco", margin, 8, 44, 28, { panel: true, radius: 4 })
+    const markW = drawBrandMark(doc, "fco", margin, 7, 72, 30, { panel: true, radius: 4 })
     doc.setTextColor(...BRAND.white)
     doc.setFont("helvetica", "bold")
     doc.setFontSize(10)
