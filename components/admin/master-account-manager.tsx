@@ -39,6 +39,18 @@ const currencyForIbanCountry = (cc: string): string | undefined => IBAN_COUNTRY_
 // Fixed, selectable account-currency list for the primary master account.
 const CURRENCY_OPTIONS = ["EUR", "USD", "GBP", "CHF"] as const
 
+// The supported non-EUR settlement currencies. EUR is always the primary
+// master account; these are the currencies the client overview renders as
+// their own dedicated settlement account cards.
+const SETTLEMENT_CURRENCIES = [...MANAGED_BANK_CURRENCIES] as string[]
+
+// An additional settlement account being edited, keyed by a stable id so the
+// currency can be re-selected without losing the typed coordinates.
+type CurrencyRow = { id: string; currency: string; iban: string; swift: string; bankName: string }
+
+let currencyRowSeq = 0
+const nextCurrencyRowId = () => `cr-${++currencyRowSeq}`
+
 async function fetchUsers(): Promise<AdminUserView[]> {
   try {
     const res = await fetch(`/api/admin/users?p=${encodeURIComponent(ADMIN_PASSCODE)}`, {
@@ -82,9 +94,12 @@ export function MasterAccountManager() {
   const [swift, setSwift] = useState("")
   const [bankName, setBankName] = useState("")
   const [currency, setCurrency] = useState("")
-  // Per-currency settlement accounts (USD / GBP / CHF …), keyed by currency.
-  const [currencyAccounts, setCurrencyAccounts] = useState<Record<string, CurrencyBankAccount>>({})
-  // Per-currency "resolving bank from IBAN…" spinners, keyed by currency.
+  // Additional settlement accounts. Each row has its OWN currency selector
+  // (chosen from the supported settlement currencies), so the admin decides
+  // which currency each block is — not a fixed label. Rows are keyed by a
+  // stable id so the currency can change freely without losing the fields.
+  const [currencyRows, setCurrencyRows] = useState<CurrencyRow[]>([])
+  // "resolving bank from IBAN…" spinners, keyed by row id.
   const [currencyLookup, setCurrencyLookup] = useState<Record<string, boolean>>({})
   const [saving, setSaving] = useState(false)
   const [bankLookingUp, setBankLookingUp] = useState(false)
@@ -115,22 +130,44 @@ export function MasterAccountManager() {
     setSwift(p.swift || "")
     setBankName(p.bankName || "")
     setCurrency(p.accountCurrency || "")
-    // Seed an editable field set for each managed currency (USD/GBP/CHF …),
-    // pre-filled from anything already on file.
-    const seeded: Record<string, CurrencyBankAccount> = {}
-    for (const cur of MANAGED_BANK_CURRENCIES) seeded[cur] = { currency: cur }
-    for (const acct of p.currencyAccounts ?? []) {
-      seeded[acct.currency] = { currency: acct.currency, iban: acct.iban, swift: acct.swift, bankName: acct.bankName }
-    }
-    setCurrencyAccounts(seeded)
+    // Seed one editable row per supported settlement currency, pre-filled from
+    // anything already on file. Rows carry a stable id so the currency picker
+    // can change a block's currency without losing its typed fields.
+    const byCurrency = new Map<string, CurrencyBankAccount>()
+    for (const acct of p.currencyAccounts ?? []) byCurrency.set(acct.currency.toUpperCase(), acct)
+    setCurrencyRows(
+      SETTLEMENT_CURRENCIES.map((cur) => {
+        const a = byCurrency.get(cur)
+        return {
+          id: nextCurrencyRowId(),
+          currency: cur,
+          iban: a?.iban ?? "",
+          swift: a?.swift ?? "",
+          bankName: a?.bankName ?? "",
+        }
+      }),
+    )
   }
 
-  // Update one field of a per-currency settlement account.
-  const updateCurrencyField = (cur: string, field: "iban" | "swift" | "bankName", value: string) => {
-    setCurrencyAccounts((prev) => ({
-      ...prev,
-      [cur]: { ...(prev[cur] ?? { currency: cur }), currency: cur, [field]: value },
-    }))
+  // Update one field of an additional settlement account row.
+  const updateCurrencyRow = (id: string, field: "iban" | "swift" | "bankName", value: string) => {
+    setCurrencyRows((prev) => prev.map((r) => (r.id === id ? { ...r, [field]: value } : r)))
+  }
+
+  // Change a row's currency. To keep every currency unique across rows, if the
+  // chosen currency is already used by another row, the two rows swap currencies
+  // (the fields stay put with their row).
+  const setRowCurrency = (id: string, newCur: string) => {
+    setCurrencyRows((prev) => {
+      const row = prev.find((r) => r.id === id)
+      if (!row || row.currency === newCur) return prev
+      const oldCur = row.currency
+      return prev.map((r) => {
+        if (r.id === id) return { ...r, currency: newCur }
+        if (r.currency === newCur) return { ...r, currency: oldCur }
+        return r
+      })
+    })
   }
 
   const selectCustomer = async (u: AdminUserView) => {
@@ -182,41 +219,43 @@ export function MasterAccountManager() {
     return { bic: info?.bic, name: cleanName }
   }
 
-  // Per-currency IBAN handler: sets the IBAN and, when it becomes VALID,
-  // auto-fills that currency's SWIFT/BIC + bank name from the IBAN (same source-
-  // of-truth behaviour as the primary EUR account) — overwriting a stale
-  // wrong-country SWIFT, otherwise only filling empty fields.
-  const handleCurrencyIban = (cur: string, raw: string) => {
+  // Per-row IBAN handler: sets the IBAN and, when it becomes VALID, auto-fills
+  // that row's SWIFT/BIC + bank name from the IBAN (same source-of-truth
+  // behaviour as the primary EUR account) — overwriting a stale wrong-country
+  // SWIFT, otherwise only filling empty fields.
+  const handleCurrencyIban = (id: string, raw: string) => {
     const value = raw.toUpperCase()
-    updateCurrencyField(cur, "iban", value)
+    updateCurrencyRow(id, "iban", value)
     const check = value.trim() ? validateIban(value) : null
     if (!check?.valid) return
     const clean = check.formatted.replace(/\s/g, "")
     const ibanCountry = clean.slice(0, 2)
-    setCurrencyLookup((p) => ({ ...p, [cur]: true }))
+    setCurrencyLookup((p) => ({ ...p, [id]: true }))
     ;(async () => {
       const bank = await resolveBankForIban(clean)
-      setCurrencyAccounts((prev) => {
-        const cur0 = prev[cur] ?? { currency: cur }
-        // Only reconcile if the IBAN hasn't changed again while resolving.
-        if ((cur0.iban ?? "").replace(/\s/g, "").toUpperCase() !== clean) return prev
-        const curSwift = (cur0.swift ?? "").trim()
-        const curSwiftCheck = curSwift ? validateBic(curSwift) : null
-        const overwrite = !!(curSwiftCheck?.valid && curSwiftCheck.countryCode !== ibanCountry)
-        const next: CurrencyBankAccount = { ...cur0, currency: cur }
-        if (bank.bic) {
-          next.swift = overwrite ? bank.bic : curSwift || bank.bic
-          if (bank.name) next.bankName = overwrite ? bank.name : (cur0.bankName ?? "").trim() || bank.name
-          else if (overwrite) next.bankName = ""
-        } else if (overwrite) {
-          next.swift = ""
-          next.bankName = ""
-        } else if (bank.name) {
-          next.bankName = (cur0.bankName ?? "").trim() || bank.name
-        }
-        return { ...prev, [cur]: next }
-      })
-    })().finally(() => setCurrencyLookup((p) => ({ ...p, [cur]: false })))
+      setCurrencyRows((prev) =>
+        prev.map((row) => {
+          if (row.id !== id) return row
+          // Only reconcile if the IBAN hasn't changed again while resolving.
+          if ((row.iban ?? "").replace(/\s/g, "").toUpperCase() !== clean) return row
+          const curSwift = (row.swift ?? "").trim()
+          const curSwiftCheck = curSwift ? validateBic(curSwift) : null
+          const overwrite = !!(curSwiftCheck?.valid && curSwiftCheck.countryCode !== ibanCountry)
+          const next = { ...row }
+          if (bank.bic) {
+            next.swift = overwrite ? bank.bic : curSwift || bank.bic
+            if (bank.name) next.bankName = overwrite ? bank.name : (row.bankName ?? "").trim() || bank.name
+            else if (overwrite) next.bankName = ""
+          } else if (overwrite) {
+            next.swift = ""
+            next.bankName = ""
+          } else if (bank.name) {
+            next.bankName = (row.bankName ?? "").trim() || bank.name
+          }
+          return next
+        }),
+      )
+    })().finally(() => setCurrencyLookup((p) => ({ ...p, [id]: false })))
   }
 
   // Whenever a VALID IBAN is present, reconcile the SWIFT/BIC, bank name and
@@ -292,39 +331,37 @@ export function MasterAccountManager() {
     }
   }
 
-  // Validate each per-currency account: IBAN & SWIFT well-formed, and same
-  // country when both are present. `invalidCurrencies` blocks saving.
+  // Validate each additional settlement row: IBAN & SWIFT well-formed, and same
+  // country when both are present. Keyed by row id; blocks saving when non-empty.
   const currencyIssues = useMemo(() => {
     const issues: Record<string, string> = {}
-    for (const cur of Object.keys(currencyAccounts)) {
-      const acct = currencyAccounts[cur]
-      const ib = acct.iban?.trim()
-      const sw = acct.swift?.trim()
+    for (const row of currencyRows) {
+      const ib = row.iban?.trim()
+      const sw = row.swift?.trim()
       const ibc = ib ? validateIban(ib) : null
       const swc = sw ? validateBic(sw) : null
-      if (ibc && !ibc.valid) issues[cur] = ibc.error || "Invalid IBAN"
-      else if (swc && !swc.valid) issues[cur] = swc.error || "Invalid SWIFT/BIC"
+      if (ibc && !ibc.valid) issues[row.id] = ibc.error || "Invalid IBAN"
+      else if (swc && !swc.valid) issues[row.id] = swc.error || "Invalid SWIFT/BIC"
       else if (ibc?.valid && swc?.valid && ibc.countryCode !== swc.countryCode)
-        issues[cur] = `IBAN country (${ibc.countryCode}) and SWIFT/BIC country (${swc.countryCode}) don't match.`
+        issues[row.id] = `IBAN country (${ibc.countryCode}) and SWIFT/BIC country (${swc.countryCode}) don't match.`
     }
     return issues
-  }, [currencyAccounts])
+  }, [currencyRows])
   const hasCurrencyIssues = Object.keys(currencyIssues).length > 0
 
   const currencyAccountsDirty = useMemo(() => {
     if (!profile) return false
     const original: Record<string, CurrencyBankAccount> = {}
-    for (const a of profile.currencyAccounts ?? []) original[a.currency] = a
-    return Object.keys(currencyAccounts).some((cur) => {
-      const a = currencyAccounts[cur]
-      const o = original[cur]
+    for (const a of profile.currencyAccounts ?? []) original[a.currency.toUpperCase()] = a
+    return currencyRows.some((row) => {
+      const o = original[row.currency.toUpperCase()]
       return (
-        (a.iban ?? "").trim() !== (o?.iban ?? "") ||
-        (a.swift ?? "").trim() !== (o?.swift ?? "") ||
-        (a.bankName ?? "").trim() !== (o?.bankName ?? "")
+        row.iban.trim() !== (o?.iban ?? "") ||
+        row.swift.trim() !== (o?.swift ?? "") ||
+        row.bankName.trim() !== (o?.bankName ?? "")
       )
     })
-  }, [profile, currencyAccounts])
+  }, [profile, currencyRows])
 
   const dirty = useMemo(() => {
     if (!profile) return false
@@ -353,11 +390,11 @@ export function MasterAccountManager() {
         swift: swift.trim(),
         bankName: bankName.trim(),
         accountCurrency: currency.trim(),
-        currencyAccounts: Object.values(currencyAccounts).map((a) => ({
-          currency: a.currency,
-          iban: (a.iban ?? "").trim(),
-          swift: (a.swift ?? "").trim(),
-          bankName: (a.bankName ?? "").trim(),
+        currencyAccounts: currencyRows.map((r) => ({
+          currency: r.currency,
+          iban: r.iban.trim(),
+          swift: r.swift.trim(),
+          bankName: r.bankName.trim(),
         })),
         adminName: "Administrator",
       },
@@ -603,34 +640,48 @@ export function MasterAccountManager() {
                     <p className="text-sm font-medium text-foreground">Currency settlement accounts</p>
                   </div>
                   <p className="text-[11px] text-muted-foreground">
-                    Insert the bank account coordinates for each additional currency. Enter an IBAN — it is validated and,
-                    when the bank is in the directory, the SWIFT/BIC and bank name are auto-filled (otherwise type them
-                    in). Each one reflects into the client&apos;s dedicated {MANAGED_BANK_CURRENCIES.join(" / ")} account
-                    in their accounts overview. Leave a currency blank to omit it.
+                    Pick a currency for each additional account and insert its bank coordinates. Enter an IBAN — it is
+                    validated and, when the bank is in the directory, the SWIFT/BIC and bank name are auto-filled
+                    (otherwise type them in). Each reflects into the client&apos;s dedicated settlement account in their
+                    accounts overview. Leave a block blank to omit that currency. EUR is the primary account above.
                   </p>
-                  {MANAGED_BANK_CURRENCIES.map((cur) => {
-                    const acct = currencyAccounts[cur] ?? { currency: cur }
-                    const issue = currencyIssues[cur]
-                    const ibanCk = acct.iban?.trim() ? validateIban(acct.iban) : null
-                    const looking = !!currencyLookup[cur]
-                    const resolvedSwift = (acct.swift ?? "").trim()
+                  {currencyRows.map((row) => {
+                    const issue = currencyIssues[row.id]
+                    const ibanCk = row.iban.trim() ? validateIban(row.iban) : null
+                    const looking = !!currencyLookup[row.id]
+                    const resolvedSwift = row.swift.trim()
+                    // Currency options for THIS block: the supported settlement
+                    // currencies not already chosen by another block, plus its own.
+                    const takenElsewhere = new Set(
+                      currencyRows.filter((r) => r.id !== row.id).map((r) => r.currency),
+                    )
+                    const options = SETTLEMENT_CURRENCIES.filter((c) => c === row.currency || !takenElsewhere.has(c))
                     return (
-                      <div key={cur} className="space-y-2 rounded-md border border-border/70 bg-background/40 p-3">
+                      <div key={row.id} className="space-y-2 rounded-md border border-border/70 bg-background/40 p-3">
                         <div className="flex items-center gap-2">
-                          <Badge variant="outline" className="font-mono text-[11px]">
-                            {cur}
-                          </Badge>
+                          <Select value={row.currency} onValueChange={(v) => setRowCurrency(row.id, v)}>
+                            <SelectTrigger className="h-8 w-[104px] font-mono text-xs">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {options.map((c) => (
+                                <SelectItem key={c} value={c} className="font-mono">
+                                  {c}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
                           <span className="text-xs text-muted-foreground">settlement account</span>
                         </div>
                         <div className="grid gap-3 sm:grid-cols-2">
                           <div className="space-y-1.5">
-                            <Label htmlFor={`ma-${cur}-iban`}>IBAN</Label>
+                            <Label htmlFor={`ma-${row.id}-iban`}>IBAN</Label>
                             <div className="relative">
                               <Input
-                                id={`ma-${cur}-iban`}
-                                value={acct.iban ?? ""}
-                                onChange={(e) => handleCurrencyIban(cur, e.target.value)}
-                                placeholder={`${cur} account IBAN`}
+                                id={`ma-${row.id}-iban`}
+                                value={row.iban}
+                                onChange={(e) => handleCurrencyIban(row.id, e.target.value)}
+                                placeholder={`${row.currency} account IBAN`}
                                 autoComplete="off"
                                 spellCheck={false}
                                 className={cn(
@@ -659,24 +710,24 @@ export function MasterAccountManager() {
                             )}
                           </div>
                           <div className="space-y-1.5">
-                            <Label htmlFor={`ma-${cur}-swift`}>SWIFT / BIC</Label>
+                            <Label htmlFor={`ma-${row.id}-swift`}>SWIFT / BIC</Label>
                             <Input
-                              id={`ma-${cur}-swift`}
-                              value={acct.swift ?? ""}
-                              onChange={(e) => updateCurrencyField(cur, "swift", e.target.value.toUpperCase())}
-                              placeholder={`${cur} bank SWIFT/BIC`}
+                              id={`ma-${row.id}-swift`}
+                              value={row.swift}
+                              onChange={(e) => updateCurrencyRow(row.id, "swift", e.target.value.toUpperCase())}
+                              placeholder={`${row.currency} bank SWIFT/BIC`}
                               autoComplete="off"
                               spellCheck={false}
                               className={cn("font-mono", issue && "border-red-500/60 focus-visible:ring-red-500/30")}
                             />
                           </div>
                           <div className="space-y-1.5 sm:col-span-2">
-                            <Label htmlFor={`ma-${cur}-bank`}>Bank name</Label>
+                            <Label htmlFor={`ma-${row.id}-bank`}>Bank name</Label>
                             <Input
-                              id={`ma-${cur}-bank`}
-                              value={acct.bankName ?? ""}
-                              onChange={(e) => updateCurrencyField(cur, "bankName", e.target.value)}
-                              placeholder={`e.g. ${cur} settlement bank`}
+                              id={`ma-${row.id}-bank`}
+                              value={row.bankName}
+                              onChange={(e) => updateCurrencyRow(row.id, "bankName", e.target.value)}
+                              placeholder={`e.g. ${row.currency} settlement bank`}
                             />
                           </div>
                         </div>
