@@ -1,7 +1,7 @@
 "use client"
 
 import Link from "next/link"
-import { useMemo, useRef, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { DealVesselDocsView } from "@/components/commodity/deal-vessel-docs-view"
 import {
   Ship,
@@ -264,6 +264,40 @@ function leadingNumber(raw: string): string {
   return m ? m[0].replace(/,+$/, "") : ""
 }
 
+// A New-deal (and its FCO offer) is in-progress local state, so a device
+// back-gesture / PWA resume that remounts this page would otherwise WIPE
+// everything the trader typed — including after issuing an FCO, leaving them
+// unable to submit the deal for authorization. We persist both drafts to
+// localStorage and restore them on mount so nothing is ever lost on navigation.
+const DEAL_DRAFT_KEY = "nqai:commodity:deal-draft"
+const FCO_DRAFT_KEY = "nqai:commodity:fco-draft"
+
+function readDraft<T>(key: string): T | null {
+  if (typeof window === "undefined") return null
+  try {
+    const raw = window.localStorage.getItem(key)
+    return raw ? (JSON.parse(raw) as T) : null
+  } catch {
+    return null
+  }
+}
+function writeDraft(key: string, value: unknown) {
+  if (typeof window === "undefined") return
+  try {
+    window.localStorage.setItem(key, JSON.stringify(value))
+  } catch {
+    /* storage unavailable / full — non-fatal */
+  }
+}
+function clearDraft(key: string) {
+  if (typeof window === "undefined") return
+  try {
+    window.localStorage.removeItem(key)
+  } catch {
+    /* ignore */
+  }
+}
+
 function StatusBadge({ status }: { status: CommodityDeal["status"] }) {
   if (status === "approved") {
     return (
@@ -426,6 +460,9 @@ export default function CommodityTradingPage() {
   const [editing, setEditing] = useState(false)
   // LOI/ICPO import + FCO issuance state.
   const loiInputRef = useRef<HTMLInputElement>(null)
+  // Guards the draft-persistence effects so the first render can't overwrite a
+  // saved draft with the empty defaults before it has been restored.
+  const draftRestored = useRef(false)
   const [extracting, setExtracting] = useState(false)
   const [loiSummary, setLoiSummary] = useState<string | null>(null)
   const [fco, setFco] = useState<FcoInput>({ ...emptyFco })
@@ -435,6 +472,32 @@ export default function CommodityTradingPage() {
 
   const set = <K extends keyof typeof form>(key: K, value: (typeof form)[K]) =>
     setForm((prev) => ({ ...prev, [key]: value }))
+
+  // Restore any in-progress deal + FCO draft on mount so a back-gesture, tab
+  // switch, reload or PWA resume never loses the trader's work. Merged onto the
+  // empty defaults so a schema change can't break an older saved draft.
+  useEffect(() => {
+    const savedDeal = readDraft<typeof emptyDeal>(DEAL_DRAFT_KEY)
+    if (savedDeal) setForm({ ...emptyDeal, ...savedDeal })
+    const savedFco = readDraft<FcoInput>(FCO_DRAFT_KEY)
+    if (savedFco) setFco({ ...emptyFco, ...savedFco })
+    draftRestored.current = true
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // Persist the drafts on every change (skip until the restore above has run so
+  // the initial empty render can't clobber a saved draft). A pristine/empty
+  // form clears its key rather than storing an empty object.
+  useEffect(() => {
+    if (!draftRestored.current) return
+    if (JSON.stringify(form) === JSON.stringify(emptyDeal)) clearDraft(DEAL_DRAFT_KEY)
+    else writeDraft(DEAL_DRAFT_KEY, form)
+  }, [form])
+  useEffect(() => {
+    if (!draftRestored.current) return
+    if (JSON.stringify(fco) === JSON.stringify(emptyFco)) clearDraft(FCO_DRAFT_KEY)
+    else writeDraft(FCO_DRAFT_KEY, fco)
+  }, [fco])
 
   // Selecting a catalog commodity auto-applies its canonical trading unit
   // (bbl for crude, MT for refined products) so the quantity is always quoted
@@ -743,7 +806,8 @@ export default function CommodityTradingPage() {
       const generated = generateFcoPdf(fco)
       pdf.show(generated)
       toast.success("Full Corporate Offer generated", {
-        description: "Preview, print or download the FCO. It follows the standard template — no upfront fee is charged to the buyer.",
+        description:
+          "Preview, print or download the FCO — no upfront fee is charged to the buyer. Your deal details are saved; when ready, tap Submit for Authorization to send it for approval.",
       })
       logActivity({
         action: `Client issued a Full Corporate Offer for ${fco.product || "a commodity"}`,
@@ -833,6 +897,11 @@ export default function CommodityTradingPage() {
       },
     })
     resetForm()
+    // The deal is filed — drop the FCO draft too so a brand-new deal doesn't
+    // inherit the previous offer. The persistence effects clear both keys.
+    setFco({ ...emptyFco })
+    setShowFco(false)
+    setLoiSummary(null)
     setTab("workflow")
   }
 
