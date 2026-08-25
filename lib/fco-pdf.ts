@@ -142,6 +142,20 @@ const KEY_CONDITIONS: Array<[string, string]> = [
 
 const dash = (v: string | undefined | null) => (v && v.trim() ? v.trim() : "—")
 
+// Format a monetary value with thousands separators. A value that is purely a
+// number (optionally with existing commas / decimals) is normalized to grouped
+// form (e.g. "24600000" → "24,600,000"); any value carrying other text is left
+// exactly as entered so free-text notes are never mangled.
+const money = (v: string | undefined | null): string => {
+  const t = (v ?? "").trim()
+  if (!t) return "—"
+  const cleaned = t.replace(/,/g, "")
+  if (!/^\d+(\.\d+)?$/.test(cleaned)) return t
+  const [intPart, decPart] = cleaned.split(".")
+  const grouped = Number(intPart).toLocaleString("en-US")
+  return decPart != null ? `${grouped}.${decPart}` : grouped
+}
+
 export function generateFcoPdf(input: FcoInput): GeneratedPdf {
   const doc = new jsPDF({ unit: "pt", format: "a4" })
   const pageWidth = doc.internal.pageSize.getWidth()
@@ -326,7 +340,7 @@ export function generateFcoPdf(input: FcoInput): GeneratedPdf {
   const subtitle = [
     dash(input.product) !== "—" ? input.product.trim() : "",
     dash(input.deliveryTerm) !== "—" ? input.deliveryTerm.trim() : "",
-    dash(input.loadPort) !== "—" ? input.loadPort.trim() : "",
+    dash(input.loadPort) !== "���" ? input.loadPort.trim() : "",
     dash(input.trialQuantity) !== "—" ? `${input.trialQuantity.trim()} Trial` : "",
     dash(input.contractQuantity) !== "—" ? `${input.contractQuantity.trim()} Contract` : "",
   ]
@@ -413,14 +427,19 @@ export function generateFcoPdf(input: FcoInput): GeneratedPdf {
     ["Contract Duration", dash(input.contractDuration) === "—" ? "—" : `${input.contractDuration.trim()} — renewable upon mutual agreement`],
     ["Delivery Terms", [dash(input.deliveryTerm) !== "—" ? input.deliveryTerm.trim() : "", dash(input.loadPort) !== "—" ? input.loadPort.trim() : ""].filter(Boolean).join(" — ") || "—"],
     ["Origins Available", dash(input.originsAvailable)],
-    ["Origin / Destination", `${dash(input.originCountry)}  →  ${dash(input.destinationCountry)}`],
+    [
+      "Origin / Destination",
+      dash(input.originCountry) === "—" && dash(input.destinationCountry) === "—"
+        ? "—"
+        : `${dash(input.originCountry)} to ${dash(input.destinationCountry)}`,
+    ],
     ["Payment Instrument", dash(input.paymentInstrument)],
     ["Incoterms", dash(input.incotermsVersion) === "—" ? "Incoterms 2020" : input.incotermsVersion.trim()],
     ["Offer Validity", `${Math.max(1, input.offerValidityDays || 7)} calendar days from date of issuance`],
-    ["Unit Price", dash(input.unitPrice) === "—" ? "—" : `${ccy}${input.unitPrice.trim()}`],
-    ["Trial Cargo Total Value", dash(input.trialCargoValue) === "—" ? "—" : `${ccy}${input.trialCargoValue.trim()}`],
-    ["Contract Period Value", dash(input.contractPeriodValue) === "—" ? "—" : `${ccy}${input.contractPeriodValue.trim()}`],
-    ["Annual Contract Value", dash(input.annualContractValue) === "—" ? "—" : `${ccy}${input.annualContractValue.trim()}`],
+    ["Unit Price", dash(input.unitPrice) === "—" ? "—" : `${ccy}${money(input.unitPrice)}`],
+    ["Trial Cargo Total Value", dash(input.trialCargoValue) === "—" ? "—" : `${ccy}${money(input.trialCargoValue)}`],
+    ["Contract Period Value", dash(input.contractPeriodValue) === "—" ? "—" : `${ccy}${money(input.contractPeriodValue)}`],
+    ["Annual Contract Value", dash(input.annualContractValue) === "—" ? "—" : `${ccy}${money(input.annualContractValue)}`],
   ])
 
   // ===== 4. Standard Transaction Procedure (hardcoded) =====
