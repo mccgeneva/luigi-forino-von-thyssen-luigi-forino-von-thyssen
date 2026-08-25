@@ -1149,8 +1149,19 @@ export async function getMyMasterBanking(): Promise<MyMasterBanking> {
     // dataOwnerId is the Master for a linked (joint/sub) account, or the account
     // itself otherwise — the exact record the admin bank editor writes to.
     const ownerId = session.dataOwnerId || session.id
-    const rec = await getDynamicUserById(ownerId)
+    let rec = await getDynamicUserById(ownerId)
     if (!rec) return {}
+    // A CHILD account is financially independent (its dataOwnerId is itself), so
+    // it reads its OWN banking. But when a child has no bank details of its own
+    // yet, fall back to displaying the group MASTER's banking — the account the
+    // administrator set up and links this member under — so the master account
+    // coordinates the admin edits reflect for the child. Once the admin gives the
+    // child its OWN IBAN it overrides this fallback.
+    const ownIban = extractBankingCoordinates(rec.profile.banking).iban
+    if (!ownIban && rec.profile.masterId && rec.profile.masterId !== rec.id) {
+      const master = await getDynamicUserById(rec.profile.masterId)
+      if (master && extractBankingCoordinates(master.profile.banking).iban) rec = master
+    }
     const primary = extractBankingCoordinates(rec.profile.banking)
     // Fold in every per-currency settlement account on file.
     const currencies: Record<string, { bankName?: string; iban?: string; swift?: string }> = {}
