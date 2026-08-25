@@ -27,7 +27,7 @@ const LOGO_SRC: Record<PdfBrand, string> = {
   capital: "/logos/mcc-capital.jpeg",
   petroli: "/logos/mcc-petroli.jpeg",
   naftahub: "/logos/naftahub.jpeg",
-  fco: "/logos/fco.png",
+  fco: "/logos/fco.jpeg",
 }
 
 /** Display name + tagline for each brand, used for the letterhead text. */
