@@ -1,7 +1,7 @@
 "use client"
 
 import Link from "next/link"
-import { useMemo, useState } from "react"
+import { useMemo, useRef, useState } from "react"
 import { DealVesselDocsView } from "@/components/commodity/deal-vessel-docs-view"
 import {
   Ship,
@@ -36,6 +36,9 @@ import {
   PlayCircle,
   Lock,
   LockOpen,
+  Upload,
+  Sparkles,
+  FileSignature,
 } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -76,6 +79,8 @@ import { CommodityQuotations } from "@/components/dashboard/commodity-quotations
 import { SpotDealsBoard } from "@/components/dashboard/spot-deals-board"
 import { type SpotDeal } from "@/lib/spot-deals-shared"
 import { useCurrentUser } from "@/lib/use-current-user"
+import { usePdfViewer } from "@/lib/pdf-viewer"
+import { generateFcoPdf, type FcoInput } from "@/lib/fco-pdf"
 import {
   useCommodityDeals,
   DEAL_STAGES,
@@ -213,6 +218,52 @@ const emptyDeal = {
   notes: "",
 }
 
+// Editable Full Corporate Offer draft. Only the commercial/party fields are
+// editable — the transaction procedure and key conditions (incl. "no upfront
+// fee to trade") are enforced by the PDF generator and never editable here.
+const emptyFco: FcoInput = {
+  sellerName: "",
+  sellerAddress: "",
+  sellerEmail: "",
+  sellerAttn: "",
+  buyerName: "",
+  buyerAddress: "",
+  buyerRegNo: "",
+  buyerAttn: "",
+  buyerEmail: "",
+  transmittedVia: "",
+  inResponseTo: "",
+  product: "",
+  specificationStandard: "",
+  keyParameters: "",
+  inspectionAgency: "",
+  certification: "",
+  trialQuantity: "",
+  contractQuantity: "",
+  contractDuration: "",
+  deliveryTerm: "",
+  loadPort: "",
+  originsAvailable: "",
+  paymentInstrument: "",
+  incotermsVersion: "Incoterms 2020",
+  offerValidityDays: 7,
+  currency: "USD",
+  unitPrice: "",
+  trialCargoValue: "",
+  contractPeriodValue: "",
+  annualContractValue: "",
+  originCountry: "",
+  destinationCountry: "",
+  governingLaw: "",
+}
+
+// Pull the leading numeric magnitude out of a quantity/value string like
+// "50,000 MT" → "50,000" or "USD 24,250,000.00" → "24,250,000.00".
+function leadingNumber(raw: string): string {
+  const m = raw.replace(/[^\d.,]/g, " ").trim().match(/[\d][\d.,]*/)
+  return m ? m[0].replace(/,+$/, "") : ""
+}
+
 function StatusBadge({ status }: { status: CommodityDeal["status"] }) {
   if (status === "approved") {
     return (
@@ -317,6 +368,7 @@ export default function CommodityTradingPage() {
     hydrated,
   } = useCommodityDeals()
   const user = useCurrentUser()
+  const pdf = usePdfViewer()
 
   // Switch to the workflow tab and scroll a specific tracked deal into view.
   const openTrackedDeal = (dealId: string) => {
@@ -372,6 +424,14 @@ export default function CommodityTradingPage() {
     notes: "",
   })
   const [editing, setEditing] = useState(false)
+  // LOI/ICPO import + FCO issuance state.
+  const loiInputRef = useRef<HTMLInputElement>(null)
+  const [extracting, setExtracting] = useState(false)
+  const [loiSummary, setLoiSummary] = useState<string | null>(null)
+  const [fco, setFco] = useState<FcoInput>({ ...emptyFco })
+  const [showFco, setShowFco] = useState(false)
+  const setFcoField = <K extends keyof FcoInput>(key: K, value: FcoInput[K]) =>
+    setFco((prev) => ({ ...prev, [key]: value }))
 
   const set = <K extends keyof typeof form>(key: K, value: (typeof form)[K]) =>
     setForm((prev) => ({ ...prev, [key]: value }))
@@ -547,6 +607,156 @@ export default function CommodityTradingPage() {
     setTab("workflow")
     if (typeof window !== "undefined") {
       requestAnimationFrame(() => window.scrollTo({ top: 0, behavior: "smooth" }))
+    }
+  }
+
+  // Upload a buyer's LOI/ICPO, extract its data server-side, and pre-fill the
+  // (fully editable) deal form + FCO draft. Nothing is executed automatically.
+  const handleExtractLoi = async (file: File) => {
+    setExtracting(true)
+    try {
+      const fd = new FormData()
+      fd.append("file", file)
+      const res = await fetch("/api/commodity/extract-loi", { method: "POST", body: fd })
+      const json = (await res.json().catch(() => ({}))) as {
+        ok?: boolean
+        error?: string
+        data?: Record<string, string>
+      }
+      if (!res.ok || !json.ok || !json.data) {
+        toast.error(json.error ?? "The document could not be read. Enter the deal details manually.")
+        return
+      }
+      const d = json.data
+      const g = (k: string) => (d[k] ?? "").trim()
+
+      const dt = g("deliveryTerm").toUpperCase()
+      const structure: TradeStructure = dt.includes("CIF")
+        ? "CIF"
+        : dt.includes("FOB")
+          ? "FOB"
+          : form.tradeStructure
+      const unit: CommodityUnit = g("quantityUnit").toLowerCase() === "bbl" ? "bbl" : "MT"
+      const qtyAmount = leadingNumber(g("trialQuantity")) || leadingNumber(g("contractQuantity"))
+      const titleBits = [g("product"), g("trialQuantity"), g("deliveryTerm"), g("loadPort")].filter(Boolean)
+      const sellerDefault = g("sellerName") || user.company?.trim() || user.fullName?.trim() || ""
+
+      setForm((prev) => ({
+        ...prev,
+        title: titleBits.length ? titleBits.join(" — ") : prev.title,
+        category: "Commodity Trade",
+        tradeStructure: structure,
+        commodityId: g("product") ? CUSTOM_COMMODITY_ID : prev.commodityId,
+        commodity: g("product") || prev.commodity,
+        quantityAmount: qtyAmount || prev.quantityAmount,
+        quantityUnit: unit,
+        approxValue: leadingNumber(g("totalValue")) || prev.approxValue,
+        currency: g("currency") || prev.currency,
+        buyerName: g("buyerName") || prev.buyerName,
+        sellerName: sellerDefault || prev.sellerName,
+        originCountry: g("originCountry") || g("loadPort") || prev.originCountry,
+        destinationCountry: g("destinationCountry") || g("dischargePort") || prev.destinationCountry,
+        notes: g("notes") || prev.notes,
+      }))
+
+      setFco((prev) => ({
+        ...prev,
+        sellerName: sellerDefault || prev.sellerName,
+        buyerName: g("buyerName") || prev.buyerName,
+        buyerAddress: g("buyerAddress") || prev.buyerAddress,
+        buyerRegNo: g("buyerRegNo") || prev.buyerRegNo,
+        buyerAttn: g("buyerAttn") || prev.buyerAttn,
+        buyerEmail: g("buyerEmail") || prev.buyerEmail,
+        inResponseTo: [g("documentType"), g("referenceNo"), g("referenceDate")].filter(Boolean).join(" ") || prev.inResponseTo,
+        product: g("product") || prev.product,
+        specificationStandard: g("specificationStandard") || prev.specificationStandard,
+        keyParameters: g("keyParameters") || prev.keyParameters,
+        inspectionAgency: g("inspectionAgency") || prev.inspectionAgency,
+        trialQuantity: g("trialQuantity") || prev.trialQuantity,
+        contractQuantity: g("contractQuantity") || prev.contractQuantity,
+        contractDuration: g("contractDuration") || prev.contractDuration,
+        deliveryTerm: g("deliveryTerm") || prev.deliveryTerm,
+        loadPort: g("loadPort") || prev.loadPort,
+        originsAvailable: g("originsAvailable") || prev.originsAvailable,
+        paymentInstrument: g("paymentInstrument") || prev.paymentInstrument,
+        currency: g("currency") || prev.currency,
+        unitPrice: leadingNumber(g("unitPrice")) || prev.unitPrice,
+        trialCargoValue: leadingNumber(g("totalValue")) || prev.trialCargoValue,
+        originCountry: g("originCountry") || g("loadPort") || prev.originCountry,
+        destinationCountry: g("destinationCountry") || g("dischargePort") || prev.destinationCountry,
+      }))
+
+      const kind = g("documentType") || "document"
+      setLoiSummary(
+        `Imported ${kind}${g("product") ? ` · ${g("product")}` : ""}${g("trialQuantity") ? ` · ${g("trialQuantity")}` : ""}. Review and adjust every field before submitting or issuing an FCO.`,
+      )
+      toast.success("Document imported", {
+        description: "The deal fields were pre-filled from the LOI/ICPO. All fields remain editable.",
+      })
+      logActivity({
+        action: `Client imported an ${kind} into the commodity desk`,
+        category: "Commodity Trading",
+        details: {
+          summary: `Client uploaded a counterparty ${kind} and auto-extracted deal terms (${g("product") || "product n/a"}, ${g("trialQuantity") || "qty n/a"}). Fields pre-filled for review; nothing executed.`,
+          decision: "Imported",
+        },
+      })
+    } catch (err) {
+      toast.error("The document could not be processed. Please try again.")
+      console.log("[v0] LOI import error:", err instanceof Error ? err.message : String(err))
+    } finally {
+      setExtracting(false)
+    }
+  }
+
+  // Open the FCO draft dialog, syncing the current deal-form values into the
+  // offer so the latest edits carry through, while keeping FCO-only fields.
+  const openFco = () => {
+    const quantityStr = form.quantityAmount.trim()
+      ? `${form.quantityAmount.trim()} ${form.quantityUnit.toUpperCase()}`
+      : ""
+    setFco((prev) => ({
+      ...prev,
+      sellerName: prev.sellerName || form.sellerName.trim() || user.company?.trim() || user.fullName?.trim() || "",
+      buyerName: prev.buyerName || form.buyerName.trim(),
+      product: prev.product || form.commodity.trim(),
+      currency: form.currency,
+      deliveryTerm: prev.deliveryTerm || form.tradeStructure,
+      trialQuantity: prev.trialQuantity || quantityStr,
+      trialCargoValue: prev.trialCargoValue || leadingNumber(form.approxValue),
+      originCountry: prev.originCountry || form.originCountry.trim(),
+      destinationCountry: prev.destinationCountry || form.destinationCountry.trim(),
+    }))
+    setShowFco(true)
+  }
+
+  const handleGenerateFco = () => {
+    if (!fco.sellerName.trim() || !fco.buyerName.trim()) {
+      toast.error("Seller and Buyer names are required to issue the FCO.")
+      return
+    }
+    if (!fco.product.trim()) {
+      toast.error("A product / grade is required to issue the FCO.")
+      return
+    }
+    try {
+      const generated = generateFcoPdf(fco)
+      pdf.show(generated)
+      toast.success("Full Corporate Offer generated", {
+        description: "Preview, print or download the FCO. It follows the standard template — no upfront fee is charged to the buyer.",
+      })
+      logActivity({
+        action: `Client issued a Full Corporate Offer for ${fco.product || "a commodity"}`,
+        category: "Commodity Trading",
+        details: {
+          summary: `Client generated an FCO PDF — Seller ${fco.sellerName}, Buyer ${fco.buyerName}, ${fco.product || "product n/a"} ${fco.trialQuantity ? `(${fco.trialQuantity} trial)` : ""}. Standard template: inspection & title transfer precede payment; no buyer upfront fee.`,
+          decision: "FCO issued",
+        },
+      })
+      setShowFco(false)
+    } catch (err) {
+      toast.error("The FCO could not be generated.")
+      console.log("[v0] FCO generation error:", err instanceof Error ? err.message : String(err))
     }
   }
 
@@ -968,6 +1178,58 @@ export default function CommodityTradingPage() {
               <CardTitle className="text-base font-semibold">New deal</CardTitle>
             </CardHeader>
             <CardContent className="space-y-5">
+              {/* Import a buyer LOI / ICPO and auto-fill the deal from it. */}
+              <div className="rounded-lg border border-dashed border-primary/40 bg-primary/5 p-4">
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                  <div className="space-y-1">
+                    <p className="flex items-center gap-2 text-sm font-medium text-foreground">
+                      <Sparkles className="h-4 w-4 text-primary" />
+                      Import from LOI / ICPO
+                    </p>
+                    <p className="text-xs text-muted-foreground">
+                      Upload the buyer&apos;s Letter of Intent or Purchase Order (PDF or image). The desk auto-extracts
+                      the terms and pre-fills every field below — all remain editable.
+                    </p>
+                  </div>
+                  <input
+                    ref={loiInputRef}
+                    type="file"
+                    accept=".pdf,.png,.jpg,.jpeg,.webp,application/pdf,image/*"
+                    className="hidden"
+                    onChange={(e) => {
+                      const file = e.target.files?.[0]
+                      e.target.value = ""
+                      if (file) void handleExtractLoi(file)
+                    }}
+                  />
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="w-full shrink-0 gap-2 sm:w-auto"
+                    disabled={extracting}
+                    onClick={() => loiInputRef.current?.click()}
+                  >
+                    {extracting ? (
+                      <>
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                        Reading document…
+                      </>
+                    ) : (
+                      <>
+                        <Upload className="h-4 w-4" />
+                        Upload LOI / ICPO
+                      </>
+                    )}
+                  </Button>
+                </div>
+                {loiSummary && (
+                  <p className="mt-3 flex items-start gap-2 rounded-md border border-primary/20 bg-background/60 p-2 text-xs text-muted-foreground">
+                    <Info className="mt-0.5 h-3.5 w-3.5 shrink-0 text-primary" />
+                    {loiSummary}
+                  </p>
+                )}
+              </div>
+
               <div className="grid gap-4 sm:grid-cols-2">
                 <div className="space-y-2 sm:col-span-2">
                   <Label htmlFor="title">Deal title *</Label>
@@ -1302,6 +1564,10 @@ export default function CommodityTradingPage() {
                   <Button variant="outline" className="w-full sm:w-auto" onClick={resetForm}>
                     Clear
                   </Button>
+                  <Button variant="secondary" className="w-full gap-2 sm:w-auto" onClick={openFco}>
+                    <FileSignature className="h-4 w-4" />
+                    Issue FCO
+                  </Button>
                   <Button className="w-full sm:w-auto" onClick={handleSubmitDeal}>
                     Submit for Authorization
                   </Button>
@@ -1309,6 +1575,217 @@ export default function CommodityTradingPage() {
               </div>
             </CardContent>
           </Card>
+
+          {/* Issue FCO dialog — editable draft, then generate the branded PDF */}
+          <Dialog open={showFco} onOpenChange={setShowFco}>
+            <DialogContent className="max-h-[90vh] max-w-3xl overflow-y-auto">
+              <DialogHeader>
+                <DialogTitle className="flex items-center gap-2">
+                  <FileSignature className="h-5 w-5 text-primary" />
+                  Issue Full Corporate Offer
+                </DialogTitle>
+                <DialogDescription>
+                  Review and adapt the offer to your marketplace terms, then generate the FCO PDF. It follows the
+                  standard template: inspection and title transfer precede payment, and no upfront fee is charged to the
+                  buyer — those clauses are fixed and cannot be edited.
+                </DialogDescription>
+              </DialogHeader>
+
+              <div className="space-y-5 py-1">
+                {/* Seller */}
+                <div className="space-y-3">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-primary">Seller</p>
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <div className="space-y-1.5">
+                      <Label htmlFor="fco-seller">Legal name *</Label>
+                      <Input id="fco-seller" value={fco.sellerName} onChange={(e) => setFcoField("sellerName", e.target.value)} />
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label htmlFor="fco-seller-attn">Attn (name, title)</Label>
+                      <Input id="fco-seller-attn" value={fco.sellerAttn} onChange={(e) => setFcoField("sellerAttn", e.target.value)} />
+                    </div>
+                    <div className="space-y-1.5 sm:col-span-2">
+                      <Label htmlFor="fco-seller-addr">Registered address</Label>
+                      <Input id="fco-seller-addr" value={fco.sellerAddress} onChange={(e) => setFcoField("sellerAddress", e.target.value)} />
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label htmlFor="fco-seller-email">Email</Label>
+                      <Input id="fco-seller-email" value={fco.sellerEmail} onChange={(e) => setFcoField("sellerEmail", e.target.value)} />
+                    </div>
+                  </div>
+                </div>
+
+                {/* Buyer */}
+                <div className="space-y-3">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-primary">Buyer</p>
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <div className="space-y-1.5">
+                      <Label htmlFor="fco-buyer">Legal name *</Label>
+                      <Input id="fco-buyer" value={fco.buyerName} onChange={(e) => setFcoField("buyerName", e.target.value)} />
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label htmlFor="fco-buyer-reg">Registration number</Label>
+                      <Input id="fco-buyer-reg" value={fco.buyerRegNo} onChange={(e) => setFcoField("buyerRegNo", e.target.value)} />
+                    </div>
+                    <div className="space-y-1.5 sm:col-span-2">
+                      <Label htmlFor="fco-buyer-addr">Registered address</Label>
+                      <Input id="fco-buyer-addr" value={fco.buyerAddress} onChange={(e) => setFcoField("buyerAddress", e.target.value)} />
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label htmlFor="fco-buyer-attn">Attn (name, title)</Label>
+                      <Input id="fco-buyer-attn" value={fco.buyerAttn} onChange={(e) => setFcoField("buyerAttn", e.target.value)} />
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label htmlFor="fco-buyer-email">Email</Label>
+                      <Input id="fco-buyer-email" value={fco.buyerEmail} onChange={(e) => setFcoField("buyerEmail", e.target.value)} />
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label htmlFor="fco-transmitted">Transmitted via</Label>
+                      <Input id="fco-transmitted" value={fco.transmittedVia} onChange={(e) => setFcoField("transmittedVia", e.target.value)} placeholder="Intermediary, if any" />
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label htmlFor="fco-inresponse">In response to</Label>
+                      <Input id="fco-inresponse" value={fco.inResponseTo} onChange={(e) => setFcoField("inResponseTo", e.target.value)} placeholder="Buyer ICPO/LOI ref & date" />
+                    </div>
+                  </div>
+                </div>
+
+                {/* Product */}
+                <div className="space-y-3">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-primary">Product specification</p>
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <div className="space-y-1.5">
+                      <Label htmlFor="fco-product">Product / grade *</Label>
+                      <Input id="fco-product" value={fco.product} onChange={(e) => setFcoField("product", e.target.value)} />
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label htmlFor="fco-spec">Specification standard</Label>
+                      <Input id="fco-spec" value={fco.specificationStandard} onChange={(e) => setFcoField("specificationStandard", e.target.value)} placeholder="e.g. ISO 8217" />
+                    </div>
+                    <div className="space-y-1.5 sm:col-span-2">
+                      <Label htmlFor="fco-params">Key parameters</Label>
+                      <Input id="fco-params" value={fco.keyParameters} onChange={(e) => setFcoField("keyParameters", e.target.value)} placeholder="Sulphur, density, flash point…" />
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label htmlFor="fco-inspection">Inspection agency</Label>
+                      <Input id="fco-inspection" value={fco.inspectionAgency} onChange={(e) => setFcoField("inspectionAgency", e.target.value)} placeholder="e.g. SGS" />
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label htmlFor="fco-cert">Certification</Label>
+                      <Input id="fco-cert" value={fco.certification} onChange={(e) => setFcoField("certification", e.target.value)} placeholder="Certificate of Origin…" />
+                    </div>
+                  </div>
+                </div>
+
+                {/* Commercial */}
+                <div className="space-y-3">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-primary">Commercial terms</p>
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <div className="space-y-1.5">
+                      <Label htmlFor="fco-trialqty">Trial quantity</Label>
+                      <Input id="fco-trialqty" value={fco.trialQuantity} onChange={(e) => setFcoField("trialQuantity", e.target.value)} placeholder="e.g. 50,000 MT" />
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label htmlFor="fco-contractqty">Contract quantity</Label>
+                      <Input id="fco-contractqty" value={fco.contractQuantity} onChange={(e) => setFcoField("contractQuantity", e.target.value)} placeholder="e.g. 100,000 MT x 12" />
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label htmlFor="fco-duration">Contract duration</Label>
+                      <Input id="fco-duration" value={fco.contractDuration} onChange={(e) => setFcoField("contractDuration", e.target.value)} placeholder="e.g. 12 months" />
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label htmlFor="fco-delivery">Delivery term</Label>
+                      <Input id="fco-delivery" value={fco.deliveryTerm} onChange={(e) => setFcoField("deliveryTerm", e.target.value)} placeholder="e.g. CIF" />
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label htmlFor="fco-loadport">Load port</Label>
+                      <Input id="fco-loadport" value={fco.loadPort} onChange={(e) => setFcoField("loadPort", e.target.value)} placeholder="e.g. Rotterdam" />
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label htmlFor="fco-origins">Origins available</Label>
+                      <Input id="fco-origins" value={fco.originsAvailable} onChange={(e) => setFcoField("originsAvailable", e.target.value)} />
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label htmlFor="fco-origin-country">Origin country</Label>
+                      <Input id="fco-origin-country" value={fco.originCountry} onChange={(e) => setFcoField("originCountry", e.target.value)} />
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label htmlFor="fco-dest-country">Destination country</Label>
+                      <Input id="fco-dest-country" value={fco.destinationCountry} onChange={(e) => setFcoField("destinationCountry", e.target.value)} />
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label htmlFor="fco-payment">Payment instrument</Label>
+                      <Input id="fco-payment" value={fco.paymentInstrument} onChange={(e) => setFcoField("paymentInstrument", e.target.value)} placeholder="e.g. MT103 TT / SBLC / DLC" />
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label htmlFor="fco-incoterms">Incoterms version</Label>
+                      <Input id="fco-incoterms" value={fco.incotermsVersion} onChange={(e) => setFcoField("incotermsVersion", e.target.value)} />
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label>Currency</Label>
+                      <Select value={fco.currency} onValueChange={(v) => setFcoField("currency", v)}>
+                        <SelectTrigger>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {CURRENCIES.map((c) => (
+                            <SelectItem key={c} value={c}>
+                              {c}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label htmlFor="fco-validity">Offer validity (days)</Label>
+                      <Input
+                        id="fco-validity"
+                        inputMode="numeric"
+                        value={String(fco.offerValidityDays)}
+                        onChange={(e) => setFcoField("offerValidityDays", Math.max(1, Number.parseInt(e.target.value.replace(/\D/g, ""), 10) || 0))}
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label htmlFor="fco-unitprice">Unit price ({fco.currency})</Label>
+                      <Input id="fco-unitprice" inputMode="decimal" value={fco.unitPrice} onChange={(e) => setFcoField("unitPrice", e.target.value)} placeholder="per MT / bbl" />
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label htmlFor="fco-trialval">Trial cargo value ({fco.currency})</Label>
+                      <Input id="fco-trialval" inputMode="decimal" value={fco.trialCargoValue} onChange={(e) => setFcoField("trialCargoValue", e.target.value)} />
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label htmlFor="fco-periodval">Contract period value ({fco.currency})</Label>
+                      <Input id="fco-periodval" inputMode="decimal" value={fco.contractPeriodValue} onChange={(e) => setFcoField("contractPeriodValue", e.target.value)} />
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label htmlFor="fco-annualval">Annual contract value ({fco.currency})</Label>
+                      <Input id="fco-annualval" inputMode="decimal" value={fco.annualContractValue} onChange={(e) => setFcoField("annualContractValue", e.target.value)} />
+                    </div>
+                    <div className="space-y-1.5 sm:col-span-2">
+                      <Label htmlFor="fco-law">Governing law &amp; jurisdiction</Label>
+                      <Input id="fco-law" value={fco.governingLaw} onChange={(e) => setFcoField("governingLaw", e.target.value)} placeholder="e.g. English law, courts of London" />
+                    </div>
+                  </div>
+                </div>
+
+                <p className="flex items-start gap-2 rounded-md border border-border bg-secondary/20 p-3 text-xs text-muted-foreground">
+                  <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
+                  Sections 4 (Transaction Procedure) and 6 (Key Commercial Conditions) are fixed by the standard template.
+                  The offer explicitly requires no fee from the buyer before inspection, title transfer, or delivery.
+                </p>
+              </div>
+
+              <DialogFooter>
+                <Button variant="outline" onClick={() => setShowFco(false)}>
+                  Cancel
+                </Button>
+                <Button className="gap-2" onClick={handleGenerateFco}>
+                  <FileText className="h-4 w-4" />
+                  Generate FCO PDF
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
 
           {/* Deal list */}
           <Card className="bg-card border-border">
@@ -2101,7 +2578,7 @@ export default function CommodityTradingPage() {
                     <div className="mt-2 flex items-center justify-between border-t border-border pt-2 text-xs">
                       <span className="text-muted-foreground">
                         New total deal value ({formatCurrency(unitPrice, amendTarget.currency)} / {unit} ×{" "}
-                        {parsed ? parsed.amount.toLocaleString("en-US") : "—"} {unit})
+                        {parsed ? parsed.amount.toLocaleString("en-US") : "��"} {unit})
                       </span>
                       <span className="font-semibold text-foreground">
                         {formatCurrency(proposedTotal, amendTarget.currency)}
