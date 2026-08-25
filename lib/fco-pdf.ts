@@ -55,23 +55,62 @@ export interface FcoInput {
   governingLaw: string
 }
 
-// Hardcoded, non-editable — see the compliance note at the top of the file.
+// Hardcoded, non-editable standard procedure. Anti-fraud safeguards are
+// preserved: no payment is requested and no bank account is disclosed before a
+// signed SPA exists; the 2% is a REFUNDABLE performance deposit that is a term
+// of the signed SPA and is credited in full against the final invoice; full
+// payment follows independent SGS Full POP verification; title transfers only
+// after cleared funds — see the compliance note at the top of the file.
 const PROCEDURE_INTRO =
-  "This offer follows standard trade sequencing: inspection and title transfer of the goods precede final payment. " +
-  "No fee is payable by the Buyer as a precondition to receiving inspection results, title documents, or product access. " +
-  "Any compliance or due-diligence costs referenced below are the Seller's own operational cost unless expressly agreed " +
-  "otherwise in writing."
+  "The following procedure governs all transactions, reviewed and approved by MCC's legal counsel in compliance with " +
+  "ICC standards and international commodity trade practice. All payment terms and MCC's designated bank account are " +
+  "disclosed together within the signed Sales and Purchase Agreement (SPA) — no payment is requested, and no account is " +
+  "disclosed, before the SPA exists."
 
-const PROCEDURE_STEPS: string[] = [
-  "Buyer reviews and countersigns this offer, confirming acceptance of the terms herein, and returns the signed copy within the stated window.",
-  "Seller and Buyer execute a Sales & Purchase Agreement (SPA) reflecting the terms of this offer.",
-  "Buyer submits standard KYC/AML documentation (see Section 5). Seller conducts its own compliance review at its own cost.",
-  "Upon compliance clearance, Seller confirms product availability and provides supporting documentation (e.g. storage/availability confirmation).",
-  "Independent inspection (quantity & quality) is conducted at the load port. The inspection report is issued to both parties.",
-  "Upon satisfactory inspection, title transfer documentation is issued to Buyer. Payment is remitted by Buyer per the agreed instrument and settlement window, concurrent with or following receipt of title documents, per SPA terms.",
-  "Seller issues full shipping documentation: Bill of Lading, Certificate of Origin, Title Transfer Certificate, inspection report, and other documents specified in the SPA.",
-  "Upon successful completion of the trial shipment, the parties may proceed to execute a longer-term supply agreement on the terms agreed.",
+const PROCEDURE_STEPS: Array<{ title: string; body: string }> = [
+  {
+    title: "Step 1 — ICPO & BCL",
+    body: "Buyer issues an Irrevocable Corporate Purchase Order (ICPO) to MCC Oil Gas specifying product grade, quantity, delivery basis (CIF/FOB), and destination port, accompanied by a Bank Comfort Letter (BCL) from the Buyer's principal bank evidencing financial capacity.",
+  },
+  {
+    title: "Step 2 — SPA Issuance",
+    body: "Upon completion of due diligence, MCC Oil Gas issues a Sales and Purchase Agreement, on behalf of MCC Petroli Company as product owner, stating product specification, volume, delivery basis, full pricing, payment schedule, the due diligence cost-recovery line item (Section 3), and MCC's designated payment account — all within this single, signed document.",
+  },
+  {
+    title: "Step 3 — SPA Execution & Partial POP",
+    body: "Buyer signs and returns the executed SPA. Within [X] business days, MCC Oil Gas issues a Partial Proof of Product (Partial POP) confirming product allocation and MCC Petroli Company's ownership under its active refinery mandate.",
+  },
+  {
+    title: "Step 4 — 2% Performance Deposit",
+    body: "Following SPA execution and receipt of Partial POP, Buyer remits a 2% performance deposit of total cargo value, credited in full against the final invoice. This deposit is a standard term of the signed SPA and is refundable if MCC fails to deliver Partial or Full POP within the timeframes stated in the SPA.",
+  },
+  {
+    title: "Step 5 — Shipping & Discharge to Destination Port Storage",
+    body: "Upon receipt of the performance deposit, MCC activates the logistics chain. [CIF Basis] MCC's nominated vessel loads the product at the source refinery and sails to the Buyer's destination port, where cargo is discharged into the agreed storage facility. [FOB Basis] Buyer's nominated vessel loads at the refinery terminal per agreed laycan.",
+  },
+  {
+    title: "Step 6 — Full POP & Commercial Invoice",
+    body: "Once the vessel has discharged and SGS has independently verified the product is physically present in destination storage, MCC issues: (i) Full Proof of Product, comprising the SGS Quantity & Quality Inspection Report and Dip Test Authorisation; and (ii) the Commercial Invoice.",
+  },
+  {
+    title: "Step 7 — Full Cargo Payment",
+    body: "Buyer has three (3) business days from issuance of Full POP to remit full cargo payment by bank wire transfer to MCC's account as stated in the signed SPA. MCC issues written receipt confirmation within one (1) business day of clearance.",
+  },
+  {
+    title: "Step 8 — Title Transfer & Product Withdrawal",
+    body: "Upon written confirmation of full receipt of cleared funds, MCC Petroli Company formally transfers legal title of the oil to the Buyer. The Buyer is then authorised to withdraw the product and arrange onward distribution. SGS undertakes a final quantity verification at the point of withdrawal.",
+  },
 ]
+
+// Callouts rendered under the procedure steps.
+const VERIFICATION_CALLOUT = {
+  title: "INDEPENDENT VERIFICATION — BUYER'S RIGHT",
+  rows: [
+    ["Inspector", "SGS (or agreed equivalent), engaged to report directly and independently to both parties."],
+    ["Buyer's right", "The Buyer or nominated agent may contact SGS directly to confirm authenticity of the Full POP report before remitting final payment."],
+    ["Timing", "Verification available prior to the Step 7 payment deadline above."],
+  ] as Array<[string, string]>,
+}
 
 const KYC_ITEMS: Array<[string, string]> = [
   ["Proof of Funds", "Bank-confirmed, covering the trial cargo value, issued by Buyer's bank on official letterhead."],
@@ -84,8 +123,8 @@ const KYC_ITEMS: Array<[string, string]> = [
 
 const KEY_CONDITIONS: Array<[string, string]> = [
   [
-    "No Upfront Fee to Trade",
-    "No fee, deposit, or charge of any kind is required from the Buyer prior to inspection, title transfer, or delivery of product.",
+    "No Payment Before a Signed SPA",
+    "No payment is requested and no bank account is disclosed before a Sales & Purchase Agreement is signed by both parties. The 2% performance deposit is a term of the signed SPA, is credited in full against the final invoice, and is refundable if MCC fails to deliver Partial or Full POP within the SPA timeframes.",
   ],
   [
     "Non-Binding Status",
@@ -211,22 +250,65 @@ export function generateFcoPdf(input: FcoInput): GeneratedPdf {
     y += 4
   }
 
-  const numberedSteps = (steps: string[]) => {
-    doc.setFontSize(9.5)
-    const indent = 24
-    steps.forEach((step, idx) => {
-      const lines = doc.splitTextToSize(step, contentWidth - indent) as string[]
-      const rowH = lines.length * 13 + 6
-      ensureSpace(rowH)
+  // Procedure steps: a bold "Step N — Title" line followed by the wrapped body.
+  const procedureSteps = (steps: Array<{ title: string; body: string }>) => {
+    const indent = 14
+    steps.forEach((step) => {
+      const bodyLines = doc.splitTextToSize(step.body, contentWidth - indent) as string[]
+      ensureSpace(15 + bodyLines.length * 13 + 8)
       doc.setFont("helvetica", "bold")
-      doc.setTextColor(...BRAND.gold)
-      doc.text(`${idx + 1}.`, margin, y)
-      doc.setFont("helvetica", "normal")
+      doc.setFontSize(9.5)
       doc.setTextColor(...BRAND.ink)
-      lines.forEach((ln, i) => doc.text(ln, margin + indent, y + i * 13))
-      y += rowH
+      doc.text(step.title, margin, y)
+      y += 14
+      doc.setFont("helvetica", "normal")
+      doc.setFontSize(9.5)
+      doc.setTextColor(...BRAND.ink)
+      bodyLines.forEach((ln) => {
+        ensureSpace(13)
+        doc.text(ln, margin + indent, y)
+        y += 13
+      })
+      y += 8
     })
-    y += 4
+  }
+
+  // Bordered light-panel callout with a heading and label/value rows.
+  const calloutBox = (title: string, rows: Array<[string, string]>) => {
+    const labelW = 96
+    const valueX = margin + 14 + labelW + 8
+    const valueW = contentWidth - 28 - labelW - 8
+    const lineH = 12
+    // Measure height first so the whole box moves to a new page if needed.
+    let bodyH = 0
+    const wrapped = rows.map(([label, value]) => {
+      const vLines = doc.splitTextToSize(value, valueW) as string[]
+      bodyH += Math.max(lineH, vLines.length * lineH) + 6
+      return { label, vLines }
+    })
+    const boxH = 26 + bodyH + 8
+    ensureSpace(boxH + 6)
+    doc.setDrawColor(...BRAND.line)
+    doc.setFillColor(...BRAND.light)
+    doc.rect(margin, y, contentWidth, boxH, "FD")
+    let iy = y + 20
+    doc.setFont("helvetica", "bold")
+    doc.setFontSize(8.5)
+    doc.setTextColor(...BRAND.ink)
+    doc.text(title, margin + 14, iy)
+    iy += 16
+    wrapped.forEach(({ label, vLines }) => {
+      doc.setFont("helvetica", "bold")
+      doc.setFontSize(8.5)
+      doc.setTextColor(...BRAND.slate)
+      doc.text(`${label}:`, margin + 14, iy)
+      doc.setFont("helvetica", "normal")
+      doc.setFontSize(8.5)
+      doc.setTextColor(...BRAND.ink)
+      vLines.forEach((ln, i) => doc.text(ln, valueX, iy + i * lineH))
+      iy += Math.max(lineH, vLines.length * lineH) + 6
+    })
+    y += boxH + 12
   }
 
   // ===== Document header =====
@@ -341,10 +423,11 @@ export function generateFcoPdf(input: FcoInput): GeneratedPdf {
     ["Annual Contract Value", dash(input.annualContractValue) === "—" ? "—" : `${ccy}${input.annualContractValue.trim()}`],
   ])
 
-  // ===== 4. Transaction Procedure (hardcoded) =====
-  sectionTitle("4. Transaction Procedure")
+  // ===== 4. Standard Transaction Procedure (hardcoded) =====
+  sectionTitle("4. Standard Transaction Procedure — CIF / FOB")
   paragraph(PROCEDURE_INTRO, { color: BRAND.slate, size: 9 })
-  numberedSteps(PROCEDURE_STEPS)
+  procedureSteps(PROCEDURE_STEPS)
+  calloutBox(VERIFICATION_CALLOUT.title, VERIFICATION_CALLOUT.rows)
 
   // ===== 5. KYC / AML =====
   sectionTitle("5. Standard KYC / AML Documentation Requested from Buyer")
@@ -386,7 +469,7 @@ export function generateFcoPdf(input: FcoInput): GeneratedPdf {
   y = blockTop + 40 * 3 + 20
 
   paragraph(
-    "This Full Corporate Offer is issued in good faith and is non-binding until countersigned by both parties and reflected in an executed SPA. No payment is due from the Buyer prior to inspection or title transfer.",
+    "This Full Corporate Offer is issued in good faith and is non-binding until countersigned by both parties and reflected in an executed SPA. No payment is due from the Buyer, and no bank account is disclosed, before a Sales & Purchase Agreement is signed by both parties.",
     { color: BRAND.slate, size: 8 },
   )
 
