@@ -1866,7 +1866,12 @@ export default function CommodityTradingPage() {
                     </div>
                     <div className="space-y-1.5">
                       <Label htmlFor="fco-payment">Payment instrument</Label>
-                      <Input id="fco-payment" value={fco.paymentInstrument} onChange={(e) => setFcoField("paymentInstrument", e.target.value)} placeholder="e.g. MT103 TT / SBLC / DLC" />
+                      <Input id="fco-payment" value={fco.paymentInstrument} onChange={(e) => setFcoField("paymentInstrument", e.target.value)} placeholder="e.g. TT / bank wire against Full POP" />
+                      <p className="text-[11px] leading-relaxed text-muted-foreground">
+                        Keep this consistent with Section 4: the standard procedure settles the cargo balance by bank
+                        wire (TT) within 3 banking days of Full POP. Avoid mixing an MT700 DLC / MT760 structure with the
+                        TT-after-POP flow — pick one payment structure.
+                      </p>
                     </div>
                     <div className="space-y-1.5">
                       <Label htmlFor="fco-incoterms">Incoterms version</Label>
