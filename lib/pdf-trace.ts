@@ -131,44 +131,29 @@ export function extractTraceToken(text: string): { token: string; payload: Trace
 // --- in-file embedding ------------------------------------------------------
 
 /**
- * Embed the trace token into a jsPDF document through two channels:
- *   1. The PDF Info dictionary (Keywords + Subject) via `setProperties`. jsPDF
- *      writes these as plaintext in the file, so `extractTraceToken` can recover
- *      them from the raw bytes.
- *   2. Near-invisible micro-text in the bottom corner of every page (tiny, very
- *      light grey) so a copy that keeps the visual content still carries the id.
+ * Embed the trace token into a jsPDF document through the PDF Info dictionary
+ * (Keywords + Subject) via `setProperties`. jsPDF writes these as plaintext in
+ * the file, so `extractTraceToken` can recover them from the raw bytes — this
+ * traces a leaked copy back to the generating account without printing anything
+ * on the page.
+ *
+ * NOTE: an earlier build also stamped near-invisible micro-text in the bottom
+ * corner of every page. That visible channel was removed platform-wide because
+ * on documents meant to be sent to a counterparty (e.g. an FCO) the faint
+ * `MCC-DOC-… · MCCX1:…` string was misread as a suspicious watermark. The
+ * invisible metadata token below, plus the authoritative server audit record,
+ * preserve full leak-traceability.
  *
  * Must be called at generation time, before the doc is rendered to a blob.
  */
 export function embedTraceToken(doc: jsPDF, token: string, docId: string): void {
-  // Channel 1: document properties.
+  // Invisible channel only: document properties (Keywords + Subject).
   try {
     doc.setProperties({
       keywords: token,
       subject: `MCC Capital document ${docId}`,
     })
   } catch {
-    // setProperties is best-effort; the micro-text channel still applies.
-  }
-
-  // Channel 2: per-page micro-text.
-  try {
-    const pageCount = doc.getNumberOfPages()
-    const pageWidth = doc.internal.pageSize.getWidth()
-    const pageHeight = doc.internal.pageSize.getHeight()
-    for (let p = 1; p <= pageCount; p++) {
-      doc.setPage(p)
-      const prevSize = doc.getFontSize()
-      doc.setFontSize(3.5)
-      doc.setTextColor(232, 232, 232) // barely visible on white
-      // Bottom-left, hugging the margin so it doesn't disturb the layout.
-      doc.text(`${docId} · ${token}`, 4, pageHeight - 3, { baseline: "bottom" })
-      // Restore a sane default for any later drawing on the same page.
-      doc.setFontSize(prevSize)
-      doc.setTextColor(17, 17, 17)
-      void pageWidth
-    }
-  } catch {
-    // If a generator uses an exotic page setup, skip micro-text silently.
+    // setProperties is best-effort; the server audit record still applies.
   }
 }
