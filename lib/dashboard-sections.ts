@@ -149,11 +149,18 @@ export function evaluateSectionAccess(
   const key = resolveSectionKeyForPath(pathname)
   if (!key) return "allowed"
 
+  // A Visitor can ALWAYS use their baseline sections — their own bank accounts,
+  // payments in/out, Bankeka Messenger, the NQAi console, the overview and Plans
+  // (so they can always view their per-currency account details and upgrade).
+  // A stale or accidental administrator "locked" override must never hide one of
+  // these from a Visitor, so this wins over any override for baseline sections.
+  if (isVisitor && VISITOR_ALLOWED_KEYS.has(key)) return "allowed"
+
   const override = overrides[key]
   if (override === "locked") return "admin-locked"
   if (override === "unlocked") return "allowed"
 
   // No administrator override → fall back to the tier default.
-  if (isVisitor) return VISITOR_ALLOWED_KEYS.has(key) ? "allowed" : "tier-locked"
+  if (isVisitor) return "tier-locked"
   return "allowed"
 }
