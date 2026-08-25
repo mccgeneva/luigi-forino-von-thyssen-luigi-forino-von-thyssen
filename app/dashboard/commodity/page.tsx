@@ -39,6 +39,7 @@ import {
   Upload,
   Sparkles,
   FileSignature,
+  Calculator,
 } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -201,6 +202,7 @@ const emptyDeal = {
   commodity: "",
   quantityAmount: "",
   quantityUnit: "MT" as CommodityUnit,
+  unitPrice: "",
   approxValue: "",
   currency: "USD",
   buyerName: "",
@@ -550,6 +552,39 @@ export default function CommodityTradingPage() {
     }))
   }
 
+  // Unit price (per MT/BBL) → shipment amount. When both a quantity and a unit
+  // price are entered, the total cargo value = quantity × unit price.
+  const parsedUnitPrice = Number.parseFloat(form.unitPrice.replace(/[, ]/g, ""))
+  const hasUnitPrice = Number.isFinite(parsedUnitPrice) && parsedUnitPrice > 0
+  const computedShipmentAmount = hasQty && hasUnitPrice ? Math.round(parsedQty * parsedUnitPrice * 100) / 100 : null
+
+  // Push the computed total into the Approx. value field.
+  const applyComputedValue = () => {
+    if (computedShipmentAmount == null) return
+    setForm((prev) => ({ ...prev, approxValue: computedShipmentAmount.toLocaleString("en-US") }))
+  }
+
+  // Recompute the total = qty × unit price and keep Approx. value in sync as the
+  // trader edits either input.
+  const recomputeTotal = (qtyStr: string, priceStr: string): string | null => {
+    const q = Number.parseFloat(qtyStr.replace(/[, ]/g, ""))
+    const p = Number.parseFloat(priceStr.replace(/[, ]/g, ""))
+    if (!Number.isFinite(q) || q <= 0 || !Number.isFinite(p) || p <= 0) return null
+    return (Math.round(q * p * 100) / 100).toLocaleString("en-US")
+  }
+  const handleUnitPriceChange = (v: string) => {
+    setForm((prev) => {
+      const total = recomputeTotal(prev.quantityAmount, v)
+      return { ...prev, unitPrice: v, approxValue: total ?? prev.approxValue }
+    })
+  }
+  const handleQuantityChange = (v: string) => {
+    setForm((prev) => {
+      const total = recomputeTotal(v, prev.unitPrice)
+      return { ...prev, quantityAmount: v, approxValue: total ?? prev.approxValue }
+    })
+  }
+
   // Deals shared with this client by an admin for visibility are READ-ONLY and
   // must not mix into the owner's own deals: they are excluded from the active
   // count, the workflow list, and document uploads, and shown in their own
@@ -701,6 +736,9 @@ export default function CommodityTradingPage() {
           : form.tradeStructure
       const unit: CommodityUnit = g("quantityUnit").toLowerCase() === "bbl" ? "bbl" : "MT"
       const qtyAmount = leadingNumber(g("trialQuantity")) || leadingNumber(g("contractQuantity"))
+      const unitPriceAmount = leadingNumber(g("unitPrice"))
+      // If the LOI gives no explicit total, derive it from qty × unit price.
+      const derivedTotal = recomputeTotal(qtyAmount, unitPriceAmount)
       const titleBits = [g("product"), g("trialQuantity"), g("deliveryTerm"), g("loadPort")].filter(Boolean)
       const sellerDefault = g("sellerName") || user.company?.trim() || user.fullName?.trim() || ""
 
@@ -713,7 +751,8 @@ export default function CommodityTradingPage() {
         commodity: g("product") || prev.commodity,
         quantityAmount: qtyAmount || prev.quantityAmount,
         quantityUnit: unit,
-        approxValue: leadingNumber(g("totalValue")) || prev.approxValue,
+        unitPrice: unitPriceAmount || prev.unitPrice,
+        approxValue: leadingNumber(g("totalValue")) || derivedTotal || prev.approxValue,
         currency: g("currency") || prev.currency,
         buyerName: g("buyerName") || prev.buyerName,
         sellerName: sellerDefault || prev.sellerName,
@@ -786,6 +825,7 @@ export default function CommodityTradingPage() {
       currency: form.currency,
       deliveryTerm: prev.deliveryTerm || form.tradeStructure,
       trialQuantity: prev.trialQuantity || quantityStr,
+      unitPrice: prev.unitPrice || leadingNumber(form.unitPrice),
       trialCargoValue: prev.trialCargoValue || leadingNumber(form.approxValue),
       originCountry: prev.originCountry || form.originCountry.trim(),
       destinationCountry: prev.destinationCountry || form.destinationCountry.trim(),
@@ -1402,7 +1442,7 @@ export default function CommodityTradingPage() {
                       className="flex-1"
                       inputMode="decimal"
                       value={form.quantityAmount}
-                      onChange={(e) => set("quantityAmount", e.target.value)}
+                      onChange={(e) => handleQuantityChange(e.target.value)}
                       placeholder={form.quantityUnit === "bbl" ? "e.g. 2,000,000" : "e.g. 100,000"}
                     />
                     {unitEditable ? (
@@ -1450,7 +1490,40 @@ export default function CommodityTradingPage() {
                 </div>
 
                 <div className="space-y-2">
-                  <Label htmlFor="value">Approx. value *</Label>
+                  <Label htmlFor="unitPrice">Unit price (per {form.quantityUnit.toUpperCase()})</Label>
+                  <div className="flex gap-2">
+                    <Input
+                      id="unitPrice"
+                      className="flex-1"
+                      inputMode="decimal"
+                      value={form.unitPrice}
+                      onChange={(e) => handleUnitPriceChange(e.target.value)}
+                      placeholder={form.quantityUnit === "bbl" ? "e.g. 78.50" : "e.g. 685.00"}
+                    />
+                    <span className="flex w-28 shrink-0 items-center justify-center rounded-md border border-input bg-muted text-sm font-medium text-muted-foreground">
+                      {form.currency}/{form.quantityUnit.toUpperCase()}
+                    </span>
+                  </div>
+                  {computedShipmentAmount != null ? (
+                    <p className="flex flex-wrap items-center gap-x-1.5 text-xs text-muted-foreground">
+                      <Calculator className="h-3.5 w-3.5 text-primary" />
+                      <span>
+                        {parsedQty.toLocaleString("en-US")} {form.quantityUnit.toUpperCase()} ×{" "}
+                        {parsedUnitPrice.toLocaleString("en-US")} ={" "}
+                        <span className="font-semibold text-foreground">
+                          {formatCurrency(computedShipmentAmount, form.currency)}
+                        </span>
+                      </span>
+                    </p>
+                  ) : (
+                    <p className="text-[11px] leading-relaxed text-muted-foreground">
+                      Enter a unit price to auto-calculate the shipment amount (quantity × price).
+                    </p>
+                  )}
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="value">Shipment amount (approx. value) *</Label>
                   <Input
                     id="value"
                     value={form.approxValue}
@@ -1458,6 +1531,15 @@ export default function CommodityTradingPage() {
                     placeholder="e.g. 75,000,000"
                     inputMode="decimal"
                   />
+                  {computedShipmentAmount != null && (
+                    <button
+                      type="button"
+                      onClick={applyComputedValue}
+                      className="text-xs font-medium text-primary hover:underline"
+                    >
+                      Use calculated {formatCurrency(computedShipmentAmount, form.currency)}
+                    </button>
+                  )}
                 </div>
 
                 <div className="space-y-2">
