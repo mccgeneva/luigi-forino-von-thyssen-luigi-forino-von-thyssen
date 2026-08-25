@@ -69,12 +69,12 @@ const PROCEDURE_INTRO =
 
 const PROCEDURE_STEPS: Array<{ title: string; body: string }> = [
   {
-    title: "Step 1 — ICPO & BCL",
-    body: "Buyer issues an Irrevocable Corporate Purchase Order (ICPO) to MCC Oil Gas specifying product grade, quantity, delivery basis (CIF/FOB), and destination port, accompanied by a Bank Comfort Letter (BCL) from the Buyer's principal bank evidencing financial capacity.",
+    title: "Step 1 — ICPO, BCL & Due-Diligence Engagement",
+    body: "Buyer issues an Irrevocable Corporate Purchase Order (ICPO) to MCC Oil Gas specifying product grade, quantity, delivery basis (CIF/FOB), and destination port, accompanied by a Bank Comfort Letter (BCL) from the Buyer's principal bank evidencing financial capacity. Upon the Buyer's acceptance of this offer, MCC engages its independent law firm and accredited third-party firms to perform full KYC due diligence, AML and sanctions screening, and counterparty compliance verification. These are real, verifiable third-party costs (a minimum of EUR 20,000) incurred by MCC to onboard the Buyer and open the transaction. To fairly allocate this exposure, the diligence cost is a mandatory term of the transaction, recovered from the Buyer as the transparent cost-recovery line item set out in the SPA (Step 2 / Section 3) and credited in full against the final invoice. For the avoidance of doubt, this amount is defined and payable within the signed SPA — no payment is requested, and no MCC bank account is disclosed, before the SPA is signed by both parties.",
   },
   {
     title: "Step 2 — SPA Issuance",
-    body: "Upon completion of due diligence, MCC Oil Gas issues a Sales and Purchase Agreement, on behalf of MCC Petroli Company as product owner, stating product specification, volume, delivery basis, full pricing, payment schedule, the due diligence cost-recovery line item (Section 3), and MCC's designated payment account — all within this single, signed document.",
+    body: "Upon completion of due diligence, MCC Oil Gas issues a Sales and Purchase Agreement, on behalf of MCC Petroli Company as product owner, stating product specification, volume, delivery basis, full pricing, payment schedule, the mandatory due-diligence cost-recovery line item (Section 3, minimum EUR 20,000, credited against the final invoice), the 2% performance deposit, and MCC's designated payment account — all within this single, signed document. Execution of the SPA is the commencement of the transaction, at which point the Buyer's cost-recovery and performance-deposit obligations become due as contract terms.",
   },
   {
     title: "Step 3 — SPA Execution & Partial POP",
@@ -123,8 +123,8 @@ const KYC_ITEMS: Array<[string, string]> = [
 
 const KEY_CONDITIONS: Array<[string, string]> = [
   [
-    "No Payment Before a Signed SPA",
-    "No payment is requested and no bank account is disclosed before a Sales & Purchase Agreement is signed by both parties. The 2% performance deposit is a term of the signed SPA, is credited in full against the final invoice, and is refundable if MCC fails to deliver Partial or Full POP within the SPA timeframes.",
+    "Payment Only Under a Signed SPA",
+    "No payment is requested and no bank account is disclosed before a Sales & Purchase Agreement is signed by both parties. Two amounts become due as terms of the signed SPA: (i) a mandatory due-diligence cost-recovery amount (minimum EUR 20,000, covering MCC's independent legal, KYC, AML and sanctions-screening costs), credited in full against the final invoice; and (ii) a 2% performance deposit, credited in full against the final invoice and refundable if MCC fails to deliver Partial or Full POP within the SPA timeframes.",
   ],
   [
     "Non-Binding Status",
