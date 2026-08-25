@@ -93,8 +93,8 @@ const PROCEDURE_STEPS: Array<{ title: string; body: string }> = [
     body: "Once the vessel has discharged and SGS has independently verified the product is physically present in destination storage, MCC issues: (i) Full Proof of Product, comprising the SGS Quantity & Quality Inspection Report and Dip Test Authorisation; and (ii) the Commercial Invoice.",
   },
   {
-    title: "Step 7 — Full Cargo Payment",
-    body: "Buyer has three (3) business days from issuance of Full POP to remit full cargo payment by bank wire transfer to MCC's account as stated in the signed SPA. MCC issues written receipt confirmation within one (1) business day of clearance.",
+    title: "Step 7 — Full Cargo Payment (SWIFT MT103)",
+    body: "Payment is accepted at delivery, after independent inspection. Buyer has three (3) business days from issuance of Full POP to remit 100% of the cargo value by SWIFT MT103 telegraphic transfer to MCC's account as stated in the signed SPA. MCC issues written receipt confirmation within one (1) business day of clearance.",
   },
   {
     title: "Step 8 — Title Transfer & Product Withdrawal",
@@ -154,6 +154,27 @@ const money = (v: string | undefined | null): string => {
   const [intPart, decPart] = cleaned.split(".")
   const grouped = Number(intPart).toLocaleString("en-US")
   return decPart != null ? `${grouped}.${decPart}` : grouped
+}
+
+// Group the leading numeric token of a quantity string while leaving the unit
+// text intact — e.g. "100000 MONTHS" → "100,000 MONTHS", "30,000 MT" stays.
+const qty = (v: string | undefined | null): string => {
+  const t = (v ?? "").trim()
+  if (!t) return "—"
+  return t.replace(/\d[\d,]*(\.\d+)?/, (m) => money(m))
+}
+
+// Simplify a delivery term to "<INCOTERM> <Destination>" to remove ambiguity
+// (e.g. "CIF Taichung Port, Taiwan" + destination "Taiwan" → "CIF Taiwan").
+// Falls back to the raw term if no incoterm / destination is available.
+const INCOTERM_RE = /^(CIF|CFR|CIP|FOB|FCA|FAS|EXW|DAP|DPU|DDP|CPT)\b/i
+const deliveryLine = (term: string | undefined | null, dest: string | undefined | null): string => {
+  const t = dash(term)
+  if (t === "—") return "—"
+  const m = t.match(INCOTERM_RE)
+  const incoterm = m ? m[1].toUpperCase() : ""
+  const d = dash(dest)
+  return incoterm && d !== "—" ? `${incoterm} ${d}` : t
 }
 
 export function generateFcoPdf(input: FcoInput): GeneratedPdf {
@@ -422,10 +443,10 @@ export function generateFcoPdf(input: FcoInput): GeneratedPdf {
   sectionTitle("3. Commercial Terms")
   const ccy = dash(input.currency) === "—" ? "" : `${input.currency.trim()} `
   kvRows([
-    ["Trial Quantity", dash(input.trialQuantity)],
-    ["Contract Quantity", dash(input.contractQuantity)],
+    ["Trial Quantity", qty(input.trialQuantity)],
+    ["Contract Quantity", qty(input.contractQuantity)],
     ["Contract Duration", dash(input.contractDuration) === "—" ? "—" : `${input.contractDuration.trim()} — renewable upon mutual agreement`],
-    ["Delivery Terms", [dash(input.deliveryTerm) !== "—" ? input.deliveryTerm.trim() : "", dash(input.loadPort) !== "—" ? input.loadPort.trim() : ""].filter(Boolean).join(" — ") || "—"],
+    ["Delivery Terms", deliveryLine(input.deliveryTerm, input.destinationCountry)],
     ["Origins Available", dash(input.originsAvailable)],
     [
       "Origin / Destination",
