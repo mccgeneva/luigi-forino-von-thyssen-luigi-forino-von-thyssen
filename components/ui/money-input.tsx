@@ -69,7 +69,18 @@ export const MoneyInput = React.forwardRef<HTMLInputElement, MoneyInputProps>(fu
       ref={ref}
       type="text"
       inputMode="decimal"
+      // iOS Safari otherwise treats an amount field as autofillable and pops the
+      // "AutoFill" accessory INSTEAD of the numeric keypad (the keyboard appears
+      // to be "missing"). These attributes disable every password-manager /
+      // contact autofill heuristic so the numeric keyboard always shows.
       autoComplete="off"
+      autoCorrect="off"
+      autoCapitalize="none"
+      spellCheck={false}
+      enterKeyHint="done"
+      data-1p-ignore
+      data-lpignore="true"
+      data-form-type="other"
       placeholder={placeholder}
       value={formatDisplay(value)}
       onChange={handleChange}
