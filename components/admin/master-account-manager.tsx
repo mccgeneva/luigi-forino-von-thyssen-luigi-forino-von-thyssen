@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Badge } from "@/components/ui/badge"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { cn } from "@/lib/utils"
 import { toast } from "sonner"
 import { ADMIN_PASSCODE } from "@/lib/admin-config"
@@ -34,6 +35,9 @@ const IBAN_COUNTRY_CURRENCY: Record<string, string> = {
   QA: "QAR", KW: "KWD", BH: "BHD",
 }
 const currencyForIbanCountry = (cc: string): string | undefined => IBAN_COUNTRY_CURRENCY[cc?.toUpperCase()]
+
+// Fixed, selectable account-currency list for the primary master account.
+const CURRENCY_OPTIONS = ["EUR", "USD", "GBP", "CHF"] as const
 
 async function fetchUsers(): Promise<AdminUserView[]> {
   try {
@@ -80,6 +84,8 @@ export function MasterAccountManager() {
   const [currency, setCurrency] = useState("")
   // Per-currency settlement accounts (USD / GBP / CHF …), keyed by currency.
   const [currencyAccounts, setCurrencyAccounts] = useState<Record<string, CurrencyBankAccount>>({})
+  // Per-currency "resolving bank from IBAN…" spinners, keyed by currency.
+  const [currencyLookup, setCurrencyLookup] = useState<Record<string, boolean>>({})
   const [saving, setSaving] = useState(false)
   const [bankLookingUp, setBankLookingUp] = useState(false)
 
@@ -174,6 +180,43 @@ export function MasterAccountManager() {
     const cleanName =
       info?.name && !/^Bank code /.test(info.name) && info.name !== "Registered institution" ? info.name : undefined
     return { bic: info?.bic, name: cleanName }
+  }
+
+  // Per-currency IBAN handler: sets the IBAN and, when it becomes VALID,
+  // auto-fills that currency's SWIFT/BIC + bank name from the IBAN (same source-
+  // of-truth behaviour as the primary EUR account) — overwriting a stale
+  // wrong-country SWIFT, otherwise only filling empty fields.
+  const handleCurrencyIban = (cur: string, raw: string) => {
+    const value = raw.toUpperCase()
+    updateCurrencyField(cur, "iban", value)
+    const check = value.trim() ? validateIban(value) : null
+    if (!check?.valid) return
+    const clean = check.formatted.replace(/\s/g, "")
+    const ibanCountry = clean.slice(0, 2)
+    setCurrencyLookup((p) => ({ ...p, [cur]: true }))
+    ;(async () => {
+      const bank = await resolveBankForIban(clean)
+      setCurrencyAccounts((prev) => {
+        const cur0 = prev[cur] ?? { currency: cur }
+        // Only reconcile if the IBAN hasn't changed again while resolving.
+        if ((cur0.iban ?? "").replace(/\s/g, "").toUpperCase() !== clean) return prev
+        const curSwift = (cur0.swift ?? "").trim()
+        const curSwiftCheck = curSwift ? validateBic(curSwift) : null
+        const overwrite = !!(curSwiftCheck?.valid && curSwiftCheck.countryCode !== ibanCountry)
+        const next: CurrencyBankAccount = { ...cur0, currency: cur }
+        if (bank.bic) {
+          next.swift = overwrite ? bank.bic : curSwift || bank.bic
+          if (bank.name) next.bankName = overwrite ? bank.name : (cur0.bankName ?? "").trim() || bank.name
+          else if (overwrite) next.bankName = ""
+        } else if (overwrite) {
+          next.swift = ""
+          next.bankName = ""
+        } else if (bank.name) {
+          next.bankName = (cur0.bankName ?? "").trim() || bank.name
+        }
+        return { ...prev, [cur]: next }
+      })
+    })().finally(() => setCurrencyLookup((p) => ({ ...p, [cur]: false })))
   }
 
   // Whenever a VALID IBAN is present, reconcile the SWIFT/BIC, bank name and
@@ -505,13 +548,18 @@ export function MasterAccountManager() {
                     </div>
                     <div className="space-y-1.5">
                       <Label htmlFor="ma-ccy">Account currency</Label>
-                      <Input
-                        id="ma-ccy"
-                        value={currency}
-                        onChange={(e) => setCurrency(e.target.value.toUpperCase().slice(0, 3))}
-                        placeholder="EUR"
-                        className="font-mono uppercase"
-                      />
+                      <Select value={currency || undefined} onValueChange={(v) => setCurrency(v)}>
+                        <SelectTrigger id="ma-ccy" className="font-mono">
+                          <SelectValue placeholder="Select currency" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {CURRENCY_OPTIONS.map((c) => (
+                            <SelectItem key={c} value={c} className="font-mono">
+                              {c}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
                     </div>
                   </div>
                   {countryMismatch && (
@@ -555,13 +603,16 @@ export function MasterAccountManager() {
                     <p className="text-sm font-medium text-foreground">Currency settlement accounts</p>
                   </div>
                   <p className="text-[11px] text-muted-foreground">
-                    Insert the bank account coordinates for each additional currency. Each one reflects into the
-                    client&apos;s dedicated {MANAGED_BANK_CURRENCIES.join(" / ")} account in their accounts overview.
-                    Leave a currency blank to omit it.
+                    Insert the bank account coordinates for each additional currency. Enter an IBAN — it is validated and
+                    the SWIFT/BIC and bank name are auto-filled from it. Each one reflects into the client&apos;s
+                    dedicated {MANAGED_BANK_CURRENCIES.join(" / ")} account in their accounts overview. Leave a currency
+                    blank to omit it.
                   </p>
                   {MANAGED_BANK_CURRENCIES.map((cur) => {
                     const acct = currencyAccounts[cur] ?? { currency: cur }
                     const issue = currencyIssues[cur]
+                    const ibanCk = acct.iban?.trim() ? validateIban(acct.iban) : null
+                    const looking = !!currencyLookup[cur]
                     return (
                       <div key={cur} className="space-y-2 rounded-md border border-border/70 bg-background/40 p-3">
                         <div className="flex items-center gap-2">
@@ -573,15 +624,29 @@ export function MasterAccountManager() {
                         <div className="grid gap-3 sm:grid-cols-2">
                           <div className="space-y-1.5">
                             <Label htmlFor={`ma-${cur}-iban`}>IBAN</Label>
-                            <Input
-                              id={`ma-${cur}-iban`}
-                              value={acct.iban ?? ""}
-                              onChange={(e) => updateCurrencyField(cur, "iban", e.target.value.toUpperCase())}
-                              placeholder={`${cur} account IBAN`}
-                              autoComplete="off"
-                              spellCheck={false}
-                              className={cn("font-mono", issue && "border-red-500/60 focus-visible:ring-red-500/30")}
-                            />
+                            <div className="relative">
+                              <Input
+                                id={`ma-${cur}-iban`}
+                                value={acct.iban ?? ""}
+                                onChange={(e) => handleCurrencyIban(cur, e.target.value)}
+                                placeholder={`${cur} account IBAN`}
+                                autoComplete="off"
+                                spellCheck={false}
+                                className={cn(
+                                  "font-mono pr-9",
+                                  issue && "border-red-500/60 focus-visible:ring-red-500/30",
+                                )}
+                              />
+                              {looking && (
+                                <Loader2 className="absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 animate-spin text-muted-foreground" />
+                              )}
+                            </div>
+                            {ibanCk?.valid && !issue && (
+                              <p className="text-[11px] text-emerald-400">
+                                Valid IBAN · {ibanCk.countryName ?? ibanCk.countryCode}
+                                {looking ? " · resolving bank…" : " · bank details auto-filled below"}
+                              </p>
+                            )}
                           </div>
                           <div className="space-y-1.5">
                             <Label htmlFor={`ma-${cur}-swift`}>SWIFT / BIC</Label>
