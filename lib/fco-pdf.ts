@@ -93,8 +93,8 @@ const PROCEDURE_STEPS: Array<{ title: string; body: string }> = [
     body: "Once the vessel has discharged and SGS has independently verified the product is physically present in destination storage, MCC issues: (i) Full Proof of Product, comprising the SGS Quantity & Quality Inspection Report and Dip Test Authorisation; and (ii) the Commercial Invoice.",
   },
   {
-    title: "Step 7 — Full Cargo Payment",
-    body: "Buyer has three (3) business days from issuance of Full POP to remit full cargo payment by bank wire transfer to MCC's account as stated in the signed SPA. MCC issues written receipt confirmation within one (1) business day of clearance.",
+    title: "Step 7 — Full Cargo Payment (SWIFT MT103)",
+    body: "Payment is accepted at delivery, after independent inspection. Buyer has three (3) business days from issuance of Full POP to remit 100% of the cargo value by SWIFT MT103 telegraphic transfer to MCC's account as stated in the signed SPA. MCC issues written receipt confirmation within one (1) business day of clearance.",
   },
   {
     title: "Step 8 — Title Transfer & Product Withdrawal",

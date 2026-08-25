@@ -229,6 +229,12 @@ const MCC_OIL_GAS_SELLER = {
   email: "sales@mccoilgas.com",
 }
 
+// Payment model imposed by the SELLER (not taken from the buyer's LOI/ICPO):
+// buyer's 2% commitment deposit, then 100% by SWIFT MT103 at delivery after
+// independent inspection, against which the buyer withdraws the product.
+const SELLER_PAYMENT_INSTRUMENT =
+  "Buyer remits a 2% commitment deposit; 100% of the cargo value is paid by SWIFT MT103 telegraphic transfer at destination after independent inspection (SGS Full POP), against which the Buyer withdraws the product. The 2% deposit is credited in full against the final invoice."
+
 // Editable Full Corporate Offer draft. Only the commercial/party fields are
 // editable — the transaction procedure and key conditions (incl. "no upfront
 // fee to trade") are enforced by the PDF generator and never editable here.
@@ -255,7 +261,7 @@ const emptyFco: FcoInput = {
   deliveryTerm: "",
   loadPort: "",
   originsAvailable: "",
-  paymentInstrument: "",
+  paymentInstrument: SELLER_PAYMENT_INSTRUMENT,
   incotermsVersion: "Incoterms 2020",
   offerValidityDays: 7,
   currency: "USD",
@@ -500,6 +506,8 @@ export default function CommodityTradingPage() {
         sellerName: MCC_OIL_GAS_SELLER.name,
         sellerAddress: MCC_OIL_GAS_SELLER.address,
         sellerEmail: MCC_OIL_GAS_SELLER.email,
+        // Payment terms are seller-imposed — never restore a stale/edited value.
+        paymentInstrument: SELLER_PAYMENT_INSTRUMENT,
       })
     draftRestored.current = true
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -802,7 +810,9 @@ export default function CommodityTradingPage() {
         deliveryTerm: g("deliveryTerm") || prev.deliveryTerm,
         loadPort: g("loadPort") || prev.loadPort,
         originsAvailable: g("originsAvailable") || prev.originsAvailable,
-        paymentInstrument: g("paymentInstrument") || prev.paymentInstrument,
+        // Payment terms are imposed by the SELLER — never taken from the buyer's
+        // LOI/ICPO.
+        paymentInstrument: SELLER_PAYMENT_INSTRUMENT,
         currency: g("currency") || prev.currency,
         unitPrice: leadingNumber(g("unitPrice")) || prev.unitPrice,
         trialCargoValue: leadingNumber(g("totalValue")) || prev.trialCargoValue,
@@ -1888,11 +1898,11 @@ export default function CommodityTradingPage() {
                     </div>
                     <div className="space-y-1.5">
                       <Label htmlFor="fco-payment">Payment instrument</Label>
-                      <Input id="fco-payment" value={fco.paymentInstrument} onChange={(e) => setFcoField("paymentInstrument", e.target.value)} placeholder="e.g. TT / bank wire against Full POP" />
+                      <Input id="fco-payment" value={fco.paymentInstrument} onChange={(e) => setFcoField("paymentInstrument", e.target.value)} placeholder="e.g. 100% SWIFT MT103 at delivery after inspection" />
                       <p className="text-[11px] leading-relaxed text-muted-foreground">
-                        Keep this consistent with Section 4: the standard procedure settles the cargo balance by bank
-                        wire (TT) within 3 banking days of Full POP. Avoid mixing an MT700 DLC / MT760 structure with the
-                        TT-after-POP flow — pick one payment structure.
+                        Seller-imposed default: Buyer&apos;s 2% commitment deposit, then 100% by SWIFT MT103 at delivery
+                        after independent inspection, against which the Buyer withdraws the product. Matches Section 4 —
+                        do not switch to a DLC/MT760 structure.
                       </p>
                     </div>
                     <div className="space-y-1.5">
