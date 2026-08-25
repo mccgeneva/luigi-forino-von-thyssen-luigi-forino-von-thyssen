@@ -14,6 +14,7 @@
 
 import { jsPDF } from "jspdf"
 import { BRAND, formatDate, makeDocRef, type GeneratedPdf } from "@/lib/pdf-core"
+import { drawBrandMark } from "@/lib/pdf-logos"
 
 export interface FcoInput {
   // Parties
@@ -132,15 +133,19 @@ export function generateFcoPdf(input: FcoInput): GeneratedPdf {
 
   const drawHeaderBand = () => {
     doc.setFillColor(...BRAND.ink)
-    doc.rect(0, 0, pageWidth, 40, "F")
+    doc.rect(0, 0, pageWidth, 44, "F")
+    // Adopted brand logo at the top-left of every page (on a white panel so it
+    // stays crisp against the dark band). Falls back to the gold "M" badge if
+    // the logo cache is cold.
+    const markW = drawBrandMark(doc, "fco", margin, 8, 44, 28, { panel: true, radius: 4 })
     doc.setTextColor(...BRAND.white)
     doc.setFont("helvetica", "bold")
     doc.setFontSize(10)
-    doc.text(seller.toUpperCase(), margin, 25)
+    doc.text(seller.toUpperCase(), margin + markW + 12, 26)
     doc.setTextColor(...BRAND.gold)
     doc.setFont("helvetica", "bold")
     doc.setFontSize(9)
-    doc.text("FULL CORPORATE OFFER", pageWidth - margin, 25, { align: "right" })
+    doc.text("FULL CORPORATE OFFER", pageWidth - margin, 26, { align: "right" })
   }
 
   const newPage = () => {
