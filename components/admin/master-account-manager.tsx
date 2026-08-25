@@ -603,16 +603,17 @@ export function MasterAccountManager() {
                     <p className="text-sm font-medium text-foreground">Currency settlement accounts</p>
                   </div>
                   <p className="text-[11px] text-muted-foreground">
-                    Insert the bank account coordinates for each additional currency. Enter an IBAN — it is validated and
-                    the SWIFT/BIC and bank name are auto-filled from it. Each one reflects into the client&apos;s
-                    dedicated {MANAGED_BANK_CURRENCIES.join(" / ")} account in their accounts overview. Leave a currency
-                    blank to omit it.
+                    Insert the bank account coordinates for each additional currency. Enter an IBAN — it is validated and,
+                    when the bank is in the directory, the SWIFT/BIC and bank name are auto-filled (otherwise type them
+                    in). Each one reflects into the client&apos;s dedicated {MANAGED_BANK_CURRENCIES.join(" / ")} account
+                    in their accounts overview. Leave a currency blank to omit it.
                   </p>
                   {MANAGED_BANK_CURRENCIES.map((cur) => {
                     const acct = currencyAccounts[cur] ?? { currency: cur }
                     const issue = currencyIssues[cur]
                     const ibanCk = acct.iban?.trim() ? validateIban(acct.iban) : null
                     const looking = !!currencyLookup[cur]
+                    const resolvedSwift = (acct.swift ?? "").trim()
                     return (
                       <div key={cur} className="space-y-2 rounded-md border border-border/70 bg-background/40 p-3">
                         <div className="flex items-center gap-2">
@@ -642,9 +643,18 @@ export function MasterAccountManager() {
                               )}
                             </div>
                             {ibanCk?.valid && !issue && (
-                              <p className="text-[11px] text-emerald-400">
+                              <p
+                                className={cn(
+                                  "text-[11px]",
+                                  looking || resolvedSwift ? "text-emerald-400" : "text-amber-300",
+                                )}
+                              >
                                 Valid IBAN · {ibanCk.countryName ?? ibanCk.countryCode}
-                                {looking ? " · resolving bank…" : " · bank details auto-filled below"}
+                                {looking
+                                  ? " · resolving bank…"
+                                  : resolvedSwift
+                                    ? ` · SWIFT/BIC ${resolvedSwift} auto-filled`
+                                    : " · bank not found in the directory — enter the SWIFT/BIC and bank name manually"}
                               </p>
                             )}
                           </div>
