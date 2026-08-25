@@ -753,7 +753,14 @@ async function resolveMasterRecord(userId: string): Promise<{ selected: DynamicU
   const selected = await getDynamicUserById(userId)
   if (!selected) return null
   const rel = effectiveRelationship(selected.profile.relationship)
-  const masterId = rel !== "master" && selected.profile.masterId ? selected.profile.masterId : userId
+  // Only Sub and Joint accounts share their Master's financial data (banking,
+  // balance) — this MUST match resolveDataOwnerIdFor / the session dataOwnerId,
+  // which is what the customer read (getMyMasterBanking) uses. A CHILD account is
+  // fully independent (linked to the Master for referral only), so its bank
+  // coordinates live on the child itself; redirecting a child to its master here
+  // wrote the admin's edits to the wrong record, so the customer never saw them.
+  const linkedToMaster = (rel === "sub" || rel === "joint") && !!selected.profile.masterId
+  const masterId = linkedToMaster ? (selected.profile.masterId as string) : userId
   if (masterId === userId) return { selected, master: selected }
   const master = (await getDynamicUserById(masterId)) ?? selected
   return { selected, master }
