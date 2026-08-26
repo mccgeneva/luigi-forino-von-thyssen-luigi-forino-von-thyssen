@@ -902,6 +902,46 @@ export default function PPPPage() {
                               Reason: {req.decisionNote}
                             </p>
                           )}
+                          {req.status === "approved" && (
+                            <div className="space-y-2 pt-1">
+                              <div className="flex flex-wrap gap-2">
+                                {req.terminationRequestedAt ? (
+                                  <Button
+                                    variant="outline"
+                                    size="sm"
+                                    disabled={withdrawingId === req.id}
+                                    onClick={() => withdrawResign(req)}
+                                  >
+                                    {withdrawingId === req.id ? (
+                                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                                    ) : (
+                                      <XCircle className="mr-2 h-4 w-4" />
+                                    )}
+                                    Withdraw exit request
+                                  </Button>
+                                ) : (
+                                  <Button
+                                    variant="outline"
+                                    size="sm"
+                                    className="text-destructive hover:text-destructive"
+                                    onClick={() => openResign(req)}
+                                  >
+                                    <LogOut className="mr-2 h-4 w-4" />
+                                    Request early exit
+                                  </Button>
+                                )}
+                              </div>
+                              {req.terminationRequestedAt && (
+                                <div className="rounded-md border border-orange-500/30 bg-orange-500/5 px-3 py-2 text-xs text-orange-600 dark:text-orange-400">
+                                  Early-exit request awaiting administrator confirmation
+                                  {typeof req.proposedExitCost === "number"
+                                    ? ` — you proposed an exit cost of ${formatMoney(req.proposedExitCost, req.currency)}.`
+                                    : "."}{" "}
+                                  The program keeps earning until the administrator confirms.
+                                </div>
+                              )}
+                            </div>
+                          )}
                         </div>
                       </div>
                     </CardContent>
