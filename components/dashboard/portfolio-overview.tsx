@@ -16,6 +16,7 @@ import { useLedger, convertCurrency, type LedgerEntry } from "@/lib/ledger-store
 import { useInstrumentRequests } from "@/lib/instrument-requests-store"
 import { useBeneficiaries } from "@/lib/beneficiaries-store"
 import { BlockedFundsNotice } from "@/components/dashboard/blocked-funds-notice"
+import { OverdraftAuthorizedBadge } from "@/components/dashboard/overdraft-authorized-badge"
 
 const currencySymbols: Record<string, string> = {
   EUR: "€",
@@ -169,14 +170,16 @@ export function PortfolioOverview() {
     <div className="space-y-4">
       {/* Per-currency balances */}
       <Card className="bg-card border-border">
-        <CardHeader className="flex flex-row items-center justify-between pb-3">
-          <div>
+        <CardHeader className="flex flex-row items-start justify-between gap-3 pb-3">
+          <div className="min-w-0">
             <CardTitle className="text-sm font-medium text-muted-foreground">
               Account Balances
             </CardTitle>
             <p className="text-xs text-muted-foreground mt-0.5">
               Master multi-currency account
             </p>
+            {/* Shown only to customers with a controlled overdraft facility. */}
+            <OverdraftAuthorizedBadge className="mt-2" />
           </div>
           <div className="rounded-lg bg-secondary p-2">
             <Wallet className="h-4 w-4 text-primary" />
