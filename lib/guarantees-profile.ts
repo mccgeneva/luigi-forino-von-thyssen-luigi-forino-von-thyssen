@@ -136,8 +136,11 @@ export async function gatherGuaranteeProfile(userId: string, config: GuaranteeCo
   // system refuses financing an already-financed deposit), so this is additive.
   let treasuryFinanced = 0
   let treasuryContribution = 0
-  // Paid-in security deposit (contribution + SKR collateral) — the base the
-  // controlled overdraft ceiling is a percentage of.
+  // SECURED security deposit (paid-in contribution + SKR collateral + the
+  // financed/leveraged portion) — the base the controlled overdraft ceiling is
+  // a percentage of. A financed deposit still secures the account, so the
+  // overdraft is authorized on the whole leveraged amount (e.g. 100k paid-in
+  // at 1:5 → a 500k secured deposit → 8% = 40k ceiling), per policy.
   let treasuryDepositBaseEur = 0
   try {
     const { rows } = await query<{
@@ -155,7 +158,8 @@ export async function gatherGuaranteeProfile(userId: string, config: GuaranteeCo
       const ccy = String(t.currency || BASE)
       treasuryFinanced = toEur(num(t.financed_amount), ccy)
       treasuryContribution = toEur(num(t.customer_contribution), ccy)
-      treasuryDepositBaseEur = treasuryContribution + toEur(num(t.skr_collateral), ccy)
+      // Secured deposit base = paid-in (contribution + SKR) + financed portion.
+      treasuryDepositBaseEur = treasuryContribution + toEur(num(t.skr_collateral), ccy) + treasuryFinanced
       if (treasuryFinanced > 0) {
         totalExposure += treasuryFinanced
         leverageLoad += treasuryFinanced
