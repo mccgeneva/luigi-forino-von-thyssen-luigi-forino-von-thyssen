@@ -75,6 +75,7 @@ import { useInstrumentRequests } from "@/lib/instrument-requests-store"
 import { useLedger } from "@/lib/ledger-store"
 import { postedLeverageInterest } from "@/lib/leverage-financing"
 import { leverageApplicationCharges } from "@/lib/leverage-audit-fee"
+import { isLiveRequest } from "@/lib/live-request"
 import { Checkbox } from "@/components/ui/checkbox"
 import { GuaranteeScoreCard } from "@/components/dashboard/guarantee-score-card"
 
@@ -445,13 +446,11 @@ export default function LeveragePage() {
   const activeLines = myRequests.filter(
     (r) => r.status === "approved" || r.status === "switchoff_pending",
   )
-  // Count of lines that are still live or in-flight — pending approval, active,
-  // or active with a switch-off queued. This DELIBERATELY excludes terminal
-  // states (closed / rejected / cancelled) so the "My Trading Lines" tab badge
-  // reflects only lines that still matter; a closed deal must not keep counting.
-  const liveLineCount = myRequests.filter(
-    (r) => r.status === "pending" || r.status === "approved" || r.status === "switchoff_pending",
-  ).length
+  // Count of lines that are still live or in-flight. `isLiveRequest` is the shared
+  // rule (lib/live-request.ts): it excludes terminal statuses (closed / rejected /
+  // cancelled) AND terminal markers, while keeping in-flight states like
+  // `switchoff_pending`. A closed deal must not keep counting on the tab badge.
+  const liveLineCount = myRequests.filter(isLiveRequest).length
   // Active lines can be in different currencies (USD, EUR, GBP, CHF). We can't
   // add across currencies, so totals are grouped per currency and each stat
   // card lists every currency it holds a balance in.

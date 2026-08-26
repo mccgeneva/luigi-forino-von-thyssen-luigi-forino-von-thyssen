@@ -63,6 +63,7 @@ import {
 } from "@/lib/ppp-yield"
 import { useInstrumentRequests, isMccHeldInstrument } from "@/lib/instrument-requests-store"
 import { computeBenefitSplit } from "@/lib/benefit-split"
+import { isLiveRequest } from "@/lib/live-request"
 import { convertCurrency } from "@/lib/fx"
 import { useLedger } from "@/lib/ledger-store"
 import { MCC_HOLDING_OWNER, MCC_BENEFIT_SHARE, CLIENT_BENEFIT_SHARE } from "@/lib/instrument-marketplace"
@@ -280,19 +281,17 @@ export default function PPPPage() {
     [requests],
   )
   const pendingCount = myApplications.filter((r) => r.status === "pending").length
-  // The tab badge should reflect only LIVE applications (pending or approved).
-  // Terminal states (cancelled/terminated, rejected) stay in the list as history
-  // but must not inflate the count — a cancelled program is no longer active.
-  const liveApplicationCount = myApplications.filter(
-    (r) => r.status === "pending" || r.status === "approved",
-  ).length
+  // The tab badge reflects only LIVE applications. `isLiveRequest` is the shared
+  // rule (lib/live-request.ts): it excludes terminal statuses (rejected/cancelled)
+  // AND terminal markers on an approved record (cancelledAt) so a terminated
+  // program never inflates the count, while staying in the list as history.
+  const liveApplicationCount = myApplications.filter(isLiveRequest).length
 
-  // Approved applications are the client's real, executed investments. We derive
-  // the "My Investments" list and the summary stats directly from these so the
-  // numbers reflect genuine Administrator-approved activity — never fake demo
-  // figures. New investments have no payouts yet until the program runs.
+  // Approved applications are the client's real, executed investments. A program
+  // terminated early stamps `cancelledAt`, so we require `isLiveRequest` too — a
+  // terminated program drops out of the "My Investments" list and summary stats.
   const approvedInvestments = useMemo(
-    () => myApplications.filter((r) => r.status === "approved"),
+    () => myApplications.filter((r) => r.status === "approved" && isLiveRequest(r)),
     [myApplications],
   )
   const totalInvested = useMemo(

@@ -27,6 +27,7 @@ import {
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
+import { isLiveRequest } from "@/lib/live-request"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Label } from "@/components/ui/label"
 import { Input } from "@/components/ui/input"
@@ -284,14 +285,18 @@ export default function ProjectFundingPage() {
     [requests],
   )
   const pendingCount = myApplications.filter((r) => r.status === "pending").length
-  const approved = useMemo(() => myApplications.filter((r) => r.status === "approved"), [myApplications])
-  // "Live" applications are those still in play — pending review or approved.
-  // Rejected (and any future terminated) applications are not counted in the
-  // tab badge / summary stat, so the number only reflects active files.
-  const liveApplications = useMemo(
-    () => myApplications.filter((r) => r.status === "pending" || r.status === "approved"),
+  // Approved AND still live — a CLOSED facility keeps status:"approved" but carries
+  // a `closedAt`/`settlement` marker, so `isLiveRequest` excludes it. Summary
+  // figures therefore reflect only active facilities, never settled/closed ones.
+  const approved = useMemo(
+    () => myApplications.filter((r) => r.status === "approved" && isLiveRequest(r)),
     [myApplications],
   )
+  // "Live" applications drive the tab badge / summary count. `isLiveRequest` is the
+  // single shared rule (lib/live-request.ts): it excludes terminal statuses
+  // (rejected/cancelled/…) AND terminal markers on an approved record
+  // (closedAt/settledAt/…) so a terminated facility never inflates the count.
+  const liveApplications = useMemo(() => myApplications.filter(isLiveRequest), [myApplications])
 
   // Summary stats derive only from approved applications, so the figures reflect
   // real Administrator-approved funding — never demo numbers.
