@@ -15,7 +15,7 @@ const eur = (n: number) =>
 
 /**
  * Small, professional badge shown to every customer whose Master Account has a
- * controlled overdraft facility authorized (i.e. a paid-in treasury deposit
+ * controlled overdraft facility authorized (i.e. a secured treasury deposit
  * exists, so `overdraft.available` is true). It states the maximum authorized
  * amount = the 8%-of-deposit ceiling (`limitEur`). Renders nothing when no
  * facility exists, so it is safe to drop anywhere a customer sees their account.
@@ -33,7 +33,7 @@ export function OverdraftAuthorizedBadge({ className }: { className?: string }) 
   return (
     <Badge
       variant="outline"
-      title={`Your Master Account may be drawn down to ${eur(overdraft.limitEur)} to settle platform charges (8% of your paid-in treasury security deposit).`}
+      title={`Your Master Account may be drawn down to ${eur(overdraft.limitEur)} to settle platform charges (8% of your secured treasury security deposit).`}
       className={cn(
         "gap-1.5 border-primary/30 bg-primary/10 text-primary",
         "text-[11px] font-medium",

@@ -8,7 +8,8 @@ import type { LedgerEntry } from "@/lib/ledger-store"
  * Controlled Master Account Overdraft.
  *
  * A Master Account may go negative (aggregate, EUR-equivalent) up to a ceiling
- * of OVERDRAFT_RATE × the customer's paid-in Treasury Security Deposit, so that
+ * of OVERDRAFT_RATE × the customer's SECURED Treasury Security Deposit (paid-in
+ * contribution + SKR collateral + financed portion), so that
  * automatic PLATFORM CHARGES & FEES can still be debited when positive funds are
  * exhausted. Ordinary outgoing money movement (payments, exchanges, transfers)
  * still requires positive funds via assertOwnerSolvent — the overdraft is for
@@ -19,7 +20,7 @@ import type { LedgerEntry } from "@/lib/ledger-store"
  * new leverage/financing.
  */
 
-/** Overdraft ceiling as a fraction of the paid-in treasury security deposit. */
+/** Overdraft ceiling as a fraction of the secured treasury security deposit. */
 export const OVERDRAFT_RATE = 0.08
 
 /** All overdraft math is done in this base currency. */
@@ -30,7 +31,7 @@ function round2(n: number): number {
 }
 
 export interface OverdraftStatus {
-  /** Paid-in treasury security deposit (contribution + SKR collateral), EUR. */
+  /** Secured treasury security deposit (contribution + SKR collateral + financed), EUR. */
   depositBaseEur: number
   /** Maximum the account may go negative = OVERDRAFT_RATE × depositBaseEur. */
   limitEur: number
@@ -72,15 +73,18 @@ export function computeOverdraftStatus(depositBaseEur: number, balanceEur: numbe
 }
 
 /**
- * Paid-in treasury security deposit for an owner, in EUR. This is the base the
- * overdraft ceiling is 8% of: the customer's OWN posted value (paid-in
- * contribution + SKR collateral) — never the financed/leveraged portion. A
- * closed/none treasury has no deposit and therefore no overdraft facility.
+ * Secured treasury security deposit for an owner, in EUR. This is the base the
+ * overdraft ceiling is 8% of: the FULL security deposit securing the facility —
+ * the customer's paid-in contribution + SKR collateral + the financed/leveraged
+ * portion. A deposit that is financed still secures the account, so it is
+ * authorized for overdraft on the whole secured amount (per policy). A
+ * closed/none treasury has no secured deposit and therefore no overdraft
+ * facility.
  */
 export async function getTreasuryDepositBaseEur(ownerId: string): Promise<number> {
   try {
     const { rows } = await query(
-      `SELECT currency, customer_contribution, skr_collateral, status
+      `SELECT currency, customer_contribution, skr_collateral, financed_amount, status
          FROM treasury_accounts WHERE user_id = $1`,
       [ownerId],
     )
@@ -89,9 +93,15 @@ export async function getTreasuryDepositBaseEur(ownerId: string): Promise<number
     const status = (r.status as string) ?? ""
     if (status === "closed" || status === "none") return 0
     const cur = ((r.currency as string) || BASE).toUpperCase()
-    const paidIn = (Number(r.customer_contribution) || 0) + (Number(r.skr_collateral) || 0)
-    if (paidIn <= 0) return 0
-    return round2(convertCurrency(paidIn, cur, BASE))
+    // The SECURED security deposit = everything actually securing the facility:
+    // paid-in contribution + SKR collateral + the financed/leveraged portion.
+    // Financed deposits are authorized for overdraft on the full secured amount.
+    const securedDeposit =
+      (Number(r.customer_contribution) || 0) +
+      (Number(r.skr_collateral) || 0) +
+      (Number(r.financed_amount) || 0)
+    if (securedDeposit <= 0) return 0
+    return round2(convertCurrency(securedDeposit, cur, BASE))
   } catch {
     return 0
   }

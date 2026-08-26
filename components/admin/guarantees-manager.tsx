@@ -184,8 +184,9 @@ export function GuaranteesManager({ passcode }: { passcode: string }) {
               </div>
               <div className="flex items-end">
                 <p className="text-[11px] text-muted-foreground">
-                  Accounts may go negative up to 8% of their paid-in treasury security deposit to settle platform
-                  charges. A negative balance raises this score and hard-blocks new leverage/financing until cleared.
+                  Accounts may go negative up to 8% of their secured treasury security deposit (including any
+                  financed portion) to settle platform charges. A negative balance raises this score and
+                  hard-blocks new leverage/financing until cleared.
                 </p>
               </div>
             </div>

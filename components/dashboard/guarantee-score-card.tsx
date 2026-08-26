@@ -175,7 +175,7 @@ function OverdraftPanel({ overdraft }: { overdraft: OverdraftStatus }) {
       <p className="mt-2 text-[11px] leading-relaxed text-muted-foreground text-pretty">
         {negative
           ? "Your Master Account is in a controlled overdraft to settle platform charges. New leverage, monetization and treasury financing are paused until you return to a positive balance."
-          : "Platform charges may draw your Master Account up to 8% of your paid-in treasury security deposit when positive funds run out. Outgoing payments still require positive funds."}
+          : "Platform charges may draw your Master Account up to 8% of your secured treasury security deposit when positive funds run out. Outgoing payments still require positive funds."}
       </p>
     </div>
   )
