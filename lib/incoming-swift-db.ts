@@ -15,7 +15,7 @@ import { query } from "@/lib/db"
  * their next load from any device and the full audit trail is durable.
  */
 
-export type IncomingSwiftStatus = "matched" | "unmatched" | "assigned"
+export type IncomingSwiftStatus = "matched" | "unmatched" | "assigned" | "rejected"
 
 export interface IncomingSwiftMessage {
   id: string
@@ -285,6 +285,25 @@ export async function markIncomingSwiftCredited(
      WHERE id = $1 AND credited_at IS NULL
      RETURNING *`,
     [id, entryId, amountLabel],
+  )
+  return rows[0] ? rowToMessage(rows[0]) : null
+}
+
+/**
+ * Administrator declines an inbound message instead of crediting it. Guarded on
+ * `credited_at IS NULL` so a message that was already credited can never be
+ * flipped to rejected. Setting status `rejected` removes it from both the admin
+ * "Awaiting credit" queue and the customer's SWIFT inbox (both filter to
+ * matched/assigned). Returns null when the message was missing or already credited.
+ */
+export async function rejectIncomingSwift(id: string, reason: string): Promise<IncomingSwiftMessage | null> {
+  await ensureTable()
+  const { rows } = await query(
+    `UPDATE incoming_swift_messages
+       SET status = 'rejected', match_reason = $2
+     WHERE id = $1 AND credited_at IS NULL AND status <> 'rejected'
+     RETURNING *`,
+    [id, reason],
   )
   return rows[0] ? rowToMessage(rows[0]) : null
 }

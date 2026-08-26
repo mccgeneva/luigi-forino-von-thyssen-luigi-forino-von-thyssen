@@ -22,6 +22,7 @@ import {
   listCreditableIncomingSwift,
   markIncomingSwiftCredited,
   markIncomingSwiftRead,
+  rejectIncomingSwift,
   type IncomingSwiftMessage,
 } from "@/lib/incoming-swift-db"
 import { convertCurrency } from "@/lib/fx"
@@ -505,6 +506,78 @@ export async function listCreditableIncomingSwiftAdmin(
     return { ok: true, messages: await listCreditableIncomingSwift() }
   } catch {
     return { ok: true, messages: [] }
+  }
+}
+
+export interface RejectResult {
+  ok: boolean
+  error?: string
+  alreadyResolved?: boolean
+}
+
+/**
+ * Administrator DECLINES an inbound message instead of crediting it. Crediting
+ * is not mandatory — a message that is unverifiable, a duplicate, or should not
+ * be booked can be rejected. Guarded so an already-credited message can't be
+ * rejected. On success the message leaves the "Awaiting credit" queue and the
+ * customer's inbox, the customer is notified, and the decision is audited.
+ */
+export async function rejectIncomingSwiftAdmin(
+  passcode: string,
+  id: string,
+  reason?: string,
+): Promise<RejectResult> {
+  if (!(await adminActionAuthorized(passcode))) {
+    return { ok: false, error: "Administrator authorization failed." }
+  }
+
+  const message = await getIncomingSwiftById(id)
+  if (!message) return { ok: false, error: "Message not found." }
+  if (message.creditedAt) {
+    return { ok: false, alreadyResolved: true, error: "This message was already credited and cannot be rejected." }
+  }
+  if (message.status === "rejected") {
+    return { ok: false, alreadyResolved: true, error: "This message was already rejected." }
+  }
+
+  const trimmed = (reason ?? "").trim()
+  const finalReason = trimmed
+    ? `Rejected by the administrator: ${trimmed}`
+    : "Rejected by the administrator after review."
+
+  try {
+    const updated = await rejectIncomingSwift(id, finalReason)
+    if (!updated) {
+      return { ok: false, alreadyResolved: true, error: "This message was already resolved." }
+    }
+
+    if (message.userId) {
+      await insertNotification({
+        userId: message.userId,
+        tone: "warning",
+        title: `SWIFT ${message.messageType} declined`,
+        body: `Your inbound SWIFT ${message.messageType}${
+          message.amount ? ` (${message.amount})` : ""
+        } was reviewed and could not be credited.${trimmed ? ` Reason: ${trimmed}` : ""} Please contact us if you believe this is an error.`,
+        href: "/dashboard/swift",
+      }).catch(() => undefined)
+    }
+
+    await logActivity({
+      action: `Inbound SWIFT ${message.messageType} rejected${message.matchedAccountHolder ? ` for ${message.matchedAccountHolder}` : ""}`,
+      category: "SWIFT",
+      details: {
+        summary: `Administrator declined inbound SWIFT ${message.messageType} (${message.id}, beneficiary IBAN ${message.beneficiaryIban || "n/a"}${message.uetr ? `, UETR ${message.uetr}` : ""}). ${finalReason}`,
+        messageId: message.id,
+        matchedUserId: message.userId,
+        decision: "Rejected",
+      },
+    }).catch(() => undefined)
+
+    return { ok: true }
+  } catch (err) {
+    console.log("[v0] rejectIncomingSwiftAdmin failed:", (err as Error).message)
+    return { ok: false, error: "Could not reject the message." }
   }
 }
 
