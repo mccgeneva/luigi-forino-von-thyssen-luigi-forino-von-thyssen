@@ -270,6 +270,12 @@ export default function PPPPage() {
     [requests],
   )
   const pendingCount = myApplications.filter((r) => r.status === "pending").length
+  // The tab badge should reflect only LIVE applications (pending or approved).
+  // Terminal states (cancelled/terminated, rejected) stay in the list as history
+  // but must not inflate the count — a cancelled program is no longer active.
+  const liveApplicationCount = myApplications.filter(
+    (r) => r.status === "pending" || r.status === "approved",
+  ).length
 
   // Approved applications are the client's real, executed investments. We derive
   // the "My Investments" list and the summary stats directly from these so the
@@ -604,7 +610,7 @@ export default function PPPPage() {
           <TabsTrigger value="programs">Available Programs</TabsTrigger>
           <TabsTrigger value="applications">
             My Applications
-            {myApplications.length > 0 && (
+            {liveApplicationCount > 0 && (
               <Badge
                 variant="outline"
                 className={cn(
@@ -614,7 +620,7 @@ export default function PPPPage() {
                     : "bg-primary/10 text-primary border-primary/20",
                 )}
               >
-                {myApplications.length}
+                {liveApplicationCount}
               </Badge>
             )}
           </TabsTrigger>
