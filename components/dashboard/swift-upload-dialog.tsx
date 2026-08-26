@@ -157,8 +157,8 @@ export function SwiftUploadDialog({ onSubmitted }: SwiftUploadDialogProps) {
         Upload SWIFT printout
       </Button>
 
-      <DialogContent className="max-w-lg">
-        <DialogHeader>
+      <DialogContent className="flex max-h-[88dvh] max-w-lg flex-col overflow-hidden">
+        <DialogHeader className="shrink-0">
           <DialogTitle className="flex items-center gap-2">
             <FileUp className="h-5 w-5 text-primary" />
             Upload SWIFT printout receipt
@@ -169,7 +169,7 @@ export function SwiftUploadDialog({ onSubmitted }: SwiftUploadDialogProps) {
           </DialogDescription>
         </DialogHeader>
 
-        <div className="space-y-4">
+        <div className="min-h-0 flex-1 space-y-4 overflow-y-auto">
           {/* Upload */}
           <div className="rounded-lg border border-dashed border-border p-4">
             <input
@@ -264,7 +264,7 @@ export function SwiftUploadDialog({ onSubmitted }: SwiftUploadDialogProps) {
           </p>
         </div>
 
-        <DialogFooter>
+        <DialogFooter className="shrink-0 border-t border-border pt-4">
           <Button variant="ghost" onClick={() => setOpen(false)} disabled={submitting}>
             <X className="mr-2 h-4 w-4" />
             Cancel
