@@ -143,6 +143,7 @@ import { PendingApprovals } from "@/components/admin/pending-approvals"
 import {
   adminCountPending,
   adminCountPaymentsAwaitingDelivery,
+  adminCountYieldTerminationRequests,
   adminDecideApproval,
   adminUpdateApprovalRecord,
   adminMarkPaymentDelivered,
@@ -570,6 +571,10 @@ export default function AdminPage() {
   // Payments approved & initiated but not yet confirmed delivered — a pending
   // stage-3 admin action that would otherwise be invisible (it left `pending`).
   const [paymentsAwaitingDelivery, setPaymentsAwaitingDelivery] = useState(0)
+  // Approved Yield / PPP programs whose client requested an early termination
+  // awaiting the admin's negotiate-cost & confirm — a pending action that left
+  // `pending` (the program is still approved) so it needs its own signal.
+  const [yieldTerminationRequests, setYieldTerminationRequests] = useState(0)
   // The type a command-center tile deep-links into when opening the dashboard.
   const [approvalsInitialKind, setApprovalsInitialKind] = useState<ApprovalKind | undefined>(undefined)
   useEffect(() => {
@@ -587,6 +592,12 @@ export default function AdminPage() {
         if (!cancelled) setPaymentsAwaitingDelivery(awaiting)
       } catch {
         // Non-fatal: the Outgoing Payments tile just omits the delivery signal.
+      }
+      try {
+        const term = await adminCountYieldTerminationRequests(ADMIN_PASSCODE)
+        if (!cancelled) setYieldTerminationRequests(term)
+      } catch {
+        // Non-fatal: the Yield / PPP tile just omits the termination signal.
       }
     })()
     return () => {
@@ -2264,7 +2275,7 @@ export default function AdminPage() {
     { id: "section-subaccounts", view: "subaccounts", label: "Sub-Account Requests", count: pendingSubAccountCount, icon: Layers },
     { id: "section-payments", view: "approvals", kind: "payment", label: "Outgoing Payments", count: (dbPending.payment ?? 0) + paymentsAwaitingDelivery, icon: ArrowUpRight },
     { id: "section-instruments", view: "approvals", kind: "instrument", label: "Bank Instruments", count: dbPending.instrument ?? 0, icon: FileText },
-    { id: "section-ppp", view: "approvals", kind: "ppp", label: "Yield / PPP", count: dbPending.ppp ?? 0, icon: TrendingUp },
+    { id: "section-ppp", view: "approvals", kind: "ppp", label: "Yield / PPP", count: (dbPending.ppp ?? 0) + yieldTerminationRequests, icon: TrendingUp },
     { id: "section-trading-fund", view: "approvals", kind: "trading_fund", label: "Treuhand Trading Fund", count: dbPending.trading_fund ?? 0, icon: Coins },
     { id: "section-treasury-lending", view: "approvals", kind: "treasury_lending", label: "Treasury Capital Lending", count: dbPending.treasury_lending ?? 0, icon: Landmark },
     { id: "section-internal-loan", view: "internal-lending", label: "Internal Lending", count: dbPending.internal_loan ?? 0, icon: HandCoins },

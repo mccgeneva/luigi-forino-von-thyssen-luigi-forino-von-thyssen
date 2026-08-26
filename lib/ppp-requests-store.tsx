@@ -25,8 +25,18 @@ export interface PPPRequest {
   decisionNote?: string // administrator note (e.g. rejection reason)
   /** ISO timestamp the client cancelled an ongoing (approved) program. */
   cancelledAt?: string
-  /** Early-cancellation penalty charged (in the invested currency), if cancelled. */
+  /** Early-cancellation penalty / agreed exit cost charged (invested currency). */
   penaltyAmount?: number
+  /** Final agreed exit cost once the administrator confirms termination. */
+  exitCostFinal?: number
+
+  // ---- Early-termination request (client resigns, admin confirms) ----------
+  /** ISO timestamp the client requested early resignation (awaiting admin). */
+  terminationRequestedAt?: string
+  /** Optional reason the client gave for resigning early. */
+  terminationReason?: string
+  /** Exit cost (damages) the client proposed to negotiate, in the invested currency. */
+  proposedExitCost?: number
 
   // ---- MCC-owned funding instrument & 75/25 benefit split (optional) --------
   /** Id of the MCC HOLDING SA-owned instrument funding this investment, if any. */

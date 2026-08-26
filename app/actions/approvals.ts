@@ -37,7 +37,6 @@ import {
   pppCapitalReturnId,
   pppIsCashFunded,
   yieldCancellationPenalty,
-  YIELD_EARLY_CANCELLATION_PENALTY_RATE,
 } from "@/lib/ppp-yield"
 import {
   INSTRUMENT_UPGRADE_FEE_LABEL,
@@ -55,6 +54,7 @@ import {
   listApprovalsForMaster,
   countPendingByKind,
   countPaymentsAwaitingDelivery,
+  countYieldTerminationRequests,
   decideApproval,
   recordAdminDecision,
   recordMasterDecision,
@@ -955,23 +955,18 @@ export async function revokeMyCommodityDeal(
 }
 
 /**
- * Client self-service cancellation of an ONGOING (approved) Yield / PPP program.
- *
- * Settled INSTANTLY, no administrator step:
- *  1. All ROI matured up to now is first CREDITED (idempotent) so the client
- *     keeps everything already earned — only FUTURE ROI stops.
- *  2. A fixed early-cancellation PENALTY (a % of the invested principal) is
- *     DEBITED from the Master Account, gated by a same-currency solvency check.
- *  3. The application is moved to `cancelled`, which stops all future ROI
- *     accrual (`buildPppRoiPosts` only credits `approved` programs) AND frees
- *     the funding instrument (the in-use gates release a `cancelled` request).
- *
- * The penalty is affordability-gated: if the client can't cover it, nothing is
- * cancelled or charged. Race-safe/ownership-scoped via `revokeApprovedApproval`.
+ * CLIENT requests early resignation from an ONGOING (approved) Yield / PPP
+ * program. This moves NO money and terminates nothing on its own — it stamps a
+ * termination request (with the client's PROPOSED exit cost + reason) onto the
+ * program and routes it to the administrator, who negotiates the final exit cost
+ * and confirms via `adminConfirmYieldTermination`. A customer can therefore never
+ * settle a large exit on themselves; the program keeps running (ROI keeps
+ * accruing) until the administrator confirms.
  */
-export async function cancelMyApprovedYield(
+export async function requestYieldTermination(
   approvalId: string,
-): Promise<{ ok: boolean; error?: string; penalty?: number; currency?: string }> {
+  input: { proposedCost?: number; reason?: string },
+): Promise<{ ok: boolean; error?: string; proposedCost?: number; currency?: string }> {
   const session = await resolveCurrentSession()
   if (!session) return { ok: false, error: "Your session has expired. Please sign in again." }
   try {
@@ -979,9 +974,110 @@ export async function cancelMyApprovedYield(
     if (!existing || existing.userId !== session.id) {
       return { ok: false, error: "This program could not be found." }
     }
-    if (existing.kind !== "ppp") return { ok: false, error: "Only a yield / PPP program can be cancelled here." }
+    if (existing.kind !== "ppp") return { ok: false, error: "Only a yield / PPP program can be resigned here." }
     if (existing.status !== "approved") {
-      return { ok: false, error: "Only an ongoing (approved) program can be cancelled." }
+      return { ok: false, error: "Only an ongoing (approved) program can be resigned." }
+    }
+    const prevPayload = existing.payload ?? {}
+    const prevRecord = (prevPayload.record as Record<string, unknown> | undefined) ?? {}
+    if (prevRecord.terminationRequestedAt && !prevRecord.cancelledAt) {
+      return { ok: false, error: "An early-termination request is already pending administrator review." }
+    }
+    const amount = Number(prevRecord.amount ?? existing.amount) || 0
+    const currency = String(prevRecord.currency || existing.currency || "USD")
+    // Default proposed exit cost = the standard early-cancellation cost (2% of
+    // principal); the client may propose a different figure to negotiate.
+    const suggested = yieldCancellationPenalty(amount)
+    let proposed = Number(input.proposedCost)
+    if (!Number.isFinite(proposed) || proposed < 0) proposed = suggested
+    proposed = Math.round((proposed + Number.EPSILON) * 100) / 100
+
+    await updateApprovalPayload(approvalId, {
+      ...prevPayload,
+      record: {
+        ...prevRecord,
+        terminationRequestedAt: new Date().toISOString(),
+        terminationReason: input.reason?.trim() || undefined,
+        proposedExitCost: proposed,
+      },
+    })
+
+    try {
+      const profile = await resolveAccountProfileById(existing.userId)
+      await logActivity({
+        action: `Client requested early termination of yield / PPP program "${existing.title}"`,
+        category: "Yield / PPP",
+        user: profile.fullName,
+        details: {
+          referenceId: existing.id,
+          summary: `Proposed exit cost ${currency} ${proposed.toLocaleString("en-US")}. ${input.reason?.trim() ? `Reason: ${input.reason.trim()}` : "No reason given."}`,
+          amount: `${currency} ${amount.toLocaleString("en-US")}`,
+          decision: "Termination requested",
+        },
+      })
+    } catch (err) {
+      console.log("[v0] yield termination request log failed:", (err as Error).message)
+    }
+
+    return { ok: true, proposedCost: proposed, currency }
+  } catch (err) {
+    console.log("[v0] requestYieldTermination failed:", (err as Error).message)
+    return { ok: false, error: "The termination request could not be submitted. Please try again." }
+  }
+}
+
+/** CLIENT withdraws a still-pending early-termination request (clears markers). */
+export async function withdrawYieldTermination(approvalId: string): Promise<{ ok: boolean; error?: string }> {
+  const session = await resolveCurrentSession()
+  if (!session) return { ok: false, error: "Your session has expired. Please sign in again." }
+  try {
+    const existing = await getApprovalById(approvalId)
+    if (!existing || existing.userId !== session.id) return { ok: false, error: "This program could not be found." }
+    if (existing.kind !== "ppp") return { ok: false, error: "Only a yield / PPP program applies here." }
+    const prevPayload = existing.payload ?? {}
+    const prevRecord = (prevPayload.record as Record<string, unknown> | undefined) ?? {}
+    if (!prevRecord.terminationRequestedAt || prevRecord.cancelledAt) {
+      return { ok: false, error: "There is no pending termination request to withdraw." }
+    }
+    const { terminationRequestedAt: _t, terminationReason: _r, proposedExitCost: _p, ...restRecord } = prevRecord
+    void _t
+    void _r
+    void _p
+    await updateApprovalPayload(approvalId, { ...prevPayload, record: restRecord })
+    return { ok: true }
+  } catch (err) {
+    console.log("[v0] withdrawYieldTermination failed:", (err as Error).message)
+    return { ok: false, error: "The request could not be withdrawn. Please try again." }
+  }
+}
+
+/**
+ * ADMINISTRATOR confirms an early-termination request at the FINAL agreed exit
+ * cost (damages). This performs the actual settlement, replacing the old instant
+ * self-service cancel:
+ *  1. Credits all ROI matured up to now (client keeps everything earned) and
+ *     ensures the invested-principal debit is present (cash-funded programs).
+ *  2. Flips the program to `cancelled` (stops future ROI, frees the instrument).
+ *  3. For a CASH-funded program, RETURNS the invested principal to the Master
+ *     Account; an instrument-funded program simply releases the pledged instrument.
+ *  4. Charges the agreed EXIT COST, gated by a same-currency solvency check (a
+ *     cash-funded return always covers it).
+ *
+ * `finalCost` is the negotiated figure the admin agrees with the client (defaults
+ * to the client's proposal but the admin can set any amount >= 0).
+ */
+export async function adminConfirmYieldTermination(
+  passcode: string,
+  approvalId: string,
+  input: { finalCost: number; note?: string },
+): Promise<{ ok: boolean; error?: string; exitCost?: number; currency?: string }> {
+  if (!(await adminOk(passcode))) return { ok: false, error: "Administrator authorization failed." }
+  try {
+    const existing = await getApprovalById(approvalId)
+    if (!existing) return { ok: false, error: "This program could not be found." }
+    if (existing.kind !== "ppp") return { ok: false, error: "Only a yield / PPP program can be terminated here." }
+    if (existing.status !== "approved") {
+      return { ok: false, error: "Only an ongoing (approved) program can be terminated." }
     }
 
     const record =
@@ -989,18 +1085,16 @@ export async function cancelMyApprovedYield(
         ?.record ?? {}
     const amount = Number(record.amount ?? existing.amount) || 0
     const currency = record.currency || existing.currency || "USD"
-    const penalty = yieldCancellationPenalty(amount)
-    // Only a CASH-funded program moved money in, so only it returns principal on
-    // cancel. An instrument-funded program is collateral-backed — no cash return.
+    // Only a CASH-funded program moved money in, so only it returns principal.
     const cashFunded = pppIsCashFunded(record)
+    let exitCost = Number(input.finalCost)
+    if (!Number.isFinite(exitCost) || exitCost < 0) return { ok: false, error: "Enter a valid exit cost." }
+    exitCost = Math.round((exitCost + Number.EPSILON) * 100) / 100
 
     const ownerId = await resolveDataOwnerIdFor(existing.userId)
 
-    // 1) Credit any ROI matured up to now so nothing earned is lost on cancel,
-    //    and ensure the invested-principal DEBIT is present (it may not have been
-    //    reconciled yet). Posting the debit here keeps the ledger consistent so
-    //    the later principal-return credit nets cleanly to zero regardless of
-    //    whether a ledger reconcile had already run.
+    // 1) Credit ROI matured up to now (nothing earned is lost) and ensure the
+    //    invested-principal debit is present so the return nets cleanly.
     try {
       const roiPosts = buildPppRoiPosts(existing)
       const capitalDebit = buildPppCapitalPosts(existing).find((p) => p.id === pppCapitalId(approvalId))
@@ -1011,23 +1105,21 @@ export async function cancelMyApprovedYield(
       }
       if (capitalDebit && !have.has(capitalDebit.id)) await upsertLedgerEntry(ownerId, capitalDebit)
     } catch (err) {
-      console.log("[v0] yield cancel ROI/capital catch-up failed:", (err as Error).message)
+      console.log("[v0] yield termination ROI/capital catch-up failed:", (err as Error).message)
     }
 
-    // 2) Solvency gate for the penalty (same-currency available on the master).
-    //    A CASH-funded cancel RETURNS the invested principal, so the penalty is
-    //    assessed against the balance available AFTER that return (the returned
-    //    principal always covers a 2% penalty). An instrument-funded cancel
-    //    returns no cash, so it is assessed against the actual balance only.
-    if (penalty > 0) {
+    // 2) Solvency gate for the exit cost. A CASH-funded return covers it; an
+    //    instrument-funded termination returns no cash, so it is assessed against
+    //    the actual balance only.
+    if (exitCost > 0) {
       const available = availableByCurrency(await readLedgerEntries(ownerId))
       const availableInCcy =
         Object.entries(available).reduce((sum, [cur, amt]) => sum + convertCurrency(amt, cur, currency), 0) +
         (cashFunded ? amount : 0)
-      if (penalty > availableInCcy + 0.01) {
+      if (exitCost > availableInCcy + 0.01) {
         return {
           ok: false,
-          error: `Cancelling incurs a ${(YIELD_EARLY_CANCELLATION_PENALTY_RATE * 100).toFixed(0)}% penalty of ${currency} ${penalty.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}, but your available balance can't cover it. Fund the account first.`,
+          error: `The agreed exit cost of ${currency} ${exitCost.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} exceeds the client's available balance. Agree a lower figure or ask the client to fund the account.`,
         }
       }
     }
@@ -1036,16 +1128,13 @@ export async function cancelMyApprovedYield(
     //    frees the funding instrument.
     const cancelled = await revokeApprovedApproval(
       approvalId,
-      session.id,
-      "Yield / PPP program cancelled by client before term end.",
+      existing.userId,
+      "Yield / PPP program terminated early — confirmed by the administrator.",
     )
-    if (!cancelled) return { ok: false, error: "This program can no longer be cancelled." }
+    if (!cancelled) return { ok: false, error: "This program can no longer be terminated." }
 
-    // 4a) For a CASH-funded program, return the invested PRINCIPAL to the Master
-    //     Account (deterministic id → idempotent; reuses `pppCapitalReturnId` so a
-    //     maturity return and this cancel return can never both post). Nets the
-    //     approval-time capital debit. Instrument-funded programs moved no cash in,
-    //     so nothing is returned — the pledged instrument is simply released.
+    // 3a) For a CASH-funded program, return the invested PRINCIPAL to the Master
+    //     Account (deterministic id → idempotent; reuses `pppCapitalReturnId`).
     if (cashFunded) {
       try {
         await upsertLedgerEntry(ownerId, {
@@ -1058,78 +1147,85 @@ export async function cancelMyApprovedYield(
           counterparty: existing.title || "Yield / PPP program",
           reference: approvalId,
           category: "NAFTAhub Yield — Capital Returned",
-          comment: `Principal returned on early cancellation of "${existing.title}".`,
+          comment: `Principal returned on early termination of "${existing.title}".`,
         })
       } catch (err) {
-        console.log("[v0] yield cancel principal return failed:", (err as Error).message)
+        console.log("[v0] yield termination principal return failed:", (err as Error).message)
       }
     }
 
-    // 4) Charge the penalty (deterministic id → idempotent, never double-charges).
-    if (penalty > 0) {
+    // 4) Charge the agreed exit cost (deterministic id → idempotent).
+    if (exitCost > 0) {
       try {
         await upsertLedgerEntry(ownerId, {
           id: `PPP-CANCEL-PENALTY-${approvalId}`,
           direction: "debit",
-          amount: penalty,
+          amount: exitCost,
           currency,
           status: "completed",
           date: new Date().toISOString(),
           counterparty: existing.title || "Yield / PPP program",
           reference: approvalId,
-          category: "NAFTAhub Yield — Early Cancellation Penalty",
-          comment: `${(YIELD_EARLY_CANCELLATION_PENALTY_RATE * 100).toFixed(0)}% early-cancellation penalty on "${existing.title}".`,
+          category: "NAFTAhub Yield — Early Termination Cost",
+          comment: `Agreed early-termination cost on "${existing.title}".`,
         })
       } catch (err) {
-        console.log("[v0] yield cancel penalty debit failed:", (err as Error).message)
+        console.log("[v0] yield termination cost debit failed:", (err as Error).message)
       }
     }
 
-    // Stamp the cancellation on the record for display (best-effort).
+    // Stamp the settlement + clear the termination-request markers (best-effort).
     try {
       const prevPayload = cancelled.payload ?? {}
       const prevRecord = (prevPayload.record as Record<string, unknown> | undefined) ?? {}
+      const { terminationRequestedAt: _t, ...restRecord } = prevRecord
+      void _t
       await updateApprovalPayload(approvalId, {
         ...prevPayload,
-        record: { ...prevRecord, cancelledAt: new Date().toISOString(), penaltyAmount: penalty },
+        record: {
+          ...restRecord,
+          cancelledAt: new Date().toISOString(),
+          penaltyAmount: exitCost,
+          exitCostFinal: exitCost,
+        },
       })
     } catch (err) {
-      console.log("[v0] yield cancel record stamp failed:", (err as Error).message)
+      console.log("[v0] yield termination record stamp failed:", (err as Error).message)
     }
 
     try {
       await insertNotification({
         userId: existing.userId,
         tone: "info",
-        title: "Yield program cancelled",
-        body: `Your yield / PPP program "${existing.title}" was cancelled. ${cashFunded ? `The invested principal of ${currency} ${amount.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} was returned to your Master Account. ` : "The pledged funding instrument has been released. "}${penalty > 0 ? `A ${currency} ${penalty.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} early-cancellation penalty was charged. ` : ""}ROI already earned was kept; future ROI has stopped.`,
+        title: "Yield program terminated",
+        body: `Your early resignation from "${existing.title}" was confirmed by the administrator. ${cashFunded ? `The invested principal of ${currency} ${amount.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} was returned to your Master Account. ` : "The pledged funding instrument has been released. "}${exitCost > 0 ? `An agreed early-termination cost of ${currency} ${exitCost.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} was charged. ` : ""}ROI already earned was kept; future ROI has stopped.`,
         href: KIND_HREF.ppp ?? "/dashboard/ppp",
       })
     } catch (err) {
-      console.log("[v0] yield cancel notification failed:", (err as Error).message)
+      console.log("[v0] yield termination notification failed:", (err as Error).message)
     }
 
     try {
       const profile = await resolveAccountProfileById(existing.userId)
       await logActivity({
-        action: `Client cancelled yield / PPP program "${existing.title}"`,
+        action: `Administrator confirmed early termination of yield / PPP program "${existing.title}"`,
         category: "Yield / PPP",
         user: profile.fullName,
         details: {
           referenceId: existing.id,
-          summary: `Cancelled ongoing program. Penalty ${currency} ${penalty.toLocaleString("en-US")} charged; earned ROI kept; funding instrument released.`,
+          summary: `Terminated early. Exit cost ${currency} ${exitCost.toLocaleString("en-US")} charged; earned ROI kept; funding released.${input.note?.trim() ? ` Note: ${input.note.trim()}` : ""}`,
           amount: `${currency} ${amount.toLocaleString("en-US")}`,
-          decision: "Cancelled",
+          decision: "Terminated",
         },
       })
     } catch (err) {
-      console.log("[v0] yield cancel activity log failed:", (err as Error).message)
+      console.log("[v0] yield termination activity log failed:", (err as Error).message)
     }
 
-    return { ok: true, penalty, currency }
+    return { ok: true, exitCost, currency }
   } catch (err) {
-    console.log("[v0] cancelMyApprovedYield failed:", (err as Error).message)
-    return { ok: false, error: "The program could not be cancelled. Please try again." }
+    console.log("[v0] adminConfirmYieldTermination failed:", (err as Error).message)
+    return { ok: false, error: "The program could not be terminated. Please try again." }
   }
 }
 
@@ -1952,6 +2048,17 @@ export async function adminCountPaymentsAwaitingDelivery(passcode: string): Prom
     return await countPaymentsAwaitingDelivery()
   } catch (err) {
     console.log("[v0] adminCountPaymentsAwaitingDelivery failed:", (err as Error).message)
+    return 0
+  }
+}
+
+/** Count of approved Yield / PPP programs with a pending early-termination request. */
+export async function adminCountYieldTerminationRequests(passcode: string): Promise<number> {
+  if (!(await adminOk(passcode))) return 0
+  try {
+    return await countYieldTerminationRequests()
+  } catch (err) {
+    console.log("[v0] adminCountYieldTerminationRequests failed:", (err as Error).message)
     return 0
   }
 }

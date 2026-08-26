@@ -384,6 +384,24 @@ export async function countPaymentsAwaitingDelivery(): Promise<number> {
 }
 
 /**
+ * Count of APPROVED Yield / PPP programs whose client has requested an early
+ * termination the administrator has not yet confirmed. These carry a pending
+ * ADMINISTRATOR action (negotiate the exit cost & confirm) even though the
+ * program is still `approved`, so they would otherwise be invisible on the
+ * command center (which counts only `pending` rows).
+ */
+export async function countYieldTerminationRequests(): Promise<number> {
+  await ensureTable()
+  const { rows } = await query<{ n: string }>(
+    `SELECT COUNT(*)::int AS n FROM approval_requests
+      WHERE kind = 'ppp' AND status = 'approved'
+        AND payload->'record'->>'terminationRequestedAt' IS NOT NULL
+        AND payload->'record'->>'cancelledAt' IS NULL`,
+  )
+  return Number(rows[0]?.n ?? 0)
+}
+
+/**
  * Record a decision on a pending request. Returns the updated record, or null
  * if it does not exist or was already decided (idempotent / race-safe via the
  * status guard in the WHERE clause).

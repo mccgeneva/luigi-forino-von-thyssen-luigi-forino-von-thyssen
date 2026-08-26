@@ -73,10 +73,12 @@ import {
   adminDeleteCommodityDeal,
   adminAdjustLeveragePpi,
   adminAdjustMonetizationReserve,
+  adminConfirmYieldTermination,
   type DealHoldState,
 } from "@/app/actions/approvals"
 import { leverageApplicationCharges } from "@/lib/leverage-audit-fee"
 import { computeMonetizationEquity } from "@/lib/monetization-equity"
+import { yieldCancellationPenalty, YIELD_EARLY_CANCELLATION_PENALTY_RATE } from "@/lib/ppp-yield"
 import {
   getClientFinancialSnapshotAdmin,
   type ClientFinancialSnapshot,
@@ -181,6 +183,34 @@ function monetizationReserveInfo(req: ApprovalRequest): {
   const negotiated = Number.isFinite(neg) && neg >= 0 ? neg : null
   const released = negotiated == null ? 0 : Math.round((original - negotiated + Number.EPSILON) * 100) / 100
   return { currency, original, negotiated, released }
+}
+
+/** Early-termination picture for an APPROVED Yield / PPP program: whether the
+ *  client has requested to resign, the reason, the exit cost they proposed, and
+ *  the standard 2%-of-principal figure the admin can offer as a baseline. Returns
+ *  null unless there is an active termination request the admin must action. */
+function pppTerminationInfo(req: ApprovalRequest): {
+  currency: string
+  principal: number
+  proposed: number
+  suggested: number
+  reason: string | null
+  requestedAt: string
+} | null {
+  if (req.kind !== "ppp") return null
+  const rec = ((req.payload as { record?: Record<string, unknown> } | undefined)?.record ?? {}) as Record<
+    string,
+    unknown
+  >
+  const requestedAt = typeof rec.terminationRequestedAt === "string" ? rec.terminationRequestedAt : null
+  if (!requestedAt || rec.cancelledAt) return null
+  const principal = Number(rec.amount ?? req.amount) || 0
+  const currency = String(rec.currency || req.currency || "USD")
+  const suggested = yieldCancellationPenalty(principal)
+  const prop = Number(rec.proposedExitCost)
+  const proposed = Number.isFinite(prop) && prop >= 0 ? Math.round((prop + Number.EPSILON) * 100) / 100 : suggested
+  const reason = typeof rec.terminationReason === "string" && rec.terminationReason.trim() ? rec.terminationReason.trim() : null
+  return { currency, principal, proposed, suggested, reason, requestedAt }
 }
 
 function formatFileSize(bytes?: number): string {
@@ -444,7 +474,7 @@ export function PendingApprovals({ initialKind }: { initialKind?: ApprovalKind }
   // not just pending ones. Otherwise an approved payment would drop out of view
   // and its stage-3 "Mark funds delivered" action would be unreachable.
   const [statusFilter, setStatusFilter] = useState<ApprovalStatus | "all">(
-    initialKind === "commodity" || initialKind === "payment" ? "all" : "pending",
+    initialKind === "commodity" || initialKind === "payment" || initialKind === "ppp" ? "all" : "pending",
   )
   const [kindFilter, setKindFilter] = useState<ApprovalKind | "all">(initialKind ?? "all")
 
@@ -713,6 +743,59 @@ export function PendingApprovals({ initialKind }: { initialKind?: ApprovalKind }
       `Reserve set to ${formatMoney2(newRes, resTarget.currency)}. ${formatMoney2(released, resTarget.currency)} released to the client's available balance.`,
     )
     setResTarget(null)
+    mutate()
+  }
+
+  // Yield / PPP early-termination dialog. The client requested to resign and
+  // proposed an exit cost; the admin agrees the FINAL exit cost (defaults to the
+  // client's proposal) then confirms, which settles and terminates the program.
+  const [termTarget, setTermTarget] = useState<{
+    id: string
+    label: string
+    currency: string
+    principal: number
+    proposed: number
+    suggested: number
+    reason: string | null
+  } | null>(null)
+  const [termValue, setTermValue] = useState("")
+  const [termNote, setTermNote] = useState("")
+
+  const openTermConfirm = (req: ApprovalRequest, info: NonNullable<ReturnType<typeof pppTerminationInfo>>) => {
+    setTermValue(info.proposed.toFixed(2))
+    setTermNote("")
+    setTermTarget({
+      id: req.id,
+      label: req.title,
+      currency: info.currency,
+      principal: info.principal,
+      proposed: info.proposed,
+      suggested: info.suggested,
+      reason: info.reason,
+    })
+  }
+
+  const confirmTermination = async () => {
+    if (!termTarget) return
+    const finalCost = Number(termValue)
+    if (!Number.isFinite(finalCost) || finalCost < 0) {
+      toast.error("Enter a valid agreed exit cost.")
+      return
+    }
+    setActing(true)
+    const res = await adminConfirmYieldTermination(ADMIN_PASSCODE, termTarget.id, {
+      finalCost,
+      note: termNote.trim() || undefined,
+    })
+    setActing(false)
+    if (!res.ok) {
+      toast.error(res.error)
+      return
+    }
+    toast.success(
+      `Program terminated. Agreed exit cost ${formatMoney2(res.exitCost ?? finalCost, res.currency ?? termTarget.currency)} charged; the client keeps earned ROI.`,
+    )
+    setTermTarget(null)
     mutate()
   }
 
@@ -1078,6 +1161,10 @@ export function PendingApprovals({ initialKind }: { initialKind?: ApprovalKind }
               // blocked equity+PPI reserve; available while pending or approved.
               const mon = monetizationReserveInfo(req)
               const canNegotiateReserve = !!mon && (req.status === "pending" || req.status === "approved")
+              // Yield / PPP early-termination request — present only on an approved
+              // program whose client asked to resign. The admin negotiates the exit
+              // cost and confirms, which terminates the program.
+              const term = pppTerminationInfo(req)
               // A shared read-only copy is a recipient-owned mirror of another
               // client's deal. It must never expose admin management actions —
               // documents, vessel, sharing and delivery are managed on the
@@ -1323,6 +1410,50 @@ export function PendingApprovals({ initialKind }: { initialKind?: ApprovalKind }
                       >
                         <Handshake className="h-3.5 w-3.5" /> Negotiate reserve
                       </Button>
+                    </div>
+                  )}
+                  {term && (
+                    <div className="w-full space-y-2 rounded-md border border-orange-500/30 bg-orange-500/5 p-3">
+                      <div className="flex items-center gap-1.5 text-sm font-medium text-orange-600 dark:text-orange-400">
+                        <Handshake className="h-4 w-4" /> Early resignation requested
+                      </div>
+                      <div className="grid gap-1 text-xs text-muted-foreground sm:grid-cols-2">
+                        <div className="flex items-center justify-between gap-2">
+                          <span>Invested principal</span>
+                          <span className="font-mono tabular-nums text-foreground">
+                            {formatMoney2(term.principal, term.currency)}
+                          </span>
+                        </div>
+                        <div className="flex items-center justify-between gap-2">
+                          <span>Standard ({(YIELD_EARLY_CANCELLATION_PENALTY_RATE * 100).toFixed(0)}%)</span>
+                          <span className="font-mono tabular-nums text-foreground">
+                            {formatMoney2(term.suggested, term.currency)}
+                          </span>
+                        </div>
+                        <div className="flex items-center justify-between gap-2 sm:col-span-2">
+                          <span>Client-proposed exit cost</span>
+                          <span className="font-mono font-semibold tabular-nums text-orange-600 dark:text-orange-400">
+                            {formatMoney2(term.proposed, term.currency)}
+                          </span>
+                        </div>
+                      </div>
+                      {term.reason && (
+                        <p className="text-xs text-muted-foreground">
+                          <span className="font-medium text-foreground">Reason: </span>
+                          {term.reason}
+                        </p>
+                      )}
+                      <div className="flex flex-wrap items-center justify-end gap-1.5">
+                        <Button
+                          size="sm"
+                          className="h-8 gap-1"
+                          disabled={acting}
+                          onClick={() => openTermConfirm(req, term)}
+                          title="Agree the final exit cost with the client and confirm — this settles the exit and terminates the yield."
+                        >
+                          <Handshake className="h-3.5 w-3.5" /> Negotiate &amp; confirm
+                        </Button>
+                      </div>
                     </div>
                   )}
                   {req.kind === "commodity" && req.status === "approved" && !isSharedCopy && (
@@ -1757,6 +1888,112 @@ export function PendingApprovals({ initialKind }: { initialKind?: ApprovalKind }
             <Button onClick={confirmResNegotiate} disabled={acting} className="gap-1">
               {acting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Handshake className="h-4 w-4" />}
               Apply &amp; release
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Confirm Yield / PPP early termination (negotiated exit cost) dialog */}
+      <Dialog open={termTarget !== null} onOpenChange={(o) => !o && !acting && setTermTarget(null)}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Handshake className="h-4 w-4 text-orange-500" />
+              Confirm early termination
+            </DialogTitle>
+            <DialogDescription className="text-pretty">
+              Agree the final exit cost (damages) with the client, then confirm to terminate the program. The client
+              keeps all ROI already earned; future ROI stops and the funding is released.
+            </DialogDescription>
+          </DialogHeader>
+          {termTarget && (
+            <div className="space-y-4">
+              <div className="rounded-md border border-border bg-muted/40 p-3 text-sm">
+                <div className="font-medium text-foreground">{termTarget.label}</div>
+                <div className="mt-2 grid gap-1 text-xs text-muted-foreground">
+                  <div className="flex items-center justify-between gap-2">
+                    <span>Invested principal</span>
+                    <span className="font-mono tabular-nums text-foreground">
+                      {formatMoney2(termTarget.principal, termTarget.currency)}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between gap-2">
+                    <span>Standard ({(YIELD_EARLY_CANCELLATION_PENALTY_RATE * 100).toFixed(0)}%)</span>
+                    <span className="font-mono tabular-nums text-foreground">
+                      {formatMoney2(termTarget.suggested, termTarget.currency)}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between gap-2">
+                    <span>Client proposed</span>
+                    <span className="font-mono tabular-nums text-foreground">
+                      {formatMoney2(termTarget.proposed, termTarget.currency)}
+                    </span>
+                  </div>
+                </div>
+                {termTarget.reason && (
+                  <p className="mt-2 text-xs text-muted-foreground">
+                    <span className="font-medium text-foreground">Reason: </span>
+                    {termTarget.reason}
+                  </p>
+                )}
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="term-cost">Final agreed exit cost ({termTarget.currency})</Label>
+                <Input
+                  id="term-cost"
+                  type="number"
+                  inputMode="decimal"
+                  min={0}
+                  step="0.01"
+                  value={termValue}
+                  onChange={(e) => setTermValue(e.target.value)}
+                  className="text-base md:text-sm"
+                />
+                <div className="flex flex-wrap gap-2 pt-0.5 text-xs">
+                  <button
+                    type="button"
+                    className="text-orange-600 hover:underline dark:text-orange-400"
+                    onClick={() => setTermValue(termTarget.proposed.toFixed(2))}
+                  >
+                    Use client proposal
+                  </button>
+                  <span className="text-muted-foreground">·</span>
+                  <button
+                    type="button"
+                    className="text-orange-600 hover:underline dark:text-orange-400"
+                    onClick={() => setTermValue(termTarget.suggested.toFixed(2))}
+                  >
+                    Use standard {(YIELD_EARLY_CANCELLATION_PENALTY_RATE * 100).toFixed(0)}%
+                  </button>
+                  <span className="text-muted-foreground">·</span>
+                  <button
+                    type="button"
+                    className="text-orange-600 hover:underline dark:text-orange-400"
+                    onClick={() => setTermValue("0")}
+                  >
+                    Waive (0)
+                  </button>
+                </div>
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="term-note">Note (optional)</Label>
+                <Textarea
+                  id="term-note"
+                  value={termNote}
+                  onChange={(e) => setTermNote(e.target.value)}
+                  placeholder="Reason for the agreed figure…"
+                  className="min-h-16 text-base md:text-sm"
+                />
+              </div>
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setTermTarget(null)} disabled={acting}>
+              Cancel
+            </Button>
+            <Button onClick={confirmTermination} disabled={acting} className="gap-1">
+              {acting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Handshake className="h-4 w-4" />}
+              Confirm &amp; terminate
             </Button>
           </DialogFooter>
         </DialogContent>
