@@ -14,6 +14,7 @@ import {
   Lock,
   Upload,
   FileText,
+  XCircle,
 } from "lucide-react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -36,6 +37,7 @@ import {
   listCreditableIncomingSwiftAdmin,
   creditIncomingSwiftAdmin,
   recordGuaranteeInstrumentAdmin,
+  rejectIncomingSwiftAdmin,
   type IngestResult,
 } from "@/app/actions/incoming-swift"
 import { listSelectableClients, type SelectableClient } from "@/app/actions/admin-users"
@@ -96,6 +98,9 @@ export function IncomingSwiftDelivery() {
   const [loadingCreditable, setLoadingCreditable] = useState(false)
   const [crediting, setCrediting] = useState<string | null>(null)
   const [booking, setBooking] = useState<string | null>(null)
+  const [rejecting, setRejecting] = useState<string | null>(null)
+  const [rejectOpen, setRejectOpen] = useState<string | null>(null)
+  const [rejectReason, setRejectReason] = useState<Record<string, string>>({})
 
   const loadQueue = async () => {
     setLoadingQueue(true)
@@ -156,6 +161,28 @@ export function IncomingSwiftDelivery() {
       toast.error("Could not reach the guarantee engine.")
     } finally {
       setBooking(null)
+    }
+  }
+
+  const handleReject = async (m: IncomingSwiftMessage) => {
+    setRejecting(m.id)
+    try {
+      const res = await rejectIncomingSwiftAdmin(ADMIN_PASSCODE, m.id, rejectReason[m.id] ?? "")
+      if (res.ok) {
+        toast.success("Message rejected. It has been removed from the queue.")
+        setCreditable((prev) => prev.filter((x) => x.id !== m.id))
+        setRejectOpen(null)
+      } else if (res.alreadyResolved) {
+        toast.warning(res.error ?? "This message was already resolved.")
+        setCreditable((prev) => prev.filter((x) => x.id !== m.id))
+        setRejectOpen(null)
+      } else {
+        toast.error(res.error ?? "Could not reject the message.")
+      }
+    } catch {
+      toast.error("Could not reach the delivery engine.")
+    } finally {
+      setRejecting(null)
     }
   }
 
@@ -382,6 +409,7 @@ export function IncomingSwiftDelivery() {
                           )}
                           Record blocked-funds guarantee &amp; charge 0.2%
                         </Button>
+                        <RejectButton id={m.id} open={rejectOpen === m.id} onToggle={setRejectOpen} />
                       </div>
                     </>
                   ) : (
@@ -399,6 +427,47 @@ export function IncomingSwiftDelivery() {
                         )}
                         Execute &amp; credit to Master Account
                       </Button>
+                      <RejectButton id={m.id} open={rejectOpen === m.id} onToggle={setRejectOpen} />
+                    </div>
+                  )}
+
+                  {rejectOpen === m.id && (
+                    <div className="mt-3 rounded-md border border-destructive/30 bg-destructive/5 p-3">
+                      <p className="text-xs font-medium text-foreground">Reject this message?</p>
+                      <p className="mt-0.5 text-xs text-muted-foreground">
+                        It will be removed from the queue and the customer&apos;s inbox, and they will be notified. This
+                        does not move any funds. Crediting is not mandatory.
+                      </p>
+                      <Textarea
+                        value={rejectReason[m.id] ?? ""}
+                        onChange={(e) => setRejectReason((prev) => ({ ...prev, [m.id]: e.target.value }))}
+                        placeholder="Optional reason shared with the customer (e.g. unverifiable / duplicate / wrong beneficiary)"
+                        className="mt-2 min-h-[64px] text-xs"
+                      />
+                      <div className="mt-2 flex flex-wrap gap-2">
+                        <Button
+                          size="sm"
+                          variant="destructive"
+                          onClick={() => handleReject(m)}
+                          disabled={rejecting === m.id}
+                          className="gap-1.5"
+                        >
+                          {rejecting === m.id ? (
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                          ) : (
+                            <XCircle className="h-4 w-4" />
+                          )}
+                          Confirm rejection
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={() => setRejectOpen(null)}
+                          disabled={rejecting === m.id}
+                        >
+                          Cancel
+                        </Button>
+                      </div>
                     </div>
                   )}
                 </div>
@@ -492,6 +561,28 @@ export function IncomingSwiftDelivery() {
         </CardContent>
       </Card>
     </div>
+  )
+}
+
+function RejectButton({
+  id,
+  open,
+  onToggle,
+}: {
+  id: string
+  open: boolean
+  onToggle: (id: string | null) => void
+}) {
+  return (
+    <Button
+      size="sm"
+      variant="outline"
+      onClick={() => onToggle(open ? null : id)}
+      className="gap-1.5 border-destructive/30 bg-transparent text-destructive hover:bg-destructive/10 hover:text-destructive"
+    >
+      <XCircle className="h-4 w-4" />
+      Reject
+    </Button>
   )
 }
 
