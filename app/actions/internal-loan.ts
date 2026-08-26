@@ -75,6 +75,9 @@ export interface AdminInternalLoan {
   purpose: string
   repaymentPlan: string
   collateralNote: string
+  /** Pledged bank instrument acting as collateral, if any (label + id). */
+  collateralInstrumentId: string
+  collateralInstrumentLabel: string
   createdAt: string
   decidedAt: string | null
   /**
@@ -101,6 +104,9 @@ export async function applyForInternalLoan(input: {
   purpose?: string
   repaymentPlan?: string
   collateralNote?: string
+  /** Optional pledged bank instrument acting as collateral (locked while live). */
+  collateralInstrumentId?: string
+  collateralInstrumentLabel?: string
 }): Promise<ApplyLoanResult> {
   const session = await resolveCurrentSession()
   if (!session?.id) return { ok: false, error: "Your session has expired. Please sign in again." }
@@ -115,6 +121,37 @@ export async function applyForInternalLoan(input: {
   const purpose = (input.purpose || "").trim()
   const repaymentPlan = (input.repaymentPlan || "").trim()
   const collateralNote = (input.collateralNote || "").trim()
+  const collateralInstrumentId = (input.collateralInstrumentId || "").trim()
+  const collateralInstrumentLabel = (input.collateralInstrumentLabel || "").trim()
+
+  // If a bank instrument is pledged as collateral, make sure it is not already
+  // committed to another LIVE internal loan (a pledged instrument is locked
+  // until that loan is repaid). This is the authoritative double-pledge guard;
+  // the client picker also hides in-use instruments. Best-effort — a read
+  // failure must not block a legitimate application.
+  if (collateralInstrumentId) {
+    try {
+      const mine = await listApprovalsForUser(session.id, "internal_loan")
+      const alreadyPledged = mine.some((r) => {
+        const rec = (r.payload as { record?: Record<string, unknown> } | undefined)?.record ?? {}
+        if (rec.collateralInstrumentId !== collateralInstrumentId) return false
+        // Live = pending, or approved and not yet repaid/settled.
+        if (r.status === "pending") return true
+        if (r.status === "approved" && !rec.settledAt && rec.status !== "closed") return true
+        return false
+      })
+      if (alreadyPledged) {
+        return {
+          ok: false,
+          error:
+            "That instrument is already pledged as collateral on another active internal loan. " +
+            "Release it by repaying that loan before pledging it again.",
+        }
+      }
+    } catch (err) {
+      console.log("[v0] internal-loan collateral double-pledge check failed (allowing):", (err as Error).message)
+    }
+  }
 
   // Guarantees Accumulator — HIGH-RISK gate. An internal loan is new debt/
   // exposure, so it is refused in real time while the account is classified
@@ -157,6 +194,8 @@ export async function applyForInternalLoan(input: {
       purpose,
       repaymentPlan,
       collateralNote,
+      collateralInstrumentId: collateralInstrumentId || undefined,
+      collateralInstrumentLabel: collateralInstrumentLabel || undefined,
     }
     await insertApproval({
       id,
@@ -227,6 +266,8 @@ export async function listInternalLoansAdmin(passcode: string): Promise<AdminInt
         purpose: (record.purpose as string) ?? "",
         repaymentPlan: (record.repaymentPlan as string) ?? "",
         collateralNote: (record.collateralNote as string) ?? "",
+        collateralInstrumentId: (record.collateralInstrumentId as string) ?? "",
+        collateralInstrumentLabel: (record.collateralInstrumentLabel as string) ?? "",
         createdAt: req.createdAt,
         decidedAt: req.decidedAt ?? null,
         discussionOpenedAt: (record.discussionOpenedAt as string) ?? null,
