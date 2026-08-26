@@ -107,17 +107,50 @@ export async function deleteLedgerEntry(userId: string, entryId: string): Promis
  * currency is overdrawn (beyond a one-cent rounding tolerance). Call this after
  * posting reservation/debit effects so a negative balance can NEVER be left
  * committed — the caller is expected to roll back and surface the failure.
+ *
+ * `options.overdraftAllowance` grants a CONTROLLED OVERDRAFT — the aggregate
+ * amount (expressed in `options.allowanceCurrency`, default EUR) by which the
+ * account may go negative across all currencies combined. This is ONLY passed by
+ * automatic platform-charge/fee post sites (leverage audit/PPI, treasury
+ * interest, card/gateway/guarantee fees), never by ordinary money movement
+ * (payments, exchanges, transfers), which keep calling with no allowance and are
+ * therefore still held to a strict positive balance. When an allowance is given,
+ * a single currency may go negative and the check passes only while the TOTAL
+ * negative (converted into the allowance currency) stays within the allowance.
  */
-export async function assertOwnerSolvent(userId: string): Promise<void> {
+export async function assertOwnerSolvent(
+  userId: string,
+  options?: { overdraftAllowance?: number; allowanceCurrency?: string },
+): Promise<void> {
   await ensureLedgerTable()
   const entries = await readLedgerEntries(userId)
   const balances = availableByCurrency(entries)
-  for (const [currency, balance] of Object.entries(balances)) {
-    if (balance < -0.01) {
-      throw new Error(
-        `INSUFFICIENT_FUNDS: posting would overdraw ${currency} (available ${balance.toFixed(2)})`,
-      )
+  const allowance = Math.max(0, options?.overdraftAllowance ?? 0)
+
+  if (allowance <= 0) {
+    // Strict mode (default): no currency may be negative.
+    for (const [currency, balance] of Object.entries(balances)) {
+      if (balance < -0.01) {
+        throw new Error(`INSUFFICIENT_FUNDS: posting would overdraw ${currency} (available ${balance.toFixed(2)})`)
+      }
     }
+    return
+  }
+
+  // Controlled-overdraft mode: sum the negatives (in the allowance currency) and
+  // fail only if the total deficit exceeds the ceiling. Lazily import the FX
+  // helper to avoid a circular import at module load.
+  const allowanceCurrency = options?.allowanceCurrency || "EUR"
+  const { convertCurrency } = await import("@/lib/fx")
+  let totalNegative = 0
+  for (const [currency, balance] of Object.entries(balances)) {
+    if (balance < 0) totalNegative += convertCurrency(-balance, currency, allowanceCurrency)
+  }
+  if (totalNegative > allowance + 0.01) {
+    throw new Error(
+      `OVERDRAFT_LIMIT: posting would overdraw the account by ${allowanceCurrency} ${totalNegative.toFixed(2)}, ` +
+        `beyond the controlled overdraft ceiling of ${allowanceCurrency} ${allowance.toFixed(2)}`,
+    )
   }
 }
 

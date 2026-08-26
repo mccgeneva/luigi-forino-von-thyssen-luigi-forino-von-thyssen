@@ -16,6 +16,7 @@ import {
   type GuaranteeConfig,
   type GuaranteeScore,
 } from "@/lib/guarantees-accumulator"
+import type { OverdraftStatus } from "@/lib/overdraft"
 
 type ScoredUser = {
   id: string
@@ -23,6 +24,7 @@ type ScoredUser = {
   company: string
   email: string
   score: GuaranteeScore | null
+  overdraft?: OverdraftStatus | null
 }
 
 function eur(n: number) {
@@ -164,6 +166,28 @@ export function GuaranteesManager({ passcode }: { passcode: string }) {
                 <Label className="text-xs">Track record</Label>
                 <Input type="number" min="0" step="0.1" value={config.weightTrackRecord} onChange={setNum("weightTrackRecord")} className="mt-1" />
               </div>
+              <div>
+                <Label className="text-xs">Overdraft</Label>
+                <Input type="number" min="0" step="0.1" value={config.weightOverdraft} onChange={setNum("weightOverdraft")} className="mt-1" />
+              </div>
+            </div>
+          </div>
+
+          {/* Controlled overdraft */}
+          <div>
+            <p className="mb-2 text-sm font-semibold text-foreground">Controlled overdraft</p>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div>
+                <Label className="text-xs">Overdraft risk points (full)</Label>
+                <Input type="number" min="0" step="1" value={config.overdraftRiskFull} onChange={setNum("overdraftRiskFull")} className="mt-1" />
+                <p className="mt-1 text-[11px] text-muted-foreground">Risk a fully-used overdraft (100% of the 8% ceiling) contributes, scaled by usage. 144 ⇒ √144 = 12 (above the default 10 gate).</p>
+              </div>
+              <div className="flex items-end">
+                <p className="text-[11px] text-muted-foreground">
+                  Accounts may go negative up to 8% of their paid-in treasury security deposit to settle platform
+                  charges. A negative balance raises this score and hard-blocks new leverage/financing until cleared.
+                </p>
+              </div>
             </div>
           </div>
 
@@ -292,7 +316,7 @@ export function GuaranteesManager({ passcode }: { passcode: string }) {
                     </div>
 
                     {s && (
-                      <div className="mt-3 grid gap-px overflow-hidden rounded-md border border-border bg-border text-center sm:grid-cols-5">
+                      <div className="mt-3 grid gap-px overflow-hidden rounded-md border border-border bg-border text-center sm:grid-cols-6">
                         <div className="bg-card p-2">
                           <p className="text-[10px] text-muted-foreground">Security deposit</p>
                           <p className="text-xs font-semibold text-foreground tabular-nums">{s.factors.securityDeposit}</p>
@@ -313,7 +337,19 @@ export function GuaranteesManager({ passcode }: { passcode: string }) {
                           <p className="text-[10px] text-muted-foreground">Track record</p>
                           <p className="text-xs font-semibold text-foreground tabular-nums">{s.factors.trackRecord ?? 0}</p>
                         </div>
+                        <div className="bg-card p-2">
+                          <p className="text-[10px] text-muted-foreground">Overdraft</p>
+                          <p className="text-xs font-semibold text-foreground tabular-nums">{s.factors.overdraft ?? 0}</p>
+                        </div>
                       </div>
+                    )}
+
+                    {u.overdraft?.inOverdraft && (
+                      <p className="mt-2 flex items-center gap-1.5 rounded-md border border-amber-500/30 bg-amber-500/5 px-2 py-1.5 text-[11px] text-amber-700 dark:text-amber-500">
+                        <ShieldAlert className="h-3.5 w-3.5 shrink-0" />
+                        Controlled overdraft: {eur(u.overdraft.negativeEur)} of {eur(u.overdraft.limitEur)} used (8% of
+                        deposit) · new financing hard-blocked until positive
+                      </p>
                     )}
 
                     {s && (

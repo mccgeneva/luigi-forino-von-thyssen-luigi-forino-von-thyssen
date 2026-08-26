@@ -1,19 +1,24 @@
 "use client"
 
 import useSWR from "swr"
-import { ShieldCheck, ShieldAlert, TrendingUp, Info } from "lucide-react"
+import { ShieldCheck, ShieldAlert, TrendingUp, Info, CircleDollarSign } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Progress } from "@/components/ui/progress"
 import { cn } from "@/lib/utils"
 import type { GuaranteeScore } from "@/lib/guarantees-accumulator"
+import type { OverdraftStatus } from "@/lib/overdraft"
 
 type Payload = {
   ok: boolean
   enforce: boolean
   highRiskThreshold: number
   score: GuaranteeScore
+  overdraft?: OverdraftStatus
 }
+
+const eur = (n: number) =>
+  `EUR ${(Number.isFinite(n) ? n : 0).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 
 const fetcher = (url: string) => fetch(url, { credentials: "include", cache: "no-store" }).then((r) => r.json())
 
@@ -97,7 +102,12 @@ export function GuaranteeScoreCard() {
           <Factor label="Exposure factor" value={score.factors?.exposure} />
           <Factor label="Payment penalty" value={score.factors?.paymentPenalty} />
           <Factor label="Track record (new account)" value={score.factors?.trackRecord} />
+          <Factor label="Overdraft" value={score.factors?.overdraft} />
         </div>
+
+        {data.overdraft?.available ? (
+          <OverdraftPanel overdraft={data.overdraft} />
+        ) : null}
 
         <div className="flex items-center justify-between rounded-lg border border-border bg-secondary/30 p-3">
           <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
@@ -117,6 +127,57 @@ export function GuaranteeScoreCard() {
         </p>
       </CardContent>
     </Card>
+  )
+}
+
+function OverdraftPanel({ overdraft }: { overdraft: OverdraftStatus }) {
+  const usedPct = Math.min(100, Math.max(0, (overdraft.usageRatio || 0) * 100))
+  const negative = overdraft.inOverdraft
+  return (
+    <div
+      className={cn(
+        "rounded-lg border p-3",
+        negative ? "border-amber-500/40 bg-amber-500/5" : "border-border bg-secondary/30",
+      )}
+    >
+      <div className="flex items-center justify-between">
+        <span className="flex items-center gap-1.5 text-xs font-medium text-foreground">
+          <CircleDollarSign className={cn("h-3.5 w-3.5", negative ? "text-amber-600" : "text-primary")} />
+          Controlled overdraft
+        </span>
+        <Badge
+          variant="outline"
+          className={cn(
+            "text-[11px]",
+            negative
+              ? "border-amber-500/30 bg-amber-500/10 text-amber-600 dark:text-amber-500"
+              : "border-border text-muted-foreground",
+          )}
+        >
+          {negative ? "In overdraft" : "Not used"}
+        </Badge>
+      </div>
+      <Progress value={usedPct} className="mt-2 h-1.5" />
+      <div className="mt-2 grid grid-cols-3 gap-2 text-[11px]">
+        <div>
+          <p className="text-muted-foreground">Used</p>
+          <p className="font-semibold tabular-nums text-foreground">{eur(overdraft.negativeEur)}</p>
+        </div>
+        <div>
+          <p className="text-muted-foreground">Available</p>
+          <p className="font-semibold tabular-nums text-foreground">{eur(overdraft.remainingEur)}</p>
+        </div>
+        <div>
+          <p className="text-muted-foreground">Ceiling (8%)</p>
+          <p className="font-semibold tabular-nums text-foreground">{eur(overdraft.limitEur)}</p>
+        </div>
+      </div>
+      <p className="mt-2 text-[11px] leading-relaxed text-muted-foreground text-pretty">
+        {negative
+          ? "Your Master Account is in a controlled overdraft to settle platform charges. New leverage, monetization and treasury financing are paused until you return to a positive balance."
+          : "Platform charges may draw your Master Account up to 8% of your paid-in treasury security deposit when positive funds run out. Outgoing payments still require positive funds."}
+      </p>
+    </div>
   )
 }
 
