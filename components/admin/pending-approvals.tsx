@@ -453,6 +453,10 @@ export function PendingApprovals({ initialKind }: { initialKind?: ApprovalKind }
     if (initialKind) setKindFilter(initialKind)
   }, [initialKind])
   const [clientFilter, setClientFilter] = useState<string>("all")
+  // Free-text customer search — matches a request's client by name, company or
+  // email so the admin can filter the related payments/transactions by customer
+  // without scrolling the (potentially long) client dropdown.
+  const [clientSearch, setClientSearch] = useState("")
   const [fromDate, setFromDate] = useState("")
   const [toDate, setToDate] = useState("")
   const [selected, setSelected] = useState<Set<string>>(new Set())
@@ -518,6 +522,16 @@ export function PendingApprovals({ initialKind }: { initialKind?: ApprovalKind }
     return (userId: string) => map.get(userId) ?? userId
   }, [clients])
 
+  // Lowercased searchable text per client (name + company + email + id) so the
+  // free-text customer search can match on any of them.
+  const clientSearchText = useMemo(() => {
+    const map = new Map<string, string>()
+    for (const c of clients) {
+      map.set(c.id, `${c.fullName} ${c.company ?? ""} ${c.email ?? ""} ${c.id}`.toLowerCase())
+    }
+    return map
+  }, [clients])
+
   const {
     data: requests = [],
     isLoading,
@@ -535,9 +549,10 @@ export function PendingApprovals({ initialKind }: { initialKind?: ApprovalKind }
     { refreshInterval: 20000 },
   )
 
-  // Client-side date filtering keeps the query path simple while still meeting
-  // the "filter by date" requirement.
+  // Client-side date + customer-search filtering keeps the query path simple
+  // while still meeting the "filter by date" and "search by customer" requirements.
   const filtered = useMemo(() => {
+    const q = clientSearch.trim().toLowerCase()
     return requests.filter((r) => {
       const t = new Date(r.createdAt).getTime()
       if (fromDate) {
@@ -549,9 +564,15 @@ export function PendingApprovals({ initialKind }: { initialKind?: ApprovalKind }
         const to = new Date(toDate).getTime() + 24 * 60 * 60 * 1000
         if (t >= to) return false
       }
+      if (q) {
+        // Match against the client's indexed text, falling back to the resolved
+        // label and raw userId so a search still works before the client list loads.
+        const hay = clientSearchText.get(r.userId) ?? `${clientLabel(r.userId)} ${r.userId}`.toLowerCase()
+        if (!hay.includes(q)) return false
+      }
       return true
     })
-  }, [requests, fromDate, toDate])
+  }, [requests, fromDate, toDate, clientSearch, clientSearchText, clientLabel])
 
   const pendingInView = filtered.filter((r) => r.status === "pending")
   const allPendingSelected = pendingInView.length > 0 && pendingInView.every((r) => selected.has(r.id))
@@ -878,6 +899,7 @@ export function PendingApprovals({ initialKind }: { initialKind?: ApprovalKind }
     setStatusFilter("pending")
     setKindFilter("all")
     setClientFilter("all")
+    setClientSearch("")
     setFromDate("")
     setToDate("")
   }
@@ -899,6 +921,31 @@ export function PendingApprovals({ initialKind }: { initialKind?: ApprovalKind }
         </div>
       </CardHeader>
       <CardContent className="space-y-4">
+        {/* Customer search — filter the related payments & transactions by customer */}
+        <div className="space-y-1.5">
+          <Label className="text-xs">Search customer</Label>
+          <div className="relative">
+            <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              value={clientSearch}
+              onChange={(e) => setClientSearch(e.target.value)}
+              placeholder="Filter by customer name, company or email…"
+              className="h-10 pl-9"
+              aria-label="Search related payments and transactions by customer"
+            />
+            {clientSearch && (
+              <button
+                type="button"
+                onClick={() => setClientSearch("")}
+                aria-label="Clear customer search"
+                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            )}
+          </div>
+        </div>
+
         {/* Filters */}
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-5">
           <div className="space-y-1.5">
