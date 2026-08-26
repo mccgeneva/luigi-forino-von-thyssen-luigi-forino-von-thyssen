@@ -11,6 +11,9 @@ import {
   Inbox,
   Banknote,
   ShieldCheck,
+  Lock,
+  Upload,
+  FileText,
 } from "lucide-react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -24,12 +27,15 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { ADMIN_PASSCODE } from "@/lib/admin-config"
+import { blobFileUrl } from "@/lib/kyc-types"
+import { downloadFile } from "@/lib/download-file"
 import {
   ingestIncomingSwiftAdmin,
   listUnmatchedIncomingSwiftAdmin,
   assignIncomingSwiftAdmin,
   listCreditableIncomingSwiftAdmin,
   creditIncomingSwiftAdmin,
+  recordGuaranteeInstrumentAdmin,
   type IngestResult,
 } from "@/app/actions/incoming-swift"
 import { listSelectableClients, type SelectableClient } from "@/app/actions/admin-users"
@@ -89,6 +95,7 @@ export function IncomingSwiftDelivery() {
   const [creditable, setCreditable] = useState<IncomingSwiftMessage[]>([])
   const [loadingCreditable, setLoadingCreditable] = useState(false)
   const [crediting, setCrediting] = useState<string | null>(null)
+  const [booking, setBooking] = useState<string | null>(null)
 
   const loadQueue = async () => {
     setLoadingQueue(true)
@@ -127,6 +134,28 @@ export function IncomingSwiftDelivery() {
       toast.error("Could not reach the credit engine.")
     } finally {
       setCrediting(null)
+    }
+  }
+
+  const handleBookGuarantee = async (m: IncomingSwiftMessage) => {
+    setBooking(m.id)
+    try {
+      const res = await recordGuaranteeInstrumentAdmin(ADMIN_PASSCODE, m.id)
+      if (res.ok) {
+        toast.success(
+          `Booked ${res.instrumentLabel} blocked-funds guarantee${res.bookedTo ? ` for ${res.bookedTo}` : ""}. Receipt fee ${res.feeLabel} charged.`,
+        )
+        setCreditable((prev) => prev.filter((x) => x.id !== m.id))
+      } else if (res.alreadyBooked) {
+        toast.warning("This message was already processed.")
+        setCreditable((prev) => prev.filter((x) => x.id !== m.id))
+      } else {
+        toast.error(res.error ?? "Could not book the guarantee.")
+      }
+    } catch {
+      toast.error("Could not reach the guarantee engine.")
+    } finally {
+      setBooking(null)
     }
   }
 
@@ -290,6 +319,11 @@ export function IncomingSwiftDelivery() {
                   <div className="mb-3 flex flex-wrap items-center gap-2">
                     <Badge className="bg-primary/15 text-primary">{m.messageType}</Badge>
                     {m.amount && <span className="text-sm font-semibold text-foreground">{m.amount}</span>}
+                    {m.customerSubmitted && (
+                      <Badge variant="outline" className="gap-1 border-blue-500/30 text-blue-600 dark:text-blue-400">
+                        <Upload className="h-3.5 w-3.5" /> Customer-uploaded
+                      </Badge>
+                    )}
                     {m.bicConfirmed ? (
                       <Badge className="gap-1 bg-emerald-500/15 text-emerald-600 dark:text-emerald-400">
                         <ShieldCheck className="h-3.5 w-3.5" /> IBAN + BIC verified
@@ -309,21 +343,64 @@ export function IncomingSwiftDelivery() {
                     {m.reference && <Detail label="Reference" value={m.reference} />}
                     {m.uetr && <Detail label="UETR" value={m.uetr} mono />}
                   </div>
-                  <div className="mt-3 flex flex-wrap items-center gap-2">
-                    <Button
-                      size="sm"
-                      onClick={() => handleCredit(m)}
-                      disabled={crediting === m.id}
-                      className="gap-1.5"
-                    >
-                      {crediting === m.id ? (
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                      ) : (
-                        <Banknote className="h-4 w-4" />
-                      )}
-                      Execute &amp; credit to Master Account
-                    </Button>
-                  </div>
+                  {m.sourceDocPathname && (
+                    <div className="mt-3">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="gap-1.5 bg-transparent"
+                        onClick={() =>
+                          void downloadFile(
+                            blobFileUrl(m.sourceDocPathname as string, ADMIN_PASSCODE),
+                            m.sourceDocName || `swift-${m.id}`,
+                          )
+                        }
+                      >
+                        <FileText className="h-4 w-4" /> View uploaded printout
+                      </Button>
+                    </div>
+                  )}
+                  {m.messageType === "MT760" ? (
+                    <>
+                      <p className="mt-2 flex items-start gap-1.5 text-xs text-muted-foreground">
+                        <Lock className="mt-0.5 h-3.5 w-3.5 shrink-0" /> An MT760 is a bank guarantee (blocked funds),
+                        not a cash transfer. Booking it adds a pledgeable bank instrument to the customer&apos;s
+                        portfolio and charges a 0.2% receipt fee to their Master Account. They can then pledge it for a
+                        treasury leverage line.
+                      </p>
+                      <div className="mt-3 flex flex-wrap items-center gap-2">
+                        <Button
+                          size="sm"
+                          onClick={() => handleBookGuarantee(m)}
+                          disabled={booking === m.id}
+                          className="gap-1.5"
+                        >
+                          {booking === m.id ? (
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                          ) : (
+                            <Lock className="h-4 w-4" />
+                          )}
+                          Record blocked-funds guarantee &amp; charge 0.2%
+                        </Button>
+                      </div>
+                    </>
+                  ) : (
+                    <div className="mt-3 flex flex-wrap items-center gap-2">
+                      <Button
+                        size="sm"
+                        onClick={() => handleCredit(m)}
+                        disabled={crediting === m.id}
+                        className="gap-1.5"
+                      >
+                        {crediting === m.id ? (
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                        ) : (
+                          <Banknote className="h-4 w-4" />
+                        )}
+                        Execute &amp; credit to Master Account
+                      </Button>
+                    </div>
+                  )}
                 </div>
               ))}
             </div>

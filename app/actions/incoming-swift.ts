@@ -24,10 +24,22 @@ import {
   type IncomingSwiftMessage,
 } from "@/lib/incoming-swift-db"
 import { convertCurrency } from "@/lib/fx"
+import { upsertLedgerEntry } from "@/lib/ledger-db"
+import { adminIssueInstrument } from "@/app/actions/approvals"
 import type { GatewayAccount } from "@/lib/gateway-store"
+import type { LedgerEntry } from "@/lib/ledger-store"
 
 /** FX spread applied when the received currency differs from the account. */
 const GATEWAY_FX_FEE_RATE = 0.005
+
+/**
+ * Receipt fee charged when a blocked-funds bank guarantee (MT760 / SBLC) is
+ * received into a customer's account. 0.2% of the undertaking face value, in the
+ * guarantee's own currency, debited from the Master Account. If that currency
+ * pocket is short it is auto-covered from the strongest funded currency by the
+ * FX auto-cover pass in reconcileMyApprovedCredits (drawn across all currencies).
+ */
+const GUARANTEE_RECEIPT_FEE_RATE = 0.002
 
 function normalizeIban(raw: string | undefined | null): string {
   return (raw ?? "").toUpperCase().replace(/[^A-Z0-9]/g, "")
@@ -265,6 +277,110 @@ export async function markMyIncomingSwiftRead(id: string): Promise<{ ok: boolean
 }
 
 // ---------------------------------------------------------------------------
+// Customer: upload a SWIFT printout (e.g. an inbound MT760 the customer was
+// informed of) and submit it to the platform. The message is attributed to the
+// uploader and lands in the administrator's verify queue (status 'assigned',
+// not yet credited) — for an MT760 the admin then books it as a pledgeable
+// blocked-funds guarantee via recordGuaranteeInstrumentAdmin. Never credits or
+// books anything itself; verification stays with the administrator.
+// ---------------------------------------------------------------------------
+
+export interface SubmitUploadInput {
+  /** The SWIFT FIN message text (recovered from the printout, customer-confirmed). */
+  raw: string
+  /** Blob pathname of the uploaded source printout, if the customer attached one. */
+  sourceDocPathname?: string | null
+  /** Original filename of the uploaded printout. */
+  sourceDocName?: string | null
+}
+
+export interface SubmitUploadResult {
+  ok: boolean
+  error?: string
+  messageId?: string
+  messageType?: string
+  amount?: string
+}
+
+export async function submitIncomingSwiftUpload(input: SubmitUploadInput): Promise<SubmitUploadResult> {
+  const session = await resolveCurrentSession()
+  if (!session) return { ok: false, error: "You must be signed in to submit a SWIFT printout." }
+
+  const text = (input.raw ?? "").trim()
+  if (!text) return { ok: false, error: "Provide the SWIFT FIN message text from the printout." }
+
+  try {
+    const ex = extractIncoming(text)
+    if (!ex.msg.type) {
+      return {
+        ok: false,
+        error:
+          "That does not look like a valid SWIFT message. Paste the full FIN text (with the :20:, :32B:/:39:, :59: fields) from the printout.",
+      }
+    }
+
+    // Resolve the uploader's display name for the queue.
+    const profile = await resolveAccountProfileById(session.id)
+    const holder = profile?.fullName || profile?.company || session.id
+    const amountStr = fmtMoney(ex.msg.amount, ex.msg.currency)
+
+    const stored = await insertIncomingSwift({
+      // Attributed to the uploader: it is THEIR inbound message. It surfaces in
+      // their own SWIFT inbox and in the admin verify queue simultaneously.
+      userId: session.id,
+      status: "assigned",
+      messageType: ex.msg.type,
+      senderBic: ex.senderBic,
+      receiverBic: ex.receiverBic,
+      beneficiaryIban: ex.beneficiaryIban,
+      beneficiaryName: ex.beneficiaryName || holder,
+      orderingCustomer: ex.orderingCustomer,
+      amount: amountStr || null,
+      currency: ex.msg.currency || null,
+      reference: ex.reference || null,
+      valueDate: ex.msg.valueDate || null,
+      uetr: ex.msg.uetr || null,
+      raw: text,
+      matchedAccountId: null,
+      matchedAccountHolder: holder,
+      bicConfirmed: false,
+      matchReason: "Customer-uploaded SWIFT printout — awaiting administrator verification.",
+      customerSubmitted: true,
+      sourceDocPathname: input.sourceDocPathname ?? null,
+      sourceDocName: input.sourceDocName ?? null,
+    })
+
+    await insertNotification({
+      userId: session.id,
+      tone: "info",
+      title: `SWIFT ${ex.msg.type} printout submitted`,
+      body:
+        ex.msg.type === "MT760"
+          ? `Your MT760 blocked-funds guarantee${amountStr ? ` (${amountStr})` : ""} was submitted for verification. Once an administrator confirms it, it will be booked to your Bank Instruments and you can pledge it for a treasury leverage line.`
+          : `Your SWIFT ${ex.msg.type} printout${amountStr ? ` (${amountStr})` : ""} was submitted for administrator verification.`,
+      href: "/dashboard/swift",
+    })
+
+    await logActivity({
+      action: `Uploaded a SWIFT ${ex.msg.type} printout${amountStr ? ` (${amountStr})` : ""} for verification`,
+      category: "SWIFT",
+      details: {
+        summary: `Customer ${holder} uploaded a SWIFT ${ex.msg.type} printout (${stored.id}${ex.beneficiaryIban ? `, beneficiary IBAN ${ex.beneficiaryIban}` : ""}${ex.msg.uetr ? `, UETR ${ex.msg.uetr}` : ""}) and submitted it to the platform for administrator verification.`,
+        messageId: stored.id,
+        messageType: ex.msg.type,
+        amount: amountStr || "n/a",
+        sourceDocument: input.sourceDocName || "(FIN text only)",
+      },
+    })
+
+    return { ok: true, messageId: stored.id, messageType: ex.msg.type, amount: amountStr || undefined }
+  } catch (err) {
+    console.log("[v0] submitIncomingSwiftUpload failed:", (err as Error).message)
+    return { ok: false, error: "Could not submit the SWIFT printout. Please try again." }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Admin: unmatched review queue + manual assignment.
 // ---------------------------------------------------------------------------
 
@@ -374,6 +490,16 @@ export async function creditIncomingSwiftAdmin(passcode: string, id: string): Pr
     // Re-parse the raw FIN so the credited amount is authoritative (never a
     // hand-edited display string).
     const parsed = parseSwiftMessage(message.raw)
+    // An MT760 is a bank guarantee (blocked funds), NOT a cash transfer — it must
+    // never hit the spendable Master Account balance. It is booked as a pledgeable
+    // bank instrument via recordGuaranteeInstrumentAdmin instead.
+    if (parsed.type === "MT760") {
+      return {
+        ok: false,
+        error:
+          "This is an MT760 bank guarantee (blocked funds), not a cash transfer. Use “Record blocked-funds guarantee” to book it as pledgeable collateral.",
+      }
+    }
     const receivedAmount = Number(parsed.amount ?? 0)
     const receivedCurrency = (parsed.currency ?? message.currency ?? "").toUpperCase()
     if (!Number.isFinite(receivedAmount) || receivedAmount <= 0) {
@@ -465,5 +591,172 @@ export async function creditIncomingSwiftAdmin(passcode: string, id: string): Pr
   } catch (err) {
     console.log("[v0] creditIncomingSwiftAdmin failed:", (err as Error).message)
     return { ok: false, error: "Could not execute the credit." }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Admin: book a received MT760 as a BLOCKED-FUNDS bank guarantee.
+//
+// An MT760 is a bank guarantee / standby LC — it transfers a BLOCKED undertaking,
+// not spendable cash. So instead of crediting the Master Account balance we
+// materialise it as a pledgeable bank INSTRUMENT (face value = the undertaking
+// amount) owned by the customer, and charge the 0.2% receipt fee to their Master
+// Account. The customer can then pledge that instrument for a treasury leverage
+// line via Leverage → funding source "Bank Instruments" (the standard flow).
+// ---------------------------------------------------------------------------
+
+export interface GuaranteeResult {
+  ok: boolean
+  error?: string
+  instrumentLabel?: string
+  feeLabel?: string
+  bookedTo?: string
+  alreadyBooked?: boolean
+}
+
+export async function recordGuaranteeInstrumentAdmin(passcode: string, id: string): Promise<GuaranteeResult> {
+  if (!(await adminActionAuthorized(passcode))) {
+    return { ok: false, error: "Administrator authorization failed." }
+  }
+
+  const message = await getIncomingSwiftById(id)
+  if (!message) return { ok: false, error: "Message not found." }
+  if (!message.userId || (message.status !== "matched" && message.status !== "assigned")) {
+    return { ok: false, error: "This message is not matched to a platform account." }
+  }
+  if (message.creditedAt) {
+    return { ok: false, alreadyBooked: true, error: "This message has already been processed." }
+  }
+
+  try {
+    // Re-parse the raw FIN so every value is authoritative.
+    const parsed = parseSwiftMessage(message.raw)
+    if (parsed.type !== "MT760") {
+      return { ok: false, error: "Only an MT760 bank guarantee can be booked as blocked-funds collateral." }
+    }
+    const g = parsed.guarantee
+    const faceValue = Number(g?.amount ?? parsed.amount ?? 0)
+    const currency = (g?.currency ?? parsed.currency ?? message.currency ?? "").toUpperCase()
+    if (!Number.isFinite(faceValue) || faceValue <= 0) {
+      return { ok: false, error: "The MT760 has no valid undertaking amount (:32B:)." }
+    }
+    if (!currency) return { ok: false, error: "The MT760 has no undertaking currency." }
+
+    const ex = extractIncoming(message.raw)
+    const issuer = message.senderBic || ex.orderingCustomer || "Issuing Bank"
+    const applicantName = firstLine(g?.applicant?.nameAndAddress) || ex.orderingCustomer || ""
+    const now = new Date()
+    const issuedDate = now.toISOString()
+    const expiryDate = g?.expiryDate
+      ? new Date(g.expiryDate).toISOString()
+      : new Date(now.getTime() + 365 * 24 * 60 * 60 * 1000).toISOString()
+    const daysRemaining = Math.max(0, Math.round((new Date(expiryDate).getTime() - now.getTime()) / 86_400_000))
+    const formLabel =
+      g?.form === "STBY" ? "Standby Letter of Credit" : g?.form === "DGAR" ? "Demand Guarantee" : "Bank Guarantee"
+
+    // Deterministic instrument id derived from the message, so re-running is safe.
+    const instrumentId = `MT760-${message.id}`
+    const instrument: Record<string, unknown> = {
+      id: instrumentId,
+      type: "MT760",
+      typeFull: `MT760 ${formLabel} (Blocked Funds)`,
+      issuer,
+      issuerBic: message.senderBic || undefined,
+      faceValue,
+      currency,
+      rating: "AAA",
+      purpose: "Blocked-funds guarantee — pledgeable as treasury leverage collateral",
+      assignable: false,
+      monetizable: false,
+      blocked: false, // pledgeable for leverage; "blocked" here means an upgrade-in-progress lock, which does NOT apply
+      owner: message.matchedAccountHolder || applicantName || undefined,
+      issuedDate,
+      expiryDate,
+      daysRemaining,
+      deliveryMethod: "SWIFT MT760",
+      form: formLabel,
+      governingLaw: g?.applicableRules || "URDG 758",
+      placeOfIssue: undefined,
+      // Trade-finance provenance for the instrument detail view.
+      tradeType: "Blocked-funds guarantee (MT760)",
+    }
+
+    // Materialise the instrument in the customer's portfolio (reuses the audited,
+    // notified admin-issuance path; born approved/active).
+    const issued = await adminIssueInstrument(passcode, message.userId, instrument)
+    if (!issued.ok) {
+      return { ok: false, error: issued.error ?? "The guarantee instrument could not be created." }
+    }
+    const approvalId = issued.request.id
+
+    // Charge the 0.2% receipt fee to the customer's Master Account (data owner).
+    const feeAmount = round2(faceValue * GUARANTEE_RECEIPT_FEE_RATE)
+    const feeLabel = `${currency} ${feeAmount.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+    const ledgerOwnerId = (await resolveDataOwnerIdFor(message.userId)) ?? message.userId
+    if (feeAmount > 0) {
+      const feeEntry: LedgerEntry = {
+        id: `MT760-FEE-${approvalId}`,
+        direction: "debit",
+        amount: feeAmount,
+        currency,
+        status: "completed",
+        date: issuedDate,
+        counterparty: "NAFTAhub Treasury",
+        reference: instrumentId,
+        category: "Blocked-Funds Guarantee Receipt Fee (0.2%)",
+        comment: `0.2% receipt fee on a ${currency} ${faceValue.toLocaleString("en-US")} MT760 blocked-funds guarantee from ${issuer}${message.uetr ? ` (UETR ${message.uetr})` : ""}. If ${currency} is short it is auto-covered from your strongest funded currency.`,
+      }
+      try {
+        await upsertLedgerEntry(ledgerOwnerId, feeEntry)
+      } catch (err) {
+        console.log("[v0] guarantee receipt fee post failed:", (err as Error).message)
+      }
+    }
+
+    const instrumentLabel = `${currency} ${faceValue.toLocaleString("en-US")}`
+
+    // Leave the creditable queue + mark processed (reuse the credited stamp with
+    // the instrument approval id as the settlement reference). Idempotent.
+    const stamped = await markIncomingSwiftCredited(
+      message.id,
+      approvalId,
+      `${instrumentLabel} MT760 guarantee (fee ${feeLabel})`,
+    )
+    if (!stamped) {
+      return { ok: false, alreadyBooked: true, error: "This message has already been processed." }
+    }
+
+    await insertNotification({
+      userId: message.userId,
+      tone: "success",
+      title: `Blocked-funds guarantee received — ${instrumentLabel}`,
+      body: `An MT760 bank guarantee of ${instrumentLabel} from ${issuer} was booked to your Bank Instruments as blocked-funds collateral. A ${feeLabel} receipt fee (0.2%) was applied. You can pledge it for a treasury leverage line under Leverage → Bank Instruments.`,
+      href: "/dashboard/instruments",
+    })
+
+    await logActivity({
+      action: `MT760 blocked-funds guarantee (${instrumentLabel}) booked for ${message.matchedAccountHolder ?? message.userId} and 0.2% receipt fee ${feeLabel} charged`,
+      category: "SWIFT",
+      details: {
+        summary: `Administrator booked inbound SWIFT MT760 (${message.id}, beneficiary IBAN ${message.beneficiaryIban || "n/a"}${message.uetr ? `, UETR ${message.uetr}` : ""}) as a pledgeable bank guarantee instrument ${instrumentId} (approval ${approvalId}) of ${instrumentLabel} for ${message.matchedAccountHolder ?? message.userId}, and charged a ${feeLabel} receipt fee (0.2%) to the Master Account.`,
+        messageId: message.id,
+        matchedUserId: message.userId,
+        instrumentId,
+        approvalId,
+        faceValue: instrumentLabel,
+        fee: feeLabel,
+        decision: "Blocked-funds guarantee booked",
+      },
+    })
+
+    return {
+      ok: true,
+      instrumentLabel,
+      feeLabel,
+      bookedTo: message.matchedAccountHolder ?? undefined,
+    }
+  } catch (err) {
+    console.log("[v0] recordGuaranteeInstrumentAdmin failed:", (err as Error).message)
+    return { ok: false, error: "Could not book the guarantee instrument." }
   }
 }

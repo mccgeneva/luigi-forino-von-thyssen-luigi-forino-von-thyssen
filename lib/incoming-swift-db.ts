@@ -49,6 +49,12 @@ export interface IncomingSwiftMessage {
   creditedEntryId: string | null
   /** Credited amount + currency label (as posted to the Master Account). */
   creditedAmount: string | null
+  /** True when the customer uploaded this message themselves (vs. platform-received). */
+  customerSubmitted: boolean
+  /** Blob pathname of the uploaded source printout, if any. */
+  sourceDocPathname: string | null
+  /** Original filename of the uploaded source printout, if any. */
+  sourceDocName: string | null
   createdAt: string
 }
 
@@ -72,6 +78,9 @@ export interface NewIncomingSwiftMessage {
   matchedAccountHolder?: string | null
   bicConfirmed?: boolean
   matchReason: string
+  customerSubmitted?: boolean
+  sourceDocPathname?: string | null
+  sourceDocName?: string | null
 }
 
 let ensured = false
@@ -114,6 +123,10 @@ async function ensureTable(): Promise<void> {
   await query(`ALTER TABLE incoming_swift_messages ADD COLUMN IF NOT EXISTS credited_at timestamptz`)
   await query(`ALTER TABLE incoming_swift_messages ADD COLUMN IF NOT EXISTS credited_entry_id text`)
   await query(`ALTER TABLE incoming_swift_messages ADD COLUMN IF NOT EXISTS credited_amount text`)
+  // Customer-submitted printout tracking (added after the table shipped).
+  await query(`ALTER TABLE incoming_swift_messages ADD COLUMN IF NOT EXISTS customer_submitted boolean NOT NULL DEFAULT false`)
+  await query(`ALTER TABLE incoming_swift_messages ADD COLUMN IF NOT EXISTS source_doc_pathname text`)
+  await query(`ALTER TABLE incoming_swift_messages ADD COLUMN IF NOT EXISTS source_doc_name text`)
   ensured = true
 }
 
@@ -142,6 +155,9 @@ function rowToMessage(row: Record<string, unknown>): IncomingSwiftMessage {
     creditedAt: row.credited_at ? new Date(row.credited_at as string).toISOString() : null,
     creditedEntryId: (row.credited_entry_id as string) ?? null,
     creditedAmount: (row.credited_amount as string) ?? null,
+    customerSubmitted: Boolean(row.customer_submitted),
+    sourceDocPathname: (row.source_doc_pathname as string) ?? null,
+    sourceDocName: (row.source_doc_name as string) ?? null,
     createdAt: row.created_at ? new Date(row.created_at as string).toISOString() : new Date().toISOString(),
   }
 }
@@ -157,8 +173,9 @@ export async function insertIncomingSwift(msg: NewIncomingSwiftMessage): Promise
     `INSERT INTO incoming_swift_messages
        (id, user_id, status, message_type, sender_bic, receiver_bic, beneficiary_iban,
         beneficiary_name, ordering_customer, amount, currency, reference, value_date,
-        uetr, raw, matched_account_id, matched_account_holder, bic_confirmed, match_reason)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
+        uetr, raw, matched_account_id, matched_account_holder, bic_confirmed, match_reason,
+        customer_submitted, source_doc_pathname, source_doc_name)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)
      RETURNING *`,
     [
       id,
@@ -180,6 +197,9 @@ export async function insertIncomingSwift(msg: NewIncomingSwiftMessage): Promise
       msg.matchedAccountHolder ?? null,
       msg.bicConfirmed ?? false,
       msg.matchReason,
+      msg.customerSubmitted ?? false,
+      msg.sourceDocPathname ?? null,
+      msg.sourceDocName ?? null,
     ],
   )
   return rowToMessage(rows[0])
