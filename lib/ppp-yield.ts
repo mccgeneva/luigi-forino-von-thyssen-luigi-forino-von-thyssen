@@ -127,6 +127,16 @@ export function pppCapitalReturnId(reqId: string): string {
   return `PPP-CAPITAL-RETURN-${reqId}`
 }
 
+/**
+ * A PPP is CASH-funded when NO bank instrument is pledged to back it. Only a
+ * cash-funded program moves money on the master account (principal debited on
+ * approval, returned at maturity). An INSTRUMENT-funded program is collateralized
+ * by the pledged instrument, so no cash leaves the balance.
+ */
+export function pppIsCashFunded(record: { fundingInstrumentId?: string } | undefined): boolean {
+  return !record?.fundingInstrumentId
+}
+
 /** The date a program is activated (and from which ROI accrues). */
 function activationDate(req: ApprovalRequest): Date {
   return req.decidedAt ? new Date(req.decidedAt) : new Date(req.createdAt)
@@ -246,23 +256,27 @@ export function buildPppRoiPosts(req: ApprovalRequest, now: Date = new Date()): 
 }
 
 /**
- * Principal (capital) movement for an APPROVED Yield / PPP application:
+ * Principal (capital) movement for an APPROVED, CASH-funded Yield / PPP program:
  *   • a DEBIT of the invested principal from the Master Account when the program
  *     is approved — the capital is deployed into the program (dated at activation);
  *   • a matching CREDIT returning the principal to the Master Account once the
  *     program TERM has fully elapsed (dated at term end).
  *
- * Returns [] for any non-approved / non-ppp request. Deterministic ids make it
- * idempotent so the principal is debited exactly once and returned exactly once,
- * and — like the ROI engine — it self-heals across devices with no scheduler.
- * (Early cancellation returns the principal via the cancel action, reusing the
- * same `pppCapitalReturnId`, so a cancel and a maturity can never double-return.)
+ * Returns [] for any non-approved / non-ppp request AND for INSTRUMENT-funded
+ * programs — those are collateralized by the pledged bank instrument, so no cash
+ * ever leaves the master account. Deterministic ids make it idempotent so the
+ * principal is debited exactly once and returned exactly once, and — like the ROI
+ * engine — it self-heals across devices with no scheduler. (Early cancellation
+ * returns the principal via the cancel action, reusing the same
+ * `pppCapitalReturnId`, so a cancel and a maturity can never double-return.)
  */
 export function buildPppCapitalPosts(req: ApprovalRequest, now: Date = new Date()): LedgerEntry[] {
   if (req.kind !== "ppp") return []
   if (req.status !== "approved") return []
 
   const record = ((req.payload as { record?: PppRecord } | undefined)?.record ?? {}) as PppRecord
+  // Instrument-funded programs pledge collateral instead of cash — no money moves.
+  if (!pppIsCashFunded(record)) return []
   const amount = Number(record.amount ?? req.amount)
   if (!Number.isFinite(amount) || amount <= 0) return []
 

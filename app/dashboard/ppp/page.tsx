@@ -62,6 +62,7 @@ import {
 import { useInstrumentRequests, isMccHeldInstrument } from "@/lib/instrument-requests-store"
 import { computeBenefitSplit } from "@/lib/benefit-split"
 import { convertCurrency } from "@/lib/fx"
+import { useLedger } from "@/lib/ledger-store"
 import { MCC_HOLDING_OWNER, MCC_BENEFIT_SHARE, CLIENT_BENEFIT_SHARE } from "@/lib/instrument-marketplace"
 import { usePdfViewer } from "@/lib/pdf-viewer"
 import { generatePPPConfirmationPdf } from "@/lib/ppp-confirmation-pdf"
@@ -160,6 +161,7 @@ export default function PPPPage() {
   const log = useActivityLog()
   const { requests, addRequest, refresh, hydrated } = usePPPRequests()
   const { instruments } = useInstrumentRequests()
+  const { totalIn } = useLedger()
 
   // Active, MCC HOLDING SA-owned instruments the client can nominate as the
   // funding source. Using one triggers the 75% MCC / 25% client benefit split.
@@ -364,6 +366,24 @@ export default function PPPPage() {
         "This instrument is already pledged to another active yield/PPP application. Release that request or choose a different instrument.",
       )
       return
+    }
+    // A CASH-funded investment (no instrument pledged) deploys the principal from
+    // the master account, so the client cannot invest more than they hold. Refuse
+    // it here for a visible message — the server enforces the same gate
+    // authoritatively (the mirror submission is fire-and-forget, so a server-only
+    // rejection would otherwise be silent). An instrument-funded program is
+    // collateral-backed and NOT balance-gated.
+    if (!selectedFundingInstrument) {
+      const availableInCcy = totalIn(selectedProgram.currency)
+      if (numericAmount > availableInCcy + 0.01) {
+        setFormError(
+          `Insufficient funds. This investment deploys ${formatMoney(numericAmount, selectedProgram.currency)} from your master account but only ${formatMoney(
+            Math.max(0, availableInCcy),
+            selectedProgram.currency,
+          )} is available. Fund the account, invest less, or back the program with a bank instrument.`,
+        )
+        return
+      }
     }
 
     const request = addRequest({
