@@ -173,16 +173,31 @@ export async function submitApproval(input: SubmitApprovalInput): Promise<Submit
     try {
       const config = await getGuaranteeConfig()
       if (config.enforce) {
-        const { score } = await gatherGuaranteeProfile(session.id, config)
+        const { score, overdraft } = await gatherGuaranteeProfile(session.id, config)
+        const productLabel =
+          input.kind === "leverage"
+            ? "leverage"
+            : input.kind === "monetization"
+              ? "instrument monetization"
+              : input.kind === "project_funding"
+                ? "project funding"
+                : "treasury financing"
+        // Controlled-overdraft HARD BLOCK: an overdrawn (negative) Master
+        // Account cannot open ANY new credit-sensitive facility until it
+        // returns to positive — regardless of the numeric risk score.
+        if (overdraft.inOverdraft) {
+          const eur = (n: number) =>
+            `EUR ${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+          return {
+            ok: false,
+            error:
+              `This ${productLabel} request cannot be opened while your Master Account is in a controlled ` +
+              `overdraft (currently ${eur(overdraft.negativeEur)} negative). New credit-sensitive facilities ` +
+              `are unavailable until your account returns to a positive balance. Fund your account to clear the ` +
+              `overdraft, then try again.`,
+          }
+        }
         if (score.highRisk) {
-          const productLabel =
-            input.kind === "leverage"
-              ? "leverage"
-              : input.kind === "monetization"
-                ? "instrument monetization"
-                : input.kind === "project_funding"
-                  ? "project funding"
-                  : "treasury financing"
           return { ok: false, error: guaranteeBlockMessage(score, config.highRiskThreshold, productLabel) }
         }
       }

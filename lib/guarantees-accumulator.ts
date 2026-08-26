@@ -70,6 +70,15 @@ export interface GuaranteeConfig {
   weightPaymentPenalty: number
   /** Weight on the Track Record (new/unproven account) factor. */
   weightTrackRecord: number
+  /** Weight on the Overdraft (negative-balance) factor. */
+  weightOverdraft: number
+  /**
+   * Risk points a FULLY-used controlled overdraft (100% of the 8% ceiling)
+   * contributes. Default 144 so a fully overdrawn account scores sqrt(144)=12 on
+   * this factor alone — above the default high-risk threshold of 10. Scaled
+   * linearly by how much of the overdraft ceiling is currently used.
+   */
+  overdraftRiskFull: number
   /**
    * Provisional risk points a brand-new account starts with (before seasoning
    * decay). Default 144 so a fresh account with no other stress scores
@@ -108,6 +117,8 @@ export const DEFAULT_GUARANTEE_CONFIG: GuaranteeConfig = {
   weightExposure: 1,
   weightPaymentPenalty: 1,
   weightTrackRecord: 1,
+  weightOverdraft: 1,
+  overdraftRiskFull: 144,
   newAccountRisk: 144,
   seasoningDays: 365,
   provenCapital: 250_000,
@@ -133,6 +144,12 @@ export interface GuaranteeInputs {
   overdueCharges: number
   /** Account age in days (drives the time credit). */
   accountAgeDays: number
+  /**
+   * Fraction (0..1) of the controlled overdraft ceiling currently used — i.e.
+   * how deep the Master Account is negative relative to its 8% limit. 0 when
+   * positive, 1 at the ceiling.
+   */
+  overdraftUsageRatio: number
   /** Common currency the figures are expressed in. */
   currency: string
 }
@@ -143,6 +160,7 @@ export interface GuaranteeFactors {
   exposure: number
   paymentPenalty: number
   trackRecord: number
+  overdraft: number
 }
 
 export type RiskBand = "low" | "moderate" | "high"
@@ -175,6 +193,7 @@ export function computeGuaranteeScore(inputs: GuaranteeInputs, config: Guarantee
   const available = Math.max(0, inputs.availableBalance || 0)
   const overdue = Math.max(0, Math.floor(inputs.overdueCharges || 0))
   const ageDays = Math.max(0, inputs.accountAgeDays || 0)
+  const overdraftUsage = clamp(inputs.overdraftUsageRatio || 0, 0, 1)
 
   // Capacity to carry risk = spendable balance + posted collateral (+ε).
   const capacity = available + guarantees + 1
@@ -209,12 +228,18 @@ export function computeGuaranteeScore(inputs: GuaranteeInputs, config: Guarantee
   const guaranteeStrength = clamp(netEquity / provenCapital, 0, 1)
   const fTrackRecord = clamp(newAccountRisk * seasoning * (1 - guaranteeStrength), 0, FACTOR_SOFT_CAP)
 
+  // 6. Overdraft — a negative Master Account balance is a live risk, scaled by
+  // how much of the controlled overdraft ceiling is used. Zero when positive.
+  const overdraftRiskFull = Math.max(0, config.overdraftRiskFull || 0)
+  const fOverdraft = clamp(overdraftRiskFull * overdraftUsage, 0, FACTOR_SOFT_CAP)
+
   const factors: GuaranteeFactors = {
     securityDeposit: round2(fSecurityDeposit),
     leverageLoad: round2(fLeverageLoad),
     exposure: round2(fExposure),
     paymentPenalty: round2(fPaymentPenalty),
     trackRecord: round2(fTrackRecord),
+    overdraft: round2(fOverdraft),
   }
 
   const weightedSum =
@@ -222,7 +247,8 @@ export function computeGuaranteeScore(inputs: GuaranteeInputs, config: Guarantee
     config.weightLeverageLoad * fLeverageLoad +
     config.weightExposure * fExposure +
     config.weightPaymentPenalty * fPaymentPenalty +
-    config.weightTrackRecord * fTrackRecord
+    config.weightTrackRecord * fTrackRecord +
+    config.weightOverdraft * fOverdraft
 
   const riskScore = Math.sqrt(Math.max(0, weightedSum))
 
@@ -255,6 +281,7 @@ export function computeGuaranteeScore(inputs: GuaranteeInputs, config: Guarantee
       availableBalance: round2(available),
       overdueCharges: overdue,
       accountAgeDays: Math.round(ageDays),
+      overdraftUsageRatio: round2(overdraftUsage),
       currency: inputs.currency,
     },
   }
