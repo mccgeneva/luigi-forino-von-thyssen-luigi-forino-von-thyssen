@@ -2348,11 +2348,121 @@ export async function reconcileMyApprovedCredits(): Promise<{ ok: boolean; appli
       }
     }
 
+    // AUTO-COVER negative currencies. Leverage fees (audit, PPI) and debit
+    // interest are charged in the leverage line's OWN currency, with no check
+    // that that currency holds funds — so a single currency (e.g. USD) can be
+    // driven negative even though the master account holds plenty elsewhere
+    // (e.g. GBP). Per the account owner's directive, fees are "drawn across all
+    // currencies": here we rebalance any genuinely overdrawn currency from the
+    // strongest funded currency via an internal FX conversion, so no single
+    // currency stays negative. Idempotent + self-resizing (deterministic ids),
+    // so it also clears a pre-existing deficit on the next ledger read.
+    try {
+      const coverOwnerId = await resolveDataOwnerIdFor(session.id)
+      applied += await autoCoverNegativeBalances(coverOwnerId)
+    } catch (err) {
+      console.log("[v0] auto-cover negative balances failed:", (err as Error).message)
+    }
+
     return { ok: true, applied }
   } catch (err) {
     console.log("[v0] reconcileMyApprovedCredits failed:", (err as Error).message)
     return { ok: false, applied: 0 }
   }
+}
+
+/**
+ * Internal FX auto-cover. Any currency whose SETTLED (completed) balance is
+ * genuinely overdrawn is topped up from the strongest funded currency the
+ * account holds, via a matched internal FX conversion (a credit into the
+ * overdrawn currency + a debit of the converted value from the source), so no
+ * single currency is left negative while funds exist elsewhere. Uses only value
+ * the account already owns — no money is created; the total EUR-equivalent is
+ * preserved. Deterministic ids (`FX-COVER-<CUR>` / `FX-COVER-<CUR>-SRC`) make it
+ * idempotent and self-resizing across reads, and cover rows are removed once a
+ * currency is no longer overdrawn (e.g. after the client funds/repays it).
+ * Holds are ignored (a reversible reservation is not a real overdraft) and
+ * sub-account-tagged rows are excluded (isolated compartments, not the pool).
+ */
+async function autoCoverNegativeBalances(ownerId: string): Promise<number> {
+  const round2 = (n: number) => Math.round(n * 100) / 100
+  const FX_COVER_PREFIX = "FX-COVER-"
+  const rows = await readLedgerEntries(ownerId)
+
+  // Natural settled balance per currency, EXCLUDING existing cover rows (so the
+  // cover never feeds on itself) and sub-account compartments.
+  const natural: Record<string, number> = {}
+  for (const e of rows) {
+    if (e.id.startsWith(FX_COVER_PREFIX)) continue
+    if (e.status !== "completed") continue
+    if (e.subAccountId) continue
+    const c = e.currency || "USD"
+    natural[c] = (natural[c] ?? 0) + (e.direction === "credit" ? e.amount : -e.amount)
+  }
+
+  const have = new Set(rows.map((r) => r.id))
+  // Spendable per source currency (natural positives), decremented as allocated
+  // so one source is never pushed negative across multiple overdrawn targets.
+  const spare: Record<string, number> = {}
+  for (const [c, v] of Object.entries(natural)) if (v > 0.01) spare[c] = v
+
+  let applied = 0
+  for (const [target, bal] of Object.entries(natural)) {
+    const creditId = `${FX_COVER_PREFIX}${target}`
+    const debitId = `${FX_COVER_PREFIX}${target}-SRC`
+    if (bal >= -0.01) {
+      // Not overdrawn (any more) — drop stale cover rows for this currency.
+      if (have.has(creditId)) await deleteLedgerEntry(ownerId, creditId).catch(() => {})
+      if (have.has(debitId)) await deleteLedgerEntry(ownerId, debitId).catch(() => {})
+      continue
+    }
+    const deficit = round2(-bal)
+    // Strongest source by value in the target currency.
+    const src = Object.keys(spare)
+      .filter((s) => s !== target && spare[s] > 0.01)
+      .sort((a, b) => convertCurrency(spare[b], b, target) - convertCurrency(spare[a], a, target))[0]
+    if (!src) {
+      // Genuinely insolvent (no other funded currency) — leave the real negative
+      // visible and clear any stale cover rows.
+      if (have.has(creditId)) await deleteLedgerEntry(ownerId, creditId).catch(() => {})
+      if (have.has(debitId)) await deleteLedgerEntry(ownerId, debitId).catch(() => {})
+      continue
+    }
+    const srcCapacityInTarget = convertCurrency(spare[src], src, target)
+    const cover = round2(Math.min(deficit, srcCapacityInTarget))
+    if (cover <= 0.01) continue
+    const srcAmount = round2(convertCurrency(cover, target, src))
+    const now = new Date().toISOString()
+    await upsertLedgerEntry(ownerId, {
+      id: creditId,
+      direction: "credit",
+      amount: cover,
+      currency: target,
+      status: "completed",
+      date: now,
+      counterparty: "Internal FX rebalance",
+      bank: "NAFTAhub Treasury",
+      reference: "fx-auto-cover",
+      comment: `Automatic FX cover — ${src} converted to ${cover.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${target} to clear an overdrawn ${target} balance (fees/interest charged in ${target} exceeded the ${target} held). Funded from your ${src} balance; no funds were created.`,
+      category: "FX Auto-Cover",
+    })
+    await upsertLedgerEntry(ownerId, {
+      id: debitId,
+      direction: "debit",
+      amount: srcAmount,
+      currency: src,
+      status: "completed",
+      date: now,
+      counterparty: "Internal FX rebalance",
+      bank: "NAFTAhub Treasury",
+      reference: "fx-auto-cover",
+      comment: `Automatic FX cover — ${srcAmount.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${src} converted to ${cover.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${target} to clear an overdrawn ${target} balance.`,
+      category: "FX Auto-Cover",
+    })
+    spare[src] = round2((spare[src] ?? 0) - srcAmount)
+    applied += 1
+  }
+  return applied
 }
 
 export type DecideResult =
