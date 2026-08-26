@@ -1039,9 +1039,16 @@ export function PendingApprovals({ initialKind }: { initialKind?: ApprovalKind }
               const canMarkDelivered =
                 req.kind === "commodity" && req.status === "approved" && !isDelivered && !isSharedCopy
               // Stage 3 for outgoing payments: an approved, not-yet-delivered wire.
+              // Only payments that entered the delivery lifecycle (stamped
+              // `deliveryInitiatedAt` at approval) offer the confirm action, so
+              // the historical backlog of older approved payments — which predate
+              // the delivery feature and will never be delivered — is excluded and
+              // stays consistent with the command-center awaiting-delivery count.
               const isPayment = req.kind === "payment"
+              const paymentInitiated =
+                (req.payload as { deliveryInitiatedAt?: string } | undefined)?.deliveryInitiatedAt != null
               const canMarkPaymentDelivered =
-                isPayment && req.status === "approved" && !isDelivered
+                isPayment && req.status === "approved" && paymentInitiated && !isDelivered
               // Three-stage lifecycle label for outgoing payments.
               const paymentStage: PaymentStage | null = isPayment
                 ? req.status === "rejected"

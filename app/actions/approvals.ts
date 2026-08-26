@@ -2969,6 +2969,27 @@ export async function adminDecideApproval(
 
     // Money only moves once ALL required gates clear (final status approved).
     if (updated.status === "approved") {
+      // A PAYMENT that reaches approved is "approved & initiated" — funds have
+      // left the account. Stamp `deliveryInitiatedAt` so it enters the stage-3
+      // delivery lifecycle. Only payments carrying this marker are counted as
+      // "awaiting delivery" on the command center, so the historical backlog of
+      // older approved payments (which predate the delivery feature and will
+      // never be marked delivered) is excluded from the admin's action count.
+      if (updated.kind === "payment") {
+        try {
+          const p = (updated.payload ?? {}) as Record<string, unknown>
+          if (!p.deliveryInitiatedAt) {
+            const persisted = await updateApprovalPayload(updated.id, {
+              ...p,
+              deliveryInitiatedAt: updated.decidedAt ?? new Date().toISOString(),
+            })
+            if (persisted) updated = persisted
+          }
+        } catch (err) {
+          console.log("[v0] payment delivery-initiated stamp failed:", (err as Error).message)
+        }
+      }
+
       // A leverage line must be marked ACTIVE on approval: stamp activatedAt
       // (interest accrual start) and the borrowed-funds credit entry id into the
       // record, so the line shows live and accrues interest regardless of which
@@ -4713,6 +4734,21 @@ export async function masterDecideApproval(
         await applyLedgerEffect(updated)
       } catch (err) {
         console.log("[v0] applyLedgerEffect (master gate) failed:", (err as Error).message)
+      }
+      // Payment fully approved via the Master gate is now "initiated" — enter
+      // the stage-3 delivery lifecycle (see the admin-decide path for rationale).
+      if (updated.kind === "payment") {
+        try {
+          const p = (updated.payload ?? {}) as Record<string, unknown>
+          if (!p.deliveryInitiatedAt) {
+            await updateApprovalPayload(updated.id, {
+              ...p,
+              deliveryInitiatedAt: new Date().toISOString(),
+            })
+          }
+        } catch (err) {
+          console.log("[v0] payment delivery-initiated stamp (master gate) failed:", (err as Error).message)
+        }
       }
     }
 
