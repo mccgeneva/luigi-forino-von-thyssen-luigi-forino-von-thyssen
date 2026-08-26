@@ -35,6 +35,7 @@ import {
   buildPppCapitalPosts,
   pppCapitalId,
   pppCapitalReturnId,
+  pppIsCashFunded,
   yieldCancellationPenalty,
   YIELD_EARLY_CANCELLATION_PENALTY_RATE,
 } from "@/lib/ppp-yield"
@@ -345,6 +346,43 @@ export async function submitApproval(input: SubmitApprovalInput): Promise<Submit
     } catch (err) {
       console.log("[v0] trading_fund solvency guard failed:", (err as Error).message)
       return { ok: false, error: "Your available balance could not be verified. Please try again." }
+    }
+  }
+
+  // A CASH-funded Yield / PPP program deploys the invested principal from the
+  // master account, so the client cannot invest more than they hold — refuse the
+  // submission before it ever reaches the administrator. An INSTRUMENT-funded
+  // program is collateralized by the pledged bank instrument (no cash moves), so
+  // it is NOT balance-gated here. Authoritative (a client-only check is bypassable).
+  if (input.kind === "ppp") {
+    const record = (input.payload?.record ?? {}) as { amount?: number; currency?: string; fundingInstrumentId?: string }
+    if (pppIsCashFunded(record)) {
+      const capital = Number(record.amount ?? input.amount)
+      if (!Number.isFinite(capital) || capital <= 0) {
+        return { ok: false, error: "The investment amount is invalid." }
+      }
+      try {
+        const ownerId = await resolveDataOwnerIdFor(session.id)
+        const available = availableByCurrency(await readLedgerEntries(ownerId))
+        const reqCurrency = record.currency || input.currency || BASE_CURRENCY
+        const totalAvailable = Object.entries(available).reduce(
+          (sum, [cur, amt]) => sum + convertCurrency(amt, cur, reqCurrency),
+          0,
+        )
+        if (capital > totalAvailable + 0.01) {
+          const fmt = (n: number) =>
+            `${reqCurrency} ${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+          return {
+            ok: false,
+            error: `Insufficient funds for this investment. It deploys ${fmt(capital)} from your master account but only ${fmt(
+              Math.max(0, totalAvailable),
+            )} is available. Fund the account, invest less, or back the program with a bank instrument.`,
+          }
+        }
+      } catch (err) {
+        console.log("[v0] ppp solvency guard failed:", (err as Error).message)
+        return { ok: false, error: "Your available balance could not be verified. Please try again." }
+      }
     }
   }
 
@@ -946,10 +984,15 @@ export async function cancelMyApprovedYield(
       return { ok: false, error: "Only an ongoing (approved) program can be cancelled." }
     }
 
-    const record = (existing.payload as { record?: { amount?: number; currency?: string } } | undefined)?.record ?? {}
+    const record =
+      (existing.payload as { record?: { amount?: number; currency?: string; fundingInstrumentId?: string } } | undefined)
+        ?.record ?? {}
     const amount = Number(record.amount ?? existing.amount) || 0
     const currency = record.currency || existing.currency || "USD"
     const penalty = yieldCancellationPenalty(amount)
+    // Only a CASH-funded program moved money in, so only it returns principal on
+    // cancel. An instrument-funded program is collateral-backed — no cash return.
+    const cashFunded = pppIsCashFunded(record)
 
     const ownerId = await resolveDataOwnerIdFor(existing.userId)
 
@@ -972,13 +1015,15 @@ export async function cancelMyApprovedYield(
     }
 
     // 2) Solvency gate for the penalty (same-currency available on the master).
-    //    Cancelling RETURNS the invested principal, so the penalty is assessed
-    //    against the balance that will be available after that return — a 2%
-    //    penalty is always covered by the returned principal.
+    //    A CASH-funded cancel RETURNS the invested principal, so the penalty is
+    //    assessed against the balance available AFTER that return (the returned
+    //    principal always covers a 2% penalty). An instrument-funded cancel
+    //    returns no cash, so it is assessed against the actual balance only.
     if (penalty > 0) {
       const available = availableByCurrency(await readLedgerEntries(ownerId))
       const availableInCcy =
-        Object.entries(available).reduce((sum, [cur, amt]) => sum + convertCurrency(amt, cur, currency), 0) + amount
+        Object.entries(available).reduce((sum, [cur, amt]) => sum + convertCurrency(amt, cur, currency), 0) +
+        (cashFunded ? amount : 0)
       if (penalty > availableInCcy + 0.01) {
         return {
           ok: false,
@@ -996,24 +1041,28 @@ export async function cancelMyApprovedYield(
     )
     if (!cancelled) return { ok: false, error: "This program can no longer be cancelled." }
 
-    // 4a) Return the invested PRINCIPAL to the Master Account (deterministic id →
-    //     idempotent; reuses `pppCapitalReturnId` so a maturity return and this
-    //     cancel return can never both post). Nets the approval-time capital debit.
-    try {
-      await upsertLedgerEntry(ownerId, {
-        id: pppCapitalReturnId(approvalId),
-        direction: "credit",
-        amount,
-        currency,
-        status: "completed",
-        date: new Date().toISOString(),
-        counterparty: existing.title || "Yield / PPP program",
-        reference: approvalId,
-        category: "NAFTAhub Yield — Capital Returned",
-        comment: `Principal returned on early cancellation of "${existing.title}".`,
-      })
-    } catch (err) {
-      console.log("[v0] yield cancel principal return failed:", (err as Error).message)
+    // 4a) For a CASH-funded program, return the invested PRINCIPAL to the Master
+    //     Account (deterministic id → idempotent; reuses `pppCapitalReturnId` so a
+    //     maturity return and this cancel return can never both post). Nets the
+    //     approval-time capital debit. Instrument-funded programs moved no cash in,
+    //     so nothing is returned — the pledged instrument is simply released.
+    if (cashFunded) {
+      try {
+        await upsertLedgerEntry(ownerId, {
+          id: pppCapitalReturnId(approvalId),
+          direction: "credit",
+          amount,
+          currency,
+          status: "completed",
+          date: new Date().toISOString(),
+          counterparty: existing.title || "Yield / PPP program",
+          reference: approvalId,
+          category: "NAFTAhub Yield — Capital Returned",
+          comment: `Principal returned on early cancellation of "${existing.title}".`,
+        })
+      } catch (err) {
+        console.log("[v0] yield cancel principal return failed:", (err as Error).message)
+      }
     }
 
     // 4) Charge the penalty (deterministic id → idempotent, never double-charges).
@@ -1053,7 +1102,7 @@ export async function cancelMyApprovedYield(
         userId: existing.userId,
         tone: "info",
         title: "Yield program cancelled",
-        body: `Your yield / PPP program "${existing.title}" was cancelled. The invested principal of ${currency} ${amount.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} was returned to your Master Account. ${penalty > 0 ? `A ${currency} ${penalty.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} early-cancellation penalty was charged. ` : ""}ROI already earned was kept; future ROI has stopped and the funding instrument is now free.`,
+        body: `Your yield / PPP program "${existing.title}" was cancelled. ${cashFunded ? `The invested principal of ${currency} ${amount.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} was returned to your Master Account. ` : "The pledged funding instrument has been released. "}${penalty > 0 ? `A ${currency} ${penalty.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} early-cancellation penalty was charged. ` : ""}ROI already earned was kept; future ROI has stopped.`,
         href: KIND_HREF.ppp ?? "/dashboard/ppp",
       })
     } catch (err) {
@@ -2376,14 +2425,32 @@ export async function reconcileMyApprovedCredits(): Promise<{ ok: boolean; appli
     // ids (`PPP-ROI-<id>-P<n>`) keep every credit idempotent.
     // The invested PRINCIPAL is debited on approval (capital deployed into the
     // program) and returned to the master account once the program term elapses
-    // — `buildPppCapitalPosts` — alongside the periodic ROI credits. Posting the
-    // capital leg here means an ALREADY-approved program self-heals: its 100M
-    // principal debit appears on the next ledger read even though approval
-    // happened before this fix existed. Deterministic ids keep it idempotent.
+    // — `buildPppCapitalPosts` — alongside the periodic ROI credits, but ONLY for
+    // CASH-funded programs. An INSTRUMENT-funded program pledges a bank instrument
+    // as collateral, so no cash ever leaves the master account. Posting the capital
+    // leg here means an ALREADY-approved cash program self-heals: its principal
+    // debit appears on the next ledger read even though approval predated the fix.
+    // Deterministic ids keep it idempotent.
     const pppReqs = mine.filter((r) => r.kind === "ppp" && r.status === "approved")
     for (const req of pppReqs) {
       const ownerId = await resolveDataOwnerIdFor(req.userId)
       const rows = await loadOwnerRows(ownerId)
+
+      // Self-heal: a prior build wrongly debited master CASH for instrument-funded
+      // programs too, which drove accounts deeply negative. For any approved PPP
+      // that is instrument-funded, delete the stale capital debit/return rows so
+      // the balance recovers on the next ledger read (collateral, not cash).
+      const record = (req.payload as { record?: { fundingInstrumentId?: string } } | undefined)?.record
+      if (!pppIsCashFunded(record)) {
+        for (const staleId of [pppCapitalId(req.id), pppCapitalReturnId(req.id)]) {
+          if (rows.has(staleId)) {
+            await deleteLedgerEntry(ownerId, staleId)
+            rows.delete(staleId)
+            applied += 1
+          }
+        }
+      }
+
       const posts = [...buildPppCapitalPosts(req), ...buildPppRoiPosts(req)]
       for (const post of posts) {
         if (rows.has(post.id)) continue
