@@ -1,6 +1,6 @@
 "use client"
 
-import { useMemo, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import {
   FileSearch,
   ArrowDownToLine,
@@ -39,6 +39,7 @@ import {
   type SwiftParty,
 } from "@/lib/swift-mt"
 import { submitSwiftMessageAdmin } from "@/app/actions/reconciliation"
+import { listCreditableIncomingSwiftAdmin } from "@/app/actions/incoming-swift"
 import { SwiftRoutingQueue } from "@/components/admin/swift-routing-queue"
 import { IncomingSwiftDelivery } from "@/components/admin/incoming-swift-delivery"
 import { toast } from "sonner"
@@ -92,6 +93,29 @@ function copy(text: string, label = "Copied to clipboard") {
 }
 
 export function AdminSwiftInspector() {
+  // --- Awaiting-credit count (drives the "Receive & deliver" tab badge so a
+  // customer-submitted SWIFT is visible without opening the tab first) ---
+  const [awaitingCount, setAwaitingCount] = useState(0)
+  const [tab, setTab] = useState("routing")
+  useEffect(() => {
+    let cancelled = false
+    listCreditableIncomingSwiftAdmin(ADMIN_PASSCODE)
+      .then((res) => {
+        if (cancelled || !res.ok) return
+        setAwaitingCount(res.messages.length)
+        // On first load, if something is awaiting action, land the admin on the
+        // delivery queue instead of the default routing tab. Guarded so it only
+        // runs while still on the default tab (never overrides a manual switch).
+        if (res.messages.length > 0) {
+          setTab((cur) => (cur === "routing" ? "deliver" : cur))
+        }
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
   // --- Inspect tab ---
   const [raw, setRaw] = useState("")
   const parsed: ParsedSwiftMessage | null = useMemo(
@@ -242,13 +266,18 @@ export function AdminSwiftInspector() {
   }
 
   return (
-    <Tabs defaultValue="routing" className="flex flex-col gap-6">
+    <Tabs value={tab} onValueChange={setTab} className="flex flex-col gap-6">
       <TabsList className="grid w-full grid-cols-2 sm:grid-cols-3 lg:grid-cols-5">
         <TabsTrigger value="routing" className="gap-2">
           <Inbox className="h-4 w-4" /> Routing
         </TabsTrigger>
         <TabsTrigger value="deliver" className="gap-2">
           <Send className="h-4 w-4" /> Receive &amp; deliver
+          {awaitingCount > 0 && (
+            <Badge className="ml-1 bg-emerald-500/15 px-1.5 text-emerald-600 dark:text-emerald-400">
+              {awaitingCount}
+            </Badge>
+          )}
         </TabsTrigger>
         <TabsTrigger value="inspect" className="gap-2">
           <FileSearch className="h-4 w-4" /> Inspect &amp; parse

@@ -1,7 +1,8 @@
 "use server"
 
 import { query } from "@/lib/db"
-import { adminActionAuthorized } from "@/lib/admin-auth"
+import { adminActionAuthorized, adminEmails } from "@/lib/admin-auth"
+import { getDynamicUserByEmail } from "@/lib/admin-users-db"
 import {
   resolveCurrentSession,
   resolveDataOwnerIdFor,
@@ -40,6 +41,45 @@ const GATEWAY_FX_FEE_RATE = 0.005
  * FX auto-cover pass in reconcileMyApprovedCredits (drawn across all currencies).
  */
 const GUARANTEE_RECEIPT_FEE_RATE = 0.002
+
+/**
+ * Notify every authorized administrator (the admin-email allowlist resolved to
+ * their platform accounts) that a customer-submitted SWIFT printout is awaiting
+ * verification. This is what surfaces the submission in the admin's own
+ * notification bell and links them straight to the delivery queue — without it
+ * a customer upload sits silently in the "Awaiting credit" tab with no signal.
+ * Best-effort: a notify failure never blocks the customer's submission.
+ */
+async function notifyAdminsOfCustomerSwift(opts: {
+  holder: string
+  messageType: string
+  amountStr: string
+}): Promise<void> {
+  try {
+    const emails = adminEmails()
+    const admins = await Promise.all(
+      emails.map((e) => getDynamicUserByEmail(e).catch(() => undefined)),
+    )
+    const seen = new Set<string>()
+    await Promise.all(
+      admins
+        .filter((a): a is NonNullable<typeof a> => !!a && !seen.has(a.id) && (seen.add(a.id), true))
+        .map((admin) =>
+          insertNotification({
+            userId: admin.id,
+            tone: "info",
+            title: `New SWIFT ${opts.messageType} awaiting verification`,
+            body: `${opts.holder} uploaded a SWIFT ${opts.messageType} printout${
+              opts.amountStr ? ` (${opts.amountStr})` : ""
+            } for verification. Open SWIFT Operations → Receive & deliver to review and action it.`,
+            href: "/dashboard/admin/swift",
+          }).catch(() => undefined),
+        ),
+    )
+  } catch {
+    // Never let admin-notification failure affect the customer's submission.
+  }
+}
 
 function normalizeIban(raw: string | undefined | null): string {
   return (raw ?? "").toUpperCase().replace(/[^A-Z0-9]/g, "")
@@ -360,6 +400,10 @@ export async function submitIncomingSwiftUpload(input: SubmitUploadInput): Promi
           : `Your SWIFT ${ex.msg.type} printout${amountStr ? ` (${amountStr})` : ""} was submitted for administrator verification.`,
       href: "/dashboard/swift",
     })
+
+    // Signal the administrators so the submission surfaces in their notification
+    // bell (and not only inside the SWIFT delivery tab they must remember to open).
+    await notifyAdminsOfCustomerSwift({ holder, messageType: ex.msg.type, amountStr })
 
     await logActivity({
       action: `Uploaded a SWIFT ${ex.msg.type} printout${amountStr ? ` (${amountStr})` : ""} for verification`,
