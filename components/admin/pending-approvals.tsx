@@ -1893,6 +1893,112 @@ export function PendingApprovals({ initialKind }: { initialKind?: ApprovalKind }
         </DialogContent>
       </Dialog>
 
+      {/* Confirm Yield / PPP early termination (negotiated exit cost) dialog */}
+      <Dialog open={termTarget !== null} onOpenChange={(o) => !o && !acting && setTermTarget(null)}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Handshake className="h-4 w-4 text-orange-500" />
+              Confirm early termination
+            </DialogTitle>
+            <DialogDescription className="text-pretty">
+              Agree the final exit cost (damages) with the client, then confirm to terminate the program. The client
+              keeps all ROI already earned; future ROI stops and the funding is released.
+            </DialogDescription>
+          </DialogHeader>
+          {termTarget && (
+            <div className="space-y-4">
+              <div className="rounded-md border border-border bg-muted/40 p-3 text-sm">
+                <div className="font-medium text-foreground">{termTarget.label}</div>
+                <div className="mt-2 grid gap-1 text-xs text-muted-foreground">
+                  <div className="flex items-center justify-between gap-2">
+                    <span>Invested principal</span>
+                    <span className="font-mono tabular-nums text-foreground">
+                      {formatMoney2(termTarget.principal, termTarget.currency)}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between gap-2">
+                    <span>Standard ({(YIELD_EARLY_CANCELLATION_PENALTY_RATE * 100).toFixed(0)}%)</span>
+                    <span className="font-mono tabular-nums text-foreground">
+                      {formatMoney2(termTarget.suggested, termTarget.currency)}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between gap-2">
+                    <span>Client proposed</span>
+                    <span className="font-mono tabular-nums text-foreground">
+                      {formatMoney2(termTarget.proposed, termTarget.currency)}
+                    </span>
+                  </div>
+                </div>
+                {termTarget.reason && (
+                  <p className="mt-2 text-xs text-muted-foreground">
+                    <span className="font-medium text-foreground">Reason: </span>
+                    {termTarget.reason}
+                  </p>
+                )}
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="term-cost">Final agreed exit cost ({termTarget.currency})</Label>
+                <Input
+                  id="term-cost"
+                  type="number"
+                  inputMode="decimal"
+                  min={0}
+                  step="0.01"
+                  value={termValue}
+                  onChange={(e) => setTermValue(e.target.value)}
+                  className="text-base md:text-sm"
+                />
+                <div className="flex flex-wrap gap-2 pt-0.5 text-xs">
+                  <button
+                    type="button"
+                    className="text-orange-600 hover:underline dark:text-orange-400"
+                    onClick={() => setTermValue(termTarget.proposed.toFixed(2))}
+                  >
+                    Use client proposal
+                  </button>
+                  <span className="text-muted-foreground">·</span>
+                  <button
+                    type="button"
+                    className="text-orange-600 hover:underline dark:text-orange-400"
+                    onClick={() => setTermValue(termTarget.suggested.toFixed(2))}
+                  >
+                    Use standard {(YIELD_EARLY_CANCELLATION_PENALTY_RATE * 100).toFixed(0)}%
+                  </button>
+                  <span className="text-muted-foreground">·</span>
+                  <button
+                    type="button"
+                    className="text-orange-600 hover:underline dark:text-orange-400"
+                    onClick={() => setTermValue("0")}
+                  >
+                    Waive (0)
+                  </button>
+                </div>
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="term-note">Note (optional)</Label>
+                <Textarea
+                  id="term-note"
+                  value={termNote}
+                  onChange={(e) => setTermNote(e.target.value)}
+                  placeholder="Reason for the agreed figure…"
+                  className="min-h-16 text-base md:text-sm"
+                />
+              </div>
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setTermTarget(null)} disabled={acting}>
+              Cancel
+            </Button>
+            <Button onClick={confirmTermination} disabled={acting} className="gap-1">
+              {acting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Handshake className="h-4 w-4" />}
+              Confirm &amp; terminate
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       {/* Revoke approved commodity deal dialog */}
       <Dialog open={revokeTarget !== null} onOpenChange={(o) => !o && !acting && setRevokeTarget(null)}>
         <DialogContent className="max-w-md">

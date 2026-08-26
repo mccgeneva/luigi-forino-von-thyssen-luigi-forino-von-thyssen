@@ -19,6 +19,7 @@ import {
   ShieldCheck,
   Landmark,
   Loader2,
+  LogOut,
 } from "lucide-react"
 import useSWR from "swr"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -43,6 +44,7 @@ import {
 } from "@/components/ui/accordion"
 import { Label } from "@/components/ui/label"
 import { Input } from "@/components/ui/input"
+import { Textarea } from "@/components/ui/textarea"
 import {
   Select,
   SelectContent,
@@ -54,7 +56,7 @@ import { cn } from "@/lib/utils"
 import { toast } from "sonner"
 import { useActivityLog } from "@/components/activity-tracker"
 import { usePPPRequests, type PPPRequest } from "@/lib/ppp-requests-store"
-import { cancelMyApprovedYield } from "@/app/actions/approvals"
+import { requestYieldTermination, withdrawYieldTermination } from "@/app/actions/approvals"
 import {
   yieldCancellationPenalty,
   YIELD_EARLY_CANCELLATION_PENALTY_RATE,
@@ -155,9 +157,15 @@ export default function PPPPage() {
   const [fundingInstrumentId, setFundingInstrumentId] = useState("")
   const [formError, setFormError] = useState<string | null>(null)
   const [detailInvestment, setDetailInvestment] = useState<PPPRequest | null>(null)
-  // Early-cancellation of an ongoing (approved) program: confirm target + busy.
-  const [cancelTarget, setCancelTarget] = useState<PPPRequest | null>(null)
-  const [cancelling, setCancelling] = useState(false)
+  // Early resignation from an ongoing (approved) program: the client requests it
+  // and PROPOSES an exit cost + reason; the administrator negotiates the final
+  // figure and confirms. `resignTarget` drives the request dialog; `resignCost`
+  // and `resignReason` are the client's proposal; `resigning` is the busy flag.
+  const [resignTarget, setResignTarget] = useState<PPPRequest | null>(null)
+  const [resignCost, setResignCost] = useState("")
+  const [resignReason, setResignReason] = useState("")
+  const [resigning, setResigning] = useState(false)
+  const [withdrawingId, setWithdrawingId] = useState<string | null>(null)
   const log = useActivityLog()
   const { requests, addRequest, refresh, hydrated } = usePPPRequests()
   const { instruments } = useInstrumentRequests()
@@ -302,38 +310,67 @@ export default function PPPPage() {
     setIsApplyOpen(true)
   }
 
-  // Cancel an ongoing (approved) program instantly: earned ROI is kept, future
-  // ROI stops, the funding instrument is freed, and the early-cancellation
-  // penalty is debited from the Master Account (server-authoritative).
-  const confirmCancel = async () => {
-    const target = cancelTarget
-    if (!target?.approvalId || cancelling) return
-    setCancelling(true)
+  // Open the early-resignation request dialog, pre-filling the proposed exit cost
+  // with the standard 2%-of-principal figure (which the client may edit).
+  const openResign = (target: PPPRequest) => {
+    setResignCost(yieldCancellationPenalty(target.amount).toFixed(2))
+    setResignReason("")
+    setResignTarget(target)
+  }
+
+  // Submit the early-resignation REQUEST. This moves no money and terminates
+  // nothing — it routes to the administrator, who negotiates the final exit cost
+  // and confirms. The program keeps running (ROI keeps accruing) until then.
+  const confirmResign = async () => {
+    const target = resignTarget
+    if (!target?.approvalId || resigning) return
+    const proposed = Number(resignCost.replace(/[^0-9.]/g, ""))
+    if (!Number.isFinite(proposed) || proposed < 0) {
+      toast.error("Enter a valid proposed exit cost.")
+      return
+    }
+    setResigning(true)
     try {
-      const res = await cancelMyApprovedYield(target.approvalId)
+      const res = await requestYieldTermination(target.approvalId, {
+        proposedCost: proposed,
+        reason: resignReason.trim() || undefined,
+      })
       if (!res.ok) {
-        toast.error("Could not cancel program", { description: res.error })
+        toast.error("Could not submit request", { description: res.error })
         return
       }
-      const penaltyLabel =
-        res.penalty && res.penalty > 0
-          ? `${res.currency} ${res.penalty.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} penalty charged. `
-          : ""
-      toast.success("Program cancelled", {
-        description: `${penaltyLabel}ROI already earned was kept, future ROI stopped, and the funding instrument is now free.`,
+      toast.success("Termination request sent", {
+        description: `You proposed an exit cost of ${formatMoney(res.proposedCost ?? proposed, res.currency ?? target.currency)}. The administrator will agree the final figure and confirm.`,
       })
       log({
-        action: `Cancelled yield / PPP program "${target.programName}"`,
+        action: `Requested early termination of yield / PPP program "${target.programName}"`,
         category: "Yield / PPP",
         details: {
-          summary: `Client cancelled the ongoing program ${target.programName} (${target.id}) before term end. ${penaltyLabel}Earned ROI kept; future ROI stopped; funding instrument released.`,
+          summary: `Client requested to resign from ${target.programName} (${target.id}), proposing an exit cost of ${formatMoney(res.proposedCost ?? proposed, res.currency ?? target.currency)}.${resignReason.trim() ? ` Reason: ${resignReason.trim()}` : ""}`,
           referenceId: target.id,
         },
       })
-      setCancelTarget(null)
+      setResignTarget(null)
       void refresh()
     } finally {
-      setCancelling(false)
+      setResigning(false)
+    }
+  }
+
+  // Withdraw a still-pending termination request (before the admin confirms).
+  const withdrawResign = async (target: PPPRequest) => {
+    if (!target.approvalId || withdrawingId) return
+    setWithdrawingId(target.id)
+    try {
+      const res = await withdrawYieldTermination(target.approvalId)
+      if (!res.ok) {
+        toast.error("Could not withdraw request", { description: res.error })
+        return
+      }
+      toast.success("Request withdrawn", { description: "Your program continues as normal." })
+      void refresh()
+    } finally {
+      setWithdrawingId(null)
     }
   }
 
@@ -985,16 +1022,41 @@ export default function PPPPage() {
                           <ExternalLink className="mr-2 h-4 w-4" />
                           View Details
                         </Button>
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          className="text-destructive hover:text-destructive"
-                          onClick={() => setCancelTarget(investment)}
-                        >
-                          <XCircle className="mr-2 h-4 w-4" />
-                          Cancel program
-                        </Button>
+                        {investment.terminationRequestedAt ? (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            disabled={withdrawingId === investment.id}
+                            onClick={() => withdrawResign(investment)}
+                          >
+                            {withdrawingId === investment.id ? (
+                              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                            ) : (
+                              <XCircle className="mr-2 h-4 w-4" />
+                            )}
+                            Withdraw exit request
+                          </Button>
+                        ) : (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="text-destructive hover:text-destructive"
+                            onClick={() => openResign(investment)}
+                          >
+                            <LogOut className="mr-2 h-4 w-4" />
+                            Request early exit
+                          </Button>
+                        )}
                       </div>
+                      {investment.terminationRequestedAt && (
+                        <div className="mt-1 rounded-md border border-orange-500/30 bg-orange-500/5 px-3 py-2 text-xs text-orange-600 dark:text-orange-400">
+                          Early-exit request awaiting administrator confirmation
+                          {typeof investment.proposedExitCost === "number"
+                            ? ` — you proposed an exit cost of ${formatMoney(investment.proposedExitCost, investment.currency)}.`
+                            : "."}{" "}
+                          The program keeps earning until the administrator confirms.
+                        </div>
+                      )}
                     </div>
                   </CardContent>
                 </Card>
@@ -1282,61 +1344,92 @@ export default function PPPPage() {
         </DialogContent>
       </Dialog>
 
-      <Dialog open={cancelTarget !== null} onOpenChange={(open) => !open && !cancelling && setCancelTarget(null)}>
+      <Dialog open={resignTarget !== null} onOpenChange={(open) => !open && !resigning && setResignTarget(null)}>
         <DialogContent className="sm:max-w-md">
-          {cancelTarget &&
+          {resignTarget &&
             (() => {
-              const penalty = yieldCancellationPenalty(cancelTarget.amount)
-              const penaltyLabel = `${cancelTarget.currency} ${penalty.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+              const standard = yieldCancellationPenalty(resignTarget.amount)
               return (
                 <>
                   <DialogHeader>
                     <DialogTitle className="flex items-center gap-2">
-                      <XCircle className="h-5 w-5 text-destructive" />
-                      Cancel ongoing program
+                      <LogOut className="h-5 w-5 text-orange-500" />
+                      Request early exit
                     </DialogTitle>
                     <DialogDescription>
-                      Cancel{" "}
-                      <span className="font-medium text-foreground">{cancelTarget.programName}</span> (
-                      {cancelTarget.id}) before its term ends. This is settled instantly and cannot be undone.
+                      Request to resign from{" "}
+                      <span className="font-medium text-foreground">{resignTarget.programName}</span> (
+                      {resignTarget.id}) before its term ends. Propose an exit cost (damages) — the administrator
+                      agrees the final figure and confirms. The program keeps earning until then.
                     </DialogDescription>
                   </DialogHeader>
 
-                  <div className="space-y-3 text-sm">
-                    <div className="flex items-center justify-between rounded-lg border border-destructive/30 bg-destructive/10 p-3">
-                      <span className="text-foreground">
-                        Early-cancellation penalty ({(YIELD_EARLY_CANCELLATION_PENALTY_RATE * 100).toFixed(0)}% of{" "}
-                        {formatMoney(cancelTarget.amount, cancelTarget.currency)})
+                  <div className="space-y-4 text-sm">
+                    <div className="flex items-center justify-between rounded-lg border border-border bg-muted/40 p-3">
+                      <span className="text-muted-foreground">
+                        Standard exit cost ({(YIELD_EARLY_CANCELLATION_PENALTY_RATE * 100).toFixed(0)}% of{" "}
+                        {formatMoney(resignTarget.amount, resignTarget.currency)})
                       </span>
-                      <span className="font-semibold text-destructive">{penaltyLabel}</span>
+                      <span className="font-mono font-semibold tabular-nums text-foreground">
+                        {formatMoney(standard, resignTarget.currency)}
+                      </span>
                     </div>
-                    <ul className="list-disc space-y-1 pl-5 text-muted-foreground">
-                      <li>The penalty is debited from your Master Account.</li>
-                      <li>ROI you have already earned is kept — only future ROI stops.</li>
-                      {cancelTarget.fundingInstrumentLabel && (
+                    <div className="space-y-1.5">
+                      <Label htmlFor="resign-cost">Your proposed exit cost ({resignTarget.currency})</Label>
+                      <Input
+                        id="resign-cost"
+                        type="number"
+                        inputMode="decimal"
+                        min={0}
+                        step="0.01"
+                        value={resignCost}
+                        onChange={(e) => setResignCost(e.target.value)}
+                        className="text-base md:text-sm"
+                      />
+                      <button
+                        type="button"
+                        className="text-xs text-orange-600 hover:underline dark:text-orange-400"
+                        onClick={() => setResignCost(standard.toFixed(2))}
+                      >
+                        Use standard {(YIELD_EARLY_CANCELLATION_PENALTY_RATE * 100).toFixed(0)}%
+                      </button>
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label htmlFor="resign-reason">Reason (optional)</Label>
+                      <Textarea
+                        id="resign-reason"
+                        value={resignReason}
+                        onChange={(e) => setResignReason(e.target.value)}
+                        placeholder="Why you'd like to exit early…"
+                        className="min-h-16 text-base md:text-sm"
+                      />
+                    </div>
+                    <ul className="list-disc space-y-1 pl-5 text-xs text-muted-foreground">
+                      <li>ROI you have already earned is kept — only future ROI stops on termination.</li>
+                      <li>The administrator must confirm before anything is charged or terminated.</li>
+                      {resignTarget.fundingInstrumentLabel && (
                         <li>
-                          The funding instrument{" "}
-                          <span className="text-foreground">{cancelTarget.fundingInstrumentLabel}</span> is freed and
-                          can be returned to the marketplace.
+                          On confirmation the funding instrument{" "}
+                          <span className="text-foreground">{resignTarget.fundingInstrumentLabel}</span> is released.
                         </li>
                       )}
                     </ul>
                   </div>
 
                   <DialogFooter className="flex-col gap-2 sm:flex-row">
-                    <Button variant="outline" onClick={() => setCancelTarget(null)} disabled={cancelling}>
+                    <Button variant="outline" onClick={() => setResignTarget(null)} disabled={resigning}>
                       Keep program
                     </Button>
-                    <Button variant="destructive" onClick={confirmCancel} disabled={cancelling}>
-                      {cancelling ? (
+                    <Button onClick={confirmResign} disabled={resigning}>
+                      {resigning ? (
                         <>
                           <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                          Cancelling…
+                          Sending…
                         </>
                       ) : (
                         <>
-                          <XCircle className="mr-2 h-4 w-4" />
-                          Cancel &amp; pay {penaltyLabel}
+                          <LogOut className="mr-2 h-4 w-4" />
+                          Send exit request
                         </>
                       )}
                     </Button>
