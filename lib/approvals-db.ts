@@ -365,12 +365,19 @@ export async function countPendingByKind(): Promise<Record<string, number>> {
  * yet confirmed delivered (stage 3). These carry a pending ADMINISTRATOR action
  * — "Mark funds delivered" — even though they are no longer `pending`, so they
  * would otherwise be invisible on the command center (which counts pending only).
+ *
+ * Scoped to payments that carry a `deliveryInitiatedAt` marker (stamped when a
+ * payment reaches approved & initiated, going forward). This DELIBERATELY
+ * excludes the historical backlog of older approved payments that predate the
+ * stage-3 delivery feature and will never be marked delivered — so only genuinely
+ * new, not-yet-delivered payments surface as an admin action.
  */
 export async function countPaymentsAwaitingDelivery(): Promise<number> {
   await ensureTable()
   const { rows } = await query<{ n: string }>(
     `SELECT COUNT(*)::int AS n FROM approval_requests
       WHERE kind = 'payment' AND status = 'approved'
+        AND payload->>'deliveryInitiatedAt' IS NOT NULL
         AND COALESCE(payload->>'delivered', 'false') <> 'true'`,
   )
   return Number(rows[0]?.n ?? 0)
