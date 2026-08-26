@@ -361,6 +361,22 @@ export async function countPendingByKind(): Promise<Record<string, number>> {
 }
 
 /**
+ * Count of outgoing PAYMENTS that were approved & initiated (stage 2) but not
+ * yet confirmed delivered (stage 3). These carry a pending ADMINISTRATOR action
+ * — "Mark funds delivered" — even though they are no longer `pending`, so they
+ * would otherwise be invisible on the command center (which counts pending only).
+ */
+export async function countPaymentsAwaitingDelivery(): Promise<number> {
+  await ensureTable()
+  const { rows } = await query<{ n: string }>(
+    `SELECT COUNT(*)::int AS n FROM approval_requests
+      WHERE kind = 'payment' AND status = 'approved'
+        AND COALESCE(payload->>'delivered', 'false') <> 'true'`,
+  )
+  return Number(rows[0]?.n ?? 0)
+}
+
+/**
  * Record a decision on a pending request. Returns the updated record, or null
  * if it does not exist or was already decided (idempotent / race-safe via the
  * status guard in the WHERE clause).

@@ -46,6 +46,7 @@ import {
   listAllApprovals,
   listApprovalsForMaster,
   countPendingByKind,
+  countPaymentsAwaitingDelivery,
   decideApproval,
   recordAdminDecision,
   recordMasterDecision,
@@ -1854,6 +1855,21 @@ export async function adminCountPending(passcode: string): Promise<Record<string
   } catch (err) {
     console.log("[v0] adminCountPending failed:", (err as Error).message)
     return {}
+  }
+}
+
+/**
+ * Count of approved-&-initiated payments still awaiting the administrator's
+ * stage-3 delivery confirmation. Surfaced on the "Outgoing Payments" command
+ * tile so a payment that already left `pending` still signals a pending action.
+ */
+export async function adminCountPaymentsAwaitingDelivery(passcode: string): Promise<number> {
+  if (!(await adminOk(passcode))) return 0
+  try {
+    return await countPaymentsAwaitingDelivery()
+  } catch (err) {
+    console.log("[v0] adminCountPaymentsAwaitingDelivery failed:", (err as Error).message)
+    return 0
   }
 }
 
