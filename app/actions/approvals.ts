@@ -30,7 +30,14 @@ import { cardFeeFor, formatCardFee, CARD_FEE_CURRENCY } from "@/lib/card-fees"
 import { leverageApplicationCharges } from "@/lib/leverage-audit-fee"
 import { computeMonetizationEquity } from "@/lib/monetization-equity"
 import { buildTradingFundPosts, TRADING_FUND_MONTHLY_ROI, type TradingFundPauseWindow } from "@/lib/trading-fund"
-import { buildPppRoiPosts, yieldCancellationPenalty, YIELD_EARLY_CANCELLATION_PENALTY_RATE } from "@/lib/ppp-yield"
+import {
+  buildPppRoiPosts,
+  buildPppCapitalPosts,
+  pppCapitalId,
+  pppCapitalReturnId,
+  yieldCancellationPenalty,
+  YIELD_EARLY_CANCELLATION_PENALTY_RATE,
+} from "@/lib/ppp-yield"
 import {
   INSTRUMENT_UPGRADE_FEE_LABEL,
   instrumentUpgradeFee,
@@ -946,25 +953,32 @@ export async function cancelMyApprovedYield(
 
     const ownerId = await resolveDataOwnerIdFor(existing.userId)
 
-    // 1) Credit any ROI matured up to now so nothing earned is lost on cancel.
+    // 1) Credit any ROI matured up to now so nothing earned is lost on cancel,
+    //    and ensure the invested-principal DEBIT is present (it may not have been
+    //    reconciled yet). Posting the debit here keeps the ledger consistent so
+    //    the later principal-return credit nets cleanly to zero regardless of
+    //    whether a ledger reconcile had already run.
     try {
       const roiPosts = buildPppRoiPosts(existing)
+      const capitalDebit = buildPppCapitalPosts(existing).find((p) => p.id === pppCapitalId(approvalId))
       const existingRows = await readLedgerEntries(ownerId)
       const have = new Set(existingRows.map((e) => e.id))
       for (const post of roiPosts) {
         if (!have.has(post.id)) await upsertLedgerEntry(ownerId, post)
       }
+      if (capitalDebit && !have.has(capitalDebit.id)) await upsertLedgerEntry(ownerId, capitalDebit)
     } catch (err) {
-      console.log("[v0] yield cancel ROI catch-up failed:", (err as Error).message)
+      console.log("[v0] yield cancel ROI/capital catch-up failed:", (err as Error).message)
     }
 
     // 2) Solvency gate for the penalty (same-currency available on the master).
+    //    Cancelling RETURNS the invested principal, so the penalty is assessed
+    //    against the balance that will be available after that return — a 2%
+    //    penalty is always covered by the returned principal.
     if (penalty > 0) {
       const available = availableByCurrency(await readLedgerEntries(ownerId))
-      const availableInCcy = Object.entries(available).reduce(
-        (sum, [cur, amt]) => sum + convertCurrency(amt, cur, currency),
-        0,
-      )
+      const availableInCcy =
+        Object.entries(available).reduce((sum, [cur, amt]) => sum + convertCurrency(amt, cur, currency), 0) + amount
       if (penalty > availableInCcy + 0.01) {
         return {
           ok: false,
@@ -981,6 +995,26 @@ export async function cancelMyApprovedYield(
       "Yield / PPP program cancelled by client before term end.",
     )
     if (!cancelled) return { ok: false, error: "This program can no longer be cancelled." }
+
+    // 4a) Return the invested PRINCIPAL to the Master Account (deterministic id →
+    //     idempotent; reuses `pppCapitalReturnId` so a maturity return and this
+    //     cancel return can never both post). Nets the approval-time capital debit.
+    try {
+      await upsertLedgerEntry(ownerId, {
+        id: pppCapitalReturnId(approvalId),
+        direction: "credit",
+        amount,
+        currency,
+        status: "completed",
+        date: new Date().toISOString(),
+        counterparty: existing.title || "Yield / PPP program",
+        reference: approvalId,
+        category: "NAFTAhub Yield — Capital Returned",
+        comment: `Principal returned on early cancellation of "${existing.title}".`,
+      })
+    } catch (err) {
+      console.log("[v0] yield cancel principal return failed:", (err as Error).message)
+    }
 
     // 4) Charge the penalty (deterministic id → idempotent, never double-charges).
     if (penalty > 0) {
@@ -1019,7 +1053,7 @@ export async function cancelMyApprovedYield(
         userId: existing.userId,
         tone: "info",
         title: "Yield program cancelled",
-        body: `Your yield / PPP program "${existing.title}" was cancelled. ${penalty > 0 ? `A ${currency} ${penalty.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} early-cancellation penalty was charged. ` : ""}ROI already earned was kept; future ROI has stopped and the funding instrument is now free.`,
+        body: `Your yield / PPP program "${existing.title}" was cancelled. The invested principal of ${currency} ${amount.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} was returned to your Master Account. ${penalty > 0 ? `A ${currency} ${penalty.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} early-cancellation penalty was charged. ` : ""}ROI already earned was kept; future ROI has stopped and the funding instrument is now free.`,
         href: KIND_HREF.ppp ?? "/dashboard/ppp",
       })
     } catch (err) {
@@ -2340,11 +2374,17 @@ export async function reconcileMyApprovedCredits(): Promise<{ ok: boolean; appli
     // is credited (the 75% is alienated to MCC HOLDING SA). No scheduler — this
     // runs on every ledger read, self-healing/cross-device, and deterministic
     // ids (`PPP-ROI-<id>-P<n>`) keep every credit idempotent.
+    // The invested PRINCIPAL is debited on approval (capital deployed into the
+    // program) and returned to the master account once the program term elapses
+    // — `buildPppCapitalPosts` — alongside the periodic ROI credits. Posting the
+    // capital leg here means an ALREADY-approved program self-heals: its 100M
+    // principal debit appears on the next ledger read even though approval
+    // happened before this fix existed. Deterministic ids keep it idempotent.
     const pppReqs = mine.filter((r) => r.kind === "ppp" && r.status === "approved")
     for (const req of pppReqs) {
       const ownerId = await resolveDataOwnerIdFor(req.userId)
       const rows = await loadOwnerRows(ownerId)
-      const posts = buildPppRoiPosts(req)
+      const posts = [...buildPppCapitalPosts(req), ...buildPppRoiPosts(req)]
       for (const post of posts) {
         if (rows.has(post.id)) continue
         await upsertLedgerEntry(ownerId, post)

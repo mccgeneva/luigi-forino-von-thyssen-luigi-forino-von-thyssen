@@ -23,9 +23,11 @@ import { round2 } from "@/lib/interest-accrual"
  * ledger. All entries use deterministic ids so reconciliation is fully idempotent
  * (never double-credits), and the balance follows the user across devices.
  *
- * NOTE: this engine ONLY credits ROI. The invested principal itself is not moved
- * by the PPP flow today (no capital debit on approval), so nothing here debits or
- * returns principal — it purely reflects the periodic yield the client earns.
+ * CAPITAL LEG: `buildPppCapitalPosts` handles the invested principal — it is
+ * DEBITED from the Master Account when the program is approved (the capital is
+ * deployed into the program) and RETURNED once the program term elapses. Early
+ * cancellation returns the principal too (handled by the cancel action). This
+ * `buildPppRoiPosts` function covers ONLY the periodic ROI the client earns.
  */
 
 /**
@@ -113,6 +115,16 @@ export function parseYieldTermEnd(duration: string | undefined, activation: Date
 /** Deterministic ledger id for the Nth matured ROI payout (1-based). */
 export function pppRoiId(reqId: string, periodIndex: number): string {
   return `PPP-ROI-${reqId}-P${periodIndex}`
+}
+
+/** Deterministic ledger id for the invested principal DEBIT (capital deployed). */
+export function pppCapitalId(reqId: string): string {
+  return `PPP-CAPITAL-${reqId}`
+}
+
+/** Deterministic ledger id for the principal RETURN (maturity or cancellation). */
+export function pppCapitalReturnId(reqId: string): string {
+  return `PPP-CAPITAL-RETURN-${reqId}`
 }
 
 /** The date a program is activated (and from which ROI accrues). */
@@ -229,6 +241,67 @@ export function buildPppRoiPosts(req: ApprovalRequest, now: Date = new Date()): 
     if (dMs > nowMs) break
     if (dMs > termEndMs) break
     pushPost(n, d)
+  }
+  return posts
+}
+
+/**
+ * Principal (capital) movement for an APPROVED Yield / PPP application:
+ *   • a DEBIT of the invested principal from the Master Account when the program
+ *     is approved — the capital is deployed into the program (dated at activation);
+ *   • a matching CREDIT returning the principal to the Master Account once the
+ *     program TERM has fully elapsed (dated at term end).
+ *
+ * Returns [] for any non-approved / non-ppp request. Deterministic ids make it
+ * idempotent so the principal is debited exactly once and returned exactly once,
+ * and — like the ROI engine — it self-heals across devices with no scheduler.
+ * (Early cancellation returns the principal via the cancel action, reusing the
+ * same `pppCapitalReturnId`, so a cancel and a maturity can never double-return.)
+ */
+export function buildPppCapitalPosts(req: ApprovalRequest, now: Date = new Date()): LedgerEntry[] {
+  if (req.kind !== "ppp") return []
+  if (req.status !== "approved") return []
+
+  const record = ((req.payload as { record?: PppRecord } | undefined)?.record ?? {}) as PppRecord
+  const amount = Number(record.amount ?? req.amount)
+  if (!Number.isFinite(amount) || amount <= 0) return []
+
+  const currency = record.currency || req.currency || "USD"
+  const start = activationDate(req)
+  if (Number.isNaN(start.getTime())) return []
+  const principal = round2(amount)
+  const programName = record.programName || req.title || "Yield / PPP program"
+
+  const posts: LedgerEntry[] = [
+    {
+      id: pppCapitalId(req.id),
+      direction: "debit",
+      amount: principal,
+      currency,
+      status: "completed",
+      date: start.toISOString(),
+      counterparty: programName,
+      reference: req.id,
+      category: "NAFTAhub Yield — Capital Invested",
+      comment: `Principal of ${formatMoney(principal, currency)} deployed into ${programName}.`,
+    },
+  ]
+
+  // Return the principal to the Master Account once the program term has elapsed.
+  const termEnd = parseYieldTermEnd(record.duration, start)
+  if (now.getTime() >= termEnd.getTime()) {
+    posts.push({
+      id: pppCapitalReturnId(req.id),
+      direction: "credit",
+      amount: principal,
+      currency,
+      status: "completed",
+      date: termEnd.toISOString(),
+      counterparty: programName,
+      reference: req.id,
+      category: "NAFTAhub Yield — Capital Returned",
+      comment: `Principal of ${formatMoney(principal, currency)} returned at maturity of ${programName}.`,
+    })
   }
   return posts
 }
