@@ -171,15 +171,25 @@ export default function PPPPage() {
   const { instruments } = useInstrumentRequests()
   const { totalIn } = useLedger()
 
-  // Active, MCC HOLDING SA-owned instruments the client can nominate as the
-  // funding source. Using one triggers the 75% MCC / 25% client benefit split.
-  const mccOwnedInstruments = useMemo(
-    () => instruments.filter((i) => i.status === "active" && !i.blocked && isMccHeldInstrument(i)),
+  // Every active, non-blocked bank instrument the client can pledge as the
+  // funding source — this INCLUDES the client's OWN instruments (e.g. an inbound
+  // MT760 blocked-funds guarantee they hold) as well as MCC HOLDING SA-owned
+  // ones. Only an MCC HOLDING SA-owned instrument triggers the 75/25 benefit
+  // split; a client's own instrument keeps 100% of the return. (Mirrors the
+  // leverage page's pledge picker, which lists all active non-blocked instruments.)
+  const pledgeableInstruments = useMemo(
+    () => instruments.filter((i) => i.status === "active" && !i.blocked),
     [instruments],
   )
   const selectedFundingInstrument = useMemo(
-    () => mccOwnedInstruments.find((i) => i.id === fundingInstrumentId) ?? null,
-    [mccOwnedInstruments, fundingInstrumentId],
+    () => pledgeableInstruments.find((i) => i.id === fundingInstrumentId) ?? null,
+    [pledgeableInstruments, fundingInstrumentId],
+  )
+  // Whether the SELECTED funding instrument is owned by MCC HOLDING SA (assignee
+  // model → 75/25 split). A client's own instrument is not MCC-held → no split.
+  const selectedInstrumentIsMccHeld = useMemo(
+    () => (selectedFundingInstrument ? isMccHeldInstrument(selectedFundingInstrument) : false),
+    [selectedFundingInstrument],
   )
 
   // Instruments already pledged to a live (pending or approved) yield/PPP
@@ -199,7 +209,7 @@ export default function PPPPage() {
   // MCC-owned instrument) — purely illustrative; actual distributions follow the
   // realised return.
   const applyBenefitPreview = useMemo(() => {
-    if (!selectedFundingInstrument || !selectedProgram) return null
+    if (!selectedFundingInstrument || !selectedInstrumentIsMccHeld || !selectedProgram) return null
     const principal = Number(amount.replace(/[^0-9.]/g, ""))
     if (!Number.isFinite(principal) || principal <= 0) return null
     const lowerPct = Number.parseFloat((selectedProgram.expectedReturn.match(/\d+(\.\d+)?/) ?? ["0"])[0])
@@ -210,7 +220,7 @@ export default function PPPPage() {
     const grossInProgramCcy = (principal * lowerPct) / 100
     const grossInInstrumentCcy = convertCurrency(grossInProgramCcy, programCurrency, instrumentCurrency)
     return { ...computeBenefitSplit(grossInInstrumentCcy), currency: instrumentCurrency }
-  }, [selectedFundingInstrument, selectedProgram, amount])
+  }, [selectedFundingInstrument, selectedInstrumentIsMccHeld, selectedProgram, amount])
   const { show: showPdf } = usePdfViewer()
 
   // Administrator-published, bank-partner-sourced institutional yields. Only
@@ -440,14 +450,16 @@ export default function PPPPage() {
       amount: numericAmount,
       sourceOfFunds: sourceLabels[sourceOfFunds] ?? sourceOfFunds,
       payoutAccount: payoutLabels[payoutAccount] ?? payoutAccount,
-      // If funded by an MCC HOLDING SA-owned instrument, record the 75/25 split
-      // so approved returns can be distributed accordingly.
+      // Pledge the selected funding instrument. Only an MCC HOLDING SA-owned
+      // instrument records the 75/25 split; a client's OWN instrument (e.g. their
+      // MT760 blocked-funds guarantee) funds the program with no split.
       ...(selectedFundingInstrument
         ? {
             fundingInstrumentId: selectedFundingInstrument.id,
             fundingInstrumentLabel: `${selectedFundingInstrument.type} ${selectedFundingInstrument.id}`,
-            mccBenefitRate: MCC_BENEFIT_SHARE,
-            clientBenefitRate: CLIENT_BENEFIT_SHARE,
+            ...(selectedInstrumentIsMccHeld
+              ? { mccBenefitRate: MCC_BENEFIT_SHARE, clientBenefitRate: CLIENT_BENEFIT_SHARE }
+              : {}),
           }
         : {}),
     })
@@ -1181,8 +1193,9 @@ export default function PPPPage() {
               </Select>
             </div>
 
-            {/* Optional MCC HOLDING SA-owned instrument as the funding source. */}
-            {mccOwnedInstruments.length > 0 ? (
+            {/* Optional funding instrument — a client's OWN instrument (e.g. an
+                MT760 blocked-funds guarantee) or an MCC HOLDING SA-owned one. */}
+            {pledgeableInstruments.length > 0 ? (
               <div className="grid gap-2">
                 <Label>Funding instrument (optional)</Label>
                 <Select
@@ -1193,12 +1206,14 @@ export default function PPPPage() {
                     <SelectValue placeholder="None — own funds" />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="none">None — own funds (no split)</SelectItem>
-                    {mccOwnedInstruments.map((inst) => {
+                    <SelectItem value="none">None — cash from master account</SelectItem>
+                    {pledgeableInstruments.map((inst) => {
                       const inUse = committedInstrumentIds.has(inst.id)
+                      const mccHeld = isMccHeldInstrument(inst)
                       return (
                         <SelectItem key={inst.id} value={inst.id} disabled={inUse}>
                           {inst.type} {inst.id} · {formatMoney(inst.faceValue, inst.currency)}
+                          {mccHeld ? " · MCC-held (75/25)" : " · your instrument"}
                           {inUse ? " · already in use" : ""}
                         </SelectItem>
                       )
@@ -1206,15 +1221,17 @@ export default function PPPPage() {
                   </SelectContent>
                 </Select>
                 <p className="text-[11px] leading-relaxed text-muted-foreground">
-                  Instruments owned by {MCC_HOLDING_OWNER} (acquired via reserve/assign) can fund this
-                  investment. Selecting one applies the benefit split below. An instrument already pledged to
-                  another live application can&apos;t be used again until that request is released.
+                  Pledge a bank instrument to back this investment instead of cash — including your own
+                  instruments such as an inbound MT760 blocked-funds guarantee. An instrument owned by{" "}
+                  {MCC_HOLDING_OWNER} applies the 75/25 benefit split below; your own instrument keeps 100% of
+                  the return. An instrument already pledged to another live application can&apos;t be used again
+                  until that request is released.
                 </p>
               </div>
             ) : null}
 
-            {/* 75 / 25 benefit-split disclosure — only when an MCC instrument is used. */}
-            {selectedFundingInstrument ? (
+            {/* 75 / 25 benefit-split disclosure — only when an MCC-held instrument is used. */}
+            {selectedFundingInstrument && selectedInstrumentIsMccHeld ? (
               <div className="rounded-lg border border-primary/20 bg-primary/5 p-3">
                 <div className="flex items-center gap-2">
                   <Lock className="h-4 w-4 shrink-0 text-primary" />
@@ -1259,6 +1276,21 @@ export default function PPPPage() {
                     instrument&apos;s currency (based on the program&apos;s expected return) — actual distributions
                     follow the realised return.
                   </span>
+                </p>
+              </div>
+            ) : selectedFundingInstrument ? (
+              <div className="rounded-lg border border-primary/20 bg-primary/5 p-3">
+                <div className="flex items-center gap-2">
+                  <Lock className="h-4 w-4 shrink-0 text-primary" />
+                  <p className="text-sm font-medium text-foreground">
+                    Backed by your instrument — {selectedFundingInstrument.type} {selectedFundingInstrument.id}
+                  </p>
+                </div>
+                <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
+                  This is your own instrument ({formatMoney(selectedFundingInstrument.faceValue, selectedFundingInstrument.currency)}),
+                  pledged as collateral to fund the program. No cash leaves your master account and there is no
+                  benefit split — you keep 100% of the return. It is released when the program ends or the pledge
+                  is withdrawn.
                 </p>
               </div>
             ) : null}
