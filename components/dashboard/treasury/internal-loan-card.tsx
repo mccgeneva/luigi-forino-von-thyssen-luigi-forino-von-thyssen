@@ -22,8 +22,13 @@ import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { cn } from "@/lib/utils"
 import { useInternalLoans, type InternalLoanView } from "@/lib/internal-loan-store"
+import { useInstrumentRequests } from "@/lib/instrument-requests-store"
+import { useLeverageRequests } from "@/lib/leverage-requests-store"
+import { usePPPRequests } from "@/lib/ppp-requests-store"
+import { isLiveRequest } from "@/lib/live-request"
 import { repayInternalLoan } from "@/app/actions/internal-loan"
 import { INTERNAL_LOAN_DEFAULT_RATE, formatLoanMoney } from "@/lib/internal-loan"
+import { Lock } from "lucide-react"
 import Link from "next/link"
 import { Messenger } from "@/components/bankeka/messenger"
 import { listConversations, getThread, sendMessage, deleteMessage } from "@/app/actions/bankeka"
@@ -64,6 +69,9 @@ function StatusBadge({ status }: { status: InternalLoanView["status"] }) {
  */
 export function InternalLoanCard() {
   const { loans, hydrated, requestLoan, refresh } = useInternalLoans()
+  const { instruments } = useInstrumentRequests()
+  const { requests: leverageRequests } = useLeverageRequests()
+  const { requests: pppRequests } = usePPPRequests()
 
   // Request form
   const [amount, setAmount] = useState("")
@@ -71,7 +79,40 @@ export function InternalLoanCard() {
   const [purpose, setPurpose] = useState("")
   const [repaymentPlan, setRepaymentPlan] = useState("")
   const [collateralNote, setCollateralNote] = useState("")
+  const [collateralInstrumentId, setCollateralInstrumentId] = useState("")
   const [submitting, setSubmitting] = useState(false)
+
+  // Instruments already committed to a LIVE facility (another internal loan, a
+  // leverage line, or a yield/PPP program) — these are locked and cannot be
+  // pledged again until released. Mirrors the instruments page in-use rule.
+  const unavailableInstrumentIds = useMemo(() => {
+    const ids = new Set<string>()
+    for (const r of leverageRequests) {
+      if (r.pledgedInstrumentId && r.status !== "rejected" && r.status !== "closed") ids.add(r.pledgedInstrumentId)
+    }
+    for (const r of pppRequests) {
+      if (r.fundingInstrumentId && r.status !== "rejected" && r.status !== "cancelled") ids.add(r.fundingInstrumentId)
+    }
+    for (const l of loans) {
+      if (l.collateralInstrumentId && isLiveRequest(l)) ids.add(l.collateralInstrumentId)
+    }
+    return ids
+  }, [leverageRequests, pppRequests, loans])
+
+  // Active, non-blocked bank instruments the borrower can pledge as collateral —
+  // their OWN instruments (e.g. an inbound MT760 blocked-funds guarantee) and any
+  // held instrument that is not already locked to another live facility.
+  const pledgeableInstruments = useMemo(
+    () =>
+      instruments.filter(
+        (i) => i.status === "active" && !i.blocked && !unavailableInstrumentIds.has(i.id),
+      ),
+    [instruments, unavailableInstrumentIds],
+  )
+  const selectedCollateral = useMemo(
+    () => pledgeableInstruments.find((i) => i.id === collateralInstrumentId) ?? null,
+    [pledgeableInstruments, collateralInstrumentId],
+  )
 
   // Per-loan repayment
   const [repayFor, setRepayFor] = useState<string | null>(null)
@@ -103,6 +144,13 @@ export function InternalLoanCard() {
       purpose: purpose.trim(),
       repaymentPlan: repaymentPlan.trim(),
       collateralNote: collateralNote.trim() || undefined,
+      collateralInstrumentId: selectedCollateral?.id,
+      collateralInstrumentLabel: selectedCollateral
+        ? `${selectedCollateral.type} ${selectedCollateral.id} · ${formatLoanMoney(
+            selectedCollateral.faceValue,
+            selectedCollateral.currency,
+          )}`
+        : undefined,
     })
     setSubmitting(false)
     if (!res.ok) {
@@ -110,12 +158,15 @@ export function InternalLoanCard() {
       return
     }
     toast.success("Loan request submitted", {
-      description: "The administrator will evaluate your request and repayment guarantee.",
+      description: selectedCollateral
+        ? "Your pledged instrument is locked as collateral while the administrator evaluates the request."
+        : "The administrator will evaluate your request and repayment guarantee.",
     })
     setAmount("")
     setPurpose("")
     setRepaymentPlan("")
     setCollateralNote("")
+    setCollateralInstrumentId("")
   }
 
   const doRepay = async (loan: InternalLoanView) => {
@@ -210,6 +261,13 @@ export function InternalLoanCard() {
                     </p>
                     {loan.purpose && (
                       <p className="mt-0.5 text-xs text-muted-foreground">Purpose: {loan.purpose}</p>
+                    )}
+                    {loan.collateralInstrumentLabel && (
+                      <p className="mt-0.5 flex items-center gap-1 text-xs text-primary">
+                        <Lock className="h-3 w-3 shrink-0" />
+                        Collateral locked: {loan.collateralInstrumentLabel}
+                        {(loan.outstanding ?? loan.amount) <= 0.01 ? " · released" : ""}
+                      </p>
                     )}
                   </div>
                   {loan.status === "approved" && (loan.outstanding ?? loan.amount) > 0.01 && (
@@ -314,6 +372,43 @@ export function InternalLoanCard() {
                 className="mt-1"
               />
             </div>
+            {pledgeableInstruments.length > 0 && (
+              <div>
+                <Label htmlFor="loan-collateral-instrument" className="text-xs">
+                  Pledge a bank instrument as collateral{" "}
+                  <span className="text-muted-foreground">(optional)</span>
+                </Label>
+                <select
+                  id="loan-collateral-instrument"
+                  value={collateralInstrumentId}
+                  onChange={(e) => setCollateralInstrumentId(e.target.value)}
+                  className="mt-1 h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+                >
+                  <option value="">None — unsecured request</option>
+                  {pledgeableInstruments.map((inst) => (
+                    <option key={inst.id} value={inst.id}>
+                      {inst.type} {inst.id} · {formatLoanMoney(inst.faceValue, inst.currency)}
+                    </option>
+                  ))}
+                </select>
+                {selectedCollateral ? (
+                  <div className="mt-2 flex items-start gap-2 rounded-lg border border-primary/20 bg-primary/5 p-2.5">
+                    <Lock className="mt-0.5 h-3.5 w-3.5 shrink-0 text-primary" />
+                    <p className="text-[11px] text-muted-foreground">
+                      Your {selectedCollateral.type} {selectedCollateral.id} (
+                      {formatLoanMoney(selectedCollateral.faceValue, selectedCollateral.currency)}) will be locked
+                      as collateral on your behalf while this loan is live, and released automatically once the
+                      loan is fully repaid. It cannot be pledged elsewhere, returned or deleted until then.
+                    </p>
+                  </div>
+                ) : (
+                  <p className="mt-1 text-[11px] text-muted-foreground">
+                    Pledging an owned instrument (e.g. an MT760 blocked-funds guarantee) as security can improve
+                    your risk profile. It stays yours — it is only locked as collateral until the loan is repaid.
+                  </p>
+                )}
+              </div>
+            )}
             <div>
               <Label htmlFor="loan-collateral" className="text-xs">
                 Repayment guarantee / collateral note <span className="text-muted-foreground">(optional)</span>

@@ -32,6 +32,15 @@ export interface InternalLoanRequest {
   purpose?: string
   repaymentPlan?: string
   collateralNote?: string
+  /**
+   * Optional bank instrument (e.g. an MT760 blocked-funds guarantee, SBLC, BG…)
+   * the borrower pledges as collateral. While the loan is LIVE (pending or
+   * funded) the instrument is locked on the client's behalf and cannot be
+   * pledged elsewhere, returned or deleted; it is released once the loan is
+   * fully repaid. Optional — a loan can be requested with no collateral at all.
+   */
+  collateralInstrumentId?: string
+  collateralInstrumentLabel?: string
   /** Annual debit interest rate as a decimal (default 3% p.a.; admin may override). */
   interestRate: number
   /** One-time arrangement fee (absolute, loan currency); set by the admin at approval. */
@@ -101,6 +110,8 @@ interface InternalLoanContextValue {
     purpose?: string
     repaymentPlan?: string
     collateralNote?: string
+    collateralInstrumentId?: string
+    collateralInstrumentLabel?: string
   }) => Promise<RequestLoanResult>
   /** Re-hydrate the list from the server. */
   refresh: () => void | Promise<unknown>
@@ -150,6 +161,8 @@ export function InternalLoanProvider({ children }: { children: React.ReactNode }
       purpose: input.purpose,
       repaymentPlan: input.repaymentPlan,
       collateralNote: input.collateralNote?.trim() || undefined,
+      collateralInstrumentId: input.collateralInstrumentId || undefined,
+      collateralInstrumentLabel: input.collateralInstrumentLabel || undefined,
       // Provisional rate shown to the client; the administrator confirms or
       // overrides it at approval (authoritative value lands back via refresh).
       interestRate: INTERNAL_LOAN_DEFAULT_RATE,

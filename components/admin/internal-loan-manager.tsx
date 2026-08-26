@@ -321,6 +321,12 @@ export function InternalLoanManager({ passcode }: { passcode: string }) {
                         <dd className="text-foreground">{loan.repaymentPlan}</dd>
                       </div>
                     )}
+                    {loan.collateralInstrumentLabel && (
+                      <div className="sm:col-span-2">
+                        <dt className="text-muted-foreground">Pledged instrument (locked as collateral)</dt>
+                        <dd className="font-medium text-foreground">{loan.collateralInstrumentLabel}</dd>
+                      </div>
+                    )}
                     {loan.collateralNote && (
                       <div className="sm:col-span-2">
                         <dt className="text-muted-foreground">Repayment guarantee / collateral</dt>

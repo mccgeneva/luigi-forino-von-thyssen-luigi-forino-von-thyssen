@@ -98,6 +98,8 @@ import { INSTRUMENT_UPGRADE_FEE_LABEL, isUpgradeOpen } from "@/lib/instrument-up
 import type { TransferDirectoryEntry } from "@/lib/users"
 import { useLeverageRequests } from "@/lib/leverage-requests-store"
 import { usePPPRequests } from "@/lib/ppp-requests-store"
+import { useInternalLoans } from "@/lib/internal-loan-store"
+import { isLiveRequest } from "@/lib/live-request"
 import {
   useMonetizationRequests,
   type MonetizationStructure,
@@ -186,6 +188,7 @@ export default function InstrumentsPage() {
   const { addRequest: addMonetizationRequest, requests: monetizationRequests, hydrated: monetizationHydrated } = useMonetizationRequests()
   const { requests: leverageRequests } = useLeverageRequests()
   const { requests: pppRequests } = usePPPRequests()
+  const { loans: internalLoans } = useInternalLoans()
 
   // Delete confirmation target (client-initiated removal of an unused holding).
   const [deleteTarget, setDeleteTarget] = useState<Instrument | null>(null)
@@ -233,8 +236,14 @@ export default function InstrumentsPage() {
       // A rejected OR cancelled yield/PPP application releases the funding instrument.
       if (req.status !== "rejected" && req.status !== "cancelled") ids.add(req.fundingInstrumentId)
     }
+    for (const loan of internalLoans) {
+      if (!loan.collateralInstrumentId) continue
+      // A pledged instrument stays locked while the loan is live (pending or
+      // funded) and is released once it is repaid/settled.
+      if (isLiveRequest(loan)) ids.add(loan.collateralInstrumentId)
+    }
     return ids
-  }, [leverageRequests, monetizationRequests, pppRequests])
+  }, [leverageRequests, monetizationRequests, pppRequests, internalLoans])
 
   // Human-readable list of the trading / debit scenarios that currently engage
   // an instrument, so a return can tell the holder exactly what reconciliation
@@ -252,6 +261,9 @@ export default function InstrumentsPage() {
     }
     if (pppRequests.some((r) => r.fundingInstrumentId === inst.id && r.status !== "rejected" && r.status !== "cancelled")) {
       reasons.push("a yield / PPP application — cancel it first")
+    }
+    if (internalLoans.some((l) => l.collateralInstrumentId === inst.id && isLiveRequest(l))) {
+      reasons.push("an internal loan — repay it to release the collateral first")
     }
     return reasons
   }
