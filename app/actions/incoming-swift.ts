@@ -277,6 +277,110 @@ export async function markMyIncomingSwiftRead(id: string): Promise<{ ok: boolean
 }
 
 // ---------------------------------------------------------------------------
+// Customer: upload a SWIFT printout (e.g. an inbound MT760 the customer was
+// informed of) and submit it to the platform. The message is attributed to the
+// uploader and lands in the administrator's verify queue (status 'assigned',
+// not yet credited) — for an MT760 the admin then books it as a pledgeable
+// blocked-funds guarantee via recordGuaranteeInstrumentAdmin. Never credits or
+// books anything itself; verification stays with the administrator.
+// ---------------------------------------------------------------------------
+
+export interface SubmitUploadInput {
+  /** The SWIFT FIN message text (recovered from the printout, customer-confirmed). */
+  raw: string
+  /** Blob pathname of the uploaded source printout, if the customer attached one. */
+  sourceDocPathname?: string | null
+  /** Original filename of the uploaded printout. */
+  sourceDocName?: string | null
+}
+
+export interface SubmitUploadResult {
+  ok: boolean
+  error?: string
+  messageId?: string
+  messageType?: string
+  amount?: string
+}
+
+export async function submitIncomingSwiftUpload(input: SubmitUploadInput): Promise<SubmitUploadResult> {
+  const session = await resolveCurrentSession()
+  if (!session) return { ok: false, error: "You must be signed in to submit a SWIFT printout." }
+
+  const text = (input.raw ?? "").trim()
+  if (!text) return { ok: false, error: "Provide the SWIFT FIN message text from the printout." }
+
+  try {
+    const ex = extractIncoming(text)
+    if (!ex.msg.type) {
+      return {
+        ok: false,
+        error:
+          "That does not look like a valid SWIFT message. Paste the full FIN text (with the :20:, :32B:/:39:, :59: fields) from the printout.",
+      }
+    }
+
+    // Resolve the uploader's display name for the queue.
+    const profile = await resolveAccountProfileById(session.id)
+    const holder = profile?.fullName || profile?.company || session.id
+    const amountStr = fmtMoney(ex.msg.amount, ex.msg.currency)
+
+    const stored = await insertIncomingSwift({
+      // Attributed to the uploader: it is THEIR inbound message. It surfaces in
+      // their own SWIFT inbox and in the admin verify queue simultaneously.
+      userId: session.id,
+      status: "assigned",
+      messageType: ex.msg.type,
+      senderBic: ex.senderBic,
+      receiverBic: ex.receiverBic,
+      beneficiaryIban: ex.beneficiaryIban,
+      beneficiaryName: ex.beneficiaryName || holder,
+      orderingCustomer: ex.orderingCustomer,
+      amount: amountStr || null,
+      currency: ex.msg.currency || null,
+      reference: ex.reference || null,
+      valueDate: ex.msg.valueDate || null,
+      uetr: ex.msg.uetr || null,
+      raw: text,
+      matchedAccountId: null,
+      matchedAccountHolder: holder,
+      bicConfirmed: false,
+      matchReason: "Customer-uploaded SWIFT printout — awaiting administrator verification.",
+      customerSubmitted: true,
+      sourceDocPathname: input.sourceDocPathname ?? null,
+      sourceDocName: input.sourceDocName ?? null,
+    })
+
+    await insertNotification({
+      userId: session.id,
+      tone: "info",
+      title: `SWIFT ${ex.msg.type} printout submitted`,
+      body:
+        ex.msg.type === "MT760"
+          ? `Your MT760 blocked-funds guarantee${amountStr ? ` (${amountStr})` : ""} was submitted for verification. Once an administrator confirms it, it will be booked to your Bank Instruments and you can pledge it for a treasury leverage line.`
+          : `Your SWIFT ${ex.msg.type} printout${amountStr ? ` (${amountStr})` : ""} was submitted for administrator verification.`,
+      href: "/dashboard/swift",
+    })
+
+    await logActivity({
+      action: `Uploaded a SWIFT ${ex.msg.type} printout${amountStr ? ` (${amountStr})` : ""} for verification`,
+      category: "SWIFT",
+      details: {
+        summary: `Customer ${holder} uploaded a SWIFT ${ex.msg.type} printout (${stored.id}${ex.beneficiaryIban ? `, beneficiary IBAN ${ex.beneficiaryIban}` : ""}${ex.msg.uetr ? `, UETR ${ex.msg.uetr}` : ""}) and submitted it to the platform for administrator verification.`,
+        messageId: stored.id,
+        messageType: ex.msg.type,
+        amount: amountStr || "n/a",
+        sourceDocument: input.sourceDocName || "(FIN text only)",
+      },
+    })
+
+    return { ok: true, messageId: stored.id, messageType: ex.msg.type, amount: amountStr || undefined }
+  } catch (err) {
+    console.log("[v0] submitIncomingSwiftUpload failed:", (err as Error).message)
+    return { ok: false, error: "Could not submit the SWIFT printout. Please try again." }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Admin: unmatched review queue + manual assignment.
 // ---------------------------------------------------------------------------
 

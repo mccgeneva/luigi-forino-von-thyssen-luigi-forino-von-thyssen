@@ -16,6 +16,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import { SwiftComposer, SWIFT_MESSAGE_TYPES, type SwiftSentSummary } from "@/components/dashboard/swift-composer"
+import { SwiftUploadDialog } from "@/components/dashboard/swift-upload-dialog"
 import { parseSwiftMessage } from "@/lib/swift-mt"
 import { submitSwiftForRouting } from "@/app/actions/swift-routing"
 import { getMyIncomingSwiftMessages, markMyIncomingSwiftRead } from "@/app/actions/incoming-swift"
@@ -573,7 +574,13 @@ export default function SwiftPage() {
             </div>
           </div>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <SwiftUploadDialog
+            onSubmitted={() => {
+              void mutateIncoming()
+              setActiveTab("inbox")
+            }}
+          />
           <Button variant="outline" size="sm" onClick={handleRefresh} disabled={isRefreshing}>
             <RefreshCw className={`mr-2 h-4 w-4 ${isRefreshing ? "animate-spin" : ""}`} />
             Refresh

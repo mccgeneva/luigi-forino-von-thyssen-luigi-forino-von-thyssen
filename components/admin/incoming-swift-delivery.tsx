@@ -12,6 +12,8 @@ import {
   Banknote,
   ShieldCheck,
   Lock,
+  Upload,
+  FileText,
 } from "lucide-react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -25,6 +27,8 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { ADMIN_PASSCODE } from "@/lib/admin-config"
+import { blobFileUrl } from "@/lib/kyc-types"
+import { downloadFile } from "@/lib/download-file"
 import {
   ingestIncomingSwiftAdmin,
   listUnmatchedIncomingSwiftAdmin,
@@ -315,6 +319,11 @@ export function IncomingSwiftDelivery() {
                   <div className="mb-3 flex flex-wrap items-center gap-2">
                     <Badge className="bg-primary/15 text-primary">{m.messageType}</Badge>
                     {m.amount && <span className="text-sm font-semibold text-foreground">{m.amount}</span>}
+                    {m.customerSubmitted && (
+                      <Badge variant="outline" className="gap-1 border-blue-500/30 text-blue-600 dark:text-blue-400">
+                        <Upload className="h-3.5 w-3.5" /> Customer-uploaded
+                      </Badge>
+                    )}
                     {m.bicConfirmed ? (
                       <Badge className="gap-1 bg-emerald-500/15 text-emerald-600 dark:text-emerald-400">
                         <ShieldCheck className="h-3.5 w-3.5" /> IBAN + BIC verified
@@ -334,6 +343,23 @@ export function IncomingSwiftDelivery() {
                     {m.reference && <Detail label="Reference" value={m.reference} />}
                     {m.uetr && <Detail label="UETR" value={m.uetr} mono />}
                   </div>
+                  {m.sourceDocPathname && (
+                    <div className="mt-3">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="gap-1.5 bg-transparent"
+                        onClick={() =>
+                          void downloadFile(
+                            blobFileUrl(m.sourceDocPathname as string, ADMIN_PASSCODE),
+                            m.sourceDocName || `swift-${m.id}`,
+                          )
+                        }
+                      >
+                        <FileText className="h-4 w-4" /> View uploaded printout
+                      </Button>
+                    </div>
+                  )}
                   {m.messageType === "MT760" ? (
                     <>
                       <p className="mt-2 flex items-start gap-1.5 text-xs text-muted-foreground">
