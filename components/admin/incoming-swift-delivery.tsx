@@ -11,6 +11,7 @@ import {
   Inbox,
   Banknote,
   ShieldCheck,
+  Lock,
 } from "lucide-react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -30,6 +31,7 @@ import {
   assignIncomingSwiftAdmin,
   listCreditableIncomingSwiftAdmin,
   creditIncomingSwiftAdmin,
+  recordGuaranteeInstrumentAdmin,
   type IngestResult,
 } from "@/app/actions/incoming-swift"
 import { listSelectableClients, type SelectableClient } from "@/app/actions/admin-users"
@@ -89,6 +91,7 @@ export function IncomingSwiftDelivery() {
   const [creditable, setCreditable] = useState<IncomingSwiftMessage[]>([])
   const [loadingCreditable, setLoadingCreditable] = useState(false)
   const [crediting, setCrediting] = useState<string | null>(null)
+  const [booking, setBooking] = useState<string | null>(null)
 
   const loadQueue = async () => {
     setLoadingQueue(true)
@@ -127,6 +130,28 @@ export function IncomingSwiftDelivery() {
       toast.error("Could not reach the credit engine.")
     } finally {
       setCrediting(null)
+    }
+  }
+
+  const handleBookGuarantee = async (m: IncomingSwiftMessage) => {
+    setBooking(m.id)
+    try {
+      const res = await recordGuaranteeInstrumentAdmin(ADMIN_PASSCODE, m.id)
+      if (res.ok) {
+        toast.success(
+          `Booked ${res.instrumentLabel} blocked-funds guarantee${res.bookedTo ? ` for ${res.bookedTo}` : ""}. Receipt fee ${res.feeLabel} charged.`,
+        )
+        setCreditable((prev) => prev.filter((x) => x.id !== m.id))
+      } else if (res.alreadyBooked) {
+        toast.warning("This message was already processed.")
+        setCreditable((prev) => prev.filter((x) => x.id !== m.id))
+      } else {
+        toast.error(res.error ?? "Could not book the guarantee.")
+      }
+    } catch {
+      toast.error("Could not reach the guarantee engine.")
+    } finally {
+      setBooking(null)
     }
   }
 
@@ -309,21 +334,47 @@ export function IncomingSwiftDelivery() {
                     {m.reference && <Detail label="Reference" value={m.reference} />}
                     {m.uetr && <Detail label="UETR" value={m.uetr} mono />}
                   </div>
-                  <div className="mt-3 flex flex-wrap items-center gap-2">
-                    <Button
-                      size="sm"
-                      onClick={() => handleCredit(m)}
-                      disabled={crediting === m.id}
-                      className="gap-1.5"
-                    >
-                      {crediting === m.id ? (
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                      ) : (
-                        <Banknote className="h-4 w-4" />
-                      )}
-                      Execute &amp; credit to Master Account
-                    </Button>
-                  </div>
+                  {m.messageType === "MT760" ? (
+                    <>
+                      <p className="mt-2 flex items-start gap-1.5 text-xs text-muted-foreground">
+                        <Lock className="mt-0.5 h-3.5 w-3.5 shrink-0" /> An MT760 is a bank guarantee (blocked funds),
+                        not a cash transfer. Booking it adds a pledgeable bank instrument to the customer&apos;s
+                        portfolio and charges a 0.2% receipt fee to their Master Account. They can then pledge it for a
+                        treasury leverage line.
+                      </p>
+                      <div className="mt-3 flex flex-wrap items-center gap-2">
+                        <Button
+                          size="sm"
+                          onClick={() => handleBookGuarantee(m)}
+                          disabled={booking === m.id}
+                          className="gap-1.5"
+                        >
+                          {booking === m.id ? (
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                          ) : (
+                            <Lock className="h-4 w-4" />
+                          )}
+                          Record blocked-funds guarantee &amp; charge 0.2%
+                        </Button>
+                      </div>
+                    </>
+                  ) : (
+                    <div className="mt-3 flex flex-wrap items-center gap-2">
+                      <Button
+                        size="sm"
+                        onClick={() => handleCredit(m)}
+                        disabled={crediting === m.id}
+                        className="gap-1.5"
+                      >
+                        {crediting === m.id ? (
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                        ) : (
+                          <Banknote className="h-4 w-4" />
+                        )}
+                        Execute &amp; credit to Master Account
+                      </Button>
+                    </div>
+                  )}
                 </div>
               ))}
             </div>
