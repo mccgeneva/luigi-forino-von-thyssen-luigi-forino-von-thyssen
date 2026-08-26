@@ -42,6 +42,8 @@ function sanitizeConfig(input: Partial<GuaranteeConfig> | undefined): GuaranteeC
     newAccountRisk: Math.max(0, numOr(c.newAccountRisk, DEFAULT_GUARANTEE_CONFIG.newAccountRisk)),
     seasoningDays: Math.max(1, numOr(c.seasoningDays, DEFAULT_GUARANTEE_CONFIG.seasoningDays)),
     provenCapital: Math.max(1, numOr(c.provenCapital, DEFAULT_GUARANTEE_CONFIG.provenCapital)),
+    weightOverdraft: Math.max(0, numOr(c.weightOverdraft, DEFAULT_GUARANTEE_CONFIG.weightOverdraft)),
+    overdraftRiskFull: Math.max(0, numOr(c.overdraftRiskFull, DEFAULT_GUARANTEE_CONFIG.overdraftRiskFull)),
     enforce: c.enforce === undefined ? DEFAULT_GUARANTEE_CONFIG.enforce : !!c.enforce,
   }
 }
@@ -76,13 +78,14 @@ export async function POST(req: Request) {
       const scored = await Promise.all(
         active.map(async (u) => {
           try {
-            const { score } = await gatherGuaranteeProfile(u.id, config)
+            const { score, overdraft } = await gatherGuaranteeProfile(u.id, config)
             return {
               id: u.id,
               fullName: u.profile.fullName,
               company: u.profile.company,
               email: u.email,
               score,
+              overdraft,
             }
           } catch {
             return {
@@ -91,6 +94,7 @@ export async function POST(req: Request) {
               company: u.profile.company,
               email: u.email,
               score: null,
+              overdraft: null,
             }
           }
         }),

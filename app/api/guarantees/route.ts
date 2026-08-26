@@ -19,9 +19,9 @@ export async function GET() {
       return NextResponse.json({ ok: false, reason: "unauthenticated" }, { status: 200 })
     }
     const config = await getGuaranteeConfig()
-    const { score } = await gatherGuaranteeProfile(session.id, config)
+    const { score, overdraft } = await gatherGuaranteeProfile(session.id, config)
     return NextResponse.json(
-      { ok: true, score, highRiskThreshold: config.highRiskThreshold, enforce: config.enforce },
+      { ok: true, score, overdraft, highRiskThreshold: config.highRiskThreshold, enforce: config.enforce },
       { status: 200 },
     )
   } catch (err) {

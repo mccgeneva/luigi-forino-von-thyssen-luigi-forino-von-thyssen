@@ -122,7 +122,17 @@ export async function applyForInternalLoan(input: {
   try {
     const config = await getGuaranteeConfig()
     if (config.enforce) {
-      const { score } = await gatherGuaranteeProfile(session.id, config)
+      const { score, overdraft } = await gatherGuaranteeProfile(session.id, config)
+      if (overdraft.inOverdraft) {
+        const eur = (n: number) =>
+          `EUR ${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+        return {
+          ok: false,
+          error:
+            `An internal loan cannot be opened while your Master Account is in a controlled overdraft ` +
+            `(currently ${eur(overdraft.negativeEur)} negative). Clear the overdraft by funding your account, then try again.`,
+        }
+      }
       if (score.highRisk) {
         return { ok: false, error: guaranteeBlockMessage(score, config.highRiskThreshold, "an internal loan") }
       }

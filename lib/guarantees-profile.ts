@@ -11,6 +11,7 @@ import {
   type GuaranteeInputs,
   type GuaranteeScore,
 } from "@/lib/guarantees-accumulator"
+import { computeOverdraftStatus, type OverdraftStatus } from "@/lib/overdraft"
 
 /**
  * Server-side gathering of the real inputs behind a user's Guarantees
@@ -82,6 +83,8 @@ export interface GuaranteeProfileResult {
   score: GuaranteeScore
   /** Convenience mirror of the key input figures for admin display. */
   currency: string
+  /** Controlled-overdraft status for the master account (EUR figures). */
+  overdraft: OverdraftStatus
 }
 
 /**
@@ -133,14 +136,18 @@ export async function gatherGuaranteeProfile(userId: string, config: GuaranteeCo
   // system refuses financing an already-financed deposit), so this is additive.
   let treasuryFinanced = 0
   let treasuryContribution = 0
+  // Paid-in security deposit (contribution + SKR collateral) — the base the
+  // controlled overdraft ceiling is a percentage of.
+  let treasuryDepositBaseEur = 0
   try {
     const { rows } = await query<{
       status: string
       financed_amount: string | number | null
       customer_contribution: string | number | null
+      skr_collateral: string | number | null
       currency: string | null
     }>(
-      `SELECT status, financed_amount, customer_contribution, currency FROM treasury_accounts WHERE user_id = $1`,
+      `SELECT status, financed_amount, customer_contribution, skr_collateral, currency FROM treasury_accounts WHERE user_id = $1`,
       [userId],
     )
     const t = rows[0]
@@ -148,6 +155,7 @@ export async function gatherGuaranteeProfile(userId: string, config: GuaranteeCo
       const ccy = String(t.currency || BASE)
       treasuryFinanced = toEur(num(t.financed_amount), ccy)
       treasuryContribution = toEur(num(t.customer_contribution), ccy)
+      treasuryDepositBaseEur = treasuryContribution + toEur(num(t.skr_collateral), ccy)
       if (treasuryFinanced > 0) {
         totalExposure += treasuryFinanced
         leverageLoad += treasuryFinanced
@@ -156,6 +164,7 @@ export async function gatherGuaranteeProfile(userId: string, config: GuaranteeCo
   } catch {
     treasuryFinanced = 0
     treasuryContribution = 0
+    treasuryDepositBaseEur = 0
   }
 
   // --- Guarantees / collateral held -------------------------------------
@@ -231,6 +240,24 @@ export async function gatherGuaranteeProfile(userId: string, config: GuaranteeCo
     accountAgeDays = 0
   }
 
+  // --- Controlled overdraft status --------------------------------------
+  // Aggregate SETTLED (completed-only) balance across currencies, EUR-equiv —
+  // a real settled deficit, excluding pending holds + sub-account compartments.
+  let settledBalanceEur = 0
+  try {
+    const perCur: Record<string, number> = {}
+    for (const e of ledgerEntries) {
+      if (e.status !== "completed") continue
+      if (e.subAccountId) continue
+      const c = (e.currency || "USD").toUpperCase()
+      perCur[c] = (perCur[c] ?? 0) + (e.direction === "credit" ? e.amount : -e.amount)
+    }
+    for (const [c, v] of Object.entries(perCur)) settledBalanceEur += toEur(v, c)
+  } catch {
+    settledBalanceEur = 0
+  }
+  const overdraft = computeOverdraftStatus(treasuryDepositBaseEur, settledBalanceEur)
+
   const inputs: GuaranteeInputs = {
     guarantees,
     leverageLoad,
@@ -238,8 +265,9 @@ export async function gatherGuaranteeProfile(userId: string, config: GuaranteeCo
     availableBalance,
     overdueCharges,
     accountAgeDays,
+    overdraftUsageRatio: overdraft.usageRatio,
     currency: BASE,
   }
 
-  return { score: computeGuaranteeScore(inputs, config), currency: BASE }
+  return { score: computeGuaranteeScore(inputs, config), currency: BASE, overdraft }
 }

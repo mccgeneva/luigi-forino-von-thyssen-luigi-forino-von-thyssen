@@ -36,6 +36,9 @@ async function ensureTable(): Promise<void> {
   await query(`ALTER TABLE guarantee_config ADD COLUMN IF NOT EXISTS new_account_risk double precision NOT NULL DEFAULT 144`)
   await query(`ALTER TABLE guarantee_config ADD COLUMN IF NOT EXISTS seasoning_days double precision NOT NULL DEFAULT 365`)
   await query(`ALTER TABLE guarantee_config ADD COLUMN IF NOT EXISTS proven_capital double precision NOT NULL DEFAULT 250000`)
+  // Overdraft factor columns — added with the controlled-overdraft feature.
+  await query(`ALTER TABLE guarantee_config ADD COLUMN IF NOT EXISTS weight_overdraft double precision NOT NULL DEFAULT 1`)
+  await query(`ALTER TABLE guarantee_config ADD COLUMN IF NOT EXISTS overdraft_risk_full double precision NOT NULL DEFAULT 144`)
   ensured = true
 }
 
@@ -49,6 +52,9 @@ function rowToConfig(row: Record<string, unknown>): GuaranteeConfig {
     newAccountRisk: row.new_account_risk == null ? DEFAULT_GUARANTEE_CONFIG.newAccountRisk : Number(row.new_account_risk),
     seasoningDays: row.seasoning_days == null ? DEFAULT_GUARANTEE_CONFIG.seasoningDays : Number(row.seasoning_days),
     provenCapital: row.proven_capital == null ? DEFAULT_GUARANTEE_CONFIG.provenCapital : Number(row.proven_capital),
+    weightOverdraft: row.weight_overdraft == null ? DEFAULT_GUARANTEE_CONFIG.weightOverdraft : Number(row.weight_overdraft),
+    overdraftRiskFull:
+      row.overdraft_risk_full == null ? DEFAULT_GUARANTEE_CONFIG.overdraftRiskFull : Number(row.overdraft_risk_full),
     highRiskThreshold: Number(row.high_risk_threshold),
     ageCreditPerYear: Number(row.age_credit_per_year),
     ageCreditMax: Number(row.age_credit_max),
@@ -78,8 +84,9 @@ export async function saveGuaranteeConfig(input: GuaranteeConfig): Promise<void>
        id, weight_security_deposit, weight_leverage_load, weight_exposure,
        weight_payment_penalty, high_risk_threshold, age_credit_per_year,
        age_credit_max, penalty_per_overdue, target_coverage, enforce,
-       weight_track_record, new_account_risk, seasoning_days, proven_capital, updated_at
-     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15, now())
+       weight_track_record, new_account_risk, seasoning_days, proven_capital,
+       weight_overdraft, overdraft_risk_full, updated_at
+     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17, now())
      ON CONFLICT (id) DO UPDATE SET
        weight_security_deposit = EXCLUDED.weight_security_deposit,
        weight_leverage_load    = EXCLUDED.weight_leverage_load,
@@ -95,6 +102,8 @@ export async function saveGuaranteeConfig(input: GuaranteeConfig): Promise<void>
        new_account_risk        = EXCLUDED.new_account_risk,
        seasoning_days          = EXCLUDED.seasoning_days,
        proven_capital          = EXCLUDED.proven_capital,
+       weight_overdraft        = EXCLUDED.weight_overdraft,
+       overdraft_risk_full     = EXCLUDED.overdraft_risk_full,
        updated_at              = now()`,
     [
       GLOBAL_ID,
@@ -112,6 +121,8 @@ export async function saveGuaranteeConfig(input: GuaranteeConfig): Promise<void>
       input.newAccountRisk,
       input.seasoningDays,
       input.provenCapital,
+      input.weightOverdraft,
+      input.overdraftRiskFull,
     ],
   )
 }
