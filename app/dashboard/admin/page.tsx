@@ -38,6 +38,7 @@ import {
   ClipboardList,
   CreditCard,
   Send,
+  Inbox,
   RefreshCw,
   Handshake,
   ArrowRight,
@@ -130,6 +131,8 @@ import { resetServerAccountDataForUser } from "@/app/actions/reset-account"
 import { listUsers, type AdminUserView } from "@/app/actions/admin-users"
 import { AdminGatewaySection } from "@/components/dashboard/admin-gateway-section"
 import { SwiftRoutingQueue } from "@/components/admin/swift-routing-queue"
+import { IncomingSwiftDelivery } from "@/components/admin/incoming-swift-delivery"
+import { listCreditableIncomingSwiftAdmin } from "@/app/actions/incoming-swift"
 import { AdminReconciliationSection } from "@/components/dashboard/admin-reconciliation-section"
 import { TreasuryManager } from "@/components/admin/treasury-manager"
 import { UserManager } from "@/components/admin/user-manager"
@@ -481,6 +484,27 @@ export default function AdminPage() {
       cancelled = true
     }
   }, [unlocked])
+
+  // Count of INCOMING SWIFT messages awaiting credit/booking — customer-uploaded
+  // printouts (e.g. an MT760) and matched inbound messages. Without surfacing
+  // this on the command center, a customer-submitted SWIFT sits only inside the
+  // separate SWIFT Operations page and the admin sees "nothing" on the panel.
+  const [pendingIncomingSwiftCount, setPendingIncomingSwiftCount] = useState(0)
+  useEffect(() => {
+    if (!unlocked) return
+    let cancelled = false
+    ;(async () => {
+      try {
+        const res = await listCreditableIncomingSwiftAdmin(ADMIN_PASSCODE)
+        if (!cancelled && res.ok) setPendingIncomingSwiftCount(res.messages.length)
+      } catch {
+        // Non-fatal: the Incoming SWIFT tile just shows 0 if it can't load.
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [unlocked, activeView])
 
   // Count of certificate requests awaiting an administrator decision (across
   // EVERY client). Certificate requests live in their own DB table, separate
@@ -2226,6 +2250,7 @@ export default function AdminPage() {
     { id: "section-kyc", view: "kyc", label: "KYC Verification", count: pendingKycCount, icon: ShieldCheck },
     { id: "section-gateway", view: "gateway", label: "Gateway Accounts", count: pendingGatewayCount, icon: Globe },
     { id: "section-swiftrouting", view: "swiftrouting", label: "SWIFT Routing", count: pendingSwiftRoutingCount, icon: Send },
+    { id: "section-incomingswift", view: "incomingswift", label: "Incoming SWIFT", count: pendingIncomingSwiftCount, icon: Inbox },
     { id: "section-subaccounts", view: "subaccounts", label: "Sub-Account Requests", count: pendingSubAccountCount, icon: Layers },
     { id: "section-payments", view: "approvals", kind: "payment", label: "Outgoing Payments", count: dbPending.payment ?? 0, icon: ArrowUpRight },
     { id: "section-instruments", view: "approvals", kind: "instrument", label: "Bank Instruments", count: dbPending.instrument ?? 0, icon: FileText },
@@ -2308,6 +2333,7 @@ export default function AdminPage() {
         { id: "kyc", label: "KYC / Beneficiaries", description: "Verify beneficiaries and KYC documents.", icon: BadgeCheck, count: pendingKycCount },
         { id: "gateway", label: "Payment Gateway", description: "Approve client account requests; configure partner banks and routing.", icon: Settings, count: pendingGatewayCount },
         { id: "swiftrouting", label: "SWIFT Routing", description: "Review client SWIFT messages and route them to the chosen beneficiary.", icon: Send, count: pendingSwiftRoutingCount },
+        { id: "incomingswift", label: "Incoming SWIFT", description: "Verify customer-uploaded SWIFT printouts (e.g. MT760 blocked-funds guarantees) and matched inbound messages, then credit or book them.", icon: Inbox, count: pendingIncomingSwiftCount },
         { id: "reconciliation", label: "Reconciliation", description: "Automated payment reconciliation engine.", icon: Repeat, count: 0 },
         { id: "treasury", label: "Treasury Services", description: "Security deposits and 1:10 leverage.", icon: Landmark, count: 0 },
         { id: "certificates", label: "Certificates", description: "Issue and re-issue official certificates.", icon: ScrollText, count: pendingCertificateCount },
@@ -5314,6 +5340,13 @@ export default function AdminPage() {
       {activeView === "swiftrouting" && (
       <div className="space-y-6">
         <SwiftRoutingQueue />
+      </div>
+      )}
+
+      {/* Incoming SWIFT — verify customer-uploaded printouts & matched inbound messages */}
+      {activeView === "incomingswift" && (
+      <div className="space-y-6">
+        <IncomingSwiftDelivery />
       </div>
       )}
 
