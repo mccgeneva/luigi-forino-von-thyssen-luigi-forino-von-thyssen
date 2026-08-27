@@ -392,6 +392,13 @@ export default function LeveragePage() {
   const [checkingMargin, setCheckingMargin] = useState(false)
   const [feeAcknowledged, setFeeAcknowledged] = useState(false)
   const [switchOffTarget, setSwitchOffTarget] = useState<LeverageRequest | null>(null)
+  // The client's real balances (EUR-normalised), loaded from the guarantee
+  // position API when the request dialog opens. `freeEur` is FREE EQUITY =
+  // available balance − outstanding borrowed/financed funds (the only money that
+  // can back a cash-funded line). Shown up-front and used to block Apply so a
+  // client can never request more margin than they actually hold.
+  const [marginInfo, setMarginInfo] = useState<{ freeEur: number; availableEur: number } | null>(null)
+  const [marginLoading, setMarginLoading] = useState(false)
   const log = useActivityLog()
   const { requests, addRequest, unwindLine, withdrawLine, hydrated } = useLeverageRequests()
   const [withdrawingId, setWithdrawingId] = useState<string | null>(null)
@@ -430,6 +437,38 @@ export default function LeveragePage() {
     const t = setInterval(() => setNow(Date.now()), 30_000)
     return () => clearInterval(t)
   }, [])
+
+  // Load the client's real free equity whenever the request dialog opens, so the
+  // available margin can be shown before anything is entered and the form can
+  // block an over-allocation on the spot (the server gate is authoritative).
+  useEffect(() => {
+    if (!isRequestOpen) return
+    let cancelled = false
+    setMarginLoading(true)
+    ;(async () => {
+      try {
+        const res = await fetch("/api/guarantees", { credentials: "include", cache: "no-store" })
+        const data = res.ok ? await res.json() : null
+        const inp = data?.ok ? data.score?.inputs : null
+        if (!cancelled) {
+          if (inp) {
+            const availableEur = Number(inp.availableBalance) || 0
+            const totalExposure = Number(inp.totalExposure) || 0
+            setMarginInfo({ freeEur: Math.max(0, availableEur - totalExposure), availableEur })
+          } else {
+            setMarginInfo(null)
+          }
+        }
+      } catch {
+        if (!cancelled) setMarginInfo(null)
+      } finally {
+        if (!cancelled) setMarginLoading(false)
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [isRequestOpen])
 
   const myRequests = useMemo(
     () =>
@@ -540,6 +579,24 @@ export default function LeveragePage() {
   // affordable, otherwise reserved as a temporary hold alongside the PPI hold
   // (available balance may go negative), pending administrator review.
   const canAppealPpi = !canAffordCharges && totalUpfrontCharge > 0
+
+  // MARGIN AVAILABILITY (cash-funded lines). The equity a client pledges must be
+  // money they actually hold. For an EUR line the cap is FREE EQUITY (available
+  // balance − outstanding borrowed/financed funds); for a non-EUR line it's the
+  // same-currency spendable balance. Instrument-funded lines are collateralised
+  // by the pledged instrument, so they are not gated here.
+  const isCashFunded = account === "treasury" || account === "master" || account === "naftahub"
+  const marginAvailable: number | null = !isCashFunded
+    ? null
+    : currency === BASE_CURRENCY
+      ? marginInfo?.freeEur ?? null
+      : balanceFor(currency)
+  // Only block once we actually know the figure — never hard-block on a failed
+  // load (the server gate still catches it). Non-EUR uses the always-known
+  // same-currency balance; EUR requires the loaded free-equity figure.
+  const marginKnown = isCashFunded && (currency !== BASE_CURRENCY || marginInfo !== null)
+  const equityExceedsMargin =
+    marginKnown && marginAvailable != null && numericEquity > marginAvailable + 0.01
 
   // When the funding category changes, clamp the chosen ratio to that
   // category's ceiling so an out-of-range value can never be submitted.
@@ -1058,13 +1115,40 @@ export default function LeveragePage() {
 
                 <div className="grid grid-cols-3 gap-3">
                   <div className="col-span-2 space-y-2">
-                    <Label>Equity Allocation</Label>
+                    <div className="flex items-center justify-between gap-2">
+                      <Label>Equity Allocation</Label>
+                      {/* Always show the client's own funds up-front so the
+                          equity they can pledge is never a surprise. */}
+                      {isCashFunded && (
+                        <span className="text-xs text-muted-foreground">
+                          {marginLoading && marginInfo === null && currency === BASE_CURRENCY ? (
+                            "Available…"
+                          ) : marginAvailable != null ? (
+                            <>
+                              Available:{" "}
+                              <span
+                                className={`font-semibold ${equityExceedsMargin ? "text-red-400" : "text-foreground"}`}
+                              >
+                                {formatMoney(marginAvailable, currency)}
+                              </span>
+                            </>
+                          ) : null}
+                        </span>
+                      )}
+                    </div>
                     <Input
                       inputMode="decimal"
                       placeholder="e.g. 250,000"
                       value={equity}
                       onChange={(e) => setEquity(e.target.value)}
                     />
+                    {equityExceedsMargin && (
+                      <p className="text-xs text-red-400">
+                        {currency === BASE_CURRENCY
+                          ? "Exceeds your free equity (own funds available, less borrowed). Borrowed funds can't be used as margin."
+                          : `Exceeds your available ${currency} balance.`}
+                      </p>
+                    )}
                   </div>
                   <div className="space-y-2">
                     <Label>Currency</Label>
@@ -1137,6 +1221,18 @@ export default function LeveragePage() {
 
                 {/* Buying power preview */}
                 <div className="rounded-lg border border-primary/20 bg-primary/5 p-3">
+                  {isCashFunded && marginAvailable != null && (
+                    <div className="mb-1 flex items-center justify-between border-b border-primary/20 pb-2 text-sm">
+                      <span className="text-muted-foreground">
+                        {currency === BASE_CURRENCY ? "Your Free Equity (own funds)" : `Available ${currency}`}
+                      </span>
+                      <span
+                        className={`font-medium ${equityExceedsMargin ? "text-red-400" : "text-foreground"}`}
+                      >
+                        {formatMoney(marginAvailable, currency)}
+                      </span>
+                    </div>
+                  )}
                   <div className="flex items-center justify-between text-sm">
                     <span className="text-muted-foreground">Your Equity</span>
                     <span className="font-medium text-foreground">
@@ -1279,7 +1375,7 @@ export default function LeveragePage() {
                   // Can't fund the full PPI but can cover the audit fee → appeal.
                   <Button
                     onClick={() => void submitRequest({ appeal: true })}
-                    disabled={checkingMargin || !feeAcknowledged}
+                    disabled={checkingMargin || !feeAcknowledged || equityExceedsMargin}
                     className="bg-amber-500 text-amber-950 hover:bg-amber-500/90"
                   >
                     {checkingMargin ? "Checking margin…" : "Make Appeal / Negotiate Costs"}
@@ -1290,12 +1386,17 @@ export default function LeveragePage() {
                     onClick={() => void submitRequest()}
                     disabled={
                       checkingMargin ||
+                      equityExceedsMargin ||
                       (totalUpfrontCharge > 0 && !feeAcknowledged) ||
                       (totalUpfrontCharge > 0 && !canAffordCharges)
                     }
                   >
-                    {checkingMargin ? "Checking margin…" : "Submit for Approval"}
-                    {!checkingMargin && <ArrowRight className="ml-2 h-4 w-4" />}
+                    {checkingMargin
+                      ? "Checking margin…"
+                      : equityExceedsMargin
+                        ? "Insufficient equity"
+                        : "Submit for Approval"}
+                    {!checkingMargin && !equityExceedsMargin && <ArrowRight className="ml-2 h-4 w-4" />}
                   </Button>
                 )}
               </DialogFooter>
