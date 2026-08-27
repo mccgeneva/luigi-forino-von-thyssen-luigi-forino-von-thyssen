@@ -44,6 +44,7 @@ import {
   type InstrumentUpgrade,
 } from "@/lib/instrument-upgrade"
 import { buildInternalLoanPosts } from "@/lib/internal-loan"
+import { isLiveRequest } from "@/lib/live-request"
 import type { LedgerEntry } from "@/lib/ledger-store"
 import { insertNotification } from "@/lib/notifications-db"
 import {
@@ -1930,12 +1931,74 @@ export async function deleteMyCommodityDeal(
 }
 
 /**
+ * Returns a human-readable reason if the given instrument approval is still
+ * ENGAGED as collateral/funding by any LIVE facility owned by the user (or their
+ * environment members), else null. This is the authoritative server-side mirror
+ * of the client `usageReasons`/`inUseInstrumentIds` gate in the instruments page.
+ *
+ * The instrument's identity used for pledging is `base.id`, where
+ * base = payload.instrument (admin-issued) ?? payload.record (client-acquired) —
+ * the exact id the leverage/monetization/PPP/internal-loan records store.
+ */
+async function instrumentEngagementReason(
+  instrumentApproval: Awaited<ReturnType<typeof getApprovalById>>,
+  userId: string,
+): Promise<string | null> {
+  if (!instrumentApproval) return null
+  const p = (instrumentApproval.payload ?? {}) as {
+    instrument?: { id?: string }
+    record?: { id?: string }
+    issuedByAdmin?: boolean
+  }
+  const instrumentId = (p.issuedByAdmin ? p.instrument?.id : p.record?.id ?? p.instrument?.id) ?? p.instrument?.id
+  if (!instrumentId) return null
+
+  // Scope the search to the account and any environment members (sub/joint), so
+  // a pledge created under a linked member id is still seen.
+  let ids = [userId]
+  try {
+    ids = Array.from(new Set([userId, ...(await resolveEnvironmentMemberIds(userId))]))
+  } catch {
+    ids = [userId]
+  }
+
+  // (approval kind, field on payload.record holding the pledged instrument id, reason)
+  const checks: Array<{ kind: ApprovalKind; field: string; reason: string }> = [
+    { kind: "internal_loan", field: "collateralInstrumentId", reason: "an internal loan — repay it to release the collateral before deleting this instrument." },
+    { kind: "leverage", field: "pledgedInstrumentId", reason: "a leverage line — close it before deleting this instrument." },
+    { kind: "monetization", field: "instrumentId", reason: "a monetization — reverse it before deleting this instrument." },
+    { kind: "ppp", field: "fundingInstrumentId", reason: "a yield / PPP application — cancel it before deleting this instrument." },
+  ]
+
+  for (const { kind, field, reason } of checks) {
+    let rows: Awaited<ReturnType<typeof listApprovalsForUsers>> = []
+    try {
+      rows = await listApprovalsForUsers(ids, kind)
+    } catch {
+      // Fail CLOSED on a specific-kind read error: better to block a delete than
+      // to release a live guarantee we couldn't verify.
+      return "This instrument's status could not be verified right now. Please try again shortly."
+    }
+    for (const row of rows) {
+      if (row.status === "rejected") continue
+      const rec = ((row.payload ?? {}) as { record?: Record<string, unknown> }).record
+      if (!rec) continue
+      if (rec[field] !== instrumentId) continue
+      if (isLiveRequest(rec)) {
+        return `This instrument is pledged to ${reason}`
+      }
+    }
+  }
+  return null
+}
+
+/**
  * Client: permanently DELETE one of their OWN bank instruments from their
- * portfolio. Ownership and kind are enforced here; the calling UI additionally
- * gates the option on the instrument not being pledged to a leverage line or
- * referenced by a monetization request (i.e. "not in use by the account"). The
- * acquisition fee is a settled, non-refundable debit and is intentionally NOT
- * refunded on deletion.
+ * portfolio. Ownership and kind are enforced here, AND the instrument must not
+ * be pledged as collateral/funding to any live facility (internal loan,
+ * leverage, monetization, PPP) — enforced authoritatively via
+ * `instrumentEngagementReason`, not just the client UI. The acquisition fee is a
+ * settled, non-refundable debit and is intentionally NOT refunded on deletion.
  */
 export async function deleteMyInstrument(
   approvalId: string,
@@ -1950,6 +2013,20 @@ export async function deleteMyInstrument(
     if (existing.kind !== "instrument") {
       return { ok: false, error: "Only bank instruments can be deleted here." }
     }
+
+    // AUTHORITATIVE "in use" guard. An instrument pledged as collateral / funding
+    // for a LIVE facility (internal loan, leverage line, monetization, PPP) must
+    // NOT be deletable — otherwise a client can raise funds against it (e.g. a
+    // 25M MT760-backed loan) and then delete the guarantee while the debt stays
+    // outstanding. The client UI hides the delete/return control, but that guard
+    // is bypassable (impersonation, stale state, a direct action call), so we
+    // re-check here on the server. Deleting is only allowed once every facility
+    // backed by this instrument is repaid/closed/reversed (i.e. no longer live).
+    const engagement = await instrumentEngagementReason(existing, session.id)
+    if (engagement) {
+      return { ok: false, error: engagement }
+    }
+
     const deleted = await deleteApprovalForUser(approvalId, session.id)
     if (!deleted) return { ok: false, error: "This instrument could not be deleted." }
 
