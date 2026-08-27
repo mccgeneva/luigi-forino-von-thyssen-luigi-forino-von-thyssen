@@ -1,7 +1,7 @@
 "use client"
 
 import useSWR from "swr"
-import { ShieldCheck, ShieldAlert, TrendingUp, Info, CircleDollarSign } from "lucide-react"
+import { ShieldCheck, ShieldAlert, TrendingUp, Info, CircleDollarSign, PiggyBank } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Progress } from "@/components/ui/progress"
@@ -42,6 +42,8 @@ export function GuaranteeScoreCard() {
       : 10
   const finalScore = Number.isFinite(score.finalScore) ? score.finalScore : 0
   const ageCredit = Number.isFinite(score.ageCredit) ? score.ageCredit : 0
+  const equityCredit = Number.isFinite(score.equityCredit) ? score.equityCredit : 0
+  const equitySavings = Number.isFinite(score.inputs?.equitySavings) ? score.inputs.equitySavings : 0
   const high = Boolean(score.highRisk)
 
   // Map the risk score onto a 0-100 bar relative to 2x the threshold so the
@@ -116,6 +118,19 @@ export function GuaranteeScoreCard() {
           </span>
           <span className="text-sm font-semibold text-foreground">−{ageCredit.toFixed(2)}</span>
         </div>
+
+        {equitySavings > 0 || equityCredit > 0 ? (
+          <div className="flex items-center justify-between rounded-lg border border-primary/20 bg-primary/5 p-3">
+            <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
+              <PiggyBank className="h-3.5 w-3.5 text-primary" />
+              Equity saving credit
+              {equitySavings > 0 ? (
+                <span className="text-[11px] text-muted-foreground/80">({eur(equitySavings)} blocked)</span>
+              ) : null}
+            </span>
+            <span className="text-sm font-semibold text-primary">−{equityCredit.toFixed(2)}</span>
+          </div>
+        ) : null}
 
         <p className="flex items-start gap-1.5 text-[11px] leading-relaxed text-muted-foreground text-pretty">
           <Info className="mt-0.5 h-3 w-3 shrink-0" />

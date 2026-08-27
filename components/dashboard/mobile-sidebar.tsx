@@ -34,6 +34,7 @@ import {
   Network,
   Wallet,
   type LucideIcon,
+  PiggyBank,
 } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -70,6 +71,7 @@ const navGroups: NavGroup[] = [
       { title: "Live FX Rates", href: "/dashboard/exchange", icon: DollarSign },
       { title: "Bank Accounts", href: "/dashboard/accounts", icon: Building2 },
       { title: "Sub-Accounts", href: "/dashboard/sub-accounts", icon: Layers, badge: "PRO" },
+      { title: "Equity Saving", href: "/dashboard/equity-saving", icon: PiggyBank, badge: "Trust+" },
       { title: "Payment Gateway", href: "/dashboard/gateway", icon: Globe, badge: "IBAN" },
       { title: "Cards", href: "/dashboard/cards", icon: CreditCard },
     ],

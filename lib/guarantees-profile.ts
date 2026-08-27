@@ -5,6 +5,7 @@ import { listApprovalsForUser } from "@/lib/approvals-db"
 import { resolveDataOwnerIdFor } from "@/lib/session-user"
 import { getDynamicUserById } from "@/lib/admin-users-db"
 import { convertCurrency } from "@/lib/fx"
+import { readEquitySavingsEur } from "@/lib/equity-savings"
 import {
   computeGuaranteeScore,
   type GuaranteeConfig,
@@ -201,6 +202,20 @@ export async function gatherGuaranteeProfile(userId: string, config: GuaranteeCo
     /* noop */
   }
 
+  // (c) Segregated EQUITY SAVING the customer has blocked as collateral. This
+  // is fully-blocked, unencumbered capital committed from the Master Account —
+  // it counts as posted collateral here (raising coverage) and separately earns
+  // a direct risk-score credit in the engine. The equity is already excluded
+  // from `availableBalance` (a held debit), so net equity is unchanged by the
+  // mere relocation and only the coverage + explicit credit improve the score.
+  let equitySavings = 0
+  try {
+    equitySavings = await readEquitySavingsEur(ownerId)
+    if (equitySavings > 0) guarantees += equitySavings
+  } catch {
+    equitySavings = 0
+  }
+
   // --- Overdue charges (auto-derived arrears) ---------------------------
   // Current monthly financing cost across live facilities; if the available
   // balance cannot cover it, count the whole months of shortfall (capped).
@@ -264,6 +279,7 @@ export async function gatherGuaranteeProfile(userId: string, config: GuaranteeCo
 
   const inputs: GuaranteeInputs = {
     guarantees,
+    equitySavings,
     leverageLoad,
     totalExposure,
     availableBalance,
