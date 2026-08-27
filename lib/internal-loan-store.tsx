@@ -59,6 +59,8 @@ export interface InternalLoanRequest {
   arrangementFeeEntryId?: string
   /** When the loan was repaid/closed — caps interest accrual. */
   closedAt?: string
+  /** When the loan was fully settled (stamped by the repayment flow). */
+  settledAt?: string
   /** Total interest settled at repayment. */
   settledInterest?: number
   /** Ledger entry id for the principal repayment debit. */
@@ -83,8 +85,13 @@ function internalLoanFromApproval(rec: ApprovalRecord): InternalLoanRequest | nu
   const base = rec.payload?.record as InternalLoanRequest | undefined
   if (!base || typeof base !== "object" || !base.id) return null
   const lifecycle = mapApprovalStatus(rec.status) as InternalLoanStatus
+  // A fully-repaid loan is recorded on the record itself (status "closed" and/or
+  // a settledAt/closedAt marker) — that sub-state wins over the coarse DB
+  // "approved" so a repaid loan is never shown as a live "Funded" loan. Also
+  // heals older repaid loans that only got a settledAt stamp.
+  const settled = base.status === "closed" || !!base.settledAt || !!base.closedAt
   const status: InternalLoanStatus =
-    lifecycle === "approved" && base.status === "closed" ? "closed" : lifecycle
+    lifecycle === "approved" && settled ? "closed" : lifecycle
   return {
     ...base,
     approvalId: rec.id,

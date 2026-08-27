@@ -612,12 +612,15 @@ export async function repayInternalLoan(input: {
 
     const nowOutstanding = Math.max(0, outstanding - repay)
 
-    // If fully repaid, stamp the settlement so interest stops accruing.
+    // If fully repaid, stamp the settlement so interest stops accruing AND mark
+    // the record closed so the customer card stops showing it as a live "Funded"
+    // loan (the store derives the "closed" sub-state from record.status/closedAt).
     if (nowOutstanding <= 0.01) {
       const record = (req.payload as { record?: Record<string, unknown> } | undefined)?.record ?? {}
+      const closedAt = new Date().toISOString()
       await updateApprovalPayload(req.id, {
         ...(req.payload ?? {}),
-        record: { ...record, settledAt: new Date().toISOString() },
+        record: { ...record, status: "closed", settledAt: closedAt, closedAt },
       })
     }
 
