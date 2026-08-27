@@ -36,24 +36,34 @@ export function isEquityEntryId(id: string | undefined): boolean {
 }
 
 /**
+ * Blocked equity per currency computed from already-loaded ledger entries
+ * (positive amounts only). Pure/synchronous so callers that already hold the
+ * ledger don't re-query.
+ */
+export function equityHoldingsFromEntries(
+  entries: Array<{ id?: string; status?: string; direction?: string; currency?: string; amount?: number }>,
+): Record<string, number> {
+  const out: Record<string, number> = {}
+  for (const e of entries) {
+    if (!isEquityEntryId(e.id)) continue
+    if (e.status !== "hold" || e.direction !== "debit") continue
+    const cur = (e.currency || BASE).toUpperCase()
+    const amt = Number(e.amount)
+    if (Number.isFinite(amt) && amt > 0) out[cur] = (out[cur] ?? 0) + amt
+  }
+  return out
+}
+
+/**
  * Current blocked equity per currency for an owner (positive amounts only).
  * Reads the authoritative ledger directly.
  */
 export async function readEquityHoldings(ownerId: string): Promise<Record<string, number>> {
-  const out: Record<string, number> = {}
   try {
-    const entries = await readLedgerEntries(ownerId)
-    for (const e of entries) {
-      if (!isEquityEntryId(e.id)) continue
-      if (e.status !== "hold" || e.direction !== "debit") continue
-      const cur = (e.currency || BASE).toUpperCase()
-      const amt = Number(e.amount)
-      if (Number.isFinite(amt) && amt > 0) out[cur] = (out[cur] ?? 0) + amt
-    }
+    return equityHoldingsFromEntries(await readLedgerEntries(ownerId))
   } catch {
-    /* degrade to no holdings on any read failure */
+    return {}
   }
-  return out
 }
 
 /** EUR-equivalent total of all blocked equity for an owner. */

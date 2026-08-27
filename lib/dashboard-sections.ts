@@ -65,6 +65,7 @@ export const DASHBOARD_SECTIONS: DashboardSection[] = [
   { key: "exchange", label: "Live FX Rates", path: "/dashboard/exchange", group: "Banking" },
   { key: "accounts", label: "Bank Accounts", path: "/dashboard/accounts", group: "Banking" },
   { key: "sub-accounts", label: "Sub-Accounts", path: "/dashboard/sub-accounts", group: "Banking" },
+  { key: "equity-saving", label: "Equity Saving", path: "/dashboard/equity-saving", group: "Banking" },
   { key: "gateway", label: "Payment Gateway", path: "/dashboard/gateway", group: "Banking" },
   { key: "cards", label: "Cards", path: "/dashboard/cards", group: "Banking" },
 

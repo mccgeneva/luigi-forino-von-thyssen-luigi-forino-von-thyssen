@@ -236,7 +236,19 @@ export function GuaranteesManager({ passcode }: { passcode: string }) {
               <Label className="text-xs">Target coverage ×</Label>
               <Input type="number" min="0.1" step="0.1" value={config.targetCoverage} onChange={setNum("targetCoverage")} className="mt-1" />
             </div>
+            <div>
+              <Label className="text-xs">Equity credit @ (EUR)</Label>
+              <Input type="number" min="1" step="1000" value={config.equityCreditFull} onChange={setNum("equityCreditFull")} className="mt-1" />
+            </div>
+            <div>
+              <Label className="text-xs">Max equity credit</Label>
+              <Input type="number" min="0" step="0.5" value={config.equityCreditMax} onChange={setNum("equityCreditMax")} className="mt-1" />
+            </div>
           </div>
+          <p className="-mt-2 text-[11px] leading-relaxed text-muted-foreground">
+            Equity saving: blocked equity earns up to <strong>Max equity credit</strong> risk-score points, reached at
+            the <strong>Equity credit @</strong> amount (linear below it). It also counts as posted collateral.
+          </p>
 
           <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border bg-secondary/30 p-3">
             <div className="flex items-center gap-3">
@@ -356,9 +368,12 @@ export function GuaranteesManager({ passcode }: { passcode: string }) {
                     {s && (
                       <p className="mt-2 text-[11px] text-muted-foreground">
                         √(weighted {s.weightedSum.toFixed(0)}) = risk {s.riskScore.toFixed(2)} − age credit{" "}
-                        {s.ageCredit.toFixed(2)} = <span className="font-medium text-foreground">{s.finalScore.toFixed(2)}</span>
+                        {s.ageCredit.toFixed(2)}
+                        {(s.equityCredit ?? 0) > 0 ? ` − equity credit ${s.equityCredit.toFixed(2)}` : ""} ={" "}
+                        <span className="font-medium text-foreground">{s.finalScore.toFixed(2)}</span>
                         {"  ·  "}exposure {eur(s.inputs.totalExposure)} · guarantees {eur(s.inputs.guarantees)} · available{" "}
                         {eur(s.inputs.availableBalance)}
+                        {(s.inputs.equitySavings ?? 0) > 0 ? ` · equity ${eur(s.inputs.equitySavings)}` : ""}
                         {s.inputs.overdueCharges > 0 ? ` · ${s.inputs.overdueCharges} overdue` : ""}
                       </p>
                     )}

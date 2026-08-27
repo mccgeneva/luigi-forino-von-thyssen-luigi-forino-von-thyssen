@@ -279,6 +279,7 @@ export async function gatherGuaranteeProfile(userId: string, config: GuaranteeCo
 
   const inputs: GuaranteeInputs = {
     guarantees,
+    equitySavings,
     leverageLoad,
     totalExposure,
     availableBalance,
