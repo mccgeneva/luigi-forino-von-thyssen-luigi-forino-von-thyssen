@@ -343,36 +343,36 @@ export default function ExchangePage() {
             <CardContent className="space-y-6">
               {/* From Currency */}
               <div className="space-y-2">
-                <div className="flex items-center justify-between gap-2">
-                  <Label className="text-muted-foreground">You Send</Label>
-                  {/* Show the spendable balance for the selected send currency
-                      up-front, before any exchange, with a Max shortcut. */}
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs text-muted-foreground">
-                      Available:{" "}
-                      <span className="font-mono font-semibold text-foreground">
-                        {currencies.find((c) => c.code === fromCurrency)?.symbol}
-                        {availableBalance.toLocaleString("en-US", {
-                          minimumFractionDigits: 2,
-                          maximumFractionDigits: 2,
-                        })}{" "}
-                        {fromCurrency}
-                      </span>
+                <Label className="text-muted-foreground">You Send</Label>
+                {/* Spendable balance for the selected send currency, shown
+                    up-front on its own strip so the long figure never crowds
+                    the label. Max fills the largest amount net of the fee. */}
+                <div className="flex items-center justify-between gap-3 rounded-lg border border-border/60 bg-secondary/30 px-3 py-2">
+                  <div className="flex min-w-0 flex-col">
+                    <span className="text-[11px] uppercase tracking-wide text-muted-foreground">
+                      Available {fromCurrency}
                     </span>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        // Max sendable = balance net of the 0.4% fee, so the
-                        // total debit (amount + fee) never exceeds the balance.
-                        const max = availableBalance / (1 + conversionFee)
-                        setFromAmount((Math.floor(max * 100) / 100).toString())
-                      }}
-                      disabled={availableBalance <= 0}
-                      className="rounded-md border border-border px-2 py-0.5 text-xs font-medium text-foreground transition-colors hover:bg-secondary disabled:opacity-40"
-                    >
-                      Max
-                    </button>
+                    <span className="truncate font-mono text-sm font-semibold tabular-nums text-foreground">
+                      {currencies.find((c) => c.code === fromCurrency)?.symbol}
+                      {availableBalance.toLocaleString("en-US", {
+                        minimumFractionDigits: 2,
+                        maximumFractionDigits: 2,
+                      })}
+                    </span>
                   </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      // Max sendable = balance net of the 0.4% fee, so the
+                      // total debit (amount + fee) never exceeds the balance.
+                      const max = availableBalance / (1 + conversionFee)
+                      setFromAmount((Math.floor(max * 100) / 100).toString())
+                    }}
+                    disabled={availableBalance <= 0}
+                    className="shrink-0 rounded-md bg-primary/15 px-3 py-1.5 text-xs font-semibold text-primary transition-colors hover:bg-primary/25 disabled:opacity-40"
+                  >
+                    Max
+                  </button>
                 </div>
                 <div className="flex gap-2">
                   <Select value={fromCurrency} onValueChange={setFromCurrency}>
