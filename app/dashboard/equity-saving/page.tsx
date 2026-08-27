@@ -54,6 +54,8 @@ export default function EquitySavingPage() {
     availableByCurrency: {},
     accountNegative: false,
     negativeEur: 0,
+    freeToCommitEur: 0,
+    borrowedEur: 0,
   })
   const [loading, setLoading] = useState(true)
 
@@ -94,7 +96,15 @@ export default function EquitySavingPage() {
   const negativeEur = snapshot.negativeEur
   const spendable = snapshot.availableByCurrency[currency] ?? 0
   const blockedInCcy = snapshot.byCurrency[currency] ?? 0
-  const capForMode = mode === "deposit" ? spendable : blockedInCcy
+  // Only FRESH, unborrowed funds may be committed. When the customer holds
+  // outstanding borrowed/financed funds (loans, leverage, financing), the
+  // blockable amount is capped at net free equity (EUR-aggregate). We can only
+  // apply that cap precisely for EUR client-side; other currencies are still
+  // enforced server-side, so we show it as guidance there.
+  const hasBorrowed = snapshot.borrowedEur > 0.01
+  const freeEur = snapshot.freeToCommitEur
+  const depositCap = hasBorrowed && currency === "EUR" ? Math.min(spendable, freeEur) : spendable
+  const capForMode = mode === "deposit" ? depositCap : blockedInCcy
   const numericAmount = Number.parseFloat(amount || "0") || 0
   const overCap = numericAmount > capForMode + 0.01
   // Top-ups are blocked entirely while the master account is negative.
@@ -294,10 +304,19 @@ export default function EquitySavingPage() {
                 placeholder="0.00"
                 className="mt-1"
               />
+              {mode === "deposit" && hasBorrowed && (
+                <p className="mt-1 text-xs text-amber-500">
+                  Free to commit (excludes borrowed funds): {fmt(freeEur, "EUR")}. You have{" "}
+                  {fmt(snapshot.borrowedEur, "EUR")} of outstanding borrowed/financed funds, which cannot enter Equity
+                  Saving.
+                </p>
+              )}
               {overCap && (
                 <p className="mt-1 text-xs text-destructive">
                   {mode === "deposit"
-                    ? "Amount exceeds your spendable balance in this currency."
+                    ? hasBorrowed && currency === "EUR"
+                      ? "Amount exceeds your free (unborrowed) equity. Borrowed/financed funds cannot be committed."
+                      : "Amount exceeds your spendable balance in this currency."
                     : "Amount exceeds the equity you have blocked in this currency."}
                 </p>
               )}
@@ -307,7 +326,7 @@ export default function EquitySavingPage() {
               <p className="flex items-start gap-2 text-xs text-muted-foreground">
                 <Lock className="mt-0.5 h-3.5 w-3.5 shrink-0 text-primary" />
                 {mode === "deposit"
-                  ? "Only clean, unencumbered funds from a positive Master Account may be committed — reserved, blocked, leveraged, PPI-appeal or overdraft-linked funds cannot. Blocked equity leaves your spendable balance but remains yours, counts as collateral, and boosts your trust score."
+                  ? "Only fresh, unborrowed funds from a positive Master Account may be committed. Borrowed or financed money — internal loans, leverage, monetization, project-funding or a financed treasury deposit — cannot be moved into Equity Saving, and neither can reserved, blocked, PPI-appeal or overdraft-linked funds. Blocked equity leaves your spendable balance but remains yours, counts as collateral, and boosts your trust score."
                   : "This submits a release request to the administrator. Nothing is unblocked yet — the administrator reviews it and negotiates the amount, modality and timing. The funds credit back to your spendable balance once approved (immediately or at the agreed time)."}
               </p>
             </div>
