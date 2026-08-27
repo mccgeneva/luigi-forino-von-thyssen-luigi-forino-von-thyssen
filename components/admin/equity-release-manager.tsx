@@ -33,7 +33,7 @@ function localDateTime(hoursFromNow: number): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
 }
 
-export function EquityReleaseManager() {
+export function EquityReleaseManager({ passcode = ADMIN_PASSCODE }: { passcode?: string }) {
   const [requests, setRequests] = useState<EquityReleaseRequest[]>([])
   const [loading, setLoading] = useState(true)
   const [busyId, setBusyId] = useState<string | null>(null)
@@ -48,12 +48,12 @@ export function EquityReleaseManager() {
 
   const load = useCallback(async () => {
     try {
-      const rows = await listEquityReleasesAdmin(ADMIN_PASSCODE)
+      const rows = await listEquityReleasesAdmin(passcode)
       setRequests(rows)
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [passcode])
 
   useEffect(() => {
     void load()

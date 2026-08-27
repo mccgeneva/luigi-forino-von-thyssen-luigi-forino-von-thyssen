@@ -39,6 +39,7 @@ import {
   CreditCard,
   Send,
   Inbox,
+  PiggyBank,
   RefreshCw,
   Handshake,
   ArrowRight,
@@ -133,6 +134,8 @@ import { AdminGatewaySection } from "@/components/dashboard/admin-gateway-sectio
 import { SwiftRoutingQueue } from "@/components/admin/swift-routing-queue"
 import { IncomingSwiftDelivery } from "@/components/admin/incoming-swift-delivery"
 import { listCreditableIncomingSwiftAdmin } from "@/app/actions/incoming-swift"
+import { EquityReleaseManager } from "@/components/admin/equity-release-manager"
+import { countPendingEquityReleasesAdmin } from "@/app/actions/equity-savings"
 import { AdminReconciliationSection } from "@/components/dashboard/admin-reconciliation-section"
 import { TreasuryManager } from "@/components/admin/treasury-manager"
 import { UserManager } from "@/components/admin/user-manager"
@@ -501,6 +504,25 @@ export default function AdminPage() {
         if (!cancelled && res.ok) setPendingIncomingSwiftCount(res.messages.length)
       } catch {
         // Non-fatal: the Incoming SWIFT tile just shows 0 if it can't load.
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [unlocked, activeView])
+
+  // Equity-release requests awaiting an administrator decision — surfaced on the
+  // command center so an equity release request is never invisible.
+  const [pendingEquityReleaseCount, setPendingEquityReleaseCount] = useState(0)
+  useEffect(() => {
+    if (!unlocked) return
+    let cancelled = false
+    ;(async () => {
+      try {
+        const n = await countPendingEquityReleasesAdmin(ADMIN_PASSCODE)
+        if (!cancelled) setPendingEquityReleaseCount(n)
+      } catch {
+        // Non-fatal: the Equity Releases tile just shows 0 if it can't load.
       }
     })()
     return () => {
@@ -2272,6 +2294,7 @@ export default function AdminPage() {
     { id: "section-gateway", view: "gateway", label: "Gateway Accounts", count: pendingGatewayCount, icon: Globe },
     { id: "section-swiftrouting", view: "swiftrouting", label: "SWIFT Routing", count: pendingSwiftRoutingCount, icon: Send },
     { id: "section-incomingswift", view: "incomingswift", label: "Incoming SWIFT", count: pendingIncomingSwiftCount, icon: Inbox },
+    { id: "section-equityrelease", view: "equityrelease", label: "Equity Releases", count: pendingEquityReleaseCount, icon: PiggyBank },
     { id: "section-subaccounts", view: "subaccounts", label: "Sub-Account Requests", count: pendingSubAccountCount, icon: Layers },
     { id: "section-payments", view: "approvals", kind: "payment", label: "Outgoing Payments", count: (dbPending.payment ?? 0) + paymentsAwaitingDelivery, icon: ArrowUpRight },
     { id: "section-instruments", view: "approvals", kind: "instrument", label: "Bank Instruments", count: dbPending.instrument ?? 0, icon: FileText },
@@ -2355,6 +2378,7 @@ export default function AdminPage() {
         { id: "gateway", label: "Payment Gateway", description: "Approve client account requests; configure partner banks and routing.", icon: Settings, count: pendingGatewayCount },
         { id: "swiftrouting", label: "SWIFT Routing", description: "Review client SWIFT messages and route them to the chosen beneficiary.", icon: Send, count: pendingSwiftRoutingCount },
         { id: "incomingswift", label: "Incoming SWIFT", description: "Verify customer-uploaded SWIFT printouts (e.g. MT760 blocked-funds guarantees) and matched inbound messages, then credit or book them.", icon: Inbox, count: pendingIncomingSwiftCount },
+    { id: "equityrelease", label: "Equity Releases", description: "Review customer requests to release blocked equity. Negotiate the amount, terms and timing, then approve (now or scheduled) or decline.", icon: PiggyBank, count: pendingEquityReleaseCount },
         { id: "reconciliation", label: "Reconciliation", description: "Automated payment reconciliation engine.", icon: Repeat, count: 0 },
         { id: "treasury", label: "Treasury Services", description: "Security deposits and 1:10 leverage.", icon: Landmark, count: 0 },
         { id: "certificates", label: "Certificates", description: "Issue and re-issue official certificates.", icon: ScrollText, count: pendingCertificateCount },
@@ -5064,7 +5088,7 @@ export default function AdminPage() {
                       <div className="flex items-center gap-2">
                         <Package className="h-4 w-4 text-muted-foreground" />
                         <span className="text-muted-foreground">Commodity:</span>
-                        <span className="text-foreground">{deal.commodity || "—"}</span>
+                        <span className="text-foreground">{deal.commodity || "���"}</span>
                       </div>
                       <div className="flex items-center gap-2">
                         <Package className="h-4 w-4 text-muted-foreground" />
@@ -5365,11 +5389,17 @@ export default function AdminPage() {
       )}
 
       {/* Incoming SWIFT — verify customer-uploaded printouts & matched inbound messages */}
-      {activeView === "incomingswift" && (
-      <div className="space-y-6">
-        <IncomingSwiftDelivery />
-      </div>
-      )}
+        {activeView === "incomingswift" && (
+          <div className="space-y-6">
+            <IncomingSwiftDelivery />
+          </div>
+        )}
+
+        {activeView === "equityrelease" && (
+          <div className="space-y-6">
+            <EquityReleaseManager />
+          </div>
+        )}
 
       {/* Automated payment reconciliation engine */}
       {activeView === "reconciliation" && (
