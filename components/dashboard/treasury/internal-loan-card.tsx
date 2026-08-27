@@ -177,7 +177,12 @@ export function InternalLoanCard() {
       return
     }
     setRepaying(true)
-    const res = await repayInternalLoan({ approvalId: loan.id, amount: value })
+    // Repay against the DB approval-row id. For loans created through the client
+    // store this differs from `loan.id` (the client localId held in
+    // payload.record.id), so passing loan.id makes getApprovalById miss and
+    // report "Loan not found". `approvalId` is the authoritative key (same one
+    // the outstanding-balance map is keyed on).
+    const res = await repayInternalLoan({ approvalId: loan.approvalId ?? loan.id, amount: value })
     setRepaying(false)
     if (!res.ok) {
       toast.error("Repayment declined", { description: res.error })
