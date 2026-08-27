@@ -6,6 +6,8 @@ import { resolveDataOwnerIdFor } from "@/lib/session-user"
 import { getDynamicUserById } from "@/lib/admin-users-db"
 import { convertCurrency } from "@/lib/fx"
 import { readEquitySavingsEur } from "@/lib/equity-savings"
+import { outstandingInternalLoan } from "@/lib/internal-loan"
+import type { ApprovalRequest } from "@/lib/approvals-db"
 import {
   computeGuaranteeScore,
   type GuaranteeConfig,
@@ -118,10 +120,23 @@ export async function gatherGuaranteeProfile(userId: string, config: GuaranteeCo
         const payload = (row.payload ?? {}) as Record<string, unknown>
         const rec = (payload.record ?? payload) as Record<string, unknown>
         if (!isLiveRecord(rec)) continue
-        const principalEur = toEur(principalOf(rec), currencyOf(rec))
-        if (principalEur <= 0) continue
-        totalExposure += principalEur
-        if (kind === "leverage") leverageLoad += principalEur
+        // Internal loans are amortising: derive the REAL outstanding from the
+        // ledger (drawdown + accrued interest − every repayment leg) rather than
+        // the flat original principal. This makes a fully-repaid loan contribute
+        // ZERO exposure even if its approval record was never stamped
+        // settled/closed (a stale marker from an older repay build), so a client
+        // who has repaid is not left stuck at high risk. Other financing kinds
+        // use their recorded principal.
+        let exposureEur: number
+        if (kind === "internal_loan") {
+          const outstanding = outstandingInternalLoan(row as ApprovalRequest, ledgerEntries)
+          exposureEur = toEur(outstanding, currencyOf(rec))
+        } else {
+          exposureEur = toEur(principalOf(rec), currencyOf(rec))
+        }
+        if (exposureEur <= 0) continue
+        totalExposure += exposureEur
+        if (kind === "leverage") leverageLoad += exposureEur
       }
     } catch {
       // ignore this kind
@@ -232,7 +247,12 @@ export async function gatherGuaranteeProfile(userId: string, config: GuaranteeCo
         const payload = (row.payload ?? {}) as Record<string, unknown>
         const rec = (payload.record ?? payload) as Record<string, unknown>
         if (!isLiveRecord(rec)) continue
-        const principalEur = toEur(principalOf(rec), currencyOf(rec))
+        // Same as the exposure loop: internal loans use their REAL ledger
+        // outstanding, so a repaid loan contributes no financing cost.
+        const principalEur =
+          kind === "internal_loan"
+            ? toEur(outstandingInternalLoan(row as ApprovalRequest, ledgerEntries), currencyOf(rec))
+            : toEur(principalOf(rec), currencyOf(rec))
         if (principalEur > 0) monthlyFinancingCost += (principalEur * rate) / 12
       }
     }
