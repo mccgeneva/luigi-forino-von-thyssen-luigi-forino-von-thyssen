@@ -32,6 +32,8 @@ import {
 import { adminActionAuthorized, adminEmails } from "@/lib/admin-auth"
 import { getDynamicUserByEmail } from "@/lib/admin-users-db"
 import { insertNotification } from "@/lib/notifications-db"
+import { gatherGuaranteeProfile } from "@/lib/guarantees-profile"
+import { getGuaranteeConfig } from "@/lib/guarantees-config-db"
 import { convertCurrency } from "@/lib/fx"
 import { logActivity } from "@/app/actions/log-activity"
 import type { LedgerEntry } from "@/lib/ledger-store"
@@ -72,6 +74,37 @@ function settledEurFromEntries(entries: LedgerEntry[]): number {
   return round2(sum)
 }
 
+/**
+ * NET FREE (unborrowed) equity, EUR-equivalent — the ONLY funds that may be
+ * committed to Equity Saving. This is the customer's own money, not proceeds of
+ * a loan / leverage line / financed treasury deposit.
+ *
+ *   freeToCommit = availableBalance − totalOutstandingBorrowedPrincipal
+ *
+ * `availableBalance` (from the Guarantees Accumulator profile) is the EUR sum of
+ * every currency's clean available balance — it already subtracts all holds,
+ * including equity already blocked. `totalExposure` is the outstanding principal
+ * on every financing product (internal loans, leverage, monetization,
+ * project-funding, treasury-lending and a financed treasury deposit). Subtracting
+ * it removes borrowed money from what can be blocked, so a customer can no longer
+ * move lended funds into the equity safeguard — only fresh, free money.
+ *
+ * Returns { freeEur, borrowedEur, availableEur }. Never throws.
+ */
+async function computeFreeToCommit(
+  userId: string,
+): Promise<{ freeEur: number; borrowedEur: number; availableEur: number } | null> {
+  try {
+    const config = await getGuaranteeConfig()
+    const profile = await gatherGuaranteeProfile(userId, config)
+    const availableEur = round2(profile.score.inputs.availableBalance || 0)
+    const borrowedEur = round2(profile.score.inputs.totalExposure || 0)
+    return { freeEur: round2(availableEur - borrowedEur), borrowedEur, availableEur }
+  } catch {
+    return null
+  }
+}
+
 /** Fire-and-forget audit of an equity-saving transfer attempt (accepted or rejected). */
 async function auditEquityAttempt(
   outcome: "accepted" | "rejected",
@@ -102,6 +135,15 @@ export interface EquitySavingsSnapshot {
   accountNegative: boolean
   /** How negative the account is, EUR-equivalent (0 when positive). */
   negativeEur: number
+  /**
+   * Fresh, FREE (unborrowed) funds that may be committed to Equity Saving,
+   * EUR-equivalent. Equals available balance minus outstanding borrowed principal
+   * (loans/leverage/financing). Only this much can be blocked — borrowed money
+   * cannot enter the safeguard.
+   */
+  freeToCommitEur: number
+  /** Outstanding borrowed/financed principal, EUR-equivalent (excluded funds). */
+  borrowedEur: number
 }
 
 export type EquityResult<T = { reference: string }> = { ok: true; data: T } | { ok: false; error: string }
@@ -109,7 +151,8 @@ export type EquityResult<T = { reference: string }> = { ok: true; data: T } | { 
 /** Read the signed-in customer's segregated equity + spendable balances. */
 export async function getMyEquitySavings(): Promise<EquitySavingsSnapshot> {
   const session = await resolveCurrentSession()
-  if (!session) return { byCurrency: {}, availableByCurrency: {}, accountNegative: false, negativeEur: 0 }
+  if (!session)
+    return { byCurrency: {}, availableByCurrency: {}, accountNegative: false, negativeEur: 0, freeToCommitEur: 0, borrowedEur: 0 }
   try {
     const ownerId = await resolveDataOwnerIdFor(session.id)
     // Lazily credit any scheduled releases whose time has arrived before reading.
@@ -124,14 +167,18 @@ export async function getMyEquitySavings(): Promise<EquitySavingsSnapshot> {
     }
     const settledEur = settledEurFromEntries(entries)
     const accountNegative = settledEur < -0.01
+    // Only fresh, unborrowed funds may be committed — exclude loan/leverage proceeds.
+    const free = await computeFreeToCommit(session.id)
     return {
       byCurrency: blocked,
       availableByCurrency: avail,
       accountNegative,
       negativeEur: accountNegative ? round2(-settledEur) : 0,
+      freeToCommitEur: free ? Math.max(0, free.freeEur) : 0,
+      borrowedEur: free ? free.borrowedEur : 0,
     }
   } catch {
-    return { byCurrency: {}, availableByCurrency: {}, accountNegative: false, negativeEur: 0 }
+    return { byCurrency: {}, availableByCurrency: {}, accountNegative: false, negativeEur: 0, freeToCommitEur: 0, borrowedEur: 0 }
   }
 }
 
@@ -188,6 +235,27 @@ export async function depositToEquitySavings(input: {
     const reason = `Insufficient clean ${currency} funds. Only ${fmtMoney(available, currency)} is unencumbered and available to move into Equity Saving (reserved, blocked, leveraged or overdraft-linked funds are excluded).`
     await auditEquityAttempt("rejected", { amount, currency, reason })
     return { ok: false, error: reason }
+  }
+
+  // ELIGIBILITY RULE 4 — FRESH, UNBORROWED FUNDS ONLY. `availableByCurrency`
+  // still counts loan / leverage / financing PROCEEDS (a real credit sitting on
+  // the master account) as spendable, so Rule 3 alone would let a customer block
+  // borrowed money. The equity safeguard must only accept the customer's OWN
+  // money, so the amount (EUR-equiv) cannot exceed net free equity =
+  // available − outstanding borrowed principal. Fails OPEN if the exposure can't
+  // be computed (a transient engine error must not block a legitimate deposit).
+  const free = await computeFreeToCommit(session.id)
+  if (free) {
+    const amountEur = currency === BASE ? amount : round2(convertCurrency(amount, currency, BASE))
+    const freeEur = Math.max(0, free.freeEur)
+    if (free.borrowedEur > 0.01 && amountEur > freeEur + 0.01) {
+      const reason =
+        freeEur <= 0.01
+          ? `Equity Saving accepts only your own free funds. Your spendable balance is currently backed by ${fmtMoney(free.borrowedEur, BASE)} of borrowed/financed funds (loans, leverage or financing), so there is no free equity to commit. Repay or add fresh funds first.`
+          : `Equity Saving accepts only your own free funds — borrowed/financed money is excluded. You can commit up to ${fmtMoney(freeEur, BASE)} of free equity (you have ${fmtMoney(free.borrowedEur, BASE)} of outstanding borrowed/financed funds).`
+      await auditEquityAttempt("rejected", { amount, currency, reason })
+      return { ok: false, error: reason }
+    }
   }
 
   const existing = equityHoldingsFromEntries(entries)[currency] ?? 0
