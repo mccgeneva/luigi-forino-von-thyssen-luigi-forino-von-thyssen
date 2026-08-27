@@ -44,6 +44,12 @@ function StatusBadge({ status }: { status: InternalLoanView["status"] }) {
         <CheckCircle2 className="h-3 w-3" /> Funded
       </Badge>
     )
+  if (status === "closed")
+    return (
+      <Badge className="gap-1 bg-muted text-muted-foreground hover:bg-muted">
+        <CheckCircle2 className="h-3 w-3" /> Repaid
+      </Badge>
+    )
   if (status === "rejected" || status === "cancelled")
     return (
       <Badge className="gap-1 bg-red-500/15 text-red-400 hover:bg-red-500/15">
@@ -122,7 +128,16 @@ export function InternalLoanCard() {
   // Which pending loan's discussion thread is expanded inline.
   const [discussFor, setDiscussFor] = useState<string | null>(null)
 
-  const activeLoans = useMemo(() => loans.filter((l) => l.status === "approved"), [loans])
+  // Funded loans (live) plus fully-repaid ones (closed), so a repaid loan is
+  // shown as "Repaid" rather than either vanishing or lingering as "Funded".
+  // Live loans first, most-recent repaid next.
+  const activeLoans = useMemo(
+    () =>
+      loans
+        .filter((l) => l.status === "approved" || l.status === "closed")
+        .sort((a, b) => (a.status === b.status ? 0 : a.status === "approved" ? -1 : 1)),
+    [loans],
+  )
   const historyLoans = useMemo(
     () => loans.filter((l) => l.status === "pending" || l.status === "rejected" || l.status === "cancelled"),
     [loans],
@@ -239,18 +254,33 @@ export function InternalLoanCard() {
         {activeLoans.length > 0 && (
           <div className="space-y-3">
             <p className="text-sm font-medium text-foreground">Your loans</p>
-            {activeLoans.map((loan) => (
-              <div key={loan.id} className="rounded-lg border border-border bg-secondary/30 p-4">
+            {activeLoans.map((loan) => {
+              const isRepaid = loan.status === "closed" || (loan.outstanding ?? loan.amount) <= 0.01
+              return (
+              <div
+                key={loan.id}
+                className={cn(
+                  "rounded-lg border border-border bg-secondary/30 p-4",
+                  isRepaid && "opacity-70",
+                )}
+              >
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div>
                     <div className="flex items-center gap-2">
-                      <span className="text-base font-semibold text-foreground">
+                      <span
+                        className={cn(
+                          "text-base font-semibold",
+                          isRepaid ? "text-muted-foreground" : "text-foreground",
+                        )}
+                      >
                         {formatLoanMoney(loan.amount, loan.currency)}
                       </span>
                       <StatusBadge status={loan.status} />
                     </div>
                     <p className="mt-1 text-xs text-muted-foreground">
-                      {loan.status === "approved" ? (
+                      {isRepaid ? (
+                        <span className="font-medium text-foreground">Repaid in full</span>
+                      ) : loan.status === "approved" ? (
                         <>
                           Outstanding{" "}
                           <span className="font-medium text-foreground">
@@ -259,19 +289,29 @@ export function InternalLoanCard() {
                           ·{" "}
                         </>
                       ) : null}
-                      {(loan.interestRate * 100).toFixed(2)}% p.a.
-                      {(loan.arrangementFee ?? 0) > 0
-                        ? ` · fee ${formatLoanMoney(loan.arrangementFee ?? 0, loan.currency)}`
-                        : ""}
+                      {!isRepaid && (
+                        <>
+                          {(loan.interestRate * 100).toFixed(2)}% p.a.
+                          {(loan.arrangementFee ?? 0) > 0
+                            ? ` · fee ${formatLoanMoney(loan.arrangementFee ?? 0, loan.currency)}`
+                            : ""}
+                        </>
+                      )}
                     </p>
                     {loan.purpose && (
                       <p className="mt-0.5 text-xs text-muted-foreground">Purpose: {loan.purpose}</p>
                     )}
                     {loan.collateralInstrumentLabel && (
-                      <p className="mt-0.5 flex items-center gap-1 text-xs text-primary">
+                      <p
+                        className={cn(
+                          "mt-0.5 flex items-center gap-1 text-xs",
+                          isRepaid ? "text-muted-foreground" : "text-primary",
+                        )}
+                      >
                         <Lock className="h-3 w-3 shrink-0" />
-                        Collateral locked: {loan.collateralInstrumentLabel}
-                        {(loan.outstanding ?? loan.amount) <= 0.01 ? " · released" : ""}
+                        {isRepaid
+                          ? `Collateral released: ${loan.collateralInstrumentLabel}`
+                          : `Collateral locked: ${loan.collateralInstrumentLabel}`}
                       </p>
                     )}
                   </div>
@@ -314,7 +354,8 @@ export function InternalLoanCard() {
                   </div>
                 )}
               </div>
-            ))}
+              )
+            })}
           </div>
         )}
 
