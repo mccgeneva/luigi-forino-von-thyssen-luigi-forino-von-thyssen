@@ -2,12 +2,13 @@
 
 import { useEffect, useMemo, useState } from "react"
 import { toast } from "sonner"
-import { PiggyBank, Lock, ArrowDownToLine, ArrowUpFromLine, ShieldCheck, TrendingUp, Loader2 } from "lucide-react"
+import { PiggyBank, Lock, ArrowDownToLine, ArrowUpFromLine, ShieldCheck, TrendingUp, Loader2, Clock, CheckCircle2, XCircle, Hourglass } from "lucide-react"
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Label } from "@/components/ui/label"
 import { MoneyInput } from "@/components/ui/money-input"
+import { Badge } from "@/components/ui/badge"
 import {
   Select,
   SelectContent,
@@ -19,12 +20,31 @@ import { useLedger } from "@/lib/ledger-store"
 import {
   getMyEquitySavings,
   depositToEquitySavings,
-  withdrawFromEquitySavings,
+  requestEquityRelease,
+  getMyEquityReleaseRequests,
+  cancelMyEquityRelease,
   type EquitySavingsSnapshot,
 } from "@/app/actions/equity-savings"
+import type { EquityReleaseRequest } from "@/lib/equity-release-db"
 
 function fmt(amount: number, currency: string) {
   return `${amount.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${currency}`
+}
+
+function fmtWhen(iso: string | null) {
+  if (!iso) return "—"
+  return new Date(iso).toLocaleString("en-GB", { dateStyle: "medium", timeStyle: "short" })
+}
+
+const RELEASE_STATUS: Record<
+  EquityReleaseRequest["status"],
+  { label: string; icon: typeof Clock; className: string }
+> = {
+  pending: { label: "Awaiting administrator", icon: Hourglass, className: "bg-amber-500/15 text-amber-500 border-amber-500/30" },
+  scheduled: { label: "Scheduled", icon: Clock, className: "bg-sky-500/15 text-sky-400 border-sky-500/30" },
+  released: { label: "Released", icon: CheckCircle2, className: "bg-emerald-500/15 text-emerald-400 border-emerald-500/30" },
+  rejected: { label: "Declined", icon: XCircle, className: "bg-destructive/15 text-destructive border-destructive/30" },
+  cancelled: { label: "Withdrawn", icon: XCircle, className: "bg-muted text-muted-foreground border-border" },
 }
 
 export default function EquitySavingPage() {
@@ -41,10 +61,13 @@ export default function EquitySavingPage() {
   const [currency, setCurrency] = useState("EUR")
   const [amount, setAmount] = useState("")
   const [submitting, setSubmitting] = useState(false)
+  const [releases, setReleases] = useState<EquityReleaseRequest[]>([])
+  const [cancellingId, setCancellingId] = useState<string | null>(null)
 
   const load = async () => {
-    const snap = await getMyEquitySavings()
+    const [snap, reqs] = await Promise.all([getMyEquitySavings(), getMyEquityReleaseRequests()])
     setSnapshot(snap)
+    setReleases(reqs)
     setLoading(false)
   }
 
@@ -92,22 +115,46 @@ export default function EquitySavingPage() {
     const res =
       mode === "deposit"
         ? await depositToEquitySavings({ amount: numericAmount, currency })
-        : await withdrawFromEquitySavings({ amount: numericAmount, currency })
+        : await requestEquityRelease({ amount: numericAmount, currency })
     setSubmitting(false)
     if (!res.ok) {
-      toast.error(mode === "deposit" ? "Could not block equity" : "Could not release equity", {
+      toast.error(mode === "deposit" ? "Could not block equity" : "Could not request release", {
         description: res.error,
       })
       return
     }
-    toast.success(
-      mode === "deposit" ? "Equity blocked as collateral" : "Equity released to your Master Account",
-      { description: fmt(numericAmount, currency) },
-    )
+    if (mode === "deposit") {
+      toast.success("Equity blocked as collateral", { description: fmt(numericAmount, currency) })
+    } else {
+      toast.success("Release request submitted", {
+        description: `${fmt(numericAmount, currency)} — the administrator will review and agree the terms and timing before it credits.`,
+      })
+    }
     setAmount("")
     refreshLedger()
     await load()
   }
+
+  const withdrawRequest = async (id: string) => {
+    setCancellingId(id)
+    const res = await cancelMyEquityRelease(id)
+    setCancellingId(null)
+    if (!res.ok) {
+      toast.error("Could not withdraw request", { description: res.error })
+      return
+    }
+    toast.success("Release request withdrawn")
+    await load()
+  }
+
+  const activeReleases = useMemo(
+    () => releases.filter((r) => r.status === "pending" || r.status === "scheduled"),
+    [releases],
+  )
+  const historyReleases = useMemo(
+    () => releases.filter((r) => r.status === "released" || r.status === "rejected" || r.status === "cancelled").slice(0, 8),
+    [releases],
+  )
 
   return (
     <div className="mx-auto w-full max-w-5xl px-4 py-6 sm:px-6 lg:py-8">
@@ -121,7 +168,8 @@ export default function EquitySavingPage() {
           <p className="mt-1 max-w-2xl text-pretty text-sm leading-relaxed text-muted-foreground">
             Move part of your Master Account balance into a segregated equity pot. The funds stay yours but are
             fully blocked as collateral — they count toward your Guarantees Accumulator trust score and improve
-            your standing. Release them back to your spendable balance at any time.
+            your standing. To release equity you submit a request; the administrator reviews it and agrees the
+            amount, terms and timing before the funds credit back to your spendable balance.
           </p>
         </div>
       </div>
@@ -193,7 +241,7 @@ export default function EquitySavingPage() {
                 }}
               >
                 <ArrowUpFromLine className="mr-2 h-4 w-4" />
-                Release
+                Request release
               </Button>
             </div>
 
@@ -259,8 +307,8 @@ export default function EquitySavingPage() {
               <p className="flex items-start gap-2 text-xs text-muted-foreground">
                 <Lock className="mt-0.5 h-3.5 w-3.5 shrink-0 text-primary" />
                 {mode === "deposit"
-                  ? "Only clean, unencumbered funds from a positive Master Account may be committed — reserved, blocked, leveraged, PPI-appeal or overdraft-linked funds cannot. Blocked equity leaves your spendable balance but remains yours, counts as collateral, and boosts your trust score. Release it anytime."
-                  : "Releasing returns the equity to your spendable Master Account balance and reduces your committed collateral accordingly."}
+                  ? "Only clean, unencumbered funds from a positive Master Account may be committed — reserved, blocked, leveraged, PPI-appeal or overdraft-linked funds cannot. Blocked equity leaves your spendable balance but remains yours, counts as collateral, and boosts your trust score."
+                  : "This submits a release request to the administrator. Nothing is unblocked yet — the administrator reviews it and negotiates the amount, modality and timing. The funds credit back to your spendable balance once approved (immediately or at the agreed time)."}
               </p>
             </div>
 
@@ -273,7 +321,7 @@ export default function EquitySavingPage() {
               ) : mode === "deposit" ? (
                 `Block ${amount ? fmt(numericAmount, currency) : "equity"}`
               ) : (
-                `Release ${amount ? fmt(numericAmount, currency) : "equity"}`
+                `Request release${amount ? ` of ${fmt(numericAmount, currency)}` : ""}`
               )}
             </Button>
           </CardContent>
@@ -318,6 +366,98 @@ export default function EquitySavingPage() {
           </CardContent>
         </Card>
       </div>
+
+      {/* Release requests */}
+      <Card className="mt-6">
+        <CardHeader>
+          <CardTitle className="text-base">My release requests</CardTitle>
+        </CardHeader>
+        <CardContent>
+          {loading ? (
+            <div className="flex items-center gap-2 text-sm text-muted-foreground">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              Loading…
+            </div>
+          ) : releases.length === 0 ? (
+            <div className="rounded-lg border border-dashed border-border p-6 text-center">
+              <ArrowUpFromLine className="mx-auto h-8 w-8 text-muted-foreground/60" />
+              <p className="mt-2 text-sm text-muted-foreground">
+                No release requests yet. Use &ldquo;Request release&rdquo; above — an administrator agrees the amount,
+                terms and timing before your equity is unblocked.
+              </p>
+            </div>
+          ) : (
+            <ul className="space-y-3">
+              {[...activeReleases, ...historyReleases].map((r) => {
+                const cfg = RELEASE_STATUS[r.status]
+                const StatusIcon = cfg.icon
+                const shownAmount = r.approvedAmount ?? r.requestedAmount
+                return (
+                  <li key={r.id} className="rounded-lg border border-border p-3">
+                    <div className="flex flex-wrap items-start justify-between gap-2">
+                      <div>
+                        <p className="text-sm font-medium text-foreground">
+                          {fmt(shownAmount, r.currency)}
+                          {r.approvedAmount != null && r.approvedAmount !== r.requestedAmount && (
+                            <span className="ml-2 text-xs text-muted-foreground">
+                              (requested {fmt(r.requestedAmount, r.currency)})
+                            </span>
+                          )}
+                        </p>
+                        <p className="mt-0.5 text-xs text-muted-foreground">Requested {fmtWhen(r.createdAt)}</p>
+                      </div>
+                      <Badge variant="outline" className={`gap-1 ${cfg.className}`}>
+                        <StatusIcon className="h-3 w-3" />
+                        {cfg.label}
+                      </Badge>
+                    </div>
+
+                    {r.status === "scheduled" && r.releaseAt && (
+                      <p className="mt-2 flex items-center gap-1.5 text-xs text-sky-400">
+                        <Clock className="h-3.5 w-3.5" />
+                        Credits automatically on {fmtWhen(r.releaseAt)}
+                      </p>
+                    )}
+                    {r.status === "released" && (
+                      <p className="mt-2 text-xs text-muted-foreground">Credited {fmtWhen(r.releasedAt)}</p>
+                    )}
+                    {r.modality && (
+                      <p className="mt-2 text-xs text-muted-foreground">
+                        <span className="font-medium text-foreground">Agreed terms: </span>
+                        {r.modality}
+                      </p>
+                    )}
+                    {r.adminNote && (
+                      <p className="mt-1 text-xs text-muted-foreground">{r.adminNote}</p>
+                    )}
+
+                    {r.status === "pending" && (
+                      <div className="mt-3">
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          onClick={() => withdrawRequest(r.id)}
+                          disabled={cancellingId === r.id}
+                        >
+                          {cancellingId === r.id ? (
+                            <>
+                              <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
+                              Withdrawing…
+                            </>
+                          ) : (
+                            "Withdraw request"
+                          )}
+                        </Button>
+                      </div>
+                    )}
+                  </li>
+                )
+              })}
+            </ul>
+          )}
+        </CardContent>
+      </Card>
     </div>
   )
 }
