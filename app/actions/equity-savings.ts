@@ -14,13 +14,76 @@ import {
   equityEntryId,
   equityHoldingsFromEntries,
 } from "@/lib/equity-savings"
+import { convertCurrency } from "@/lib/fx"
 import { logActivity } from "@/app/actions/log-activity"
+import type { LedgerEntry } from "@/lib/ledger-store"
+
+const BASE = "EUR"
+
+function round2(n: number): number {
+  return Math.round(((Number(n) || 0) + Number.EPSILON) * 100) / 100
+}
+
+function fmtMoney(amount: number, currency: string): string {
+  return `${amount.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${currency}`
+}
+
+/**
+ * SETTLED (completed-only) balance per currency for the master pool. Holds are
+ * NOT subtracted here — this is the money actually owned, the same definition
+ * the controlled-overdraft engine uses to decide whether an account is negative
+ * (`lib/overdraft.ts` getSettledBalanceEur). Sub-account-tagged rows are
+ * excluded (isolated compartments, not the shared master pool).
+ */
+function settledByCurrency(entries: LedgerEntry[]): Record<string, number> {
+  const perCur: Record<string, number> = {}
+  for (const e of entries) {
+    if (e.status !== "completed") continue
+    if (e.subAccountId) continue
+    const c = (e.currency || "USD").toUpperCase()
+    perCur[c] = (perCur[c] ?? 0) + (e.direction === "credit" ? e.amount : -e.amount)
+  }
+  return perCur
+}
+
+/** Aggregate settled balance across all currencies, EUR-equivalent. */
+function settledEurFromEntries(entries: LedgerEntry[]): number {
+  const perCur = settledByCurrency(entries)
+  let sum = 0
+  for (const [c, v] of Object.entries(perCur)) sum += convertCurrency(v, c, BASE)
+  return round2(sum)
+}
+
+/** Fire-and-forget audit of an equity-saving transfer attempt (accepted or rejected). */
+async function auditEquityAttempt(
+  outcome: "accepted" | "rejected",
+  input: { amount: number; currency: string; reason?: string; blockedTotal?: number },
+): Promise<void> {
+  await logActivity({
+    category: "Treasury",
+    action: `Equity saving deposit ${outcome}`,
+    details: {
+      amount: input.amount,
+      currency: input.currency,
+      ...(input.reason ? { reason: input.reason } : {}),
+      ...(input.blockedTotal != null ? { blockedTotal: input.blockedTotal } : {}),
+    },
+  }).catch(() => {})
+}
 
 export interface EquitySavingsSnapshot {
   /** Blocked equity per currency (only currencies with a positive balance). */
   byCurrency: Record<string, number>
   /** Spendable (available) balance per currency, for the deposit picker. */
   availableByCurrency: Record<string, number>
+  /**
+   * True when the master account is negative (in controlled overdraft): its
+   * aggregate settled EUR balance is below zero. While true, NO equity top-up
+   * is allowed — the customer must first restore a positive balance.
+   */
+  accountNegative: boolean
+  /** How negative the account is, EUR-equivalent (0 when positive). */
+  negativeEur: number
 }
 
 export type EquityResult<T = { reference: string }> = { ok: true; data: T } | { ok: false; error: string }
@@ -28,7 +91,7 @@ export type EquityResult<T = { reference: string }> = { ok: true; data: T } | { 
 /** Read the signed-in customer's segregated equity + spendable balances. */
 export async function getMyEquitySavings(): Promise<EquitySavingsSnapshot> {
   const session = await resolveCurrentSession()
-  if (!session) return { byCurrency: {}, availableByCurrency: {} }
+  if (!session) return { byCurrency: {}, availableByCurrency: {}, accountNegative: false, negativeEur: 0 }
   try {
     const ownerId = await resolveDataOwnerIdFor(session.id)
     const entries = await readLedgerEntries(ownerId)
@@ -37,11 +100,18 @@ export async function getMyEquitySavings(): Promise<EquitySavingsSnapshot> {
     // Only surface currencies the customer actually holds or has blocked.
     const avail: Record<string, number> = {}
     for (const [cur, amt] of Object.entries(available)) {
-      if (amt > 0.009 || blocked[cur] > 0) avail[cur] = Math.round(amt * 100) / 100
+      if (amt > 0.009 || blocked[cur] > 0) avail[cur] = round2(amt)
     }
-    return { byCurrency: blocked, availableByCurrency: avail }
+    const settledEur = settledEurFromEntries(entries)
+    const accountNegative = settledEur < -0.01
+    return {
+      byCurrency: blocked,
+      availableByCurrency: avail,
+      accountNegative,
+      negativeEur: accountNegative ? round2(-settledEur) : 0,
+    }
   } catch {
-    return { byCurrency: {}, availableByCurrency: {} }
+    return { byCurrency: {}, availableByCurrency: {}, accountNegative: false, negativeEur: 0 }
   }
 }
 
@@ -68,16 +138,36 @@ export async function depositToEquitySavings(input: {
   const ownerId = await resolveDataOwnerIdFor(session.id)
   const entries = await readLedgerEntries(ownerId)
 
-  // The pot can only hold currencies the customer actually has spendable.
-  const available = availableByCurrency(entries)[currency] ?? 0
+  // ELIGIBILITY RULE 1 — NEGATIVE MASTER ACCOUNT (hard pre-check).
+  // If the master account is negative (in controlled overdraft), NO equity
+  // top-up is allowed in any currency. The customer must first restore a
+  // positive balance. This catches the cross-currency case where one currency
+  // looks positive while the account as a whole is overdrawn.
+  const settledPer = settledByCurrency(entries)
+  const settledEur = settledEurFromEntries(entries)
+  if (settledEur < -0.01) {
+    const reason = `Your Master Account is negative (${fmtMoney(round2(-settledEur), BASE)} in overdraft). Restore a positive balance before adding to Equity Saving.`
+    await auditEquityAttempt("rejected", { amount, currency, reason })
+    return { ok: false, error: reason }
+  }
+
+  // ELIGIBILITY RULE 2 — the SOURCE currency itself must not be in deficit.
+  const settledInCcy = round2(settledPer[currency] ?? 0)
+  if (settledInCcy < -0.01) {
+    const reason = `Your ${currency} balance is negative (${fmtMoney(round2(-settledInCcy), currency)}). Equity Saving can only be funded from a positive ${currency} balance.`
+    await auditEquityAttempt("rejected", { amount, currency, reason })
+    return { ok: false, error: reason }
+  }
+
+  // ELIGIBILITY RULE 3 — CLEAN FUNDS ONLY. `availableByCurrency` already
+  // subtracts every hold (reserved, blocked, leverage/PPI-appeal, overdraft and
+  // any other encumbrance), so it is exactly the clean, unencumbered, spendable
+  // balance. Only that may be committed.
+  const available = round2(availableByCurrency(entries)[currency] ?? 0)
   if (amount > available + 0.01) {
-    return {
-      ok: false,
-      error: `Insufficient ${currency} balance. You can move up to ${available.toLocaleString("en-US", {
-        minimumFractionDigits: 2,
-        maximumFractionDigits: 2,
-      })} ${currency} into equity savings.`,
-    }
+    const reason = `Insufficient clean ${currency} funds. Only ${fmtMoney(available, currency)} is unencumbered and available to move into Equity Saving (reserved, blocked, leveraged or overdraft-linked funds are excluded).`
+    await auditEquityAttempt("rejected", { amount, currency, reason })
+    return { ok: false, error: reason }
   }
 
   const existing = equityHoldingsFromEntries(entries)[currency] ?? 0
@@ -118,14 +208,12 @@ export async function depositToEquitySavings(input: {
     } else {
       await deleteLedgerEntry(ownerId, entryId)
     }
-    return { ok: false, error: "That amount would overdraw the account. Nothing was moved." }
+    const reason = "That amount would overdraw the account. Nothing was moved."
+    await auditEquityAttempt("rejected", { amount, currency, reason })
+    return { ok: false, error: reason }
   }
 
-  await logActivity({
-    category: "Treasury",
-    action: "Equity saving deposit",
-    details: { amount, currency, blockedTotal: next },
-  }).catch(() => {})
+  await auditEquityAttempt("accepted", { amount, currency, blockedTotal: next })
 
   return { ok: true, data: { reference: entryId } }
 }

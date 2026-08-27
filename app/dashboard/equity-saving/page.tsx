@@ -29,7 +29,12 @@ function fmt(amount: number, currency: string) {
 
 export default function EquitySavingPage() {
   const { refresh: refreshLedger } = useLedger()
-  const [snapshot, setSnapshot] = useState<EquitySavingsSnapshot>({ byCurrency: {}, availableByCurrency: {} })
+  const [snapshot, setSnapshot] = useState<EquitySavingsSnapshot>({
+    byCurrency: {},
+    availableByCurrency: {},
+    accountNegative: false,
+    negativeEur: 0,
+  })
   const [loading, setLoading] = useState(true)
 
   const [mode, setMode] = useState<"deposit" | "withdraw">("deposit")
@@ -62,15 +67,25 @@ export default function EquitySavingPage() {
   )
   const totalBlockedEur = useMemo(() => snapshot.byCurrency.EUR ?? 0, [snapshot])
 
+  const accountNegative = snapshot.accountNegative
+  const negativeEur = snapshot.negativeEur
   const spendable = snapshot.availableByCurrency[currency] ?? 0
   const blockedInCcy = snapshot.byCurrency[currency] ?? 0
   const capForMode = mode === "deposit" ? spendable : blockedInCcy
   const numericAmount = Number.parseFloat(amount || "0") || 0
   const overCap = numericAmount > capForMode + 0.01
+  // Top-ups are blocked entirely while the master account is negative.
+  const depositBlocked = mode === "deposit" && accountNegative
 
   const submit = async () => {
     if (numericAmount <= 0) {
       toast.error("Enter an amount greater than zero.")
+      return
+    }
+    if (depositBlocked) {
+      toast.error("Master Account is negative", {
+        description: "Restore a positive balance before adding to Equity Saving.",
+      })
       return
     }
     setSubmitting(true)
@@ -182,6 +197,19 @@ export default function EquitySavingPage() {
               </Button>
             </div>
 
+            {depositBlocked && (
+              <div className="rounded-lg border border-destructive/30 bg-destructive/10 p-3">
+                <p className="flex items-start gap-2 text-xs text-destructive">
+                  <Lock className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                  <span>
+                    Your Master Account is negative ({fmt(negativeEur, "EUR")} in overdraft). You can&apos;t add to
+                    Equity Saving until the balance is positive again. Restore it, then move only clean available
+                    funds here. You can still release existing equity.
+                  </span>
+                </p>
+              </div>
+            )}
+
             <div>
               <Label htmlFor="equity-currency" className="text-xs">
                 Currency
@@ -231,12 +259,12 @@ export default function EquitySavingPage() {
               <p className="flex items-start gap-2 text-xs text-muted-foreground">
                 <Lock className="mt-0.5 h-3.5 w-3.5 shrink-0 text-primary" />
                 {mode === "deposit"
-                  ? "Blocked equity leaves your spendable balance but remains yours — it is committed as collateral and boosts your trust score. You can release it anytime."
+                  ? "Only clean, unencumbered funds from a positive Master Account may be committed — reserved, blocked, leveraged, PPI-appeal or overdraft-linked funds cannot. Blocked equity leaves your spendable balance but remains yours, counts as collateral, and boosts your trust score. Release it anytime."
                   : "Releasing returns the equity to your spendable Master Account balance and reduces your committed collateral accordingly."}
               </p>
             </div>
 
-            <Button type="button" className="w-full" onClick={submit} disabled={submitting || overCap || numericAmount <= 0}>
+            <Button type="button" className="w-full" onClick={submit} disabled={submitting || overCap || numericAmount <= 0 || depositBlocked}>
               {submitting ? (
                 <>
                   <Loader2 className="mr-2 h-4 w-4 animate-spin" />
