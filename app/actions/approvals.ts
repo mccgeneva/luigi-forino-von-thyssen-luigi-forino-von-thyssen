@@ -216,15 +216,19 @@ export async function submitApproval(input: SubmitApprovalInput): Promise<Submit
   }
 
   // Leverage — MARGIN SOLVENCY gate. A cash-funded leveraged line (Treasury,
-  // Master Banking, NAFTAhub) requires the client to actually hold the margin
-  // (equity) they pledge. Capacity is assessed holistically as NET FREE
-  // COLLATERAL = spendable balance + posted guarantees − existing exposure, so
-  // a 0-balance account, or one already fully committed / over-leveraged (e.g.
-  // a security deposit financed 1:5), has no free margin and is refused in real
-  // time. Instrument-funded lines are collateralised by the pledged bank
-  // instrument (validated against its face value), so they skip the cash test.
-  // This runs regardless of the guarantee enforce toggle — solvency is not a
-  // policy option. Fails CLOSED (a balance that can't be verified blocks).
+  // Master Banking, NAFTAhub) requires the client to commit their OWN FREE cash
+  // as margin. Capacity is FREE EQUITY = spendable balance − outstanding
+  // borrowed/financed principal (`totalExposure`), so borrowed money can never
+  // back a new line: a client living on a loan (e.g. a 25M internal loan whose
+  // proceeds inflate the available balance) has ~0 free equity and is refused in
+  // real time. We deliberately DO NOT add posted `guarantees` here — a pledged
+  // instrument or the equity-saving pot (often itself funded by the loan) is
+  // collateral, not spendable margin; a client who wants to back a line with an
+  // instrument uses the "Bank Instruments" funding source, which is validated
+  // against the instrument's face value and skips this cash test. This mirrors
+  // the Equity-Saving "own funds only" rule (freeEur = available − exposure).
+  // Runs regardless of the guarantee enforce toggle — solvency is not a policy
+  // option. Fails CLOSED (a balance that can't be verified blocks).
   if (input.kind === "leverage") {
     const rec = ((input.payload as Record<string, unknown> | undefined)?.record ?? {}) as Record<string, unknown>
     const account = String(rec.account ?? "")
@@ -238,10 +242,13 @@ export async function submitApproval(input: SubmitApprovalInput): Promise<Submit
       try {
         const config = await getGuaranteeConfig()
         const { score } = await gatherGuaranteeProfile(session.id, config)
-        // score.inputs figures are all normalised to EUR (BASE).
+        // score.inputs figures are all normalised to EUR (BASE). Free equity is
+        // the client's OWN unborrowed money: available balance less outstanding
+        // borrowed/financed principal. Borrowed proceeds and pledged collateral
+        // are excluded.
         const netFreeEur = Math.max(
           0,
-          (score.inputs.availableBalance || 0) + (score.inputs.guarantees || 0) - (score.inputs.totalExposure || 0),
+          (score.inputs.availableBalance || 0) - (score.inputs.totalExposure || 0),
         )
         const equityEur = convertCurrency(equity, reqCurrency, BASE_CURRENCY)
         if (equityEur > netFreeEur + 0.01) {
@@ -249,11 +256,11 @@ export async function submitApproval(input: SubmitApprovalInput): Promise<Submit
             `EUR ${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
           return {
             ok: false,
-            error: `Insufficient free margin to open this leveraged line. It pledges ${fmtEur(
+            error: `Insufficient free equity to open this leveraged line. It pledges ${fmtEur(
               equityEur,
-            )} of your own equity, but your net free collateral (available balance plus posted guarantees, less existing exposure) is only ${fmtEur(
+            )} of your own margin, but your free equity (available balance less outstanding borrowed/financed funds) is only ${fmtEur(
               netFreeEur,
-            )}. Fund your account or reduce existing exposure before applying.`,
+            )}. Borrowed or financed funds cannot be used as leverage margin — fund your account with fresh funds, repay outstanding financing, or pledge a bank instrument instead.`,
           }
         }
       } catch (err) {
