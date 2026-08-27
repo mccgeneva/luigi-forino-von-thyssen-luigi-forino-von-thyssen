@@ -39,6 +39,9 @@ async function ensureTable(): Promise<void> {
   // Overdraft factor columns — added with the controlled-overdraft feature.
   await query(`ALTER TABLE guarantee_config ADD COLUMN IF NOT EXISTS weight_overdraft double precision NOT NULL DEFAULT 1`)
   await query(`ALTER TABLE guarantee_config ADD COLUMN IF NOT EXISTS overdraft_risk_full double precision NOT NULL DEFAULT 144`)
+  // Equity-saving credit columns — added with the Equity Saving feature.
+  await query(`ALTER TABLE guarantee_config ADD COLUMN IF NOT EXISTS equity_credit_full double precision NOT NULL DEFAULT 250000`)
+  await query(`ALTER TABLE guarantee_config ADD COLUMN IF NOT EXISTS equity_credit_max double precision NOT NULL DEFAULT 8`)
   ensured = true
 }
 
@@ -58,6 +61,8 @@ function rowToConfig(row: Record<string, unknown>): GuaranteeConfig {
     highRiskThreshold: Number(row.high_risk_threshold),
     ageCreditPerYear: Number(row.age_credit_per_year),
     ageCreditMax: Number(row.age_credit_max),
+    equityCreditFull: row.equity_credit_full == null ? DEFAULT_GUARANTEE_CONFIG.equityCreditFull : Number(row.equity_credit_full),
+    equityCreditMax: row.equity_credit_max == null ? DEFAULT_GUARANTEE_CONFIG.equityCreditMax : Number(row.equity_credit_max),
     penaltyPerOverdue: Number(row.penalty_per_overdue),
     targetCoverage: Number(row.target_coverage),
     enforce: Boolean(row.enforce),
@@ -85,8 +90,8 @@ export async function saveGuaranteeConfig(input: GuaranteeConfig): Promise<void>
        weight_payment_penalty, high_risk_threshold, age_credit_per_year,
        age_credit_max, penalty_per_overdue, target_coverage, enforce,
        weight_track_record, new_account_risk, seasoning_days, proven_capital,
-       weight_overdraft, overdraft_risk_full, updated_at
-     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17, now())
+       weight_overdraft, overdraft_risk_full, equity_credit_full, equity_credit_max, updated_at
+     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19, now())
      ON CONFLICT (id) DO UPDATE SET
        weight_security_deposit = EXCLUDED.weight_security_deposit,
        weight_leverage_load    = EXCLUDED.weight_leverage_load,
@@ -104,6 +109,8 @@ export async function saveGuaranteeConfig(input: GuaranteeConfig): Promise<void>
        proven_capital          = EXCLUDED.proven_capital,
        weight_overdraft        = EXCLUDED.weight_overdraft,
        overdraft_risk_full     = EXCLUDED.overdraft_risk_full,
+       equity_credit_full      = EXCLUDED.equity_credit_full,
+       equity_credit_max       = EXCLUDED.equity_credit_max,
        updated_at              = now()`,
     [
       GLOBAL_ID,
@@ -123,6 +130,8 @@ export async function saveGuaranteeConfig(input: GuaranteeConfig): Promise<void>
       input.provenCapital,
       input.weightOverdraft,
       input.overdraftRiskFull,
+      input.equityCreditFull,
+      input.equityCreditMax,
     ],
   )
 }

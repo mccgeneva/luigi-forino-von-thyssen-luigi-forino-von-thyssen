@@ -100,6 +100,16 @@ export interface GuaranteeConfig {
   ageCreditPerYear: number
   /** Maximum age credit that can ever be subtracted. */
   ageCreditMax: number
+  /**
+   * Segregated EQUITY SAVING (in EUR) at which the maximum equity credit is
+   * granted. Equity savings are fully-blocked collateral the customer commits
+   * from their Master Account; committing them is a strong positive signal, so
+   * beyond boosting collateral coverage they earn a direct risk-score credit
+   * that scales linearly up to this amount.
+   */
+  equityCreditFull: number
+  /** Maximum risk-score points the equity-saving credit can ever subtract. */
+  equityCreditMax: number
   /** Risk points added per overdue monthly financing charge. */
   penaltyPerOverdue: number
   /**
@@ -125,6 +135,8 @@ export const DEFAULT_GUARANTEE_CONFIG: GuaranteeConfig = {
   highRiskThreshold: 10,
   ageCreditPerYear: 1.5,
   ageCreditMax: 6,
+  equityCreditFull: 250_000,
+  equityCreditMax: 8,
   penaltyPerOverdue: 25,
   targetCoverage: 1,
   enforce: true,
@@ -134,6 +146,12 @@ export const DEFAULT_GUARANTEE_CONFIG: GuaranteeConfig = {
 export interface GuaranteeInputs {
   /** Security deposits + pledged guarantee instruments held (collateral). */
   guarantees: number
+  /**
+   * Segregated equity-saving collateral (EUR) the customer has blocked from
+   * their Master Account. Drives the equity credit (and is already folded into
+   * `guarantees` by the profile gatherer, so it is NOT re-added here).
+   */
+  equitySavings: number
   /** Outstanding leverage borrowed. */
   leverageLoad: number
   /** ALL outstanding financing (leverage + monetization + funding + treasury). */
@@ -170,6 +188,8 @@ export interface GuaranteeScore {
   weightedSum: number
   riskScore: number
   ageCredit: number
+  /** Risk-score points removed by committed equity savings (0 when none). */
+  equityCredit: number
   finalScore: number
   /** 0–100 creditworthiness for display (higher = healthier). */
   creditScore: number
@@ -255,7 +275,15 @@ export function computeGuaranteeScore(inputs: GuaranteeInputs, config: Guarantee
   const ageYears = ageDays / 365
   const ageCredit = clamp(ageYears * config.ageCreditPerYear, 0, config.ageCreditMax)
 
-  const finalScore = Math.max(0, riskScore - ageCredit)
+  // Equity-saving credit — committed, fully-blocked equity is a strong positive
+  // that directly lowers the risk score (on top of improving collateral
+  // coverage). Scales linearly with the blocked amount up to `equityCreditFull`.
+  const equitySavings = Math.max(0, inputs.equitySavings || 0)
+  const equityCreditFull = config.equityCreditFull > 0 ? config.equityCreditFull : 250_000
+  const equityCreditMax = Math.max(0, config.equityCreditMax || 0)
+  const equityCredit = clamp((equitySavings / equityCreditFull) * equityCreditMax, 0, equityCreditMax)
+
+  const finalScore = Math.max(0, riskScore - ageCredit - equityCredit)
 
   const threshold = config.highRiskThreshold > 0 ? config.highRiskThreshold : 10
   const highRisk = finalScore > threshold
@@ -270,12 +298,14 @@ export function computeGuaranteeScore(inputs: GuaranteeInputs, config: Guarantee
     weightedSum: round2(weightedSum),
     riskScore: round2(riskScore),
     ageCredit: round2(ageCredit),
+    equityCredit: round2(equityCredit),
     finalScore: round2(finalScore),
     creditScore: Math.round(creditScore),
     band,
     highRisk,
     inputs: {
       guarantees: round2(guarantees),
+      equitySavings: round2(equitySavings),
       leverageLoad: round2(leverageLoad),
       totalExposure: round2(totalExposure),
       availableBalance: round2(available),

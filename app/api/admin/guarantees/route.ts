@@ -36,6 +36,8 @@ function sanitizeConfig(input: Partial<GuaranteeConfig> | undefined): GuaranteeC
     highRiskThreshold: Math.max(0.1, numOr(c.highRiskThreshold, DEFAULT_GUARANTEE_CONFIG.highRiskThreshold)),
     ageCreditPerYear: Math.max(0, numOr(c.ageCreditPerYear, DEFAULT_GUARANTEE_CONFIG.ageCreditPerYear)),
     ageCreditMax: Math.max(0, numOr(c.ageCreditMax, DEFAULT_GUARANTEE_CONFIG.ageCreditMax)),
+    equityCreditFull: Math.max(1, numOr(c.equityCreditFull, DEFAULT_GUARANTEE_CONFIG.equityCreditFull)),
+    equityCreditMax: Math.max(0, numOr(c.equityCreditMax, DEFAULT_GUARANTEE_CONFIG.equityCreditMax)),
     penaltyPerOverdue: Math.max(0, numOr(c.penaltyPerOverdue, DEFAULT_GUARANTEE_CONFIG.penaltyPerOverdue)),
     targetCoverage: Math.max(0.1, numOr(c.targetCoverage, DEFAULT_GUARANTEE_CONFIG.targetCoverage)),
     weightTrackRecord: Math.max(0, numOr(c.weightTrackRecord, DEFAULT_GUARANTEE_CONFIG.weightTrackRecord)),
