@@ -648,13 +648,13 @@ export default function LeveragePage() {
       }
     }
 
-    // MARGIN SOLVENCY pre-check (cash-funded lines only). The client must
-    // actually hold the equity it pledges. We assess NET FREE COLLATERAL
-    // (available balance + posted guarantees − existing exposure) from the
-    // guarantee position API so a 0-balance or over-exposed account is blocked
-    // here with a clear message — the authoritative gate also lives on the
-    // server (submitApproval). Instrument-funded lines are backed by the
-    // pledged instrument and skip this check.
+    // MARGIN SOLVENCY pre-check (cash-funded lines only). The client must commit
+    // their OWN FREE cash as margin. Free equity = available balance − outstanding
+    // borrowed/financed principal (from the guarantee position API), so borrowed
+    // proceeds and pledged collateral do NOT count as margin — a 0-balance or
+    // loan-funded account is blocked here with a clear message. The authoritative
+    // gate also lives on the server (submitApproval). Instrument-funded lines are
+    // backed by the pledged instrument and skip this check.
     if (account === "treasury" || account === "master" || account === "naftahub") {
       setCheckingMargin(true)
       try {
@@ -664,18 +664,18 @@ export default function LeveragePage() {
         if (inp) {
           const netFreeEur = Math.max(
             0,
-            (Number(inp.availableBalance) || 0) + (Number(inp.guarantees) || 0) - (Number(inp.totalExposure) || 0),
+            (Number(inp.availableBalance) || 0) - (Number(inp.totalExposure) || 0),
           )
           const fmtEur = (n: number) =>
             `EUR ${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
-          // EUR lines compare directly to net free collateral; non-EUR lines
-          // additionally require same-currency cash to cover the equity.
+          // EUR lines compare directly to free equity; non-EUR lines additionally
+          // require same-currency cash to cover the equity.
           const equityInsufficientEur = currency === BASE_CURRENCY && numericEquity > netFreeEur + 0.01
           const cashInsufficient = currency !== BASE_CURRENCY && numericEquity > balanceFor(currency) + 0.01
           if (equityInsufficientEur || cashInsufficient) {
             setFormError(
               currency === BASE_CURRENCY
-                ? `Insufficient free margin. This line pledges ${formatMoney(numericEquity, currency)} of equity, but your net free collateral (balance + guarantees − existing exposure) is only ${fmtEur(netFreeEur)}. Fund your account or reduce existing exposure before applying.`
+                ? `Insufficient free equity. This line pledges ${formatMoney(numericEquity, currency)} of margin, but your free equity (available balance less outstanding borrowed/financed funds) is only ${fmtEur(netFreeEur)}. Borrowed funds cannot be used as margin — fund your account with fresh funds, repay financing, or pledge a bank instrument instead.`
                 : `Insufficient ${currency} balance to cover the ${formatMoney(numericEquity, currency)} margin for this line. Fund your account before applying.`,
             )
             setCheckingMargin(false)
