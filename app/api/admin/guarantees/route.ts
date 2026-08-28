@@ -1,9 +1,11 @@
 import { NextResponse } from "next/server"
+import { generateText } from "ai"
 import { adminActionAuthorized } from "@/lib/admin-auth"
-import { listDynamicUsers } from "@/lib/admin-users-db"
+import { listDynamicUsers, getDynamicUserById } from "@/lib/admin-users-db"
 import { getGuaranteeConfig, saveGuaranteeConfig } from "@/lib/guarantees-config-db"
 import { gatherGuaranteeProfile } from "@/lib/guarantees-profile"
-import { DEFAULT_GUARANTEE_CONFIG, type GuaranteeConfig } from "@/lib/guarantees-accumulator"
+import { nqaiChatModel } from "@/lib/ai-models"
+import { DEFAULT_GUARANTEE_CONFIG, riskBandLabel, type GuaranteeConfig } from "@/lib/guarantees-accumulator"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -24,6 +26,15 @@ export const dynamic = "force-dynamic"
 
 type SavePayload = { op: "save"; pin: string; config: GuaranteeConfig }
 type LoadPayload = { op: "load"; pin: string }
+type DraftPayload = {
+  op: "draft-message"
+  pin: string
+  userId: string
+  decision: "approve" | "decline"
+  amount?: string
+  note?: string
+}
+type Payload = SavePayload | LoadPayload | DraftPayload
 
 function sanitizeConfig(input: Partial<GuaranteeConfig> | undefined): GuaranteeConfig {
   const c = input ?? {}
@@ -51,9 +62,9 @@ function sanitizeConfig(input: Partial<GuaranteeConfig> | undefined): GuaranteeC
 }
 
 export async function POST(req: Request) {
-  let body: SavePayload | LoadPayload
+  let body: Payload
   try {
-    body = (await req.json()) as SavePayload | LoadPayload
+    body = (await req.json()) as Payload
   } catch {
     return NextResponse.json({ ok: false, error: "Invalid request body." }, { status: 200 })
   }
@@ -104,6 +115,80 @@ export async function POST(req: Request) {
       // High-risk first, then by descending final score.
       scored.sort((a, b) => (b.score?.finalScore ?? -1) - (a.score?.finalScore ?? -1))
       return NextResponse.json({ ok: true, config, users: scored })
+    }
+
+    if (body.op === "draft-message") {
+      const userId = typeof body.userId === "string" ? body.userId : ""
+      const decision = body.decision === "approve" ? "approve" : "decline"
+      if (!userId) {
+        return NextResponse.json({ ok: false, error: "Missing client." }, { status: 200 })
+      }
+      const user = await getDynamicUserById(userId)
+      if (!user) {
+        return NextResponse.json({ ok: false, error: "Client not found." }, { status: 200 })
+      }
+      const config = await getGuaranteeConfig()
+      // Re-gather server-side so the drafted message reflects the client's TRUE
+      // current position, never client-supplied figures.
+      const { score } = await gatherGuaranteeProfile(userId, config)
+      const clientName = user.profile.fullName || user.profile.company || "the client"
+      const company = user.profile.company || ""
+
+      const fmtEur = (n: number) =>
+        `EUR ${Math.round(n).toLocaleString("en-US", { maximumFractionDigits: 0 })}`
+
+      // A plain-language snapshot for the model — NOT the raw internal formula.
+      const facts = score
+        ? [
+            `Client: ${clientName}${company ? ` (${company})` : ""}`,
+            `Decision the administrator has taken: ${decision === "approve" ? "APPROVE the facility" : "DECLINE the facility"}`,
+            body.amount ? `Requested facility amount: ${body.amount}` : "",
+            `Internal risk score: ${score.finalScore.toFixed(2)} (band: ${riskBandLabel(score.band)}, high-risk threshold ${config.highRiskThreshold})`,
+            `High risk flag: ${score.highRisk ? "YES — outside current treasury risk appetite" : "no"}`,
+            `Outstanding exposure / borrowing: ${fmtEur(score.inputs.totalExposure)}`,
+            `Posted guarantees / collateral: ${fmtEur(score.inputs.guarantees)}`,
+            `Client's own available (unborrowed) funds: ${fmtEur(score.inputs.availableBalance)}`,
+            (score.inputs.equitySavings ?? 0) > 0 ? `Equity saving committed: ${fmtEur(score.inputs.equitySavings ?? 0)}` : "",
+            score.inputs.overdueCharges > 0
+              ? `Overdue items on the account: ${score.inputs.overdueCharges}`
+              : "No overdue items.",
+            body.note ? `Administrator's private context (do not quote verbatim): ${body.note}` : "",
+          ]
+            .filter(Boolean)
+            .join("\n")
+        : `Client: ${clientName}${company ? ` (${company})` : ""}\nDecision: ${decision === "approve" ? "APPROVE" : "DECLINE"}\n(Risk profile could not be computed.)`
+
+      const system = [
+        "You are NQAi, the relationship desk assistant for NAFTAhub / MCC Capital.",
+        "Write a short, warm, PROFESSIONAL message that a relationship manager can copy and paste directly into a chat/email with the client about their loan / credit-facility request.",
+        "Rules:",
+        "- Address the client by name. Keep it 90–160 words, plain paragraphs, no markdown headings, no bullet symbols, no emojis.",
+        "- Never expose internal jargon: do NOT mention 'risk score', numeric scores, weights, 'Guarantees Accumulator', thresholds, or any raw internal figure. Translate the drivers into plain business language.",
+        "- If DECLINING: be kind and respectful, explain that the request currently falls outside the bank's treasury risk appetite, and give the real reasons in soft terms (e.g. high outstanding exposure relative to the client's own free funds, limited unencumbered equity, or an overdue item that must be cleared). Offer constructive, concrete next steps to become eligible (reduce outstanding exposure, clear the overdue item, add their own equity or additional collateral) and warmly invite them to resubmit afterwards.",
+        "- If APPROVING: congratulate them, confirm the facility is approved (mention the requested amount if provided), and note it remains subject to the standard documentation and terms.",
+        "- Sign off politely as the NAFTAhub Relationship Team. Do not invent specific figures that were not provided.",
+        "- Output ONLY the message body, ready to paste. No preamble like 'Here is the message'.",
+      ].join("\n")
+
+      try {
+        const { text } = await generateText({
+          model: nqaiChatModel(),
+          system,
+          prompt: `Draft the client message based on this decision and profile:\n\n${facts}`,
+          maxOutputTokens: 700,
+          temperature: 0.6,
+        })
+        const message = (text || "").trim()
+        if (!message) {
+          return NextResponse.json({ ok: false, error: "NQAi returned an empty draft. Try again." }, { status: 200 })
+        }
+        return NextResponse.json({ ok: true, message, decision, clientName })
+      } catch (err) {
+        return NextResponse.json(
+          { ok: false, error: (err as Error)?.message || "NQAi draft failed." },
+          { status: 200 },
+        )
+      }
     }
 
     return NextResponse.json({ ok: false, error: "Unknown operation." }, { status: 200 })
