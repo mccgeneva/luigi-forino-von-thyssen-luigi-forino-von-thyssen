@@ -568,7 +568,7 @@ export default function PaymentsPage() {
     }
   }
 
-  const handleSendPayment = () => {
+  const handleSendPayment = async () => {
     const amountValue = Number.parseFloat(payAmount)
     if (!payBeneficiary.trim()) {
       setFormError("Please enter a beneficiary name.")
@@ -653,12 +653,31 @@ export default function PaymentsPage() {
     }
 
     // Borrowed-funds ring-fence (friendly pre-check; addRequest → mirrorSubmission
-    // is fire-and-forget, so the server rejection would otherwise be silent).
-    if (ringfence && hasBorrowed && convertCurrency(amountValue, payCurrency, "EUR") > ringfence.freeEur + 0.01) {
+    // is fire-and-forget, so the server rejection would otherwise be silent and
+    // the request would optimistically look "pending"). Resolve the ring-fence
+    // DETERMINISTICALLY here: use the loaded state, else fetch fresh on submit —
+    // so the block fires even if the background fetch has not populated yet.
+    let rf = ringfence
+    if (!rf) {
+      try {
+        const res = await fetch("/api/guarantees", { credentials: "include", cache: "no-store" })
+        const data = res.ok ? await res.json() : null
+        const inp = data?.ok ? data.score?.inputs : null
+        if (inp) {
+          const availableEur = Math.max(0, Number(inp.availableBalance) || 0)
+          const exposureEur = Math.max(0, Number(inp.totalExposure) || 0)
+          rf = { freeEur: Math.max(0, availableEur - exposureEur), exposureEur }
+          setRingfence(rf)
+        }
+      } catch {
+        /* fall through — the authoritative server gate still enforces */
+      }
+    }
+    if (rf && rf.exposureEur > 0.01 && convertCurrency(amountValue, payCurrency, "EUR") > rf.freeEur + 0.01) {
       setFormError(
         `This payment would draw on borrowed funds. Leveraged and loan proceeds are reserved for trading on NAFTAhub and cannot be paid out to a third party. Your own transferable funds are ${fmtEur(
-          ringfence.freeEur,
-        )} (${fmtEur(ringfence.exposureEur)} of financing is outstanding). Repay the financing or use your own funds.`,
+          rf.freeEur,
+        )} (${fmtEur(rf.exposureEur)} of financing is outstanding). Repay the financing or use your own funds.`,
       )
       return
     }
