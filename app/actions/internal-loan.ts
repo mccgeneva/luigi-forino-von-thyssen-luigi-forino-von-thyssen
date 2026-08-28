@@ -45,6 +45,7 @@ import {
   availableByCurrency,
 } from "@/lib/ledger-db"
 import { convertCurrency } from "@/lib/fx"
+import { getOverdraftStatusForOwner } from "@/lib/overdraft"
 import { insertNotification } from "@/lib/notifications-db"
 import { logActivity } from "@/app/actions/log-activity"
 import { getGuaranteeConfig } from "@/lib/guarantees-config-db"
@@ -324,7 +325,103 @@ export async function approveInternalLoanAdmin(input: {
 
     const ownerId = await resolveDataOwnerIdFor(req.userId).catch(() => req.userId)
 
-    // 1) Credit the principal to the Master (idempotent).
+    // -----------------------------------------------------------------------
+    // UPFRONT ARRANGEMENT FEE GATE — the one-time fee must be PAID FIRST, from
+    // the borrower's OWN funds (available balance + controlled-overdraft
+    // allowance), BEFORE any principal is credited. If they cannot cover it,
+    // NO loan is funded: nothing is credited and the approval fails so the
+    // administrator can reject the request. This prevents funding a €250M loan
+    // to a customer who cannot even pay its €48k arrangement fee.
+    // -----------------------------------------------------------------------
+    if (arrangementFee > 0) {
+      try {
+        const entries = await readLedgerEntries(ownerId)
+        const avail = availableByCurrency(entries)
+        let availableInFeeCcy = 0
+        for (const [cur, amt] of Object.entries(avail)) {
+          availableInFeeCcy += cur === currency ? amt : convertCurrency(amt, cur, currency)
+        }
+        const od = await getOverdraftStatusForOwner(ownerId)
+        const overdraftInFeeCcy = od.remainingEur > 0 ? convertCurrency(od.remainingEur, "EUR", currency) : 0
+        const spendable = availableInFeeCcy + overdraftInFeeCcy
+
+        if (arrangementFee > spendable + 0.01) {
+          try {
+            await insertNotification({
+              userId: ownerId,
+              tone: "warning",
+              title: "Internal loan not funded — arrangement fee unpaid",
+              body: `Your internal loan could not be funded because the one-time ${formatLoanMoney(
+                arrangementFee,
+                currency,
+              )} arrangement fee must be paid upfront and it exceeds your available funds and overdraft allowance. Add funds to your Master Account, then ask the administrator to approve again.`,
+              href: "/dashboard/treasury",
+            })
+          } catch {
+            // non-critical
+          }
+          await logActivity({
+            action: `Internal loan ${req.id} NOT funded — ${formatLoanMoney(arrangementFee, currency)} arrangement fee unaffordable`,
+            category: "Treasury",
+            userId: req.userId,
+            details: {
+              summary: `Administrator tried to fund internal loan ${req.id} for ${formatLoanMoney(
+                amount,
+                currency,
+              )} but the borrower could not pay the mandatory upfront ${formatLoanMoney(
+                arrangementFee,
+                currency,
+              )} arrangement fee (available ${formatLoanMoney(
+                Math.max(0, availableInFeeCcy),
+                currency,
+              )} + overdraft ${formatLoanMoney(Math.max(0, overdraftInFeeCcy), currency)}). No principal was credited.`,
+              referenceId: req.id,
+              decision: "Not funded — upfront fee unaffordable",
+            },
+          }).catch(() => undefined)
+          return {
+            ok: false,
+            error: `The borrower cannot pay the mandatory upfront ${formatLoanMoney(
+              arrangementFee,
+              currency,
+            )} arrangement fee (available ${formatLoanMoney(
+              Math.max(0, availableInFeeCcy),
+              currency,
+            )} + overdraft ${formatLoanMoney(
+              Math.max(0, overdraftInFeeCcy),
+              currency,
+            )}). The loan cannot be funded — ask them to fund their Master Account first, or reject the request.`,
+          }
+        }
+      } catch (err) {
+        // A blocked-funds check must NOT silently fund on an internal error:
+        // treat an unverifiable balance as unaffordable (fail closed).
+        console.log("[v0] internal-loan fee solvency check failed (blocking):", (err as Error).message)
+        return {
+          ok: false,
+          error: "Could not verify the borrower can pay the upfront arrangement fee. Please retry.",
+        }
+      }
+    }
+
+    // 1) Charge the mandatory one-time arrangement fee FIRST (idempotent).
+    if (arrangementFee > 0) {
+      await upsertLedgerEntry(ownerId, {
+        id: internalLoanFeeId(req.id),
+        direction: "debit",
+        amount: arrangementFee,
+        currency,
+        status: "completed",
+        date: activatedAt,
+        counterparty: "MCC Capital — Internal Lending",
+        bank: "MCC Capital",
+        reference: req.id,
+        comment: `One-time upfront arrangement fee for internal loan ${req.id}.`,
+        category: "Internal Loan Fee",
+      })
+    }
+
+    // 2) Credit the principal to the Master (idempotent) — only after the fee.
     await upsertLedgerEntry(ownerId, {
       id: internalLoanCreditId(req.id),
       direction: "credit",
@@ -338,23 +435,6 @@ export async function approveInternalLoanAdmin(input: {
       comment: `Internal loan drawdown (${req.id}) at ${(annualRate * 100).toFixed(2)}% p.a.`,
       category: "Internal Loan Drawdown",
     })
-
-    // 2) One-time arrangement fee debit, if the admin set one (idempotent).
-    if (arrangementFee > 0) {
-      await upsertLedgerEntry(ownerId, {
-        id: internalLoanFeeId(req.id),
-        direction: "debit",
-        amount: arrangementFee,
-        currency,
-        status: "completed",
-        date: activatedAt,
-        counterparty: "MCC Capital — Internal Lending",
-        bank: "MCC Capital",
-        reference: req.id,
-        comment: `One-time arrangement fee for internal loan ${req.id}.`,
-        category: "Internal Loan Fee",
-      })
-    }
 
     // 3) Persist the effective terms + mark approved.
     const nextRecord = {

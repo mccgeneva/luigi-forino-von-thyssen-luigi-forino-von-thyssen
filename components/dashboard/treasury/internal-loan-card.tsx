@@ -335,6 +335,42 @@ export function InternalLoanCard() {
                   )}
                 </div>
 
+                {/* Funding breakdown — makes the one-time arrangement fee that
+                    was CHARGED to the master account explicit. On a large loan
+                    the fee is invisible in the balance number, so we spell out
+                    principal credited − fee charged = net credited. */}
+                {(loan.arrangementFee ?? 0) > 0 && (
+                  <div className="mt-3 rounded-lg border border-border bg-card p-3">
+                    <p className="mb-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                      Charged to your master account
+                    </p>
+                    <dl className="space-y-1.5 text-xs">
+                      <div className="flex items-center justify-between gap-2">
+                        <dt className="text-muted-foreground">Principal credited</dt>
+                        <dd className="font-medium text-green-400 tabular-nums">
+                          + {formatLoanMoney(loan.amount, loan.currency)}
+                        </dd>
+                      </div>
+                      <div className="flex items-center justify-between gap-2">
+                        <dt className="text-muted-foreground">Arrangement fee (one-time)</dt>
+                        <dd className="font-medium text-orange-400 tabular-nums">
+                          − {formatLoanMoney(loan.arrangementFee ?? 0, loan.currency)}
+                        </dd>
+                      </div>
+                      <div className="flex items-center justify-between gap-2 border-t border-border pt-1.5">
+                        <dt className="font-medium text-foreground">Net credited to master account</dt>
+                        <dd className="font-semibold text-foreground tabular-nums">
+                          {formatLoanMoney(loan.amount - (loan.arrangementFee ?? 0), loan.currency)}
+                        </dd>
+                      </div>
+                    </dl>
+                    <p className="mt-2 text-[11px] text-muted-foreground">
+                      The fee shows in your transactions as{" "}
+                      <span className="text-foreground">&ldquo;Internal Loan Fee&rdquo;</span>.
+                    </p>
+                  </div>
+                )}
+
                 {loan.status === "approved" && repayFor === loan.id && (loan.outstanding ?? loan.amount) > 0.01 && (
                   <div className="mt-3 flex flex-wrap items-end gap-3 border-t border-border pt-3">
                     <div className="flex-1 min-w-[160px]">
