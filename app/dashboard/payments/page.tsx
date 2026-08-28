@@ -285,12 +285,19 @@ export default function PaymentsPage() {
 
   // Ring-fence pre-check: the payment PRINCIPAL (fee excluded, matching the
   // server) converted to EUR must not exceed the client's own free funds when
-  // they carry outstanding borrowing. Only bites when hasBorrowed.
-  const exceedsOwnFunds =
+  // they carry outstanding borrowing. This depends ONLY on the entered amount
+  // (not on the IBAN/beneficiary being filled yet) so the over-limit warning
+  // appears the instant a borrowed-funds amount is typed — that was the UX gap
+  // where the customer could type 20M and see no immediate flag.
+  const amountExceedsOwnFunds =
     hasBorrowed &&
     !!ringfence &&
-    liveTransfer.valid &&
-    convertCurrency(liveTransfer.amount, payCurrency, "EUR") > ringfence.freeEur + 0.01
+    (() => {
+      const v = Number.parseFloat(payAmount)
+      if (!Number.isFinite(v) || v <= 0) return false
+      return convertCurrency(v, payCurrency, "EUR") > ringfence.freeEur + 0.01
+    })()
+  const exceedsOwnFunds = amountExceedsOwnFunds
 
   // Payment History is derived from persistent sources so rows never disappear
   // on navigation: outgoing rows come from the persisted payment-request store,
@@ -993,13 +1000,23 @@ export default function PaymentsPage() {
                       placeholder="0.00"
                       value={payAmount}
                       onValueChange={setPayAmount}
-                      aria-invalid={liveTransfer.insufficient}
-                      className={liveTransfer.insufficient ? "border-destructive focus-visible:ring-destructive" : undefined}
+                      aria-invalid={liveTransfer.insufficient || amountExceedsOwnFunds}
+                      className={
+                        liveTransfer.insufficient || amountExceedsOwnFunds
+                          ? "border-destructive focus-visible:ring-destructive"
+                          : undefined
+                      }
                     />
                     {liveTransfer.insufficient && (
                       <p className="text-xs text-destructive" role="alert">
                         Exceeds available {payCurrency} balance of {formatCurrency(selectedCurrencyBalance, payCurrency)} (need{" "}
                         {formatCurrency(liveTransfer.total, payCurrency)} incl. 2% fee).
+                      </p>
+                    )}
+                    {!liveTransfer.insufficient && amountExceedsOwnFunds && ringfence && (
+                      <p className="text-xs text-destructive" role="alert">
+                        Exceeds your transferable own funds of {fmtEur(ringfence.freeEur)}. Borrowed
+                        (leveraged/loan) proceeds are reserved for trading on NAFTAhub and cannot be paid out.
                       </p>
                     )}
                   </div>
