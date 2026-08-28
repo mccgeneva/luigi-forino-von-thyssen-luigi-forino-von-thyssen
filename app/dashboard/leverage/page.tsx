@@ -394,6 +394,11 @@ export default function LeveragePage() {
   const [formError, setFormError] = useState<string | null>(null)
   const [checkingMargin, setCheckingMargin] = useState(false)
   const [feeAcknowledged, setFeeAcknowledged] = useState(false)
+  // When the (required) Instrument Type is missing at submit/appeal, we scroll
+  // to and highlight the field — the error banner sits far below it in a long
+  // dialog, so otherwise the client is stuck not knowing what to fix.
+  const [instrumentTypeError, setInstrumentTypeError] = useState(false)
+  const instrumentTypeRef = useRef<HTMLDivElement | null>(null)
   const [switchOffTarget, setSwitchOffTarget] = useState<LeverageRequest | null>(null)
   // The client's real balances (EUR-normalised), loaded from the guarantee
   // position API when the request dialog opens. `freeEur` is FREE EQUITY =
@@ -667,6 +672,7 @@ export default function LeveragePage() {
     setPledgedInstrumentId("")
     setNotes("")
     setFormError(null)
+    setInstrumentTypeError(false)
     setFeeAcknowledged(false)
   }
 
@@ -682,7 +688,14 @@ export default function LeveragePage() {
       return
     }
     if (!instrumentType) {
-      setFormError("Please select an instrument type to trade.")
+      setFormError("Please select an instrument type to trade — it's near the top of this form.")
+      setInstrumentTypeError(true)
+      // Bring the empty field into view and open the picker so the fix is obvious.
+      if (typeof window !== "undefined") {
+        requestAnimationFrame(() => {
+          instrumentTypeRef.current?.scrollIntoView({ behavior: "smooth", block: "center" })
+        })
+      }
       return
     }
     // Bank Instruments funding must be backed by a specific active instrument,
@@ -1298,10 +1311,23 @@ export default function LeveragePage() {
                   </Select>
                 </div>
 
-                <div className="space-y-2">
-                  <Label>Instrument Type</Label>
-                  <Select value={instrumentType} onValueChange={setInstrumentType}>
-                    <SelectTrigger>
+                <div className="space-y-2" ref={instrumentTypeRef}>
+                  <Label>
+                    Instrument Type <span className="text-destructive">*</span>
+                  </Label>
+                  <Select
+                    value={instrumentType}
+                    onValueChange={(v) => {
+                      setInstrumentType(v)
+                      setInstrumentTypeError(false)
+                      if (formError) setFormError(null)
+                    }}
+                  >
+                    <SelectTrigger
+                      className={
+                        instrumentTypeError ? "border-destructive ring-2 ring-destructive/40" : undefined
+                      }
+                    >
                       <SelectValue placeholder="Select asset class" />
                     </SelectTrigger>
                     <SelectContent>
@@ -1312,6 +1338,11 @@ export default function LeveragePage() {
                       ))}
                     </SelectContent>
                   </Select>
+                  {instrumentTypeError && (
+                    <p className="text-xs text-destructive">
+                      Required — pick the asset class this line will trade to continue.
+                    </p>
+                  )}
                 </div>
 
                 <div className="space-y-2">
