@@ -7,6 +7,8 @@ import { resolveAccountProfileById, resolveCurrentSession, resolveDataOwnerIdFor
 import { getDynamicUserByEmail } from "@/lib/admin-users-db"
 import { listApprovalsForUser } from "@/lib/approvals-db"
 import { reconcileSubAccountFees } from "@/lib/sub-account-db"
+import { getFinancingRingfence } from "@/lib/guarantees-profile"
+import { convertCurrency } from "@/lib/fx"
 import { logActivity } from "@/app/actions/log-activity"
 import { getMyMembership } from "@/app/actions/membership"
 import { capabilitiesForAccount, VISITOR_RESTRICTION_MESSAGE } from "@/lib/tier-capabilities"
@@ -283,6 +285,31 @@ export async function sendInstantTransfer(input: {
         ok: false,
         error: `Insufficient funds. This transfer needs ${currency} ${amount.toLocaleString("en-US")} but only ${currency} ${available.toLocaleString("en-US")} is available.`,
       }
+    }
+
+    // RING-FENCE borrowed funds. Leverage lines and loans credit the balance
+    // with proceeds scoped strictly for trading (buying power) and repayment —
+    // they must NOT be transferred out to a third party. When the sender has
+    // outstanding borrowing, cap the outbound to their OWN free funds
+    // (aggregate available − outstanding financing, EUR). Accounts with no
+    // borrowing are unaffected. The gate only bites on a positive determination;
+    // an unexpected read failure does not block (solvency is already enforced
+    // above), but the defensive profile degrades rather than throws.
+    try {
+      const { freeEur, exposureEur } = await getFinancingRingfence(session.id)
+      if (exposureEur > 0.01) {
+        const amountEur = convertCurrency(amount, currency, "EUR")
+        if (amountEur > freeEur + 0.01) {
+          const fmt = (n: number) =>
+            `EUR ${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+          return {
+            ok: false,
+            error: `This transfer would draw on borrowed funds. Leveraged and loan proceeds are reserved for trading on NAFTAhub and cannot be transferred out. Your own transferable funds are ${fmt(freeEur)} — you currently have ${fmt(exposureEur)} of outstanding financing. Repay the financing or use your own funds to send this transfer.`,
+          }
+        }
+      }
+    } catch (err) {
+      console.log("[v0] transfer ring-fence check failed (allowing):", (err as Error).message)
     }
 
     const ref = (input.reference || "").trim() || `ITR-${Date.now().toString().slice(-8)}`
