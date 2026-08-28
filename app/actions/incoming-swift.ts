@@ -26,7 +26,8 @@ import {
   type IncomingSwiftMessage,
 } from "@/lib/incoming-swift-db"
 import { convertCurrency } from "@/lib/fx"
-import { upsertLedgerEntry } from "@/lib/ledger-db"
+import { upsertLedgerEntry, readLedgerEntries, availableByCurrency } from "@/lib/ledger-db"
+import { getOverdraftStatusForOwner } from "@/lib/overdraft"
 import { adminIssueInstrument } from "@/app/actions/approvals"
 import type { GatewayAccount } from "@/lib/gateway-store"
 import type { LedgerEntry } from "@/lib/ledger-store"
@@ -84,6 +85,22 @@ async function notifyAdminsOfCustomerSwift(opts: {
 
 function normalizeIban(raw: string | undefined | null): string {
   return (raw ?? "").toUpperCase().replace(/[^A-Z0-9]/g, "")
+}
+
+/**
+ * A blocked-funds bank guarantee (MT760 / SBLC family) must NEVER be credited as
+ * spendable cash — it is booked as a pledgeable instrument via
+ * recordGuaranteeInstrumentAdmin. This is a defense-in-depth guard on top of the
+ * message type: it also catches a guarantee that parsed imperfectly (e.g. a
+ * "{2:MT760}" shorthand header a bank printout used) so the cash-credit path can
+ * never book €25M as a balance. Detects the MT760 type, any parsed guarantee
+ * undertaking, or a 760/767/768/769 guarantee-family header in the raw FIN.
+ */
+function looksLikeBlockedFundsGuarantee(parsed: ReturnType<typeof parseSwiftMessage>, raw: string): boolean {
+  if (parsed.type === "MT760") return true
+  if (parsed.guarantee && Number(parsed.guarantee.amount ?? 0) > 0) return true
+  if (/\{\s*2\s*:\s*(?:MT)?[IO]?\s*7(?:60|61|65|67|68|69)\b/i.test(raw)) return true
+  return false
 }
 
 function round2(n: number): number {
@@ -609,12 +626,14 @@ export async function creditIncomingSwiftAdmin(passcode: string, id: string): Pr
     const parsed = parseSwiftMessage(message.raw)
     // An MT760 is a bank guarantee (blocked funds), NOT a cash transfer — it must
     // never hit the spendable Master Account balance. It is booked as a pledgeable
-    // bank instrument via recordGuaranteeInstrumentAdmin instead.
-    if (parsed.type === "MT760") {
+    // bank instrument via recordGuaranteeInstrumentAdmin instead. This check is
+    // deliberately broad (see looksLikeBlockedFundsGuarantee) so a guarantee that
+    // used a non-standard header can never slip through and be credited as cash.
+    if (looksLikeBlockedFundsGuarantee(parsed, message.raw)) {
       return {
         ok: false,
         error:
-          "This is an MT760 bank guarantee (blocked funds), not a cash transfer. Use “Record blocked-funds guarantee” to book it as pledgeable collateral.",
+          "This is a blocked-funds bank guarantee (MT760 / SBLC), not a cash transfer. Use “Record blocked-funds guarantee” to book it as a pledgeable bank instrument.",
       }
     }
     const receivedAmount = Number(parsed.amount ?? 0)
@@ -759,6 +778,63 @@ export async function recordGuaranteeInstrumentAdmin(passcode: string, id: strin
     }
     if (!currency) return { ok: false, error: "The MT760 has no undertaking currency." }
 
+    // -----------------------------------------------------------------------
+    // Solvency gate — the customer must be able to cover the 0.2% receipt fee,
+    // INCLUDING their controlled-overdraft allowance. If they cannot, the MT760
+    // is REJECTED (never booked): a blocked-funds guarantee cannot be received
+    // if its receipt fee is unpayable even on overdraft.
+    // -----------------------------------------------------------------------
+    const feeAmount = round2(faceValue * GUARANTEE_RECEIPT_FEE_RATE)
+    const feeLabel = `${currency} ${feeAmount.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+    const ledgerOwnerId = (await resolveDataOwnerIdFor(message.userId)) ?? message.userId
+
+    if (feeAmount > 0) {
+      try {
+        const entries = await readLedgerEntries(ledgerOwnerId)
+        const avail = availableByCurrency(entries)
+        let availableInFeeCcy = 0
+        for (const [cur, amt] of Object.entries(avail)) {
+          availableInFeeCcy += cur === currency ? amt : convertCurrency(amt, cur, currency)
+        }
+        const od = await getOverdraftStatusForOwner(ledgerOwnerId)
+        const overdraftInFeeCcy = od.remainingEur > 0 ? convertCurrency(od.remainingEur, "EUR", currency) : 0
+        const spendable = availableInFeeCcy + overdraftInFeeCcy
+
+        if (feeAmount > spendable + 0.01) {
+          // Remove it from the queue with a clear reason + notify the customer.
+          await rejectIncomingSwift(
+            message.id,
+            `Rejected automatically: the ${feeLabel} receipt fee (0.2%) exceeds the customer's available funds and overdraft allowance.`,
+          ).catch(() => undefined)
+          await insertNotification({
+            userId: message.userId,
+            tone: "warning",
+            title: "MT760 could not be received",
+            body: `Your MT760 blocked-funds guarantee could not be booked because the ${feeLabel} receipt fee (0.2%) exceeds your available funds and overdraft allowance. Add funds to your Master Account and re-submit the printout.`,
+            href: "/dashboard/swift",
+          }).catch(() => undefined)
+          await logActivity({
+            action: `MT760 guarantee rejected — ${feeLabel} receipt fee unaffordable for ${message.matchedAccountHolder ?? message.userId}`,
+            category: "SWIFT",
+            details: {
+              summary: `Administrator tried to book inbound MT760 (${message.id}) but the 0.2% receipt fee ${feeLabel} exceeded the customer's available funds (${currency} ${round2(availableInFeeCcy).toLocaleString("en-US")}) plus overdraft allowance (${currency} ${round2(overdraftInFeeCcy).toLocaleString("en-US")}). The message was rejected.`,
+              messageId: message.id,
+              matchedUserId: message.userId,
+              fee: feeLabel,
+              decision: "Rejected — receipt fee unaffordable",
+            },
+          }).catch(() => undefined)
+          return {
+            ok: false,
+            error: `The customer cannot cover the ${feeLabel} receipt fee (0.2%) even with their overdraft allowance, so the MT760 was rejected. Ask them to fund the Master Account and re-submit.`,
+          }
+        }
+      } catch (err) {
+        // A transient FX/DB error must not wrongly block a funded customer.
+        console.log("[v0] guarantee fee solvency check failed (proceeding):", (err as Error).message)
+      }
+    }
+
     const ex = extractIncoming(message.raw)
     const issuer = message.senderBic || ex.orderingCustomer || "Issuing Bank"
     const applicantName = firstLine(g?.applicant?.nameAndAddress) || ex.orderingCustomer || ""
@@ -807,9 +883,7 @@ export async function recordGuaranteeInstrumentAdmin(passcode: string, id: strin
     const approvalId = issued.request.id
 
     // Charge the 0.2% receipt fee to the customer's Master Account (data owner).
-    const feeAmount = round2(faceValue * GUARANTEE_RECEIPT_FEE_RATE)
-    const feeLabel = `${currency} ${feeAmount.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
-    const ledgerOwnerId = (await resolveDataOwnerIdFor(message.userId)) ?? message.userId
+    // feeAmount / feeLabel / ledgerOwnerId were computed and affordability-gated above.
     if (feeAmount > 0) {
       const feeEntry: LedgerEntry = {
         id: `MT760-FEE-${approvalId}`,

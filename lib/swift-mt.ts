@@ -419,7 +419,13 @@ export function detectMessageType(blocks: SwiftBlocks): SwiftMessageType {
   const appHeader = blocks.applicationHeader
   let mt: string | undefined
   if (appHeader) {
-    const m = appHeader.match(/^[IO](\d{3})/i)
+    // Accept every common way a printout writes the block-2 type:
+    //   {2:I760...}  {2:O760...}  (standard input/output application header)
+    //   {2:MT760}    {2:760}      (bank-printout shorthand — very common)
+    // The old regex only matched the leading I/O form, so a "{2:MT760}"
+    // header fell through to MT103 and a blocked-funds guarantee was wrongly
+    // treated (and credited) as a cash transfer.
+    const m = appHeader.trim().match(/^(?:MT)?[IO]?\s*(\d{3})/i)
     if (m) mt = m[1]
   }
   // MT202 COV is an MT202 carrying a sequence B (cover) with :50a:/:59a:.
@@ -435,8 +441,17 @@ export function detectMessageType(blocks: SwiftBlocks): SwiftMessageType {
 
   // Fall back to field-signature heuristics when no app header was supplied.
   if (findField(blocks.text, "79")) return "MT799"
-  // MT760 carries undertaking-specific fields (form/purpose) and no :32A:.
-  if (findField(blocks.text, "22A") || findField(blocks.text, "22D") || findField(blocks.text, "40C")) {
+  // MT760 carries undertaking-specific fields (sub-message type :12:, purpose
+  // :22A:, form :22D:, applicable rules :40C:, guarantee terms :77C:/:77U:) and
+  // no :32A:. Any of these is a strong signal it's a guarantee, not a payment.
+  if (
+    findField(blocks.text, "12") ||
+    findField(blocks.text, "22A") ||
+    findField(blocks.text, "22D") ||
+    findField(blocks.text, "40C") ||
+    findField(blocks.text, "77C") ||
+    findField(blocks.text, "77U")
+  ) {
     return "MT760"
   }
   if (findByPrefix(blocks.text, "59")) return "MT103"
