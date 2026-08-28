@@ -11,6 +11,9 @@ import {
   Percent,
   Wallet,
   MessagesSquare,
+  HelpCircle,
+  ShieldCheck,
+  TrendingUp,
 } from "lucide-react"
 import { toast } from "sonner"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -127,6 +130,9 @@ export function InternalLoanCard() {
 
   // Which pending loan's discussion thread is expanded inline.
   const [discussFor, setDiscussFor] = useState<string | null>(null)
+
+  // Which loan's "understand this decision / usage" detail panel is expanded.
+  const [detailFor, setDetailFor] = useState<string | null>(null)
 
   // Funded loans (live) plus fully-repaid ones (closed), so a repaid loan is
   // shown as "Repaid" rather than either vanishing or lingering as "Funded".
@@ -353,6 +359,110 @@ export function InternalLoanCard() {
                     </Button>
                   </div>
                 )}
+
+                {/* Understand how the approved amount may be used. */}
+                {loan.status === "approved" && !isRepaid && (
+                  <div className="mt-3 border-t border-border pt-3">
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="h-auto px-0 text-xs text-primary hover:bg-transparent hover:text-primary"
+                      onClick={() => setDetailFor(detailFor === loan.id ? null : loan.id)}
+                    >
+                      <ShieldCheck className="mr-1.5 h-3.5 w-3.5" />
+                      {detailFor === loan.id ? "Hide usage & terms" : "How can I use this loan?"}
+                      <ChevronDown
+                        className={cn(
+                          "ml-1 h-3.5 w-3.5 transition-transform",
+                          detailFor === loan.id && "rotate-180",
+                        )}
+                      />
+                    </Button>
+
+                    {detailFor === loan.id && (() => {
+                      const outstanding = loan.outstanding ?? loan.amount
+                      const repaid = Math.max(0, loan.amount - outstanding)
+                      const untouched = repaid <= 0.01
+                      return (
+                        <div className="mt-2 space-y-3 rounded-lg border border-primary/20 bg-primary/5 p-3">
+                          <div className="flex items-start gap-2">
+                            <TrendingUp className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
+                            <div className="space-y-1">
+                              <p className="text-xs font-medium text-foreground">
+                                Authorized use of these funds
+                              </p>
+                              <p className="text-xs text-muted-foreground">
+                                This financing was credited to your master account as trading buying power.
+                                It is reserved for <span className="text-foreground">trading activity on
+                                NAFTAhub</span> (opening positions, leverage margin, funding programs) and for{" "}
+                                <span className="text-foreground">repaying this facility</span>. Borrowed
+                                proceeds cannot be transferred or paid out to a third party — only your own
+                                unborrowed funds can leave the account.
+                              </p>
+                            </div>
+                          </div>
+
+                          <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+                            <div className="rounded-md border border-border bg-card p-2.5">
+                              <p className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                                Amount drawn
+                              </p>
+                              <p className="mt-0.5 text-sm font-semibold text-foreground">
+                                {formatLoanMoney(loan.amount, loan.currency)}
+                              </p>
+                            </div>
+                            <div className="rounded-md border border-border bg-card p-2.5">
+                              <p className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                                Repaid so far
+                              </p>
+                              <p className="mt-0.5 text-sm font-semibold text-foreground">
+                                {formatLoanMoney(repaid, loan.currency)}
+                              </p>
+                            </div>
+                            <div className="rounded-md border border-border bg-card p-2.5">
+                              <p className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                                Outstanding
+                              </p>
+                              <p className="mt-0.5 text-sm font-semibold text-foreground">
+                                {formatLoanMoney(outstanding, loan.currency)}
+                              </p>
+                            </div>
+                          </div>
+
+                          <p className="text-xs text-muted-foreground">
+                            {untouched ? (
+                              <>
+                                <span className="font-medium text-foreground">Not deployed yet.</span> The full{" "}
+                                {formatLoanMoney(loan.amount, loan.currency)} is sitting in your master account
+                                ready to trade. Put it to work in{" "}
+                                <Link href="/dashboard/leverage" className="underline hover:text-foreground">
+                                  Leverage
+                                </Link>
+                                ,{" "}
+                                <Link href="/dashboard/trading" className="underline hover:text-foreground">
+                                  Trading
+                                </Link>{" "}
+                                or a{" "}
+                                <Link href="/dashboard/ppp" className="underline hover:text-foreground">
+                                  funding program
+                                </Link>
+                                . When you want to close it, repay from your master balance above.
+                              </>
+                            ) : (
+                              <>
+                                <span className="font-medium text-foreground">In use.</span> You have repaid{" "}
+                                {formatLoanMoney(repaid, loan.currency)} of{" "}
+                                {formatLoanMoney(loan.amount, loan.currency)}; the remaining{" "}
+                                {formatLoanMoney(outstanding, loan.currency)} stays deployed as trading capital
+                                and accrues {(loan.interestRate * 100).toFixed(2)}% p.a. until repaid.
+                              </>
+                            )}
+                          </p>
+                        </div>
+                      )
+                    })()}
+                  </div>
+                )}
               </div>
               )
             })}
@@ -511,6 +621,66 @@ export function InternalLoanCard() {
                         Under review. The administrator will open a discussion here to go over the terms
                         and request any supporting documents before funding.
                       </p>
+                    </div>
+                  )}
+
+                  {/* Declined — let the client understand why and how to become eligible. */}
+                  {loan.status === "rejected" && (
+                    <div className="border-t border-border px-3 py-2.5">
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="h-auto px-0 text-xs text-primary hover:bg-transparent hover:text-primary"
+                        onClick={() => setDetailFor(detailFor === loan.id ? null : loan.id)}
+                      >
+                        <HelpCircle className="mr-1.5 h-3.5 w-3.5" />
+                        {detailFor === loan.id ? "Hide explanation" : "Why was this declined?"}
+                        <ChevronDown
+                          className={cn(
+                            "ml-1 h-3.5 w-3.5 transition-transform",
+                            detailFor === loan.id && "rotate-180",
+                          )}
+                        />
+                      </Button>
+
+                      {detailFor === loan.id && (
+                        <div className="mt-2 space-y-3 rounded-lg border border-red-500/20 bg-red-500/5 p-3">
+                          {loan.decisionNote ? (
+                            <div>
+                              <p className="text-xs font-medium text-foreground">
+                                Administrator&apos;s note
+                              </p>
+                              <p className="mt-0.5 text-xs text-muted-foreground">{loan.decisionNote}</p>
+                            </div>
+                          ) : (
+                            <p className="text-xs text-muted-foreground">
+                              This request could not be approved at this time. Based on the current review, the
+                              facility fell outside our treasury&apos;s risk appetite — typically because the
+                              requested amount is high relative to your own unencumbered funds, the repayment
+                              guarantee or collateral was not sufficient, or there is an item outstanding on the
+                              account that needs to be cleared first.
+                            </p>
+                          )}
+
+                          <div>
+                            <p className="text-xs font-medium text-foreground">How to become eligible</p>
+                            <ul className="mt-1 space-y-1 text-xs text-muted-foreground">
+                              <li>• Lower the requested amount, or reduce existing outstanding financing.</li>
+                              <li>• Pledge a bank instrument or add your own equity as collateral to strengthen the request.</li>
+                              <li>• Clear any overdue item on the account.</li>
+                              <li>• Add a clear repayment plan tied to incoming receivables.</li>
+                            </ul>
+                          </div>
+
+                          <p className="text-xs text-muted-foreground">
+                            You are welcome to adjust the details and apply again above, or{" "}
+                            <Link href="/dashboard/bankeka" className="underline hover:text-foreground">
+                              message the administrator
+                            </Link>{" "}
+                            to discuss what would make this workable.
+                          </p>
+                        </div>
+                      )}
                     </div>
                   )}
                   {isPending && loan.discussionOpenedAt && (
