@@ -1,9 +1,18 @@
 "use client"
 
-import { useCallback, useMemo } from "react"
-import { CalendarClock, TrendingDown, Receipt, Wallet, CheckCircle2, CircleDollarSign } from "lucide-react"
+import { useCallback, useMemo, useState } from "react"
+import {
+  CalendarClock,
+  TrendingDown,
+  Receipt,
+  Wallet,
+  CheckCircle2,
+  CircleDollarSign,
+  ArrowDownRight,
+} from "lucide-react"
 import { Card, CardContent } from "@/components/ui/card"
 import { Skeleton } from "@/components/ui/skeleton"
+import { cn } from "@/lib/utils"
 import { useProjectFunding } from "@/lib/project-funding-store"
 import { useMonetizationRequests } from "@/lib/monetization-requests-store"
 import { useLeverageRequests } from "@/lib/leverage-requests-store"
@@ -64,6 +73,30 @@ export default function DebitsPage() {
 
   const primaryCurrency = schedule.facilities[0]?.currency ?? "EUR"
 
+  // Jump-to-terminate: tapping the "you owe" hero (or a facility card) scrolls to
+  // the facility list and auto-opens the Terminate dialog. When only ONE facility
+  // is active the hero targets it directly; otherwise it just reveals the list.
+  const [terminateTarget, setTerminateTarget] = useState<string | null>(null)
+
+  const activeFacilities = useMemo(
+    () => schedule.facilities.filter((f) => !f.closed),
+    [schedule.facilities],
+  )
+
+  const soleSettleId = useMemo(() => {
+    if (activeFacilities.length !== 1) return null
+    const f = activeFacilities[0]
+    if (!f.settleable) return null
+    return (f.kind === "treasury" ? f.id : f.approvalId) ?? null
+  }, [activeFacilities])
+
+  const jumpToTerminate = useCallback(() => {
+    if (typeof document !== "undefined") {
+      document.getElementById("debit-facilities")?.scrollIntoView({ behavior: "smooth", block: "start" })
+    }
+    if (soleSettleId) setTerminateTarget(soleSettleId)
+  }, [soleSettleId])
+
   // Plain-language "do I owe anything right now" answer.
   const hasActive = schedule.totals.activeCount > 0
   const outstandingLabel = useMemo(() => {
@@ -103,8 +136,27 @@ export default function DebitsPage() {
         </Card>
       ) : (
         <>
-          {/* Status hero — the one-glance answer to "do I owe anything?" */}
-          <Card className={hasActive ? "border-amber-500/40" : "border-emerald-500/40"}>
+          {/* Status hero — the one-glance answer to "do I owe anything?" and,
+              when you owe, a tap-target that jumps straight to settlement. */}
+          <Card
+            className={cn(
+              hasActive ? "border-amber-500/40" : "border-emerald-500/40",
+              hasActive && "cursor-pointer transition-colors hover:border-amber-500/70",
+            )}
+            role={hasActive ? "button" : undefined}
+            tabIndex={hasActive ? 0 : undefined}
+            onClick={hasActive ? jumpToTerminate : undefined}
+            onKeyDown={
+              hasActive
+                ? (e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault()
+                      jumpToTerminate()
+                    }
+                  }
+                : undefined
+            }
+          >
             <CardContent className="pt-6">
               <div className="flex items-start gap-4">
                 <div
@@ -128,6 +180,13 @@ export default function DebitsPage() {
                     <p className="text-xs text-muted-foreground">
                       Outstanding financed principal — what you borrowed and still owe. Each facility is listed
                       below with its rate and settlement options.
+                    </p>
+
+                    <p className="mt-2 inline-flex items-center gap-1.5 text-xs font-medium text-amber-500">
+                      <ArrowDownRight className="h-3.5 w-3.5" />
+                      {schedule.totals.activeCount === 1
+                        ? "Tap to review and terminate this debit"
+                        : "Tap to jump to your facilities and terminate a debit"}
                     </p>
 
                     <div className="mt-4 grid gap-3 sm:grid-cols-2">
@@ -204,7 +263,13 @@ export default function DebitsPage() {
             </p>
           )}
 
-          <DebitFacilities facilities={schedule.facilities} onSettled={onSettled} />
+          <DebitFacilities
+            facilities={schedule.facilities}
+            onSettled={onSettled}
+            autoTerminateId={terminateTarget}
+            onAutoTerminateHandled={() => setTerminateTarget(null)}
+            onRequestTerminate={(id) => setTerminateTarget(id)}
+          />
           <DebitCalendar charges={schedule.charges} />
           <DebitChargeList charges={schedule.charges} />
           <DebitScenarios activeKinds={activeKinds} />
