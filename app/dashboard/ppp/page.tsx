@@ -62,6 +62,9 @@ import {
   YIELD_EARLY_CANCELLATION_PENALTY_RATE,
 } from "@/lib/ppp-yield"
 import { useInstrumentRequests, isMccHeldInstrument } from "@/lib/instrument-requests-store"
+import { useInternalLoans } from "@/lib/internal-loan-store"
+import { useMonetizationRequests } from "@/lib/monetization-requests-store"
+import { useLeverageRequests } from "@/lib/leverage-requests-store"
 import { computeBenefitSplit } from "@/lib/benefit-split"
 import { isLiveRequest } from "@/lib/live-request"
 import { convertCurrency } from "@/lib/fx"
@@ -170,6 +173,12 @@ export default function PPPPage() {
   const log = useActivityLog()
   const { requests, addRequest, refresh, hydrated } = usePPPRequests()
   const { instruments } = useInstrumentRequests()
+  // Cross-product engagement — an instrument pledged to a loan, leverage line or
+  // monetization is just as "used" as one funding another PPP program. These
+  // stores are mounted in the dashboard layout, so any page can read them.
+  const { loans: internalLoans } = useInternalLoans()
+  const { requests: monetizationRequests } = useMonetizationRequests()
+  const { requests: leverageRequests } = useLeverageRequests()
   const { totalIn } = useLedger()
 
   // Every active, non-blocked bank instrument the client can pledge as the
@@ -193,16 +202,34 @@ export default function PPPPage() {
     [selectedFundingInstrument],
   )
 
-  // Instruments already pledged to a live (pending or approved) yield/PPP
-  // application. An instrument can only fund ONE investment at a time — it may
-  // not be double-pledged as collateral. Rejected requests release it.
+  // Instruments already pledged/committed to ANY live facility — a yield/PPP
+  // program, an internal loan (collateral), a leverage line, or a monetization.
+  // A bank instrument is single-use collateral, so an id in this set can never
+  // be pledged again ("debit on debit" is banned). Mirrors the instruments
+  // page's `inUseInstrumentIds` so every picker across the app agrees.
   const committedInstrumentIds = useMemo(() => {
     const ids = new Set<string>()
     for (const r of requests) {
-      if (r.fundingInstrumentId && r.status !== "rejected") ids.add(r.fundingInstrumentId)
+      if (r.fundingInstrumentId && r.status !== "rejected" && r.status !== "cancelled") {
+        ids.add(r.fundingInstrumentId)
+      }
+    }
+    for (const loan of internalLoans) {
+      if (loan.collateralInstrumentId && isLiveRequest(loan)) ids.add(loan.collateralInstrumentId)
+    }
+    for (const lev of leverageRequests) {
+      if (
+        lev.pledgedInstrumentId &&
+        (lev.status === "approved" || lev.status === "switchoff_pending" || lev.status === "pending")
+      ) {
+        ids.add(lev.pledgedInstrumentId)
+      }
+    }
+    for (const m of monetizationRequests) {
+      if (m.instrumentId && m.status !== "rejected" && m.status !== "reversed") ids.add(m.instrumentId)
     }
     return ids
-  }, [requests])
+  }, [requests, internalLoans, leverageRequests, monetizationRequests])
 
   // Indicative 75/25 split preview for the apply dialog. Uses the LOWER bound of
   // the program's expected-return range applied to the entered amount, converted
@@ -1223,8 +1250,9 @@ export default function PPPPage() {
                   Pledge a bank instrument to back this investment instead of cash — including your own
                   instruments such as an inbound MT760 blocked-funds guarantee. An instrument owned by{" "}
                   {MCC_HOLDING_OWNER} applies the 75/25 benefit split below; your own instrument keeps 100% of
-                  the return. An instrument already pledged to another live application can&apos;t be used again
-                  until that request is released.
+                  the return. Each bank instrument can back only one facility at a time — an instrument already
+                  pledged to a live leverage line, loan, monetization or PPP program can&apos;t be used again
+                  until that facility is released.
                 </p>
               </div>
             ) : null}

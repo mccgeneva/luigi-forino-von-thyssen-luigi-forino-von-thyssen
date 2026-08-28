@@ -28,6 +28,7 @@ import { useInternalLoans, type InternalLoanView } from "@/lib/internal-loan-sto
 import { useInstrumentRequests } from "@/lib/instrument-requests-store"
 import { useLeverageRequests } from "@/lib/leverage-requests-store"
 import { usePPPRequests } from "@/lib/ppp-requests-store"
+import { useMonetizationRequests } from "@/lib/monetization-requests-store"
 import { isLiveRequest } from "@/lib/live-request"
 import { repayInternalLoan } from "@/app/actions/internal-loan"
 import { INTERNAL_LOAN_DEFAULT_RATE, formatLoanMoney } from "@/lib/internal-loan"
@@ -81,6 +82,7 @@ export function InternalLoanCard() {
   const { instruments } = useInstrumentRequests()
   const { requests: leverageRequests } = useLeverageRequests()
   const { requests: pppRequests } = usePPPRequests()
+  const { requests: monetizationRequests } = useMonetizationRequests()
 
   // Request form
   const [amount, setAmount] = useState("")
@@ -105,8 +107,11 @@ export function InternalLoanCard() {
     for (const l of loans) {
       if (l.collateralInstrumentId && isLiveRequest(l)) ids.add(l.collateralInstrumentId)
     }
+    for (const m of monetizationRequests) {
+      if (m.instrumentId && m.status !== "rejected" && m.status !== "reversed") ids.add(m.instrumentId)
+    }
     return ids
-  }, [leverageRequests, pppRequests, loans])
+  }, [leverageRequests, pppRequests, loans, monetizationRequests])
 
   // Active, non-blocked bank instruments the borrower can pledge as collateral —
   // their OWN instruments (e.g. an inbound MT760 blocked-funds guarantee) and any
