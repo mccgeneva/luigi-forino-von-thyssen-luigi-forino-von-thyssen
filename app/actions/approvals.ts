@@ -23,7 +23,7 @@ import {
   limitBlockMessage,
 } from "@/lib/account-limits-eval"
 import { getGuaranteeConfig } from "@/lib/guarantees-config-db"
-import { gatherGuaranteeProfile } from "@/lib/guarantees-profile"
+import { gatherGuaranteeProfile, getFinancingRingfence } from "@/lib/guarantees-profile"
 import { guaranteeBlockMessage } from "@/lib/guarantees-accumulator"
 import { planReservation, formatMoney, type ReservationPlan } from "@/lib/fund-reservation"
 import { cardFeeFor, formatCardFee, CARD_FEE_CURRENCY } from "@/lib/card-fees"
@@ -487,6 +487,40 @@ export async function submitApproval(input: SubmitApprovalInput): Promise<Submit
       // assertOwnerSolvent at approval), so a transient DB blip must not block
       // all payments. The failure is logged for investigation.
       console.log("[v0] payment limit guard failed:", (err as Error).message)
+    }
+  }
+
+  // RING-FENCE borrowed funds on outbound payments. Leverage lines and loans
+  // credit the balance with proceeds scoped strictly for trading (buying power)
+  // and repayment — they must never leave the account as a payment/transfer to a
+  // third party. When the payer carries outstanding borrowing, the payment
+  // principal must come from their OWN free funds (aggregate available −
+  // outstanding financing, EUR). Accounts with no borrowing are unaffected. This
+  // mirrors the instant-transfer ring-fence and the leverage margin rule.
+  if (input.kind === "payment") {
+    try {
+      const { freeEur, exposureEur } = await getFinancingRingfence(session.id)
+      if (exposureEur > 0.01) {
+        const rec = (input.payload?.record ?? {}) as { amount?: number }
+        const principal =
+          typeof rec.amount === "number" && Number.isFinite(rec.amount)
+            ? rec.amount
+            : Number(input.amount) || 0
+        const principalEur = convertCurrency(principal, input.currency || BASE_CURRENCY, BASE_CURRENCY)
+        if (principalEur > freeEur + 0.01) {
+          const fmt = (n: number) =>
+            `EUR ${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+          return {
+            ok: false,
+            error: `This payment would draw on borrowed funds. Leveraged and loan proceeds are reserved for trading on NAFTAhub and cannot be paid out to a third party. Your own transferable funds are ${fmt(freeEur)} — you currently have ${fmt(exposureEur)} of outstanding financing. Repay the financing or use your own funds to make this payment.`,
+          }
+        }
+      }
+    } catch (err) {
+      // Defensive: the profile degrades rather than throws, so this rarely fires.
+      // Do not block on an unexpected read failure — solvency is separately
+      // enforced by assertOwnerSolvent at approval.
+      console.log("[v0] payment ring-fence guard failed (allowing):", (err as Error).message)
     }
   }
 

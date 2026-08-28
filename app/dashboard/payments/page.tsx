@@ -222,6 +222,35 @@ export default function PaymentsPage() {
     }
   }, [])
 
+  // Borrowed-funds ring-fence. Leverage/loan proceeds credited to the balance are
+  // reserved for trading on NAFTAhub and cannot be paid out to a third party, so
+  // an account with outstanding financing can only pay from its OWN free funds
+  // (EUR aggregate: available − outstanding financing). Friendly client pre-check;
+  // the authoritative hard block lives server-side in submitApproval.
+  const [ringfence, setRingfence] = useState<{ freeEur: number; exposureEur: number } | null>(null)
+  useEffect(() => {
+    let cancelled = false
+    fetch("/api/guarantees", { credentials: "include", cache: "no-store" })
+      .then((r) => r.json())
+      .then((data) => {
+        const inp = data?.ok ? data.score?.inputs : null
+        if (!cancelled && inp) {
+          const availableEur = Math.max(0, Number(inp.availableBalance) || 0)
+          const exposureEur = Math.max(0, Number(inp.totalExposure) || 0)
+          setRingfence({ freeEur: Math.max(0, availableEur - exposureEur), exposureEur })
+        }
+      })
+      .catch(() => {
+        /* pre-check simply won't run; the server gate still enforces */
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+  const hasBorrowed = (ringfence?.exposureEur ?? 0) > 0.01
+  const fmtEur = (n: number) =>
+    `EUR ${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+
   // Live available balance from recorded incoming payments.
   const masterBalance = balanceFor(MASTER_ACCOUNT_CURRENCY)
 
@@ -253,6 +282,15 @@ export default function PaymentsPage() {
       insufficient: total > selectedCurrencyBalance + 0.001,
     }
   }, [payAmount, selectedCurrencyBalance])
+
+  // Ring-fence pre-check: the payment PRINCIPAL (fee excluded, matching the
+  // server) converted to EUR must not exceed the client's own free funds when
+  // they carry outstanding borrowing. Only bites when hasBorrowed.
+  const exceedsOwnFunds =
+    hasBorrowed &&
+    !!ringfence &&
+    liveTransfer.valid &&
+    convertCurrency(liveTransfer.amount, payCurrency, "EUR") > ringfence.freeEur + 0.01
 
   // Payment History is derived from persistent sources so rows never disappear
   // on navigation: outgoing rows come from the persisted payment-request store,
@@ -612,6 +650,17 @@ export default function PaymentsPage() {
         setFormError(limitBlockMessage(assessment))
         return
       }
+    }
+
+    // Borrowed-funds ring-fence (friendly pre-check; addRequest → mirrorSubmission
+    // is fire-and-forget, so the server rejection would otherwise be silent).
+    if (ringfence && hasBorrowed && convertCurrency(amountValue, payCurrency, "EUR") > ringfence.freeEur + 0.01) {
+      setFormError(
+        `This payment would draw on borrowed funds. Leveraged and loan proceeds are reserved for trading on NAFTAhub and cannot be paid out to a third party. Your own transferable funds are ${fmtEur(
+          ringfence.freeEur,
+        )} (${fmtEur(ringfence.exposureEur)} of financing is outstanding). Repay the financing or use your own funds.`,
+      )
+      return
     }
 
     const beneficiary = payBeneficiary.trim()
@@ -1026,6 +1075,25 @@ export default function PaymentsPage() {
                           Insufficient funds — reduce the amount or add funds before submitting.
                         </p>
                       )}
+                      {hasBorrowed && ringfence && (
+                        <div className="mt-2 rounded-md border border-amber-500/30 bg-amber-500/10 p-2 text-xs">
+                          <div className="flex items-center justify-between">
+                            <span className="text-muted-foreground">Transferable (your own funds)</span>
+                            <span className={exceedsOwnFunds ? "font-semibold text-destructive" : "font-semibold text-foreground"}>
+                              {fmtEur(ringfence.freeEur)}
+                            </span>
+                          </div>
+                          <p className="mt-1 text-muted-foreground">
+                            {fmtEur(ringfence.exposureEur)} of leveraged/loan funds is reserved for trading on
+                            NAFTAhub and cannot be paid out.
+                          </p>
+                          {exceedsOwnFunds && (
+                            <p className="mt-1 text-destructive" role="alert">
+                              This payment exceeds your own transferable funds.
+                            </p>
+                          )}
+                        </div>
+                      )}
                     </div>
                   )
                 })()}
@@ -1053,9 +1121,13 @@ export default function PaymentsPage() {
                 >
                   Cancel
                 </Button>
-                <Button onClick={handleSendPayment} disabled={liveTransfer.insufficient}>
+                <Button onClick={handleSendPayment} disabled={liveTransfer.insufficient || exceedsOwnFunds}>
                   <ShieldCheck className="mr-2 h-4 w-4" />
-                  {liveTransfer.insufficient ? "Insufficient balance" : "Submit for Approval"}
+                  {liveTransfer.insufficient
+                    ? "Insufficient balance"
+                    : exceedsOwnFunds
+                      ? "Exceeds transferable funds"
+                      : "Submit for Approval"}
                 </Button>
               </DialogFooter>
             </DialogContent>

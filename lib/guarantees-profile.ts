@@ -15,6 +15,7 @@ import {
   type GuaranteeScore,
 } from "@/lib/guarantees-accumulator"
 import { computeOverdraftStatus, type OverdraftStatus } from "@/lib/overdraft"
+import { getGuaranteeConfig } from "@/lib/guarantees-config-db"
 
 /**
  * Server-side gathering of the real inputs behind a user's Guarantees
@@ -310,4 +311,35 @@ export async function gatherGuaranteeProfile(userId: string, config: GuaranteeCo
   }
 
   return { score: computeGuaranteeScore(inputs, config), currency: BASE, overdraft }
+}
+
+export interface FinancingRingfence {
+  /** Aggregate spendable balance across currencies, EUR-normalised. */
+  availableEur: number
+  /** Outstanding borrowed/financed principal (leverage, loans, monetization,
+   *  funding, financed treasury deposit), EUR-normalised. */
+  exposureEur: number
+  /** The client's OWN transferable funds = max(0, available − exposure). */
+  freeEur: number
+  /** True when the account carries any outstanding borrowing. */
+  hasBorrowed: boolean
+}
+
+/**
+ * How much of the spendable balance is the client's OWN (unborrowed) money.
+ *
+ * Leverage lines and loans CREDIT the master balance with borrowed proceeds that
+ * are scoped strictly for trading (buying power) and repayment — they must never
+ * leave the account as an outbound payment/transfer to a third party. This
+ * returns the free-own-funds figure so outbound flows can be ring-fenced to it.
+ * All figures are EUR-normalised aggregates. Reuses the fully-defensive
+ * `gatherGuaranteeProfile` (each sub-read degrades to 0 rather than throwing).
+ */
+export async function getFinancingRingfence(userId: string): Promise<FinancingRingfence> {
+  const config = await getGuaranteeConfig()
+  const { score } = await gatherGuaranteeProfile(userId, config)
+  const availableEur = Math.max(0, score.inputs.availableBalance || 0)
+  const exposureEur = Math.max(0, score.inputs.totalExposure || 0)
+  const freeEur = Math.max(0, availableEur - exposureEur)
+  return { availableEur, exposureEur, freeEur, hasBorrowed: exposureEur > 0.01 }
 }

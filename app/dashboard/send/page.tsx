@@ -58,6 +58,7 @@ import {
 } from "@/components/ui/dropdown-menu"
 import { resolveTransferRecipient } from "@/app/actions/transfers"
 import { sendInstantTransfer } from "@/app/actions/ledger"
+import { convertCurrency } from "@/lib/fx"
 import { toast } from "sonner"
 
 const CURRENCIES = ["EUR", "USD", "GBP", "CHF", "JPY", "AUD", "CAD", "SGD"]
@@ -148,6 +149,45 @@ export default function SendMoneyPage() {
   const [search, setSearch] = useState("")
 
   const availableBalance = balanceFor(currency)
+
+  // Borrowed-funds ring-fence. Leverage/loan proceeds credited to the balance are
+  // reserved for trading and cannot be transferred out, so an account with
+  // outstanding financing can only send its OWN free funds (EUR aggregate:
+  // available − outstanding financing). Loaded from the guarantee position API;
+  // the server enforces the same rule authoritatively.
+  const [ringfence, setRingfence] = useState<{ freeEur: number; exposureEur: number } | null>(null)
+  useEffect(() => {
+    let cancelled = false
+    ;(async () => {
+      try {
+        const res = await fetch("/api/guarantees", { credentials: "include", cache: "no-store" })
+        const data = res.ok ? await res.json() : null
+        const inp = data?.ok ? data.score?.inputs : null
+        if (!cancelled && inp) {
+          const availableEur = Math.max(0, Number(inp.availableBalance) || 0)
+          const exposureEur = Math.max(0, Number(inp.totalExposure) || 0)
+          setRingfence({ freeEur: Math.max(0, availableEur - exposureEur), exposureEur })
+        }
+      } catch {
+        if (!cancelled) setRingfence(null)
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  // Only bites when the account actually carries borrowing. The entered amount is
+  // compared to free own funds in EUR (matches the server ring-fence).
+  const hasBorrowed = (ringfence?.exposureEur ?? 0) > 0.01
+  const amountEurEntered = (() => {
+    const v = Number.parseFloat(amount)
+    if (!Number.isFinite(v) || v <= 0) return 0
+    return convertCurrency(v, currency, "EUR")
+  })()
+  const exceedsOwnFunds = hasBorrowed && !!ringfence && amountEurEntered > ringfence.freeEur + 0.01
+  const fmtEur = (n: number) =>
+    `EUR ${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 
   // Live recipient resolution for the instant method. Every account is resolved
   // on the server (which checks the Neon `admin_users` table), so any account
@@ -288,6 +328,12 @@ export default function SendMoneyPage() {
       )
       return
     }
+    if (ringfence && hasBorrowed && convertCurrency(amountValue, currency, "EUR") > ringfence.freeEur + 0.01) {
+      setFormError(
+        `This transfer would draw on borrowed funds. Leveraged and loan proceeds are reserved for trading on NAFTAhub and cannot be transferred out. Your own transferable funds are ${fmtEur(ringfence.freeEur)} (${fmtEur(ringfence.exposureEur)} of financing is outstanding).`,
+      )
+      return
+    }
 
     // Settle the transfer SERVER-SIDE so both parties see it on any device or
     // browser. (Posting to the browser's localStorage only made the money appear
@@ -333,6 +379,12 @@ export default function SendMoneyPage() {
     if (amountValue > availableBalance) {
       setFormError(
         `Insufficient balance. This transfer needs ${formatCurrency(amountValue, currency)} but only ${formatCurrency(availableBalance, currency)} is available.`,
+      )
+      return
+    }
+    if (ringfence && hasBorrowed && convertCurrency(amountValue, currency, "EUR") > ringfence.freeEur + 0.01) {
+      setFormError(
+        `This transfer would draw on borrowed funds. Leveraged and loan proceeds are reserved for trading on NAFTAhub and cannot be transferred out. Your own transferable funds are ${fmtEur(ringfence.freeEur)} (${fmtEur(ringfence.exposureEur)} of financing is outstanding).`,
       )
       return
     }
@@ -630,6 +682,20 @@ export default function SendMoneyPage() {
                 {formatCurrency(availableBalance, currency)}
               </span>
             </p>
+            {hasBorrowed && ringfence && (
+              <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-2.5 text-xs">
+                <p className="text-muted-foreground">
+                  Transferable (your own funds):{" "}
+                  <span className={cn("font-semibold", exceedsOwnFunds ? "text-red-400" : "text-foreground")}>
+                    {fmtEur(ringfence.freeEur)}
+                  </span>
+                </p>
+                <p className="mt-1 text-muted-foreground">
+                  {fmtEur(ringfence.exposureEur)} of leveraged/loan funds is reserved for trading on
+                  NAFTAhub and cannot be transferred out.
+                </p>
+              </div>
+            )}
 
             {method === "instant" && (
               <div className="space-y-2">
@@ -688,15 +754,19 @@ export default function SendMoneyPage() {
               <Button
                 className="w-full"
                 onClick={handleInstantSend}
-                disabled={!canSendMoney || !resolvedRecipient || recipientIsSelf || sending}
+                disabled={!canSendMoney || !resolvedRecipient || recipientIsSelf || sending || exceedsOwnFunds}
               >
                 <Zap className="mr-2 h-4 w-4" />
-                {sending ? "Sending…" : "Send Instantly"}
+                {sending ? "Sending…" : exceedsOwnFunds ? "Exceeds transferable funds" : "Send Instantly"}
               </Button>
             ) : (
-              <Button className="w-full" onClick={handleApprovalSend} disabled={!canSendMoney}>
+              <Button
+                className="w-full"
+                onClick={handleApprovalSend}
+                disabled={!canSendMoney || exceedsOwnFunds}
+              >
                 <Send className="mr-2 h-4 w-4" />
-                Submit for Approval
+                {exceedsOwnFunds ? "Exceeds transferable funds" : "Submit for Approval"}
               </Button>
             )}
 
