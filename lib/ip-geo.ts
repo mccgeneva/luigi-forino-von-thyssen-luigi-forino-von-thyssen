@@ -42,28 +42,24 @@ export function isPrivateIp(ip: string): boolean {
   return false
 }
 
-/**
- * Resolve an approximate physical location for an IP using a free, key-less
- * HTTPS geolocation service (ipwho.is). Best-effort: any failure returns a
- * result carrying just the IP plus an error note, never throws. Done at lookup
- * time so historical rows (recorded before geo existed) are located too.
- */
-export async function geolocateIp(ip: string | null): Promise<IpGeo | null> {
-  if (!ip) return null
-  const clean = ip.split(",")[0]?.trim() || ip.trim()
-  if (!clean) return null
-  if (isPrivateIp(clean)) return { ip: clean, isPrivate: true }
+// In-memory cache of resolved locations, shared across requests on the same
+// server instance. The admin panels re-resolve the WHOLE IP list on every load,
+// and the free geo services rate-limit a shared serverless egress IP quickly —
+// caching successful (and private) resolutions is what actually keeps the panel
+// populated. Errors are NOT cached so a transient failure retries next load.
+const GEO_CACHE_TTL_MS = 6 * 60 * 60 * 1000 // 6h
+const geoCache = new Map<string, { value: IpGeo; expires: number }>()
+
+/** Provider 1: ipwho.is — keyless HTTPS. Returns null on any non-fatal failure. */
+async function lookupIpWhoIs(clean: string): Promise<IpGeo | null> {
   try {
     const res = await fetch(`https://ipwho.is/${encodeURIComponent(clean)}`, {
       cache: "no-store",
-      // Don't let a slow third-party service hang the admin lookup.
       signal: AbortSignal.timeout(6000),
     })
-    if (!res.ok) return { ip: clean, error: "Geolocation service unavailable." }
+    if (!res.ok) return null
     const data = (await res.json()) as Record<string, unknown>
-    if (!data || data.success === false) {
-      return { ip: clean, error: (data?.message as string) || "No location on record for this address." }
-    }
+    if (!data || data.success === false) return null
     const connection = (data.connection as Record<string, unknown> | undefined) ?? {}
     return {
       ip: clean,
@@ -79,6 +75,66 @@ export async function geolocateIp(ip: string | null): Promise<IpGeo | null> {
       org: connection.org as string | undefined,
     }
   } catch {
-    return { ip: clean, error: "Geolocation lookup failed." }
+    return null
   }
+}
+
+/**
+ * Provider 2 (fallback): ip-api.com — keyless. The free endpoint is HTTP-only,
+ * which is fine server-side (no mixed-content). Used when ipwho.is is rate-
+ * limited/unavailable so the panel still resolves.
+ */
+async function lookupIpApiCom(clean: string): Promise<IpGeo | null> {
+  try {
+    const fields = "status,message,country,countryCode,regionName,city,zip,lat,lon,timezone,isp,org,query"
+    const res = await fetch(`http://ip-api.com/json/${encodeURIComponent(clean)}?fields=${fields}`, {
+      cache: "no-store",
+      signal: AbortSignal.timeout(6000),
+    })
+    if (!res.ok) return null
+    const data = (await res.json()) as Record<string, unknown>
+    if (!data || data.status !== "success") return null
+    return {
+      ip: clean,
+      country: data.country as string | undefined,
+      countryCode: data.countryCode as string | undefined,
+      region: data.regionName as string | undefined,
+      city: data.city as string | undefined,
+      postal: data.zip as string | undefined,
+      latitude: typeof data.lat === "number" ? data.lat : undefined,
+      longitude: typeof data.lon === "number" ? data.lon : undefined,
+      timezone: data.timezone as string | undefined,
+      isp: data.isp as string | undefined,
+      org: data.org as string | undefined,
+    }
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Resolve an approximate physical location for an IP using free, key-less
+ * geolocation services with a fallback chain (ipwho.is → ip-api.com) and an
+ * in-memory cache. Best-effort: any failure returns a result carrying just the
+ * IP plus an error note, never throws. Done at lookup time so historical rows
+ * (recorded before geo existed) are located too.
+ */
+export async function geolocateIp(ip: string | null): Promise<IpGeo | null> {
+  if (!ip) return null
+  const clean = ip.split(",")[0]?.trim() || ip.trim()
+  if (!clean) return null
+  if (isPrivateIp(clean)) return { ip: clean, isPrivate: true }
+
+  const cached = geoCache.get(clean)
+  if (cached && cached.expires > Date.now()) return cached.value
+
+  // Try providers in order; the first that resolves wins.
+  const resolved = (await lookupIpWhoIs(clean)) ?? (await lookupIpApiCom(clean))
+  if (resolved) {
+    geoCache.set(clean, { value: resolved, expires: Date.now() + GEO_CACHE_TTL_MS })
+    return resolved
+  }
+
+  // Both providers failed (most likely rate-limited). Do not cache the error.
+  return { ip: clean, error: "Geolocation service unavailable." }
 }
