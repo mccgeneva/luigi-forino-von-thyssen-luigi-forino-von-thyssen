@@ -426,6 +426,19 @@ export default function TradingPage() {
   const [applicantEmail, setApplicantEmail] = useState("")
   const [submitting, setSubmitting] = useState(false)
 
+  // Prefill the application with the signed-in customer's own identity so they
+  // don't retype it. Only fills empty fields (never overwrites edits), and
+  // guards against the neutral placeholder identity before the session resolves.
+  const openApplyDialog = () => {
+    const name = user.fullName && user.fullName !== "Account" ? user.fullName : ""
+    const company = user.company && user.company !== "—" ? user.company : ""
+    const composedName = name && company ? `${name} — ${company}` : name || company
+    const composedEmail = user.accountEmail?.trim() || user.email?.trim() || ""
+    if (composedName) setApplicantName((prev) => (prev.trim() ? prev : composedName))
+    if (composedEmail) setApplicantEmail((prev) => (prev.trim() ? prev : composedEmail))
+    setApplyOpen(true)
+  }
+
   // Early-termination request state, loaded from the user's own trading_fund
   // approvals (keyed by subscription id = the ledger position ref). Tells us
   // which positions already have a request under administrator review.
@@ -1723,7 +1736,7 @@ export default function TradingPage() {
                 </div>
               </div>
 
-              <Button className="w-full" size="lg" onClick={() => setApplyOpen(true)}>
+              <Button className="w-full" size="lg" onClick={openApplyDialog}>
                 Apply with {tokens.toLocaleString("en-US")} Tokens · {formatEur(capital)}
                 <ArrowRight className="ml-2 h-4 w-4" />
               </Button>
@@ -1872,7 +1885,13 @@ export default function TradingPage() {
       </Dialog>
 
       {/* Treuhand AG fund application dialog */}
-      <Dialog open={applyOpen} onOpenChange={setApplyOpen}>
+        <Dialog
+          open={applyOpen}
+          onOpenChange={(open) => {
+            if (open) openApplyDialog()
+            else setApplyOpen(false)
+          }}
+        >
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
             <DialogTitle>Apply — Treuhand AG Limited Hedge Fund</DialogTitle>
