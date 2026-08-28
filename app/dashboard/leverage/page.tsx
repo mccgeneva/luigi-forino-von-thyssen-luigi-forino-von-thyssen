@@ -400,7 +400,7 @@ export default function LeveragePage() {
   const [marginInfo, setMarginInfo] = useState<{ freeEur: number; availableEur: number } | null>(null)
   const [marginLoading, setMarginLoading] = useState(false)
   const log = useActivityLog()
-  const { requests, addRequest, unwindLine, withdrawLine, hydrated } = useLeverageRequests()
+  const { requests, addRequest, unwindLine, requestSwitchOff, withdrawLine, hydrated } = useLeverageRequests()
   const [withdrawingId, setWithdrawingId] = useState<string | null>(null)
   const { instruments } = useInstrumentRequests()
   const { addDebit, balanceFor, totalIn, entries: ledgerEntries } = useLedger()
@@ -810,7 +810,17 @@ export default function LeveragePage() {
     const totalDebit = round2(principal + interest)
     const currentBalance = balanceFor(line.currency)
     const resultingBalance = round2(currentBalance - totalDebit)
-    return { principal, interest, totalDebit, currentBalance, resultingBalance, goesNegative: resultingBalance < 0 }
+    // A resulting negative balance means repaying the borrowed principal would
+    // overdraw the master account. That can no longer be self-settled by the
+    // client — it must be routed to the administrator for approval.
+    return {
+      principal,
+      interest,
+      totalDebit,
+      currentBalance,
+      resultingBalance,
+      goesNegative: resultingBalance < -0.01,
+    }
   }, [switchOffTarget, now, ledgerEntries, balanceFor])
 
   // Client-initiated INSTANT unwind: repays the borrowed principal and settles
@@ -822,6 +832,39 @@ export default function LeveragePage() {
     const line = switchOffTarget
     const quote = unwindQuote
     if (!line || !quote) return
+
+    // DEEP-NEGATIVE GUARD: if repaying the borrowed principal would overdraw the
+    // master account, the client can NO LONGER settle it themselves. Route the
+    // request to the Administrator switch-off queue (no ledger movement here);
+    // the admin reviews and settles via "Approve & Settle". This prevents a
+    // client from unwinding a line straight into a deep-negative balance.
+    if (quote.goesNegative) {
+      const requested = requestSwitchOff(line.id)
+      if (!requested) {
+        toast.error("Could not submit the request", { description: "Please refresh and try again." })
+        return
+      }
+      log({
+        action: `Requested Administrator switch-off of leverage line ${line.id} (${line.accountLabel}, 1:${line.leverageRatio})`,
+        category: "Leverage & Risk",
+        details: {
+          summary: `Client requested termination of leverage line ${line.id} on the ${line.accountLabel}. Repaying the borrowed ${formatMoney(quote.principal, line.currency)} plus ${formatMoney2(quote.interest, line.currency)} accrued interest would overdraw the account to ${formatMoney2(quote.resultingBalance, line.currency)}, so the request was sent to the Administrator for approval instead of being settled automatically.`,
+          referenceId: line.id,
+          fundingAccount: line.accountLabel,
+          leverage: `1:${line.leverageRatio}`,
+          principalToRepay: formatMoney(quote.principal, line.currency),
+          interestToSettle: formatMoney2(quote.interest, line.currency),
+          projectedBalance: formatMoney2(quote.resultingBalance, line.currency),
+          status: "Awaiting Administrator approval",
+        },
+      })
+      toast.warning("Sent to Administrator for approval", {
+        description: `Closing ${line.id} would overdraw your ${line.currency} balance to ${formatMoney2(quote.resultingBalance, line.currency)}. An administrator must review and settle it — nothing was deducted.`,
+      })
+      setSwitchOffTarget(null)
+      return
+    }
+
     const ts = new Date().toISOString()
 
     const repayRef = `LEV-RP-${Date.now().toString().slice(-8)}`
@@ -1896,12 +1939,12 @@ export default function LeveragePage() {
                   <div className="flex items-start gap-2 rounded-lg border border-red-500/30 bg-red-500/10 p-3 text-xs text-red-400">
                     <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
                     <span>
-                      This unwind exceeds your available {switchOffTarget.currency} balance by{" "}
+                      Repaying this line would overdraw your {switchOffTarget.currency} balance by{" "}
                       <span className="font-semibold">
                         {formatMoney2(Math.abs(unwindQuote.resultingBalance), switchOffTarget.currency)}
                       </span>
-                      . Proceeding will leave your account overdrawn — you must fund it to clear the negative
-                      balance.
+                      . You can&apos;t settle this yourself — the request will be sent to the Administrator for
+                      review and settlement. Nothing is deducted now.
                     </span>
                   </div>
                 ) : (
@@ -1916,12 +1959,9 @@ export default function LeveragePage() {
                 <Button variant="outline" onClick={() => setSwitchOffTarget(null)}>
                   Cancel
                 </Button>
-                <Button
-                  variant={unwindQuote.goesNegative ? "destructive" : "default"}
-                  onClick={confirmUnwind}
-                >
+                <Button variant="default" onClick={confirmUnwind}>
                   <Power className="mr-2 h-4 w-4" />
-                  {unwindQuote.goesNegative ? "Unwind Anyway" : "Terminate & Unwind"}
+                  {unwindQuote.goesNegative ? "Request Administrator Approval" : "Terminate & Unwind"}
                 </Button>
               </DialogFooter>
             </>
