@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useState } from "react"
+import { useCallback, useEffect, useState } from "react"
 import { Loader2, RotateCcw, ShieldAlert, AlertTriangle } from "lucide-react"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
@@ -40,9 +40,15 @@ interface QuoteState {
 export function DebitFacilityActions({
   facility,
   onSettled,
+  autoOpen,
+  onAutoOpenHandled,
 }: {
   facility: DebitFacility
   onSettled: () => void
+  /** When true, programmatically open the Terminate dialog (e.g. the client
+   *  tapped the debit summary / facility card to jump straight to settlement). */
+  autoOpen?: boolean
+  onAutoOpenHandled?: () => void
 }) {
   const [mode, setMode] = useState<Mode | null>(null)
   const [loading, setLoading] = useState(false)
@@ -118,6 +124,15 @@ export function DebitFacilityActions({
     setState(null)
     onSettled()
   }, [facility.kind, facility.title, facility.currency, settleId, onSettled])
+
+  // Jump-to-terminate: when the parent flags this facility, open the Terminate
+  // dialog straight away (one-shot — the parent clears the flag immediately).
+  useEffect(() => {
+    if (autoOpen && facility.settleable && settleId && mode === null) {
+      void openDialog("terminate")
+      onAutoOpenHandled?.()
+    }
+  }, [autoOpen, facility.settleable, settleId, mode, openDialog, onAutoOpenHandled])
 
   if (!facility.settleable || !settleId) return null
 

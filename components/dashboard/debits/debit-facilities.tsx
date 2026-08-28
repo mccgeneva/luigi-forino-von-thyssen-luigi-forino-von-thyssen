@@ -12,9 +12,17 @@ import type { DebitFacility } from "@/lib/debit-schedule"
 export function DebitFacilities({
   facilities,
   onSettled,
+  autoTerminateId,
+  onAutoTerminateHandled,
+  onRequestTerminate,
 }: {
   facilities: DebitFacility[]
   onSettled: () => void
+  /** settleId of a facility whose Terminate dialog should auto-open. */
+  autoTerminateId?: string | null
+  onAutoTerminateHandled?: () => void
+  /** Tapping an active facility card requests jumping straight to its settlement. */
+  onRequestTerminate?: (settleId: string) => void
 }) {
   if (facilities.length === 0) return null
 
@@ -24,8 +32,29 @@ export function DebitFacilities({
   const renderFacility = (f: DebitFacility) => {
     const meta = KIND_META[f.kind]
     const Icon = meta.icon
+    const settleId = f.kind === "treasury" ? f.id : f.approvalId
+    const canJump = !f.closed && f.settleable && !!settleId
     return (
-      <li key={`${f.kind}-${f.id}`} className="rounded-lg border border-border bg-secondary/20 p-4">
+      <li
+        key={`${f.kind}-${f.id}`}
+        className={cn(
+          "rounded-lg border border-border bg-secondary/20 p-4",
+          canJump && "cursor-pointer transition-colors hover:border-destructive/50 hover:bg-secondary/40",
+        )}
+        role={canJump ? "button" : undefined}
+        tabIndex={canJump ? 0 : undefined}
+        onClick={canJump ? () => onRequestTerminate?.(settleId as string) : undefined}
+        onKeyDown={
+          canJump
+            ? (e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault()
+                  onRequestTerminate?.(settleId as string)
+                }
+              }
+            : undefined
+        }
+      >
                 <div className="flex items-start gap-3">
                   <div className={cn("flex h-9 w-9 shrink-0 items-center justify-center rounded-lg", meta.iconWrap)}>
                     <Icon className="h-4 w-4" />
@@ -75,13 +104,22 @@ export function DebitFacilities({
                   </div>
                 </dl>
 
-                <DebitFacilityActions facility={f} onSettled={onSettled} />
+                {/* Stop card-level clicks from double-triggering when the user
+                    taps the explicit Reconcile / Terminate buttons. */}
+                <div onClick={(e) => e.stopPropagation()}>
+                  <DebitFacilityActions
+                    facility={f}
+                    onSettled={onSettled}
+                    autoOpen={!!settleId && settleId === autoTerminateId}
+                    onAutoOpenHandled={onAutoTerminateHandled}
+                  />
+                </div>
               </li>
     )
   }
 
   return (
-    <Card>
+    <Card id="debit-facilities" className="scroll-mt-20">
       <CardHeader>
         <CardTitle className="text-base">Your loans, leverage &amp; debits</CardTitle>
         <CardDescription>
