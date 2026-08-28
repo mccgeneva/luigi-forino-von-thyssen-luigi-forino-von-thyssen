@@ -18,19 +18,14 @@ export function DebitFacilities({
 }) {
   if (facilities.length === 0) return null
 
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="text-base">Your loans, leverage & debits</CardTitle>
-        <CardDescription>Each financing arrangement currently charging interest to this account.</CardDescription>
-      </CardHeader>
-      <CardContent>
-        <ul className="grid gap-3 md:grid-cols-2">
-          {facilities.map((f) => {
-            const meta = KIND_META[f.kind]
-            const Icon = meta.icon
-            return (
-              <li key={`${f.kind}-${f.id}`} className="rounded-lg border border-border bg-secondary/20 p-4">
+  const active = facilities.filter((f) => !f.closed)
+  const closed = facilities.filter((f) => f.closed)
+
+  const renderFacility = (f: DebitFacility) => {
+    const meta = KIND_META[f.kind]
+    const Icon = meta.icon
+    return (
+      <li key={`${f.kind}-${f.id}`} className="rounded-lg border border-border bg-secondary/20 p-4">
                 <div className="flex items-start gap-3">
                   <div className={cn("flex h-9 w-9 shrink-0 items-center justify-center rounded-lg", meta.iconWrap)}>
                     <Icon className="h-4 w-4" />
@@ -82,9 +77,33 @@ export function DebitFacilities({
 
                 <DebitFacilityActions facility={f} onSettled={onSettled} />
               </li>
-            )
-          })}
-        </ul>
+    )
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base">Your loans, leverage &amp; debits</CardTitle>
+        <CardDescription>
+          Every loan, leverage line, monetization facility and treasury financing on this account — including
+          internal loans raised in the Treasury section.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-5">
+        {active.length > 0 && (
+          <div>
+            <p className="mb-2 text-xs font-medium text-muted-foreground">
+              Active — currently charging interest
+            </p>
+            <ul className="grid gap-3 md:grid-cols-2">{active.map(renderFacility)}</ul>
+          </div>
+        )}
+        {closed.length > 0 && (
+          <div>
+            <p className="mb-2 text-xs font-medium text-muted-foreground">Settled &amp; closed</p>
+            <ul className="grid gap-3 md:grid-cols-2">{closed.map(renderFacility)}</ul>
+          </div>
+        )}
       </CardContent>
     </Card>
   )

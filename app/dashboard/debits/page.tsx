@@ -1,7 +1,7 @@
 "use client"
 
 import { useCallback, useMemo } from "react"
-import { CalendarClock, TrendingDown, Receipt, Wallet } from "lucide-react"
+import { CalendarClock, TrendingDown, Receipt, Wallet, CheckCircle2, CircleDollarSign } from "lucide-react"
 import { Card, CardContent } from "@/components/ui/card"
 import { Skeleton } from "@/components/ui/skeleton"
 import { useProjectFunding } from "@/lib/project-funding-store"
@@ -64,6 +64,14 @@ export default function DebitsPage() {
 
   const primaryCurrency = schedule.facilities[0]?.currency ?? "EUR"
 
+  // Plain-language "do I owe anything right now" answer.
+  const hasActive = schedule.totals.activeCount > 0
+  const outstandingLabel = useMemo(() => {
+    const entriesOut = Object.entries(schedule.totals.outstandingByCurrency).filter(([, v]) => v > 0)
+    if (entriesOut.length === 0) return null
+    return entriesOut.map(([ccy, amt]) => formatMoney(amt, ccy)).join("  ·  ")
+  }, [schedule.totals.outstandingByCurrency])
+
   return (
     <div className="space-y-6 max-w-5xl">
       <div>
@@ -95,39 +103,96 @@ export default function DebitsPage() {
         </Card>
       ) : (
         <>
-          {/* Summary */}
-          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-            <SummaryCard
-              icon={TrendingDown}
-              label="Monthly run-rate"
-              value={formatMoney(schedule.totals.monthlyRunRate, primaryCurrency)}
-              hint="Combined full-month debit interest"
-            />
-            <SummaryCard
-              icon={CalendarClock}
-              label="Next charge"
-              value={nextCharge ? formatMoney(nextCharge.amount, nextCharge.currency) : "—"}
-              hint={
-                nextCharge
-                  ? new Date(nextCharge.date).toLocaleDateString("en-GB", {
-                      day: "2-digit",
-                      month: "short",
-                      year: "numeric",
-                    })
-                  : "No upcoming charges"
-              }
-            />
+          {/* Status hero — the one-glance answer to "do I owe anything?" */}
+          <Card className={hasActive ? "border-amber-500/40" : "border-emerald-500/40"}>
+            <CardContent className="pt-6">
+              <div className="flex items-start gap-4">
+                <div
+                  className={
+                    "flex h-11 w-11 shrink-0 items-center justify-center rounded-xl " +
+                    (hasActive ? "bg-amber-500/15 text-amber-500" : "bg-emerald-500/15 text-emerald-500")
+                  }
+                >
+                  {hasActive ? <CircleDollarSign className="h-5 w-5" /> : <CheckCircle2 className="h-5 w-5" />}
+                </div>
+
+                {hasActive ? (
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm font-medium text-foreground">
+                      You currently owe money on {schedule.totals.activeCount}{" "}
+                      {schedule.totals.activeCount === 1 ? "facility" : "facilities"}
+                    </p>
+                    <p className="mt-1 text-2xl font-bold text-foreground tabular-nums break-all">
+                      {outstandingLabel ?? "—"}
+                    </p>
+                    <p className="text-xs text-muted-foreground">
+                      Outstanding financed principal — what you borrowed and still owe. Each facility is listed
+                      below with its rate and settlement options.
+                    </p>
+
+                    <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                      <div className="rounded-lg border border-border bg-secondary/20 p-3">
+                        <div className="flex items-center gap-1.5 text-muted-foreground">
+                          <TrendingDown className="h-3.5 w-3.5" />
+                          <span className="text-[11px] font-medium">Interest cost per month</span>
+                        </div>
+                        <p className="mt-0.5 text-base font-semibold text-foreground tabular-nums break-all">
+                          {formatMoney(schedule.totals.monthlyRunRate, primaryCurrency)}
+                        </p>
+                      </div>
+                      <div className="rounded-lg border border-border bg-secondary/20 p-3">
+                        <div className="flex items-center gap-1.5 text-muted-foreground">
+                          <CalendarClock className="h-3.5 w-3.5" />
+                          <span className="text-[11px] font-medium">Next interest charge</span>
+                        </div>
+                        <p className="mt-0.5 text-base font-semibold text-foreground tabular-nums break-all">
+                          {nextCharge ? formatMoney(nextCharge.amount, nextCharge.currency) : "None scheduled"}
+                        </p>
+                        {nextCharge && (
+                          <p className="text-[11px] text-muted-foreground">
+                            due{" "}
+                            {new Date(nextCharge.date).toLocaleDateString("en-GB", {
+                              day: "2-digit",
+                              month: "short",
+                              year: "numeric",
+                            })}
+                          </p>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="min-w-0 flex-1">
+                    <p className="text-base font-semibold text-foreground">You have no active debt right now</p>
+                    <p className="mt-1 text-xs text-muted-foreground text-pretty">
+                      Every loan, leverage line and financing facility on this account is settled or closed, so
+                      no interest is currently accruing.
+                      {schedule.totals.postedTotal > 0
+                        ? ` Over the life of your past financing you were charged ${formatMoney(
+                            schedule.totals.postedTotal,
+                            primaryCurrency,
+                          )} in interest — the settled history is shown below.`
+                        : ""}
+                    </p>
+                  </div>
+                )}
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* Secondary figures — lifetime + projection, clearly labelled. */}
+          <div className="grid gap-4 sm:grid-cols-2">
             <SummaryCard
               icon={Receipt}
-              label="Settled to date"
+              label="Interest charged so far"
               value={formatMoney(schedule.totals.postedTotal, primaryCurrency)}
-              hint="Interest already charged"
+              hint="Total debit interest billed on this account to date"
             />
             <SummaryCard
               icon={Wallet}
-              label="Upcoming (12 mo)"
+              label="Projected next 12 months"
               value={formatMoney(schedule.totals.upcomingTotal, primaryCurrency)}
-              hint="Projected over the next year"
+              hint="Estimated interest if today's facilities stay open"
             />
           </div>
 
