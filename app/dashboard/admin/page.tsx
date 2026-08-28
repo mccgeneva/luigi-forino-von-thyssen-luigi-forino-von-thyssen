@@ -147,6 +147,7 @@ import {
   adminCountPending,
   adminCountPaymentsAwaitingDelivery,
   adminCountYieldTerminationRequests,
+  adminCountTradingFundTerminationRequests,
   adminDecideApproval,
   adminUpdateApprovalRecord,
   adminMarkPaymentDelivered,
@@ -597,6 +598,10 @@ export default function AdminPage() {
   // awaiting the admin's negotiate-cost & confirm — a pending action that left
   // `pending` (the program is still approved) so it needs its own signal.
   const [yieldTerminationRequests, setYieldTerminationRequests] = useState(0)
+  // Approved Treuhand fund positions whose client requested an early termination
+  // awaiting the admin's reconcile & close — the position stays `approved`, so
+  // (like the yield case) it left `pending` and needs its own signal.
+  const [treuhandTerminationRequests, setTreuhandTerminationRequests] = useState(0)
   // The type a command-center tile deep-links into when opening the dashboard.
   const [approvalsInitialKind, setApprovalsInitialKind] = useState<ApprovalKind | undefined>(undefined)
   useEffect(() => {
@@ -620,6 +625,12 @@ export default function AdminPage() {
         if (!cancelled) setYieldTerminationRequests(term)
       } catch {
         // Non-fatal: the Yield / PPP tile just omits the termination signal.
+      }
+      try {
+        const treuhandTerm = await adminCountTradingFundTerminationRequests(ADMIN_PASSCODE)
+        if (!cancelled) setTreuhandTerminationRequests(treuhandTerm)
+      } catch {
+        // Non-fatal: the Treuhand tile just omits the termination signal.
       }
     })()
     return () => {
@@ -2300,6 +2311,7 @@ export default function AdminPage() {
     { id: "section-instruments", view: "approvals", kind: "instrument", label: "Bank Instruments", count: dbPending.instrument ?? 0, icon: FileText },
     { id: "section-ppp", view: "approvals", kind: "ppp", label: "Yield / PPP", count: (dbPending.ppp ?? 0) + yieldTerminationRequests, icon: TrendingUp },
     { id: "section-trading-fund", view: "approvals", kind: "trading_fund", label: "Treuhand Trading Fund", count: dbPending.trading_fund ?? 0, icon: Coins },
+    { id: "section-treuhand-termination", view: "treuhand", label: "Treuhand Early Exit", count: treuhandTerminationRequests, icon: Coins },
     { id: "section-treasury-lending", view: "approvals", kind: "treasury_lending", label: "Treasury Capital Lending", count: dbPending.treasury_lending ?? 0, icon: Landmark },
     { id: "section-internal-loan", view: "internal-lending", label: "Internal Lending", count: dbPending.internal_loan ?? 0, icon: HandCoins },
     { id: "section-funding", view: "approvals", kind: "project_funding", label: "Project Funding", count: dbPending.project_funding ?? 0, icon: Building2 },
@@ -2350,7 +2362,7 @@ export default function AdminPage() {
         { id: "settlement", label: "Securities Settlement", description: "DTC and Euroclear settlement instructions.", icon: Globe, count: pendingDTC.length + pendingEuroclear.length },
         { id: "commodity", label: "Commodity Deals", description: "POP/POF review and trade execution.", icon: Ship, count: pendingDeals.length },
         { id: "spotdeals", label: "Spot Deals & Vessels", description: "Manage tankers and publish limited-time spot offers.", icon: Tag, count: 0 },
-        { id: "treuhand", label: "Treuhand Fund Positions", description: "Pause, reactivate or close any client's hedge-fund position.", icon: Coins, count: 0 },
+        { id: "treuhand", label: "Treuhand Fund Positions", description: "Pause, reactivate, reconcile or close any client's hedge-fund position. Early-termination requests appear here.", icon: Coins, count: treuhandTerminationRequests },
         { id: "internal-lending", label: "Internal Lending", description: "Evaluate client loan requests, set the rate & fee, then fund to the master account or decline.", icon: HandCoins, count: dbPending.internal_loan ?? 0 },
       ],
     },
