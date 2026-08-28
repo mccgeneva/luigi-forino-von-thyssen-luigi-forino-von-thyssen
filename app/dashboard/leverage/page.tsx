@@ -72,6 +72,9 @@ import {
   type LeverageAccountKey,
 } from "@/lib/leverage-requests-store"
 import { useInstrumentRequests } from "@/lib/instrument-requests-store"
+import { useInternalLoans } from "@/lib/internal-loan-store"
+import { useMonetizationRequests } from "@/lib/monetization-requests-store"
+import { usePPPRequests } from "@/lib/ppp-requests-store"
 import { useLedger } from "@/lib/ledger-store"
 import { postedLeverageInterest } from "@/lib/leverage-financing"
 import { leverageApplicationCharges } from "@/lib/leverage-audit-fee"
@@ -403,6 +406,13 @@ export default function LeveragePage() {
   const { requests, addRequest, unwindLine, requestSwitchOff, withdrawLine, hydrated } = useLeverageRequests()
   const [withdrawingId, setWithdrawingId] = useState<string | null>(null)
   const { instruments } = useInstrumentRequests()
+  // Cross-product engagement: an instrument pledged to a loan, monetization or
+  // PPP program is just as "used" as one backing another leverage line. These
+  // stores are mounted globally in the dashboard layout, so reading them here
+  // lets the picker ban a re-pledge no matter which facility already holds it.
+  const { loans: internalLoans } = useInternalLoans()
+  const { requests: monetizationRequests } = useMonetizationRequests()
+  const { requests: pppRequests } = usePPPRequests()
   const { addDebit, balanceFor, totalIn, entries: ledgerEntries } = useLedger()
 
   // Active bank instruments the client can pledge as collateral when funding a
@@ -416,8 +426,11 @@ export default function LeveragePage() {
     () => activeInstruments.find((i) => i.id === pledgedInstrumentId),
     [activeInstruments, pledgedInstrumentId],
   )
-  // Instruments currently pledged to a live or in-flight leverage line, so the
-  // collateral list can flag which ones are already committed vs. available.
+  // Instruments currently pledged/committed to ANY live facility — a leverage
+  // line, an internal loan (collateral), a monetization, or a PPP/yield program.
+  // A bank instrument is single-use collateral, so an id in this set can never be
+  // pledged again ("debit on debit" is banned). Mirrors the instruments page's
+  // `inUseInstrumentIds` so the two views agree.
   const pledgedInstrumentIds = useMemo(() => {
     const ids = new Set<string>()
     for (const r of requests) {
@@ -428,8 +441,22 @@ export default function LeveragePage() {
         ids.add(r.pledgedInstrumentId)
       }
     }
+    for (const loan of internalLoans) {
+      // Live = pending or funded; released once repaid/settled/closed.
+      if (loan.collateralInstrumentId && isLiveRequest(loan)) ids.add(loan.collateralInstrumentId)
+    }
+    for (const m of monetizationRequests) {
+      // A rejected OR reversed monetization no longer engages the instrument.
+      if (m.instrumentId && m.status !== "rejected" && m.status !== "reversed") ids.add(m.instrumentId)
+    }
+    for (const p of pppRequests) {
+      // A rejected OR cancelled yield/PPP application releases the instrument.
+      if (p.fundingInstrumentId && p.status !== "rejected" && p.status !== "cancelled") {
+        ids.add(p.fundingInstrumentId)
+      }
+    }
     return ids
-  }, [requests])
+  }, [requests, internalLoans, monetizationRequests, pppRequests])
 
   // Live clock so accrued interest ticks up while the page is open.
   const [now, setNow] = useState(() => Date.now())
@@ -617,6 +644,12 @@ export default function LeveragePage() {
   // defaults to the instrument's face value and the currency is locked to the
   // instrument's currency, since the line is backed by that specific asset.
   const handlePledgeInstrument = (id: string) => {
+    // Never accept an instrument already pledged to a live facility (leverage,
+    // loan, monetization or PPP) — single-use collateral, no re-pledge.
+    if (pledgedInstrumentIds.has(id)) {
+      setFormError("That bank instrument is already pledged to another live facility and cannot be pledged again.")
+      return
+    }
     setPledgedInstrumentId(id)
     const inst = activeInstruments.find((i) => i.id === id)
     if (inst) {
