@@ -65,6 +65,7 @@ export default function BankAccountsPage() {
   // Tracks the values we last auto-filled from an IBAN lookup so a fresh lookup
   // never clobbers something the user typed manually (manual edits always win).
   const autoFilledRef = useRef({ bankName: "", swift: "", country: "" })
+  const accountsListRef = useRef<HTMLDivElement>(null)
   const [addError, setAddError] = useState<string | null>(null)
   const logActivity = useActivityLog()
   const user = useCurrentUser()
@@ -207,6 +208,25 @@ export default function BankAccountsPage() {
     autoFilledRef.current = { bankName: "", swift: "", country: "" }
     toast.success("Account submitted for review", {
       description: "Our onboarding team will verify and activate the account.",
+    })
+  }
+
+  // Clicking a per-currency summary card opens that currency's account. When a
+  // currency holds exactly one account we jump straight to its full detail page;
+  // when it holds several we filter the list below to that currency and scroll
+  // to it so the user can pick the specific account.
+  const openCurrency = (currency: string) => {
+    const inCurrency = bankAccounts.filter((a) => a.currency === currency)
+    if (inCurrency.length === 1) {
+      router.push(`/dashboard/accounts/${encodeURIComponent(inCurrency[0].id)}`)
+      return
+    }
+    setCurrencyFilter(currency)
+    setStatusFilter("all")
+    setCountryFilter("all")
+    setSearchQuery("")
+    requestAnimationFrame(() => {
+      accountsListRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })
     })
   }
 
@@ -446,7 +466,19 @@ export default function BankAccountsPage() {
           .sort((a, b) => b[1].total - a[1].total)
           .slice(0, 5)
           .map(([currency, data]) => (
-            <Card key={currency} className="bg-zinc-900/50 border-zinc-800">
+            <Card
+              key={currency}
+              role="button"
+              tabIndex={0}
+              onClick={() => openCurrency(currency)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault()
+                  openCurrency(currency)
+                }
+              }}
+              className="bg-zinc-900/50 border-zinc-800 cursor-pointer transition-colors hover:border-amber-500/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500/50"
+            >
               <CardContent className="p-4">
                 <div className="flex items-center justify-between mb-2">
                   <span className="text-xs font-medium text-muted-foreground">{currency}</span>
@@ -519,7 +551,7 @@ export default function BankAccountsPage() {
       </div>
 
       {/* Account Cards Grid */}
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+      <div ref={accountsListRef} className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 scroll-mt-4">
         {filteredAccounts.map((account) => (
           <Card
             key={account.id}
