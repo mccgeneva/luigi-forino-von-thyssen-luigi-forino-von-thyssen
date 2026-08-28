@@ -56,6 +56,7 @@ import {
   countPendingByKind,
   countPaymentsAwaitingDelivery,
   countYieldTerminationRequests,
+  countTradingFundTerminationRequests,
   decideApproval,
   recordAdminDecision,
   recordMasterDecision,
@@ -2177,6 +2178,17 @@ export async function adminCountYieldTerminationRequests(passcode: string): Prom
     return await countYieldTerminationRequests()
   } catch (err) {
     console.log("[v0] adminCountYieldTerminationRequests failed:", (err as Error).message)
+    return 0
+  }
+}
+
+/** Count of approved Treuhand fund positions with a pending early-termination request. */
+export async function adminCountTradingFundTerminationRequests(passcode: string): Promise<number> {
+  if (!(await adminOk(passcode))) return 0
+  try {
+    return await countTradingFundTerminationRequests()
+  } catch (err) {
+    console.log("[v0] adminCountTradingFundTerminationRequests failed:", (err as Error).message)
     return 0
   }
 }
