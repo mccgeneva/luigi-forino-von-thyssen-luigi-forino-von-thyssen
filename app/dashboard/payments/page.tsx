@@ -917,6 +917,15 @@ export default function PaymentsPage() {
                   <span className={liveTransfer.insufficient ? "font-medium text-destructive" : "font-medium text-foreground"}>
                     {formatCurrency(selectedCurrencyBalance, payCurrency)}
                   </span>
+                  {hasBorrowed && ringfence && (
+                    <>
+                      {" · "}
+                      <span className="font-medium text-amber-500">
+                        Transferable (your own funds): {fmtEur(ringfence.freeEur)}
+                      </span>{" "}
+                      — leveraged/loan proceeds are reserved for trading on NAFTAhub and cannot be paid out.
+                    </>
+                  )}
                 </DialogDescription>
               </DialogHeader>
               <div className="grid gap-4 py-4">
@@ -1120,7 +1129,7 @@ export default function PaymentsPage() {
                   <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
                   <p className="text-xs text-muted-foreground text-pretty">
                     All outgoing payments require mandatory Administrator approval. Submitting this
-                    form creates a pending request — no funds leave your account until an
+                    form creates a pending request ��� no funds leave your account until an
                     Administrator approves it.
                   </p>
                 </div>
