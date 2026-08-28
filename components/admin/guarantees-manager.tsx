@@ -1,7 +1,7 @@
 "use client"
 
 import { useEffect, useMemo, useState } from "react"
-import { Loader2, Save, ShieldAlert, ShieldCheck, Search, RefreshCw } from "lucide-react"
+import { Loader2, Save, ShieldAlert, ShieldCheck, Search, RefreshCw, Sparkles, Copy, Check } from "lucide-react"
 import { toast } from "sonner"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -9,6 +9,16 @@ import { Label } from "@/components/ui/label"
 import { Input } from "@/components/ui/input"
 import { Switch } from "@/components/ui/switch"
 import { Badge } from "@/components/ui/badge"
+import { Textarea } from "@/components/ui/textarea"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { cn } from "@/lib/utils"
 import {
   DEFAULT_GUARANTEE_CONFIG,
@@ -46,6 +56,69 @@ export function GuaranteesManager({ passcode }: { passcode: string }) {
   const [users, setUsers] = useState<ScoredUser[]>([])
   const [config, setConfig] = useState<GuaranteeConfig>(DEFAULT_GUARANTEE_CONFIG)
   const [search, setSearch] = useState("")
+
+  // NQAi client-message drafting
+  const [draftTarget, setDraftTarget] = useState<ScoredUser | null>(null)
+  const [draftDecision, setDraftDecision] = useState<"approve" | "decline">("decline")
+  const [draftAmount, setDraftAmount] = useState("")
+  const [draftNote, setDraftNote] = useState("")
+  const [draftBusy, setDraftBusy] = useState(false)
+  const [draftMessage, setDraftMessage] = useState("")
+  const [copied, setCopied] = useState(false)
+
+  function openDraft(u: ScoredUser) {
+    setDraftTarget(u)
+    // Default the decision to the honest one for this profile.
+    setDraftDecision(u.score?.highRisk ? "decline" : "approve")
+    setDraftAmount("")
+    setDraftNote("")
+    setDraftMessage("")
+    setCopied(false)
+  }
+
+  async function generateDraft() {
+    if (!draftTarget) return
+    setDraftBusy(true)
+    setDraftMessage("")
+    try {
+      const res = await fetch("/api/admin/guarantees", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        credentials: "include",
+        cache: "no-store",
+        body: JSON.stringify({
+          op: "draft-message",
+          pin: passcode,
+          userId: draftTarget.id,
+          decision: draftDecision,
+          amount: draftAmount.trim() || undefined,
+          note: draftNote.trim() || undefined,
+        }),
+      })
+      const data = await res.json()
+      if (!data.ok) {
+        toast.error(data.reason === "unauthorized" ? "Authorization required." : data.error || "Draft failed.")
+        return
+      }
+      setDraftMessage(String(data.message || ""))
+    } catch (err) {
+      toast.error((err as Error)?.message || "Draft failed.")
+    } finally {
+      setDraftBusy(false)
+    }
+  }
+
+  async function copyDraft() {
+    if (!draftMessage) return
+    try {
+      await navigator.clipboard.writeText(draftMessage)
+      setCopied(true)
+      toast.success("Message copied — paste it into the client discussion.")
+      setTimeout(() => setCopied(false), 2000)
+    } catch {
+      toast.error("Copy failed — select the text and copy manually.")
+    }
+  }
 
   async function load() {
     setLoading(true)
@@ -377,6 +450,13 @@ export function GuaranteesManager({ passcode }: { passcode: string }) {
                         {s.inputs.overdueCharges > 0 ? ` · ${s.inputs.overdueCharges} overdue` : ""}
                       </p>
                     )}
+
+                    <div className="mt-3 flex justify-end">
+                      <Button variant="outline" size="sm" onClick={() => openDraft(u)}>
+                        <Sparkles className="h-4 w-4" />
+                        <span className="ml-1">Draft client message</span>
+                      </Button>
+                    </div>
                   </div>
                 )
               })}
@@ -384,6 +464,94 @@ export function GuaranteesManager({ passcode }: { passcode: string }) {
           )}
         </CardContent>
       </Card>
+
+      <Dialog open={!!draftTarget} onOpenChange={(o) => !o && setDraftTarget(null)}>
+        <DialogContent className="flex max-h-[90dvh] max-w-lg flex-col overflow-hidden">
+          <DialogHeader className="shrink-0">
+            <DialogTitle className="flex items-center gap-2">
+              <Sparkles className="h-5 w-5 text-primary" />
+              Draft client message
+            </DialogTitle>
+            <DialogDescription>
+              {draftTarget
+                ? `NQAi will write a kind, copy-paste message for ${draftTarget.company?.trim() || draftTarget.fullName} explaining the loan decision. No internal scores are ever shown to the client.`
+                : ""}
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="min-h-0 flex-1 space-y-4 overflow-y-auto pr-1">
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div>
+                <Label className="text-xs">Decision</Label>
+                <Select value={draftDecision} onValueChange={(v) => setDraftDecision(v as "approve" | "decline")}>
+                  <SelectTrigger className="mt-1">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="approve">Approve facility</SelectItem>
+                    <SelectItem value="decline">Decline — outside risk appetite</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <Label className="text-xs">Requested amount (optional)</Label>
+                <Input
+                  placeholder="e.g. EUR 5,000,000"
+                  value={draftAmount}
+                  onChange={(e) => setDraftAmount(e.target.value)}
+                  className="mt-1"
+                />
+              </div>
+            </div>
+
+            <div>
+              <Label className="text-xs">Note to NQAi (optional, private — not quoted to the client)</Label>
+              <Textarea
+                placeholder="Any extra context, conditions, or a specific tone you want…"
+                value={draftNote}
+                onChange={(e) => setDraftNote(e.target.value)}
+                className="mt-1"
+                rows={2}
+              />
+            </div>
+
+            <Button onClick={() => void generateDraft()} disabled={draftBusy} className="w-full">
+              {draftBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
+              <span className="ml-1">{draftMessage ? "Regenerate" : "Generate with NQAi"}</span>
+            </Button>
+
+            {draftMessage && (
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <Label className="text-xs">Message to the client (editable)</Label>
+                  <Button variant="ghost" size="sm" onClick={() => void copyDraft()}>
+                    {copied ? <Check className="h-4 w-4 text-green-600" /> : <Copy className="h-4 w-4" />}
+                    <span className="ml-1">{copied ? "Copied" : "Copy"}</span>
+                  </Button>
+                </div>
+                <Textarea
+                  value={draftMessage}
+                  onChange={(e) => setDraftMessage(e.target.value)}
+                  rows={10}
+                  className="text-sm leading-relaxed"
+                />
+              </div>
+            )}
+          </div>
+
+          <DialogFooter className="shrink-0 border-t border-border pt-3">
+            <Button variant="outline" onClick={() => setDraftTarget(null)}>
+              Close
+            </Button>
+            {draftMessage && (
+              <Button onClick={() => void copyDraft()}>
+                {copied ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
+                <span className="ml-1">Copy message</span>
+              </Button>
+            )}
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }
