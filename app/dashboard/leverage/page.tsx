@@ -665,6 +665,15 @@ export default function LeveragePage() {
         )
         return
       }
+      // DOUBLE-PLEDGE BAN: an instrument already backing a live line cannot
+      // secure another (no "debit on debit"). The server re-checks across every
+      // facility type; this is the immediate, visible block.
+      if (pledgedInstrumentIds.has(selectedInstrument.id)) {
+        setFormError(
+          "This bank instrument is already pledged to another live leverage line. Close that line first, or pledge a different instrument.",
+        )
+        return
+      }
     }
 
     const cap = maxLeverageFor(account)
@@ -1130,18 +1139,24 @@ export default function LeveragePage() {
                             <SelectValue placeholder="Select an active instrument" />
                           </SelectTrigger>
                           <SelectContent>
-                            {activeInstruments.map((inst) => (
-                              <SelectItem key={inst.id} value={inst.id}>
-                                <span className="flex w-full items-center justify-between gap-3">
-                                  <span>
-                                    {inst.type} · {inst.issuer}
+                            {activeInstruments.map((inst) => {
+                              const alreadyPledged = pledgedInstrumentIds.has(inst.id)
+                              return (
+                                <SelectItem key={inst.id} value={inst.id} disabled={alreadyPledged}>
+                                  <span className="flex w-full items-center justify-between gap-3">
+                                    <span>
+                                      {inst.type} · {inst.issuer}
+                                      {alreadyPledged && (
+                                        <span className="ml-1 text-xs text-muted-foreground">· already pledged</span>
+                                      )}
+                                    </span>
+                                    <span className="text-xs text-muted-foreground">
+                                      {formatMoney(inst.faceValue, inst.currency)}
+                                    </span>
                                   </span>
-                                  <span className="text-xs text-muted-foreground">
-                                    {formatMoney(inst.faceValue, inst.currency)}
-                                  </span>
-                                </span>
-                              </SelectItem>
-                            ))}
+                                </SelectItem>
+                              )
+                            })}
                           </SelectContent>
                         </Select>
                         {selectedInstrument && (
@@ -1150,6 +1165,19 @@ export default function LeveragePage() {
                             {formatMoney(selectedInstrument.faceValue, selectedInstrument.currency)} ·
                             collateral currency {selectedInstrument.currency}
                           </p>
+                        )}
+                        <p className="text-xs text-muted-foreground">
+                          Each bank instrument can back only one facility at a time — an instrument already pledged
+                          to a live line cannot be pledged again.
+                        </p>
+                        {selectedInstrument && pledgedInstrumentIds.has(selectedInstrument.id) && (
+                          <div className="flex items-start gap-2 rounded-lg border border-red-500/20 bg-red-500/10 p-3 text-xs text-red-400">
+                            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+                            <span>
+                              This instrument is already pledged to another live leverage line. Close that line
+                              first, or pledge a different instrument.
+                            </span>
+                          </div>
                         )}
                       </>
                     )}

@@ -286,6 +286,20 @@ export async function submitApproval(input: SubmitApprovalInput): Promise<Submit
     const equity = Number(rec.equity)
     const ratio = Number(rec.leverageRatio)
     const feeCurrency = String(rec.currency || input.currency || BASE_CURRENCY)
+
+    // DOUBLE-PLEDGE BAN — a bank instrument already securing a live facility
+    // (leverage / loan / monetization / PPP) cannot back another leverage line
+    // ("debit on debit"). Authoritative backstop for the client picker guard.
+    const pledgedId = typeof rec.pledgedInstrumentId === "string" ? rec.pledgedInstrumentId : ""
+    if (pledgedId) {
+      const engagedBy = await instrumentPledgedElsewhere(pledgedId, session.id)
+      if (engagedBy) {
+        return {
+          ok: false,
+          error: `This bank instrument is already pledged to ${engagedBy}, so it cannot back another leverage line. Each instrument can secure only one facility at a time — close or settle the existing one first, or pledge a different instrument.`,
+        }
+      }
+    }
     // PPI APPEAL EXCEPTION: when the client cannot afford the upfront charges and
     // submits an appeal, the charges are reserved as temporary HOLDS (see the
     // charge block below) that may push available balance negative pending admin
@@ -2022,6 +2036,47 @@ async function instrumentEngagementReason(
       if (isLiveRequest(rec)) {
         return `This instrument is pledged to ${reason}`
       }
+    }
+  }
+  return null
+}
+
+/**
+ * Given a bank-instrument id, is it ALREADY pledged/committed as collateral or
+ * funding to a LIVE facility (leverage line, internal loan, monetization, or
+ * PPP)? Used to BAN re-pledging the same instrument for a second facility — a
+ * "debit on debit" — regardless of product. Scans the account + linked members.
+ * Fails CLOSED (returns a blocking reason) on a read error, so an unverifiable
+ * pledge can never slip through. Returns a human label of the engaging facility,
+ * or null when the instrument is free.
+ */
+async function instrumentPledgedElsewhere(instrumentId: string, userId: string): Promise<string | null> {
+  if (!instrumentId) return null
+  let ids = [userId]
+  try {
+    ids = Array.from(new Set([userId, ...(await resolveEnvironmentMemberIds(userId))]))
+  } catch {
+    ids = [userId]
+  }
+  const checks: Array<{ kind: ApprovalKind; field: string; label: string }> = [
+    { kind: "leverage", field: "pledgedInstrumentId", label: "another leverage line" },
+    { kind: "internal_loan", field: "collateralInstrumentId", label: "an internal loan" },
+    { kind: "monetization", field: "instrumentId", label: "a monetization facility" },
+    { kind: "ppp", field: "fundingInstrumentId", label: "a yield / PPP program" },
+  ]
+  for (const { kind, field, label } of checks) {
+    let rows: Awaited<ReturnType<typeof listApprovalsForUsers>> = []
+    try {
+      rows = await listApprovalsForUsers(ids, kind)
+    } catch {
+      return "its current pledges could not be verified — please try again shortly"
+    }
+    for (const row of rows) {
+      if (row.status === "rejected") continue
+      const rec = ((row.payload ?? {}) as { record?: Record<string, unknown> }).record
+      if (!rec) continue
+      if (rec[field] !== instrumentId) continue
+      if (isLiveRequest(rec)) return label
     }
   }
   return null
