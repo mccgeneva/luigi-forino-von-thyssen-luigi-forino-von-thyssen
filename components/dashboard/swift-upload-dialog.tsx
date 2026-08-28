@@ -64,27 +64,27 @@ export function SwiftUploadDialog({ onSubmitted }: SwiftUploadDialogProps) {
 
   const handleFile = async (file: File) => {
     setDocName(file.name)
-    // 1) Upload the original printout to Blob so the administrator can verify it.
-    setUploading(true)
-    try {
-      const safe = file.name.replace(/[^a-zA-Z0-9._-]/g, "_")
-      const blob = await upload(`swift/${Date.now()}-${safe}`, file, {
-        access: "public",
-        handleUploadUrl: "/api/swift/blob-upload",
-      })
-      setDocPathname(blob.pathname)
-    } catch {
-      toast.error("Could not upload the file. You can still paste the FIN text below.")
-    } finally {
-      setUploading(false)
-    }
 
-    // 2) Extract the SWIFT FIN text from the printout to pre-fill the field.
+    // Read the SWIFT fields AND upload the original printout CONCURRENTLY and
+    // independently. Extraction is what fills the field the customer submits;
+    // the Blob upload only gives the administrator the original to verify, so a
+    // slow or failed upload must NEVER block reading or submitting. Both carry
+    // an abort timeout so neither phase can hang the dialog forever.
+    void extractFin(file)
+    void uploadOriginal(file)
+  }
+
+  // 1) Extract the SWIFT FIN text from the printout to pre-fill the field.
+  const extractFin = async (file: File) => {
     setExtracting(true)
     try {
       const form = new FormData()
       form.append("file", file)
-      const res = await fetch("/api/swift/extract", { method: "POST", body: form })
+      const res = await fetch("/api/swift/extract", {
+        method: "POST",
+        body: form,
+        signal: AbortSignal.timeout(60000),
+      })
       const data = (await res.json()) as {
         ok: boolean
         error?: string
@@ -101,9 +101,35 @@ export function SwiftUploadDialog({ onSubmitted }: SwiftUploadDialogProps) {
         })
       }
     } catch {
-      toast.error("Extraction failed", { description: "Paste the SWIFT FIN text from the printout below." })
+      toast.warning("Couldn't read the printout automatically", {
+        description: "Paste the SWIFT FIN text from the printout below.",
+      })
     } finally {
       setExtracting(false)
+    }
+  }
+
+  // 2) Upload the original printout to Blob so the administrator can verify it.
+  //    Best-effort and non-blocking — the source document is optional.
+  const uploadOriginal = async (file: File) => {
+    setUploading(true)
+    try {
+      const safe = file.name.replace(/[^a-zA-Z0-9._-]/g, "_")
+      const blob = await upload(`swift/${Date.now()}-${safe}`, file, {
+        access: "public",
+        handleUploadUrl: "/api/swift/blob-upload",
+        abortSignal: AbortSignal.timeout(60000),
+      })
+      setDocPathname(blob.pathname)
+    } catch {
+      // Non-fatal: the customer can still submit the FIN text; the original
+      // document just won't be attached for the administrator.
+      setDocPathname(null)
+      toast.message("Original file not attached", {
+        description: "We couldn't upload the file, but you can still submit the SWIFT text below.",
+      })
+    } finally {
+      setUploading(false)
     }
   }
 
@@ -269,7 +295,7 @@ export function SwiftUploadDialog({ onSubmitted }: SwiftUploadDialogProps) {
             <X className="mr-2 h-4 w-4" />
             Cancel
           </Button>
-          <Button onClick={handleSubmit} disabled={busy || !raw.trim() || !parsed}>
+          <Button onClick={handleSubmit} disabled={submitting || !raw.trim() || !parsed}>
             {submitting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Upload className="mr-2 h-4 w-4" />}
             Submit for verification
           </Button>

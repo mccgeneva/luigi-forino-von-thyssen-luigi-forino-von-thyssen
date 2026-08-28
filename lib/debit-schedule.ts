@@ -115,6 +115,13 @@ export interface DebitScheduleTotals {
   monthlyRunRate: number
   /** Distinct currencies present across all facilities. */
   currencies: string[]
+  /** Number of live (non-closed) facilities — the "do I owe anything" answer. */
+  activeCount: number
+  /**
+   * Outstanding financed principal on live facilities, grouped by currency —
+   * i.e. what the client has borrowed and still owes right now.
+   */
+  outstandingByCurrency: Record<string, number>
 }
 
 export interface DebitSchedule {
@@ -268,14 +275,20 @@ export function buildDebitSchedule(input: BuildDebitScheduleInput): DebitSchedul
   // A funded internal loan is a debit facility exactly like the other four:
   // the principal is credited to the master account and monthly debit interest
   // accrues from the funding date. Show approved (live) AND closed loans.
+  // Show every funded internal loan (approved or closed) — NOT gated on an
+  // `activatedAt` stamp, which is optional and, when missing, previously hid the
+  // loan from this page entirely (so it only showed under Treasury). Interest is
+  // only projected when the loan is actually funded/activated, so the calendar
+  // never invents charges the server won't post.
   const internalLoans = (input.internalLoans ?? []).filter((l) => {
     const st = l.status ?? ""
-    return (st === "approved" || st === "closed") && Number(l.amount) > 0 && !!l.activatedAt
+    return (st === "approved" || st === "closed") && Number(l.amount) > 0
   })
   for (const loan of internalLoans) {
     const shim = internalLoanApprovalShim(loan)
     const terms = readInternalLoanTerms(shim)
     if (!terms) continue
+    const funded = !!terms.activatedAt
     const closed = loan.status === "closed" || !!terms.settledAt
     facilities.push({
       id: shim.id,
@@ -283,10 +296,10 @@ export function buildDebitSchedule(input: BuildDebitScheduleInput): DebitSchedul
       title: loan.purpose?.trim() ? `Internal loan · ${loan.purpose.trim()}` : "Internal loan",
       principal: terms.amount,
       currency: terms.currency,
-      startDate: terms.activatedAt ?? shim.createdAt,
+      startDate: terms.activatedAt ?? loan.decidedAt ?? shim.createdAt,
       annualRate: terms.annualRate,
       rateLabel: fmtPct(terms.annualRate),
-      monthlyAmount: monthlyInternalLoanInterest(terms),
+      monthlyAmount: funded ? monthlyInternalLoanInterest(terms) : 0,
       status: closed ? "closed" : "approved",
       closed,
       approvalId: shim.id,
@@ -294,11 +307,13 @@ export function buildDebitSchedule(input: BuildDebitScheduleInput): DebitSchedul
     })
     // Reuse the audited engine for the interest charges (skip the one-time
     // principal credit + arrangement fee — only interest debits are schedule
-    // charges).
-    for (const post of buildInternalLoanPosts(shim, new Set(), horizon)) {
-      if (post.direction !== "debit") continue
-      if (!post.entry.id.startsWith("ILOAN-INT-")) continue
-      pushCharge(post.entry, "internal_loan")
+    // charges). Only when funded, so projections stay ledger-accurate.
+    if (funded) {
+      for (const post of buildInternalLoanPosts(shim, new Set(), horizon)) {
+        if (post.direction !== "debit") continue
+        if (!post.entry.id.startsWith("ILOAN-INT-")) continue
+        pushCharge(post.entry, "internal_loan")
+      }
     }
   }
 
@@ -307,13 +322,25 @@ export function buildDebitSchedule(input: BuildDebitScheduleInput): DebitSchedul
 
   const postedTotal = round2(charges.filter((c) => c.posted).reduce((s, c) => s + c.amount, 0))
   const upcomingTotal = round2(charges.filter((c) => c.upcoming).reduce((s, c) => s + c.amount, 0))
-  const monthlyRunRate = round2(facilities.filter((f) => !f.closed).reduce((s, f) => s + f.monthlyAmount, 0))
+  const activeFacilities = facilities.filter((f) => !f.closed)
+  const monthlyRunRate = round2(activeFacilities.reduce((s, f) => s + f.monthlyAmount, 0))
   const currencies = Array.from(new Set(facilities.map((f) => f.currency)))
+  const outstandingByCurrency: Record<string, number> = {}
+  for (const f of activeFacilities) {
+    outstandingByCurrency[f.currency] = round2((outstandingByCurrency[f.currency] ?? 0) + f.principal)
+  }
 
   return {
     facilities,
     charges,
-    totals: { postedTotal, upcomingTotal, monthlyRunRate, currencies },
+    totals: {
+      postedTotal,
+      upcomingTotal,
+      monthlyRunRate,
+      currencies,
+      activeCount: activeFacilities.length,
+      outstandingByCurrency,
+    },
     hasAny: facilities.length > 0,
   }
 
