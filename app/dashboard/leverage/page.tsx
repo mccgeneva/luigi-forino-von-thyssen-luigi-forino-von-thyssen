@@ -590,7 +590,7 @@ export default function LeveragePage() {
   const availableRatios = account ? leverageRatiosFor(account) : LEVERAGE_RATIOS
   const projectedBuyingPower = numericEquity * numericRatio
   const projectedBorrowed = numericEquity * (numericRatio - 1)
-  // Risk-based rate for the chosen ratio (higher leverage → lower rate).
+  // Risk-based rate for the chosen ratio (higher leverage → higher rate).
   const projectedAnnualRate = debitInterestRateFor(numericRatio)
   const projectedAnnualInterest = projectedBorrowed * projectedAnnualRate
   // Debit interest accrues on the BORROWED amount for as long as the line/
@@ -1103,7 +1103,7 @@ export default function LeveragePage() {
                     Allocate your own equity and choose a ratio up to 1:{MAX_LEVERAGE}. On Administrator
                     approval, the borrowed portion — equity × (ratio − 1) — is credited to your balance, and
                     debit interest begins accruing on those borrowed funds under a risk-based scale where a
-                    higher ratio carries a lower rate (14% at 1:2, 10% at 1:5, down to 3% at 1:30). One twelfth
+                    higher ratio carries a higher rate (2% at 1:2, 3% at 1:5, up to 22% at 1:30). One twelfth
                     of the annual interest is charged to your Master Account each month; the borrowed principal
                     is repaid when you switch the line off.
                   </p>
@@ -1996,13 +1996,13 @@ export default function LeveragePage() {
             </AccordionItem>
             <AccordionItem value="interest">
               <AccordionTrigger>
-                Debit interest — risk-based scale, higher leverage means a lower rate
+                Debit interest — risk-based scale, higher leverage means a higher rate
               </AccordionTrigger>
               <AccordionContent className="text-sm text-muted-foreground">
                 When a line is activated, the borrowed portion — equity × (ratio − 1) — is credited to your
-                balance. Debit interest follows a risk-based inverse scale: a higher leverage multiple signals
-                lower risk and carries a lower annual rate — 14% at 1:2, 10% at 1:5, 8% at 1:10, 7% at 1:15,
-                6% at 1:20, 4% at 1:25 and 3% at 1:30. One twelfth of the annual interest is automatically
+                balance. Debit interest follows a risk-based scale: a higher leverage multiple carries more
+                risk and a higher annual rate — 2% at 1:2, 3% at 1:5, 8% at 1:10, 10% at 1:15,
+                14% at 1:20, 18% at 1:25 and 22% at 1:30. One twelfth of the annual interest is automatically
                 charged to your Master Account each month (you receive a notification with the amount and
                 remaining balance), and any remainder is settled when you switch the line off.
               </AccordionContent>
