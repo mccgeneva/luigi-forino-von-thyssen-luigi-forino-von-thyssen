@@ -192,8 +192,7 @@ export async function POST(req: Request) {
       }
 
       const oldFaceValue = Number(inst.faceValue ?? existing.amount) || 0
-      const feeCurrency = String(inst.currency ?? existing.currency ?? "USD")
-      const fee = instrumentUpgradeFee(oldFaceValue)
+      const oldCurrency = String(inst.currency ?? existing.currency ?? "USD")
 
       // Negotiated new instrument
       const bankKey = String(body.newBankKey ?? "")
@@ -202,7 +201,7 @@ export async function POST(req: Request) {
       const newType = String(body.newType ?? current?.newType ?? inst.type ?? "SBLC").trim()
       const newTypeFull = String(body.newTypeFull ?? body.newType ?? current?.newTypeFull ?? inst.typeFull ?? "Bank Instrument").trim()
       const newFaceValue = Number(body.newFaceValue ?? current?.newFaceValue ?? 0)
-      const newCurrency = String(body.newCurrency ?? current?.newCurrency ?? feeCurrency).trim()
+      const newCurrency = String(body.newCurrency ?? current?.newCurrency ?? oldCurrency).trim()
       const terms = String(body.terms ?? current?.terms ?? "").trim() || undefined
       const note = String(body.note ?? current?.note ?? "").trim() || undefined
 
@@ -210,6 +209,13 @@ export async function POST(req: Request) {
       if (!Number.isFinite(newFaceValue) || newFaceValue <= 0) {
         return NextResponse.json({ ok: false, error: "Enter a valid negotiated face value for the new instrument." }, { status: 200 })
       }
+
+      // The expertise & upgrade fee is 0.08% of the NEGOTIATED new face value
+      // (what the customer is actually receiving), charged in the new currency —
+      // NOT the original instrument's value. Recomputed on every start/revise so
+      // it always tracks the latest negotiated figure.
+      const fee = instrumentUpgradeFee(newFaceValue)
+      const feeCurrency = newCurrency
 
       // Record the deal WITHOUT charging or blocking — the fee is taken only when
       // the customer confirms. A revise keeps any legacy `proposed`/fee state and

@@ -164,9 +164,10 @@ export function InstrumentUpgradeManager() {
     setNote(u?.note || "")
   }, [])
 
-  const oldFace = Number(target?.instrument.faceValue ?? 0)
-  const oldCurrency = target?.instrument.currency ?? "USD"
-  const fee = instrumentUpgradeFee(oldFace)
+  // Fee is 0.08% of the NEGOTIATED new face value (in the new currency) — it must
+  // track what the admin types, not the original instrument value.
+  const negotiatedFace = Number(newFaceValue.replace(/,/g, "")) || 0
+  const fee = instrumentUpgradeFee(negotiatedFace)
 
   const submitDeal = useCallback(async () => {
     if (!target) return
@@ -533,9 +534,9 @@ export function InstrumentUpgradeManager() {
             <div className="rounded-lg border border-border bg-muted/40 p-3 text-sm">
               <div className="flex items-center justify-between">
                 <span className="text-muted-foreground">
-                  Expertise &amp; upgrade fee ({INSTRUMENT_UPGRADE_FEE_LABEL} of {money(oldFace, oldCurrency)})
+                  Expertise &amp; upgrade fee ({INSTRUMENT_UPGRADE_FEE_LABEL} of {money(negotiatedFace, newCurrency)})
                 </span>
-                <span className="font-semibold">{money(fee, oldCurrency)}</span>
+                <span className="font-semibold">{money(fee, newCurrency)}</span>
               </div>
               <p className="mt-1 text-xs text-muted-foreground">
                 Charged to the customer&apos;s Master Account only when they confirm the deal (balance verified first).

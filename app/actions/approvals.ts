@@ -5679,7 +5679,7 @@ export async function acceptInstrumentUpgrade(approvalId: string): Promise<Instr
     // nothing is issued or charged if the customer cannot cover it.
     const ownerId = await resolveDataOwnerIdFor(existing.userId)
     const feeCurrency = upgrade.feeCurrency
-    const feeAmount = upgrade.fee > 0 ? upgrade.fee : instrumentUpgradeFee(upgrade.oldFaceValue)
+    const feeAmount = upgrade.fee > 0 ? upgrade.fee : instrumentUpgradeFee(upgrade.newFaceValue || upgrade.oldFaceValue)
     const alreadyCharged = upgrade.feeCharged === true || upgrade.status === "proposed"
     if (!alreadyCharged && feeAmount > 0) {
       const available = availableByCurrency(await readLedgerEntries(ownerId))
