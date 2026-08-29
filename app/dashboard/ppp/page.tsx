@@ -44,6 +44,7 @@ import {
 } from "@/components/ui/accordion"
 import { Label } from "@/components/ui/label"
 import { Input } from "@/components/ui/input"
+import { MoneyInput } from "@/components/ui/money-input"
 import { Textarea } from "@/components/ui/textarea"
 import {
   Select,
@@ -1198,9 +1199,9 @@ export default function PPPPage() {
           <div className="grid gap-4 py-4">
             <div className="grid gap-2">
               <Label>Investment Amount ({selectedProgram?.currency})</Label>
-              <Input
+              <MoneyInput
                 value={amount}
-                onChange={(e) => setAmount(e.target.value)}
+                onValueChange={setAmount}
                 placeholder={`Min: ${formatCurrency(selectedProgram?.minInvestment || 0)}`}
               />
             </div>
