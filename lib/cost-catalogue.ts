@@ -266,7 +266,7 @@ export const COST_SECTIONS: CostSection[] = [
       },
       {
         item: "Instrument transformation / upgrade",
-        fee: `${pct(INSTRUMENT_UPGRADE_FEE_RATE, 4)} of old face value`,
+        fee: `${pct(INSTRUMENT_UPGRADE_FEE_RATE, 4)} of the negotiated new face value`,
         when: "One-time expertise & upgrade fee, charged only when you confirm an administrator-negotiated upgrade into a fresh instrument.",
       },
       {
