@@ -11,6 +11,7 @@ import { DebitProfileCard } from "@/components/dashboard/debits/debit-profile-ca
 import { Separator } from "@/components/ui/separator"
 import { useCurrentUser } from "@/lib/use-current-user"
 import { KycDocumentsCard } from "@/components/dashboard/kyc-documents-card"
+import { TermsCostsCard } from "@/components/dashboard/terms-costs-card"
 
 function InfoList({ items }: { items: { label: string; value: string; icon: React.ElementType }[] }) {
   return (
@@ -116,6 +117,9 @@ export default function ProfilePage() {
           </div>
         </CardContent>
       </Card>
+
+      {/* Terms and Costs — complete platform fee catalogue (view online / download PDF). */}
+      <TermsCostsCard />
 
       {/* Debits & Credits — links to the dedicated financing / charge-calendar page. */}
       <DebitProfileCard />
