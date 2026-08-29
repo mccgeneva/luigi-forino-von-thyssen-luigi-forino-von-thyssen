@@ -593,6 +593,18 @@ export default function LeveragePage() {
   // Risk-based rate for the chosen ratio (higher leverage → lower rate).
   const projectedAnnualRate = debitInterestRateFor(numericRatio)
   const projectedAnnualInterest = projectedBorrowed * projectedAnnualRate
+  // Debit interest accrues on the BORROWED amount for as long as the line/
+  // leveraged instrument stays in place. Shown broken down per year / month /
+  // day so the client sees the true running cost. Monthly = 1/12 of the annual
+  // rate (how the accrual engine charges it); daily = annual / 365.
+  const projectedMonthlyInterest = projectedAnnualInterest / 12
+  const projectedDailyInterest = projectedAnnualInterest / 365
+  // Instrument-funded lines pledge a bank instrument as BLOCKED collateral, so
+  // the pledged face value is never spendable cash — only the borrowed funds
+  // are actually credited and deployable. Cash-funded lines deploy the full
+  // buying power. This drives the honest "deployable" figure below.
+  const instrumentFunded = account === "instruments"
+  const deployableFunds = instrumentFunded ? projectedBorrowed : projectedBuyingPower
   // Upfront charges (audit & compliance fee + PPI premium), charged together to
   // the Master Account on confirmation whether the line is accepted or not.
   const applicationCharges = leverageApplicationCharges(numericEquity, numericRatio)
@@ -1384,23 +1396,77 @@ export default function LeveragePage() {
                       +{formatMoney(projectedBorrowed, currency)}
                     </span>
                   </div>
-                  <div className="mt-1 flex items-center justify-between text-sm">
-                    <span className="text-muted-foreground">
-                      Debit Interest ({(projectedAnnualRate * 100).toFixed(2)}% / yr · 1:{numericRatio})
-                    </span>
-                    <span className="font-medium text-orange-400">
-                      {formatMoney2(projectedAnnualInterest, currency)} / yr
-                    </span>
+                  {/* Debit interest — the running cost of keeping the line /
+                      leveraged instrument in place, on the borrowed amount.
+                      Broken down per year / month / day so it's unambiguous. */}
+                  <div className="mt-2 rounded-md border border-orange-500/30 bg-orange-500/5 p-2.5">
+                    <div className="flex items-center justify-between text-sm">
+                      <span className="font-medium text-foreground">
+                        Debit Interest on borrowed funds
+                      </span>
+                      <span className="font-medium text-orange-400">
+                        {(projectedAnnualRate * 100).toFixed(2)}% / yr · 1:{numericRatio}
+                      </span>
+                    </div>
+                    <div className="mt-2 grid grid-cols-3 gap-2 text-center">
+                      <div className="rounded bg-background/40 py-1.5">
+                        <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Per year</div>
+                        <div className="font-mono text-sm font-bold tabular-nums text-orange-400">
+                          {formatMoney2(projectedAnnualInterest, currency)}
+                        </div>
+                      </div>
+                      <div className="rounded bg-background/40 py-1.5">
+                        <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Per month</div>
+                        <div className="font-mono text-sm font-bold tabular-nums text-orange-400">
+                          {formatMoney2(projectedMonthlyInterest, currency)}
+                        </div>
+                      </div>
+                      <div className="rounded bg-background/40 py-1.5">
+                        <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Per day</div>
+                        <div className="font-mono text-sm font-bold tabular-nums text-orange-400">
+                          {formatMoney2(projectedDailyInterest, currency)}
+                        </div>
+                      </div>
+                    </div>
+                    <p className="mt-2 text-[11px] leading-relaxed text-muted-foreground">
+                      Charged monthly as 1/12 of the annual rate on the{" "}
+                      {formatMoney(projectedBorrowed, currency)} borrowed, accruing every day the line stays open —
+                      and it keeps accruing for as long as this leveraged {instrumentFunded ? "instrument" : "line"} is
+                      in place, until you settle or unwind it.
+                    </p>
                   </div>
+
+                  {/* Deployable funds — the money actually credited and usable.
+                      For an instrument-funded line the pledged face value is
+                      BLOCKED collateral (never spendable), so only the borrowed
+                      funds are deployable; the full buying power is a notional
+                      position ceiling, not spendable cash. */}
                   <div className="mt-2 flex items-center justify-between border-t border-primary/20 pt-2">
                     <span className="flex items-center gap-1 text-sm font-medium text-foreground">
                       <TrendingUp className="h-4 w-4 text-primary" />
-                      Buying Power
+                      {instrumentFunded ? "Deployable funds (credited)" : "Buying Power"}
                     </span>
                     <span className="text-lg font-bold text-primary">
-                      {formatMoney(projectedBuyingPower, currency)}
+                      {formatMoney(deployableFunds, currency)}
                     </span>
                   </div>
+                  {instrumentFunded && (
+                    <>
+                      <div className="mt-1 flex items-center justify-between text-xs">
+                        <span className="text-muted-foreground">Notional position ceiling (incl. pledged collateral)</span>
+                        <span className="font-medium text-muted-foreground">
+                          {formatMoney(projectedBuyingPower, currency)}
+                        </span>
+                      </div>
+                      <p className="mt-2 text-[11px] leading-relaxed text-muted-foreground">
+                        Your pledged {formatMoney(numericEquity, currency)} instrument is{" "}
+                        <span className="font-medium text-foreground">blocked collateral</span> — it is never spendable
+                        cash. Only the {formatMoney(projectedBorrowed, currency)} of borrowed funds is credited and
+                        deployable, and these funds are ring-fenced for on-platform investing tools &amp; services and
+                        facility repayment — they cannot be paid out or transferred to third parties.
+                      </p>
+                    </>
+                  )}
                 </div>
 
                 {/* Upfront charges — audit & compliance fee + PPI, charged immediately on confirmation */}
