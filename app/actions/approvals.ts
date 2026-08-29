@@ -47,6 +47,7 @@ import {
   instrumentUpgradeFee,
   type InstrumentUpgrade,
 } from "@/lib/instrument-upgrade"
+import { findInstrumentType } from "@/lib/instrument-marketplace"
 import { buildInternalLoanPosts } from "@/lib/internal-loan"
 import { isLiveRequest } from "@/lib/live-request"
 import type { LedgerEntry } from "@/lib/ledger-store"
@@ -5856,6 +5857,13 @@ export async function acceptInstrumentUpgrade(approvalId: string): Promise<Instr
     const newId = `${upgrade.newType}-${Math.floor(100000 + Math.random() * 900000)}`
     const now = new Date()
     const expiry = new Date(now.getTime() + 365 * 24 * 60 * 60 * 1000)
+    // Capabilities follow the NEW instrument type, not the old one. Without this
+    // a BG upgraded FROM an MT760 blocked-funds guarantee inherited the MT760's
+    // `assignable:false / monetizable:false` (and its "Blocked-funds guarantee"
+    // trade label), so the fresh, fully-usable instrument showed NO Transfer /
+    // Assign / Monetize actions. A fresh partner-bank instrument must be usable
+    // per its own type (BG → both true; DLC → monetizable only; etc.).
+    const newTypeMeta = findInstrumentType(upgrade.newType)
     const newInstrument: Record<string, unknown> = {
       ...oldBase,
       id: newId,
@@ -5875,6 +5883,9 @@ export async function acceptInstrumentUpgrade(approvalId: string): Promise<Instr
       expiryDate: expiry.toISOString(),
       daysRemaining: 365,
       rating: "AAA",
+      assignable: newTypeMeta?.assignable ?? true,
+      monetizable: newTypeMeta?.monetizable ?? true,
+      tradeType: `Transformation upgrade from ${String((oldBase as { typeFull?: unknown }).typeFull ?? "prior instrument")}`,
       blocked: undefined,
       upgrade: undefined,
     }
