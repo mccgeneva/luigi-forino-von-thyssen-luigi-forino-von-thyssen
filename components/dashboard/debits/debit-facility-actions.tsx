@@ -226,6 +226,11 @@ export function DebitFacilityActions({
               <Loader2 className="h-4 w-4 animate-spin" />
               Calculating payoff…
             </div>
+          ) : pendingApproval && !state ? (
+            <div className="flex items-start gap-2 rounded-lg border border-primary/30 bg-primary/10 p-3 text-sm text-foreground">
+              <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
+              <p className="text-pretty">{pendingApproval}</p>
+            </div>
           ) : error && !state ? (
             <div className="space-y-3">
               <div className="flex items-start gap-2 rounded-lg border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">
@@ -238,9 +243,26 @@ export function DebitFacilityActions({
                   variant="outline"
                   className="w-full gap-1.5"
                   onClick={() => void openDialog(mode)}
+                  disabled={working}
                 >
                   <RotateCcw className="h-3.5 w-3.5" />
                   Retry
+                </Button>
+              )}
+              {/* The payoff PREVIEW failed, but termination re-resolves and
+                  recomputes authoritatively on the server (with its own solvency
+                  + overdraft + admin-approval routing, posting nothing on error).
+                  So let the client proceed directly instead of dead-ending. */}
+              {isTerminate && (
+                <Button
+                  size="sm"
+                  variant="destructive"
+                  className="w-full gap-1.5"
+                  onClick={() => void runTerminate()}
+                  disabled={working}
+                >
+                  {working ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ShieldAlert className="h-3.5 w-3.5" />}
+                  Terminate &amp; settle anyway
                 </Button>
               )}
             </div>
