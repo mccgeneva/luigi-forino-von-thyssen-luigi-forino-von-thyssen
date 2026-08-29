@@ -131,9 +131,10 @@ export function DebitFacilities({
       <CardContent className="space-y-5">
         {active.length > 0 && (
           <div>
-            <p className="mb-2 text-xs font-medium text-muted-foreground">
-              Active — currently charging interest
-            </p>
+            <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+              <p className="text-xs font-medium text-muted-foreground">Active — currently charging interest</p>
+              <SettleAllButton facilities={active} onSettled={onSettled} />
+            </div>
             <ul className="grid gap-3 md:grid-cols-2">{active.map(renderFacility)}</ul>
           </div>
         )}
