@@ -61,6 +61,7 @@ import {
   countPaymentsAwaitingDelivery,
   countYieldTerminationRequests,
   countTradingFundTerminationRequests,
+  countInstrumentUpgradeRequests,
   decideApproval,
   recordAdminDecision,
   recordMasterDecision,
@@ -2422,6 +2423,16 @@ export async function adminCountTradingFundTerminationRequests(passcode: string)
     return await countTradingFundTerminationRequests()
   } catch (err) {
     console.log("[v0] adminCountTradingFundTerminationRequests failed:", (err as Error).message)
+    return 0
+  }
+}
+
+export async function adminCountInstrumentUpgradeRequests(passcode: string): Promise<number> {
+  if (!(await adminOk(passcode))) return 0
+  try {
+    return await countInstrumentUpgradeRequests()
+  } catch (err) {
+    console.log("[v0] adminCountInstrumentUpgradeRequests failed:", (err as Error).message)
     return 0
   }
 }

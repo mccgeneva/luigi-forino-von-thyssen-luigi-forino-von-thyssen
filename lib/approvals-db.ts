@@ -421,6 +421,24 @@ export async function countTradingFundTerminationRequests(): Promise<number> {
 }
 
 /**
+ * Count of APPROVED bank instruments whose client has REQUESTED a transformation
+ * upgrade the administrator has not yet actioned. The customer-initiated request
+ * stamps `payload.upgrade.status = 'requested'` on the still-`approved`
+ * instrument (it blocks nothing and charges nothing), so — like the yield /
+ * Treuhand termination requests — it never enters the `pending` counts and is
+ * invisible on the command center without this dedicated count.
+ */
+export async function countInstrumentUpgradeRequests(): Promise<number> {
+  await ensureTable()
+  const { rows } = await query<{ n: string }>(
+    `SELECT COUNT(*)::int AS n FROM approval_requests
+      WHERE kind = 'instrument' AND status = 'approved'
+        AND payload->'upgrade'->>'status' = 'requested'`,
+  )
+  return Number(rows[0]?.n ?? 0)
+}
+
+/**
  * Record a decision on a pending request. Returns the updated record, or null
  * if it does not exist or was already decided (idempotent / race-safe via the
  * status guard in the WHERE clause).

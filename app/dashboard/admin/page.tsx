@@ -52,6 +52,7 @@ import {
   Network,
   HandCoins,
   ShieldAlert,
+  Sparkles,
 } from "lucide-react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -149,6 +150,7 @@ import {
   adminCountPaymentsAwaitingDelivery,
   adminCountYieldTerminationRequests,
   adminCountTradingFundTerminationRequests,
+  adminCountInstrumentUpgradeRequests,
   adminDecideApproval,
   adminUpdateApprovalRecord,
   adminMarkPaymentDelivered,
@@ -622,6 +624,11 @@ export default function AdminPage() {
   // awaiting the admin's reconcile & close — the position stays `approved`, so
   // (like the yield case) it left `pending` and needs its own signal.
   const [treuhandTerminationRequests, setTreuhandTerminationRequests] = useState(0)
+  // Approved bank instruments whose client REQUESTED a transformation upgrade
+  // awaiting the admin to propose terms. The instrument stays `approved` (nothing
+  // blocked/charged), so it left `pending` and needs its own signal — otherwise
+  // the admin gets the bell but the panel shows "all caught up".
+  const [instrumentUpgradeRequests, setInstrumentUpgradeRequests] = useState(0)
   // The type a command-center tile deep-links into when opening the dashboard.
   const [approvalsInitialKind, setApprovalsInitialKind] = useState<ApprovalKind | undefined>(undefined)
   useEffect(() => {
@@ -651,6 +658,12 @@ export default function AdminPage() {
         if (!cancelled) setTreuhandTerminationRequests(treuhandTerm)
       } catch {
         // Non-fatal: the Treuhand tile just omits the termination signal.
+      }
+      try {
+        const upgradeReq = await adminCountInstrumentUpgradeRequests(ADMIN_PASSCODE)
+        if (!cancelled) setInstrumentUpgradeRequests(upgradeReq)
+      } catch {
+        // Non-fatal: the Bank Instruments tile just omits the upgrade-request signal.
       }
     })()
     return () => {
@@ -2329,6 +2342,7 @@ export default function AdminPage() {
     { id: "section-subaccounts", view: "subaccounts", label: "Sub-Account Requests", count: pendingSubAccountCount, icon: Layers },
     { id: "section-payments", view: "approvals", kind: "payment", label: "Outgoing Payments", count: (dbPending.payment ?? 0) + paymentsAwaitingDelivery, icon: ArrowUpRight },
     { id: "section-instruments", view: "approvals", kind: "instrument", label: "Bank Instruments", count: dbPending.instrument ?? 0, icon: FileText },
+    { id: "section-instrument-upgrade", view: "instruments", label: "Instrument Upgrade Requests", count: instrumentUpgradeRequests, icon: Sparkles },
     { id: "section-ppp", view: "approvals", kind: "ppp", label: "Yield / PPP", count: (dbPending.ppp ?? 0) + yieldTerminationRequests, icon: TrendingUp },
     { id: "section-trading-fund", view: "approvals", kind: "trading_fund", label: "Treuhand Trading Fund", count: dbPending.trading_fund ?? 0, icon: Coins },
     { id: "section-treuhand-termination", view: "treuhand", label: "Treuhand Early Exit", count: treuhandTerminationRequests, icon: Coins },
@@ -2366,7 +2380,7 @@ export default function AdminPage() {
       items: [
         { id: "approvals", label: "All Pending Approvals", description: "Cross-client queue for every request type, with bulk actions.", icon: ClipboardList, count: dbPendingTotal },
         { id: "payments", label: "Outgoing Payments", description: "Review and authorize pending wire transfers.", icon: ArrowUpRight, count: pending.length },
-        { id: "instruments", label: "Bank Instruments", description: "Approve SBLC, BG and MTN issuance requests.", icon: FileText, count: pendingInstruments.length },
+        { id: "instruments", label: "Bank Instruments", description: "Approve SBLC, BG and MTN issuance requests, and review customer upgrade requests.", icon: FileText, count: pendingInstruments.length + instrumentUpgradeRequests },
         { id: "ppp", label: "Yield / PPP", description: "Review private placement & yield applications.", icon: TrendingUp, count: pendingPPP.length },
         { id: "funding", label: "Project Funding", description: "Assess AES project funding applications.", icon: Building2, count: pendingFunding.length },
         { id: "leverage", label: "Leverage Lines", description: "Approve leverage and switch-off requests.", icon: Gauge, count: pendingLeverage.length + pendingSwitchOff.length },
