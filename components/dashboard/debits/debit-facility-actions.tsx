@@ -29,6 +29,11 @@ interface QuoteState {
   available: number
   covered: boolean
   shortfall: number
+  settleableNow: boolean
+  needsApproval: boolean
+  overdraftLimitEur: number
+  approvalGranted: boolean
+  approvalPending: boolean
 }
 
 /**
@@ -55,6 +60,8 @@ export function DebitFacilityActions({
   const [working, setWorking] = useState(false)
   const [state, setState] = useState<QuoteState | null>(null)
   const [error, setError] = useState<string | null>(null)
+  /** Set when a deep-negative termination was routed to the administrator. */
+  const [pendingApproval, setPendingApproval] = useState<string | null>(null)
 
   // Treasury facilities are keyed by their drawdown txn id; the other three by
   // their backing approval id.
@@ -66,6 +73,7 @@ export function DebitFacilityActions({
       setMode(next)
       setState(null)
       setError(null)
+      setPendingApproval(null)
       setLoading(true)
       const res = await quoteDebitSettlement(facility.kind, settleId)
       setLoading(false)
@@ -73,7 +81,17 @@ export function DebitFacilityActions({
         setError(res.error)
         return
       }
-      setState({ quote: res.quote, available: res.available, covered: res.covered, shortfall: res.shortfall })
+      setState({
+        quote: res.quote,
+        available: res.available,
+        covered: res.covered,
+        shortfall: res.shortfall,
+        settleableNow: res.settleableNow,
+        needsApproval: res.needsApproval,
+        overdraftLimitEur: res.overdraftLimitEur,
+        approvalGranted: res.approvalGranted,
+        approvalPending: res.approvalPending,
+      })
     },
     [facility.kind, settleId],
   )
@@ -83,6 +101,7 @@ export function DebitFacilityActions({
     setMode(null)
     setState(null)
     setError(null)
+    setPendingApproval(null)
   }, [working])
 
   const runTerminate = useCallback(async () => {
@@ -91,6 +110,15 @@ export function DebitFacilityActions({
     const res = await terminateDebitFacility(facility.kind, settleId)
     setWorking(false)
     if (!res.ok) {
+      // Routed to the administrator (deep negative beyond authorized overdraft):
+      // show an informational pending state, not a red error.
+      if ("pendingApproval" in res && res.pendingApproval) {
+        setPendingApproval(res.error)
+        setError(null)
+        toast.info("Sent to the administrator for approval.")
+        onSettled()
+        return
+      }
       toast.error(res.error)
       setError(res.error)
       return
@@ -138,8 +166,15 @@ export function DebitFacilityActions({
 
   const q = state?.quote
   const isTerminate = mode === "terminate"
+  // Terminate is confirmable either as an instant settlement (balance covers it
+  // OR within the authorized overdraft / already granted) OR as a request to the
+  // administrator (deep negative). Reconcile is unchanged.
   const canConfirm =
-    !!state && !working && (isTerminate ? state.covered && state.quote.payoff > 0 : state.quote.reconcileDue > 0)
+    !!state &&
+    !working &&
+    !pendingApproval &&
+    (isTerminate ? state.quote.payoff > 0 && !state.approvalPending : state.quote.reconcileDue > 0)
+  const isApprovalRequest = isTerminate && !!state && state.needsApproval && !state.approvalGranted
 
   return (
     <>
@@ -228,14 +263,42 @@ export function DebitFacilityActions({
                 </dl>
               )}
 
-              {isTerminate && !state.covered && (
-                <div className="flex items-start gap-2 rounded-lg border border-destructive/30 bg-destructive/10 p-3 text-xs text-destructive">
+              {isTerminate && !state.covered && state.settleableNow && (
+                <div className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-600 dark:text-amber-400">
                   <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
                   <p className="text-pretty">
-                    Your master account balance can&apos;t cover this termination. You&apos;re short by{" "}
-                    <span className="font-semibold">{formatMoney(state.shortfall, q.currency)}</span>. Top up the balance
-                    first — nothing will be charged.
+                    {state.approvalGranted
+                      ? "An administrator has approved this settlement. It will be charged now and your account may go negative as authorized."
+                      : (
+                        <>
+                          Your balance is short by{" "}
+                          <span className="font-semibold">{formatMoney(state.shortfall, q.currency)}</span>, but this stays
+                          within your authorized overdraft. You can settle now — your account will go temporarily negative.
+                        </>
+                      )}
                   </p>
+                </div>
+              )}
+
+              {isApprovalRequest && (
+                <div className="flex items-start gap-2 rounded-lg border border-destructive/30 bg-destructive/10 p-3 text-xs text-destructive">
+                  <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0" />
+                  <p className="text-pretty">
+                    This payoff would take your account{" "}
+                    <span className="font-semibold">beyond your authorized overdraft</span>
+                    {state.overdraftLimitEur > 0 && <> (approx. {formatMoney(state.overdraftLimitEur, "EUR")})</>}. It needs
+                    administrator approval.{" "}
+                    {state.approvalPending
+                      ? "A request is already awaiting the administrator."
+                      : "Send it for approval — nothing is charged until it's approved."}
+                  </p>
+                </div>
+              )}
+
+              {pendingApproval && (
+                <div className="flex items-start gap-2 rounded-lg border border-primary/30 bg-primary/10 p-3 text-xs text-foreground">
+                  <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
+                  <p className="text-pretty">{pendingApproval}</p>
                 </div>
               )}
 
@@ -253,24 +316,30 @@ export function DebitFacilityActions({
 
           <DialogFooter className="gap-2 sm:gap-2">
             <Button variant="ghost" size="sm" onClick={close} disabled={working}>
-              Cancel
+              {pendingApproval ? "Close" : "Cancel"}
             </Button>
-            <Button
-              size="sm"
-              variant={isTerminate ? "destructive" : "default"}
-              disabled={!canConfirm}
-              onClick={() => void (isTerminate ? runTerminate() : runReconcile())}
-              className="gap-1.5"
-            >
-              {working && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
-              {isTerminate
-                ? q
-                  ? `Terminate & settle ${formatMoney(q.payoff, q.currency)}`
-                  : "Terminate & settle"
-                : q && q.reconcileDue > 0
-                  ? `Post ${formatMoney(q.reconcileDue, q.currency)}`
-                  : "Nothing due"}
-            </Button>
+            {!pendingApproval && (
+              <Button
+                size="sm"
+                variant={isApprovalRequest ? "default" : isTerminate ? "destructive" : "default"}
+                disabled={!canConfirm}
+                onClick={() => void (isTerminate ? runTerminate() : runReconcile())}
+                className="gap-1.5"
+              >
+                {working && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+                {isTerminate
+                  ? isApprovalRequest
+                    ? state?.approvalPending
+                      ? "Awaiting administrator"
+                      : "Request administrator approval"
+                    : q
+                      ? `Terminate & settle ${formatMoney(q.payoff, q.currency)}`
+                      : "Terminate & settle"
+                  : q && q.reconcileDue > 0
+                    ? `Post ${formatMoney(q.reconcileDue, q.currency)}`
+                    : "Nothing due"}
+              </Button>
+            )}
           </DialogFooter>
         </DialogContent>
       </Dialog>

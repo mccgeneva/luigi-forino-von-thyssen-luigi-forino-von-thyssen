@@ -26,6 +26,7 @@ export type ApprovalKind =
   | "commodity"
   | "bank_account"
   | "card"
+  | "debit_termination"
 
 export const APPROVAL_KINDS: ApprovalKind[] = [
   "payment",
@@ -47,6 +48,7 @@ export const APPROVAL_KINDS: ApprovalKind[] = [
   "commodity",
   "bank_account",
   "card",
+  "debit_termination",
 ]
 
 export const KIND_LABELS: Record<ApprovalKind, string> = {
@@ -69,6 +71,7 @@ export const KIND_LABELS: Record<ApprovalKind, string> = {
   commodity: "Commodity Deal",
   bank_account: "Bank Account Registration",
   card: "Payment Card",
+  debit_termination: "Debit Termination (overdraft)",
 }
 
 /** Best-effort deep link to the section where a client reviews this kind. */
@@ -89,6 +92,7 @@ export const KIND_HREF: Partial<Record<ApprovalKind, string>> = {
   commodity: "/dashboard/commodity",
   bank_account: "/dashboard/accounts",
   card: "/dashboard/cards",
+  debit_termination: "/dashboard/debits",
 }
 
 export function kindLabel(kind: ApprovalKind): string {

@@ -6,6 +6,7 @@ import { cn } from "@/lib/utils"
 import { formatMoney } from "@/lib/fund-reservation"
 import { KIND_META } from "@/components/dashboard/debits/debit-meta"
 import { DebitFacilityActions } from "@/components/dashboard/debits/debit-facility-actions"
+import { SettleAllButton } from "@/components/dashboard/debits/settle-all-button"
 import type { DebitFacility } from "@/lib/debit-schedule"
 
 /** The loans, leverage lines and debits this account carries. */
@@ -130,9 +131,10 @@ export function DebitFacilities({
       <CardContent className="space-y-5">
         {active.length > 0 && (
           <div>
-            <p className="mb-2 text-xs font-medium text-muted-foreground">
-              Active — currently charging interest
-            </p>
+            <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+              <p className="text-xs font-medium text-muted-foreground">Active — currently charging interest</p>
+              <SettleAllButton facilities={active} onSettled={onSettled} />
+            </div>
             <ul className="grid gap-3 md:grid-cols-2">{active.map(renderFacility)}</ul>
           </div>
         )}
