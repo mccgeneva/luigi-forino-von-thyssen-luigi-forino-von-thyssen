@@ -5752,12 +5752,19 @@ export async function acceptInstrumentUpgrade(approvalId: string): Promise<Instr
     })
     await decideApproval(created.id, "approved", "Instrument upgrade")
 
-    // 2) Stamp the old deal accepted, then retire the old (blocked) instrument.
-    await updateApprovalPayload(approvalId, {
-      ...(existing.payload ?? {}),
-      upgrade: { ...upgrade, status: "accepted", feeCharged: true, decidedAt: now.toISOString(), newInstrumentId: newId },
-    })
-    await revokeApprovedApproval(approvalId, session.dataOwnerId, "Retired — transformed into an upgraded instrument.")
+    // 2) Retire the OLD instrument by DELETING it outright — an upgraded
+    // instrument is transformed into the fresh one, so the old row must be
+    // removed entirely (not merely soft-cancelled, which left a lingering card
+    // the customer had to delete manually). Hard delete scoped to the holder,
+    // exactly like the manual "settle out" path; the new instrument already
+    // carries `upgradedFrom` for provenance. Falls back to a soft-cancel only if
+    // the delete cannot run, so the old instrument can NEVER remain active.
+    const removed = await deleteApprovalForUser(approvalId, existing.userId)
+    if (!removed) {
+      await revokeApprovedApproval(approvalId, existing.userId, "Retired — transformed into an upgraded instrument.").catch(
+        () => null,
+      )
+    }
 
     try {
       await insertNotification({
