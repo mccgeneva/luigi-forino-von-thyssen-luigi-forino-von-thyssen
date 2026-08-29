@@ -2702,7 +2702,7 @@ export default function InstrumentsPage() {
                     <p className="mt-2 flex items-start gap-1.5 text-[11px] leading-relaxed text-muted-foreground">
                       <Lock className="mt-px h-3 w-3 shrink-0" />
                       <span>
-                        The equity scales from 0.75% at 1% LTV to 5% at 100% LTV; the PPI premium is funded from it. The
+                        The equity scales from 0.0625% at 1% LTV to ~0.42% at 100% LTV; the PPI premium is funded from it. The
                         full amount is blocked from your {monetizeReserveCurrency} Master Account on submission and
                         released automatically if the request is declined or reversed.
                       </span>
