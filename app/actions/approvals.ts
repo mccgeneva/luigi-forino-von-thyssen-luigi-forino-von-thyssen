@@ -43,6 +43,7 @@ import {
 } from "@/lib/ppp-yield"
 import {
   INSTRUMENT_UPGRADE_FEE_LABEL,
+  INSTRUMENT_UPGRADE_FEE_RATE,
   instrumentUpgradeFee,
   type InstrumentUpgrade,
 } from "@/lib/instrument-upgrade"
@@ -5644,6 +5645,133 @@ export async function transferMyInstrument(
 export type InstrumentUpgradeResult =
   | { ok: true; newInstrumentId?: string; refunded?: number; currency?: string }
   | { ok: false; error: string }
+
+/**
+ * CUSTOMER-INITIATED upgrade request. The customer asks to have one of their
+ * held instruments transformed into a fresh, better one; the Administrator then
+ * reviews it and proposes terms (or declines). This moves NO money and blocks
+ * nothing — it only stamps `payload.upgrade = { status: "requested", ... }` with
+ * placeholder new-instrument fields (a like-for-like copy that the admin's
+ * "Propose upgrade" overwrites) and fans a notification out to every admin. The
+ * engagement guard is enforced downstream: the admin `start` op hard-blocks a
+ * pledged/reserved instrument, so a request on an engaged instrument simply
+ * cannot be actioned (the client UI also hides the request action for those).
+ */
+export async function requestInstrumentUpgrade(
+  approvalId: string,
+  note?: string,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const session = await resolveCurrentSession()
+  if (!session) return { ok: false, error: "Your session has expired. Please sign in again." }
+  try {
+    const existing = await getApprovalById(approvalId)
+    if (!existing || existing.kind !== "instrument" || existing.status !== "approved") {
+      return { ok: false, error: "Active instrument not found." }
+    }
+    if (existing.userId !== session.dataOwnerId) {
+      return { ok: false, error: "You can only request upgrades for instruments in your own portfolio." }
+    }
+    const payload = (existing.payload ?? {}) as {
+      record?: Record<string, unknown>
+      instrument?: Record<string, unknown>
+      issuedByAdmin?: boolean
+      upgrade?: InstrumentUpgrade
+    }
+    const current = payload.upgrade
+    if (current && current.status !== "declined") {
+      const label =
+        current.status === "requested"
+          ? "already requested — an administrator is reviewing it"
+          : current.status === "accepted"
+            ? "already been upgraded"
+            : "already in an active upgrade negotiation"
+      return { ok: false, error: `This instrument has ${label}.` }
+    }
+
+    const base = (payload.issuedByAdmin ? payload.instrument : payload.record ?? payload.instrument) ?? {}
+    const oldFaceValue = Number((base as { faceValue?: number }).faceValue ?? existing.amount) || 0
+    const oldCurrency = String((base as { currency?: string }).currency ?? existing.currency ?? "USD")
+    const oldType = String((base as { type?: string }).type ?? "SBLC")
+    const oldTypeFull = String((base as { typeFull?: string }).typeFull ?? "Bank Instrument")
+    const oldIssuer = String((base as { issuer?: string }).issuer ?? "")
+    const trimmedNote = (note ?? "").trim() || undefined
+
+    // Placeholder new-instrument fields (copy of the current instrument) so the
+    // record satisfies the InstrumentUpgrade type; the admin's Propose upgrade
+    // (start op) overwrites them with the real negotiated terms.
+    const upgrade: InstrumentUpgrade = {
+      status: "requested",
+      proposedAt: new Date().toISOString(),
+      feeRate: INSTRUMENT_UPGRADE_FEE_RATE,
+      fee: instrumentUpgradeFee(oldFaceValue),
+      feeCurrency: oldCurrency,
+      oldFaceValue,
+      feeCharged: false,
+      requestedByCustomer: true,
+      requestedAt: new Date().toISOString(),
+      customerRequestNote: trimmedNote,
+      newType: oldType,
+      newTypeFull: oldTypeFull,
+      newIssuer: oldIssuer,
+      newFaceValue: oldFaceValue,
+      newCurrency: oldCurrency,
+      note: trimmedNote,
+    }
+    await updateApprovalPayload(approvalId, { ...(existing.payload ?? {}), upgrade })
+
+    // Alert EVERY administrator so any of them can review the request and
+    // propose terms. Best-effort — a notification failure never fails the request.
+    let holderName = existing.userId
+    try {
+      const profile = await resolveAccountProfileById(existing.userId)
+      holderName = profile.fullName
+    } catch {
+      /* best-effort */
+    }
+    try {
+      const admins = await Promise.all(adminEmails().map((e) => getDynamicUserByEmail(e).catch(() => undefined)))
+      const seen = new Set<string>()
+      await Promise.all(
+        admins
+          .filter(
+            (a): a is NonNullable<typeof a> =>
+              !!a && a.id !== existing.userId && !seen.has(a.id) && (seen.add(a.id), true),
+          )
+          .map((admin) =>
+            insertNotification({
+              userId: admin.id,
+              tone: "warning",
+              title: "Customer requested an instrument upgrade",
+              body: `${holderName} requested an upgrade of their ${oldTypeFull} (${oldCurrency} ${oldFaceValue.toLocaleString("en-US")})${trimmedNote ? ` — "${trimmedNote}"` : ""}. Open the Instrument Upgrade panel to review and propose terms.`,
+              href: "/dashboard/admin",
+            }).catch(() => undefined),
+          ),
+      )
+    } catch (err) {
+      console.log("[v0] requestInstrumentUpgrade admin fan-out failed:", (err as Error).message)
+    }
+
+    try {
+      await logActivity({
+        action: `Requested an instrument upgrade`,
+        category: "Bank Instruments",
+        user: holderName,
+        details: {
+          referenceId: String((base as { id?: string }).id ?? approvalId),
+          summary: `Customer requested an upgrade of ${oldTypeFull} (${oldCurrency} ${oldFaceValue.toLocaleString("en-US")})${trimmedNote ? ` — "${trimmedNote}"` : ""}.`,
+          action: "Upgrade requested",
+        },
+      })
+    } catch (err) {
+      console.log("[v0] requestInstrumentUpgrade activity failed:", (err as Error).message)
+    }
+
+    return { ok: true }
+  } catch (err) {
+    console.log("[v0] requestInstrumentUpgrade failed:", (err as Error).message)
+    return { ok: false, error: "The request could not be completed. Please try again." }
+  }
+}
 
 /**
  * Confirm an Administrator-proposed transformation/upgrade at the agreed value.

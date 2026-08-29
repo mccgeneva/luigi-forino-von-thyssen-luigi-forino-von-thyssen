@@ -94,7 +94,7 @@ import {
   isMccOwnedAction,
 } from "@/lib/instrument-marketplace"
 import { resolveTransferRecipient } from "@/app/actions/transfers"
-import { acceptInstrumentUpgrade, declineInstrumentUpgrade, counterInstrumentUpgrade } from "@/app/actions/approvals"
+import { acceptInstrumentUpgrade, declineInstrumentUpgrade, counterInstrumentUpgrade, requestInstrumentUpgrade } from "@/app/actions/approvals"
 import { INSTRUMENT_UPGRADE_FEE_LABEL, isUpgradeOpen } from "@/lib/instrument-upgrade"
 import {
   instrumentManagementFee,
@@ -202,6 +202,10 @@ export default function InstrumentsPage() {
   const [returnTarget, setReturnTarget] = useState<Instrument | null>(null)
   // Administrator transformation-upgrade offer the customer can accept/decline.
   const [upgradeTarget, setUpgradeTarget] = useState<Instrument | null>(null)
+  // Customer-initiated upgrade REQUEST (distinct from responding to an admin offer).
+  const [upgradeRequestTarget, setUpgradeRequestTarget] = useState<Instrument | null>(null)
+  const [upgradeRequestNote, setUpgradeRequestNote] = useState("")
+  const [requestingUpgrade, setRequestingUpgrade] = useState(false)
   const [upgradeBusy, setUpgradeBusy] = useState(false)
   const [upgradeDiscuss, setUpgradeDiscuss] = useState(false)
   const [counterValue, setCounterValue] = useState("")
@@ -573,6 +577,45 @@ export default function InstrumentsPage() {
       void refreshInstruments()
     } finally {
       setCounterBusy(false)
+    }
+  }
+
+  // A client may REQUEST an upgrade of a holding when it is active, not engaged
+  // anywhere (blocked / monetized / leveraged / pledged / on loan), and not
+  // already in an upgrade flow. A previously declined request can be re-made.
+  const canRequestUpgrade = (inst: Instrument) =>
+    inst.status === "active" &&
+    !inst.blocked &&
+    usageReasons(inst).length === 0 &&
+    (!inst.upgrade || inst.upgrade.status === "declined")
+
+  // Send a customer-initiated upgrade request to the administrator.
+  const submitUpgradeRequest = async () => {
+    const target = upgradeRequestTarget
+    if (!target || requestingUpgrade) return
+    setRequestingUpgrade(true)
+    try {
+      const res = await requestInstrumentUpgrade(target.approvalId ?? target.id, upgradeRequestNote.trim() || undefined)
+      if (!res.ok) {
+        toast.error("Request failed", { description: res.error })
+        return
+      }
+      toast.success("Upgrade requested", {
+        description: "An administrator will review your request and propose terms — nothing is charged until you confirm a deal.",
+      })
+      logActivity({
+        action: `Requested an upgrade of ${target.id}`,
+        category: "Bank Instruments",
+        details: {
+          summary: `Requested a transformation upgrade of ${target.typeFull} (${target.id}).`,
+          referenceId: target.id,
+        },
+      })
+      setUpgradeRequestTarget(null)
+      setUpgradeRequestNote("")
+      void refreshInstruments()
+    } finally {
+      setRequestingUpgrade(false)
     }
   }
 
@@ -1619,6 +1662,17 @@ export default function InstrumentsPage() {
                               <Download className="mr-2 h-4 w-4" />
                               Download Certificate
                             </DropdownMenuItem>
+                            {canRequestUpgrade(instrument) && (
+                              <DropdownMenuItem
+                                onClick={() => {
+                                  setUpgradeRequestNote("")
+                                  setUpgradeRequestTarget(instrument)
+                                }}
+                              >
+                                <Sparkles className="mr-2 h-4 w-4" />
+                                Request upgrade
+                              </DropdownMenuItem>
+                            )}
                             {isMccHeldInstrument(instrument) && instrument.status === "active" ? (
                               <>
                                 <DropdownMenuSeparator />
@@ -1673,6 +1727,18 @@ export default function InstrumentsPage() {
                               {instrument.upgrade.newIssuer} is offered. Tap to review.
                             </p>
                           </button>
+                        )}
+
+                        {instrument.upgrade?.status === "requested" && (
+                          <div className="w-full rounded-lg border border-primary/30 bg-primary/5 p-3">
+                            <div className="flex items-center gap-1.5 text-xs font-semibold text-primary">
+                              <Sparkles className="h-3.5 w-3.5" />
+                              Upgrade requested
+                            </div>
+                            <p className="mt-1 text-xs text-muted-foreground">
+                              Awaiting an administrator to review your request and propose terms. Your instrument stays fully usable.
+                            </p>
+                          </div>
                         )}
 
                         {leverageByInstrument.has(instrument.id) && (
@@ -1946,6 +2012,17 @@ export default function InstrumentsPage() {
                               <ExternalLink className="mr-2 h-4 w-4" />
                               View Details
                             </DropdownMenuItem>
+                            {canRequestUpgrade(instrument) && (
+                              <DropdownMenuItem
+                                onClick={() => {
+                                  setUpgradeRequestNote("")
+                                  setUpgradeRequestTarget(instrument)
+                                }}
+                              >
+                                <Sparkles className="mr-2 h-4 w-4" />
+                                Request upgrade
+                              </DropdownMenuItem>
+                            )}
                           </DropdownMenuContent>
                         </DropdownMenu>
                       </div>
@@ -2986,6 +3063,69 @@ export default function InstrumentsPage() {
                 </>
               )
             })()}
+        </DialogContent>
+      </Dialog>
+
+      {/* Customer-initiated upgrade REQUEST */}
+      <Dialog
+        open={upgradeRequestTarget !== null}
+        onOpenChange={(o) => {
+          if (!o && !requestingUpgrade) {
+            setUpgradeRequestTarget(null)
+            setUpgradeRequestNote("")
+          }
+        }}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Sparkles className="h-4 w-4 text-primary" />
+              Request an upgrade
+            </DialogTitle>
+            <DialogDescription>
+              Ask an administrator to transform this instrument into a fresh, better one from a reputable partner
+              bank. They will review your request and propose terms — nothing is blocked or charged until you confirm
+              a deal.
+            </DialogDescription>
+          </DialogHeader>
+          {upgradeRequestTarget && (
+            <div className="space-y-4">
+              <div className="rounded-lg border border-border bg-muted/40 p-3 text-sm">
+                <p className="font-medium text-foreground">{upgradeRequestTarget.typeFull}</p>
+                <p className="text-xs text-muted-foreground">
+                  {upgradeRequestTarget.issuer} · {upgradeRequestTarget.id}
+                </p>
+                <p className="mt-1 font-semibold">
+                  {formatCurrency(upgradeRequestTarget.faceValue, upgradeRequestTarget.currency)}
+                </p>
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="upgrade-request-note">What would you like? (optional)</Label>
+                <Textarea
+                  id="upgrade-request-note"
+                  value={upgradeRequestNote}
+                  onChange={(e) => setUpgradeRequestNote(e.target.value)}
+                  placeholder="e.g. a higher face value, a specific issuing bank, or a different instrument type"
+                  rows={3}
+                />
+              </div>
+            </div>
+          )}
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setUpgradeRequestTarget(null)
+                setUpgradeRequestNote("")
+              }}
+              disabled={requestingUpgrade}
+            >
+              Cancel
+            </Button>
+            <Button onClick={() => void submitUpgradeRequest()} disabled={requestingUpgrade}>
+              {requestingUpgrade ? "Requesting…" : "Request upgrade"}
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
 
