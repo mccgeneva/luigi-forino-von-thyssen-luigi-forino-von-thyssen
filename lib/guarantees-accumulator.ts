@@ -201,6 +201,13 @@ export interface GuaranteeScore {
 /** Soft cap so one runaway ratio cannot dominate the whole score. */
 const FACTOR_SOFT_CAP = 150
 const PENALTY_SOFT_CAP = 200
+/**
+ * How many times the authorized overdraft ceiling a breach can escalate the
+ * overdraft risk factor. At the ceiling the factor equals `overdraftRiskFull`
+ * (default 144 → sqrt≈12); at ≥ ~2.25× it clears an 18-point high-risk gate; and
+ * it caps at 6× so an extreme negative balance cannot make the score infinite.
+ */
+const OVERDRAFT_BREACH_CAP = 6
 
 /**
  * Compute the full guarantee score from real inputs and the (tunable) config.
@@ -213,7 +220,12 @@ export function computeGuaranteeScore(inputs: GuaranteeInputs, config: Guarantee
   const available = Math.max(0, inputs.availableBalance || 0)
   const overdue = Math.max(0, Math.floor(inputs.overdueCharges || 0))
   const ageDays = Math.max(0, inputs.accountAgeDays || 0)
-  const overdraftUsage = clamp(inputs.overdraftUsageRatio || 0, 0, 1)
+  // overdraftUsageRatio is now the UNCLAMPED breach ratio (0 = positive, 1 = at
+  // the ceiling, >1 = beyond the authorized overdraft). Allow it to escalate the
+  // risk factor well past the ceiling (capped at 6× so one runaway figure can't
+  // be infinite) so a deep, illogical overdraft is properly reflected instead of
+  // saturating at the ceiling.
+  const overdraftUsage = clamp(inputs.overdraftUsageRatio || 0, 0, OVERDRAFT_BREACH_CAP)
 
   // Capacity to carry risk = spendable balance + posted collateral (+ε).
   const capacity = available + guarantees + 1
@@ -249,9 +261,13 @@ export function computeGuaranteeScore(inputs: GuaranteeInputs, config: Guarantee
   const fTrackRecord = clamp(newAccountRisk * seasoning * (1 - guaranteeStrength), 0, FACTOR_SOFT_CAP)
 
   // 6. Overdraft — a negative Master Account balance is a live risk, scaled by
-  // how much of the controlled overdraft ceiling is used. Zero when positive.
+  // how deep the account is relative to its controlled overdraft ceiling. Zero
+  // when positive; overdraftRiskFull at exactly the ceiling; and it ESCALATES
+  // linearly beyond that when the ceiling is breached (up to OVERDRAFT_BREACH_CAP
+  // × the ceiling), so a deeply negative account is driven firmly into high risk
+  // instead of scoring the same as a mild, within-ceiling overdraft.
   const overdraftRiskFull = Math.max(0, config.overdraftRiskFull || 0)
-  const fOverdraft = clamp(overdraftRiskFull * overdraftUsage, 0, FACTOR_SOFT_CAP)
+  const fOverdraft = clamp(overdraftRiskFull * overdraftUsage, 0, overdraftRiskFull * OVERDRAFT_BREACH_CAP)
 
   const factors: GuaranteeFactors = {
     securityDeposit: round2(fSecurityDeposit),

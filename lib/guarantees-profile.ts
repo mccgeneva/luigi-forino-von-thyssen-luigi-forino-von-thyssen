@@ -306,7 +306,9 @@ export async function gatherGuaranteeProfile(userId: string, config: GuaranteeCo
     availableBalance,
     overdueCharges,
     accountAgeDays,
-    overdraftUsageRatio: overdraft.usageRatio,
+    // Feed the UNCLAMPED breach ratio so a deep overdraft (far beyond the 8%
+    // ceiling) escalates the risk score rather than saturating at the ceiling.
+    overdraftUsageRatio: overdraft.breachRatio,
     currency: BASE,
   }
 
