@@ -622,6 +622,35 @@ export async function submitApproval(input: SubmitApprovalInput): Promise<Submit
     input.payload = payloadObj
   }
 
+  // ROI WITHDRAWAL LOCK — funding-source detection. An investment (Yield/PPP or
+  // Treuhand fund) counts as LEVERAGE/DEBIT-funded when the customer carries any
+  // outstanding borrowed/financed exposure at the moment they invest (their
+  // master balance is partly borrowed money). Its ROI is then credited but LOCKED
+  // (PPP: until maturity; Treuhand: 3 months rolling per credit). A customer with
+  // ZERO borrowed exposure invests pure real money → ROI is freely withdrawable.
+  // Stamp the flag ONCE here so the ROI engines decide deterministically; legacy
+  // programs with no flag default to free (never retroactively locked).
+  if (input.kind === "ppp" || input.kind === "trading_fund") {
+    try {
+      const config = await getGuaranteeConfig()
+      const { score } = await gatherGuaranteeProfile(session.id, config)
+      const leverageFunded = (score.inputs.totalExposure ?? 0) > 0.01
+      const payloadObj = (input.payload ?? {}) as Record<string, unknown>
+      if (input.kind === "ppp") {
+        // PPP stores the investment under payload.record.
+        const rec = (payloadObj.record ?? {}) as Record<string, unknown>
+        rec.leverageFunded = leverageFunded
+        payloadObj.record = rec
+      } else {
+        // Treuhand stores its fields at the payload root.
+        payloadObj.leverageFunded = leverageFunded
+      }
+      input.payload = payloadObj
+    } catch (err) {
+      console.log("[v0] ROI funding-source detection failed (defaulting to freely withdrawable):", (err as Error).message)
+    }
+  }
+
   try {
     const request = await insertApproval({
       userId: session.id,
@@ -2861,7 +2890,14 @@ export async function reconcileMyApprovedCredits(): Promise<{ ok: boolean; appli
 
       const posts = [...buildPppCapitalPosts(req), ...buildPppRoiPosts(req)]
       for (const post of posts) {
-        if (rows.has(post.id)) continue
+        const cur = rows.get(post.id)
+        // Post when missing OR when the entry must change — notably a locked
+        // (leverage-funded) ROI `hold` becoming a withdrawable `completed` credit
+        // once the program matures. Re-running with an identical entry is a no-op,
+        // so this never double-posts.
+        if (cur && cur.status === post.status && cur.direction === post.direction && cur.amount === post.amount) {
+          continue
+        }
         await upsertLedgerEntry(ownerId, post)
         rows.set(post.id, post)
         applied += 1

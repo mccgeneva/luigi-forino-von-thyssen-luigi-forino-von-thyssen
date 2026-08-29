@@ -53,6 +53,15 @@ export const TRADING_FUND_MONTHLY_ROI = 0.25
 export const TRADING_FUND_TERM_MONTHS = 12
 
 /**
+ * ROI WITHDRAWAL LOCK for a LEVERAGE/DEBIT-funded Treuhand position. Each monthly
+ * ROI credit is still shown on the master account the month it is earned, but it
+ * is not WITHDRAWABLE until this many months have elapsed FROM THAT CREDIT (a
+ * rolling lock — every payment carries its own 3-month unlock). ROI on a position
+ * funded with the client's OWN real money is freely withdrawable immediately.
+ */
+export const TRADING_FUND_ROI_LOCK_MONTHS = 3
+
+/**
  * Platform commission charged on EVERY exit ("when money goes out"), applied to
  * the CAPITAL RETURNED. Debited from the master account at termination, whether
  * the position matures at term end or is terminated early.
@@ -293,23 +302,45 @@ export function buildTradingFundPosts(req: ApprovalRequest, now: Date = new Date
     comment: `Capital deployed to the ${FUND_LABEL}${tokenNote}.`,
   })
 
+  // Was this subscription funded with LEVERAGE/DEBIT money? Stamped at submission
+  // from the account's borrowed exposure. Only a leverage-funded position locks
+  // its ROI; a position funded with the client's own real money pays freely-
+  // withdrawable ROI.
+  const leverageFunded = (req.payload as { leverageFunded?: boolean } | undefined)?.leverageFunded === true
+
   // 2. Fixed 25% monthly ROI, in arrears and pause-aware — the first payment
   //    matures one full ACTIVE month after activation, then each active month,
   //    up to the fixed engagement term (after which the position expires).
+  //    LEVERAGE-funded: each ROI is CREDITED (reflects on the master account) but
+  //    HELD — not withdrawable — until TRADING_FUND_ROI_LOCK_MONTHS have elapsed
+  //    from that credit (rolling). A held credit shows on the ledger yet is
+  //    excluded from the spendable balance, and flips to `completed` (withdrawable)
+  //    automatically once its unlock date passes (same id → the reconciler updates
+  //    it). REAL-money positions post `completed` immediately.
   const monthlyRoi = round2(capital * TRADING_FUND_MONTHLY_ROI)
   if (monthlyRoi > 0) {
+    const nowMs = now.getTime()
     for (const period of maturedRoiPayments(start, now, pauses, roiStopMs, TRADING_FUND_TERM_MONTHS)) {
+      let unlockMs = 0
+      if (leverageFunded) {
+        const u = new Date(period.date)
+        u.setMonth(u.getMonth() + TRADING_FUND_ROI_LOCK_MONTHS)
+        unlockMs = u.getTime()
+      }
+      const locked = leverageFunded && nowMs < unlockMs
       posts.push({
         id: tradingFundRoiId(req.id, period.index),
         direction: "credit",
         amount: monthlyRoi,
         currency,
-        status: "completed",
+        status: locked ? "hold" : "completed",
         date: period.date.toISOString(),
         counterparty: FUND_LABEL,
         reference: req.id,
         category: "NAFTAhub Trading — Fund ROI",
-        comment: `Month ${period.index} of ${TRADING_FUND_TERM_MONTHS} — ${(TRADING_FUND_MONTHLY_ROI * 100).toFixed(0)}% ROI on the ${FUND_LABEL}${tokenNote}.`,
+        comment: locked
+          ? `Month ${period.index} of ${TRADING_FUND_TERM_MONTHS} — ${(TRADING_FUND_MONTHLY_ROI * 100).toFixed(0)}% ROI on the ${FUND_LABEL}${tokenNote}. Leverage-funded: credited but locked (not withdrawable) until ${new Date(unlockMs).toISOString().slice(0, 10)} — ${TRADING_FUND_ROI_LOCK_MONTHS} months from this credit.`
+          : `Month ${period.index} of ${TRADING_FUND_TERM_MONTHS} — ${(TRADING_FUND_MONTHLY_ROI * 100).toFixed(0)}% ROI on the ${FUND_LABEL}${tokenNote}.`,
       })
     }
   }
