@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react"
 import { toast } from "sonner"
-import { ArrowUpCircle, Loader2, RefreshCw, Search, Sparkles, MessageSquare, Pencil, Undo2, Handshake } from "lucide-react"
+import { ArrowUpCircle, Loader2, RefreshCw, Search, Sparkles, MessageSquare, Pencil, Undo2, Handshake, Lock } from "lucide-react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -61,6 +61,8 @@ interface HeldInstrument {
   holderEmail: string
   instrument: InstrumentVM
   upgrade: InstrumentUpgrade | null
+  /** Non-null when the instrument is pledged/reserved to a live facility and cannot be upgraded. */
+  engagedReason?: string | null
 }
 
 function money(amount: number | undefined, currency: string | undefined): string {
@@ -292,6 +294,7 @@ export function InstrumentUpgradeManager() {
               const legacyProposed = u?.status === "proposed"
               const open = negotiating || legacyProposed
               const counter = u?.customerCounterFaceValue
+              const engaged = !open && u?.status !== "accepted" && !!it.engagedReason
               return (
                 <li
                   key={it.approvalId}
@@ -314,6 +317,10 @@ export function InstrumentUpgradeManager() {
                           <Badge className="gap-1 bg-primary/15 text-primary">
                             <Sparkles className="size-3" /> Upgraded
                           </Badge>
+                        ) : engaged ? (
+                          <Badge variant="outline" className="gap-1 border-amber-500/40 text-amber-600">
+                            <Lock className="size-3" /> Reserved
+                          </Badge>
                         ) : null}
                       </div>
                       <p className="truncate text-sm text-muted-foreground">
@@ -322,6 +329,11 @@ export function InstrumentUpgradeManager() {
                       {open && u ? (
                         <p className="text-xs text-muted-foreground">
                           Proposed: {money(u.newFaceValue, u.newCurrency)} {u.newTypeFull} — {u.newIssuer}
+                        </p>
+                      ) : null}
+                      {engaged && it.engagedReason ? (
+                        <p className="flex items-center gap-1 text-xs text-amber-600">
+                          <Lock className="size-3" /> {it.engagedReason}
                         </p>
                       ) : null}
                       {open && counter ? (
@@ -361,6 +373,10 @@ export function InstrumentUpgradeManager() {
                         </>
                       ) : u?.status === "accepted" ? (
                         <span className="text-sm text-muted-foreground">Completed</span>
+                      ) : engaged ? (
+                        <span className="inline-flex items-center gap-1.5 text-xs text-amber-600">
+                          <Lock className="size-3.5" /> Reserved — cannot be upgraded
+                        </span>
                       ) : (
                         <Button size="sm" onClick={() => openStart(it)}>
                           <ArrowUpCircle className="mr-2 size-4" /> Propose upgrade

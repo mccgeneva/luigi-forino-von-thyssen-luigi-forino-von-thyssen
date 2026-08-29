@@ -1,9 +1,10 @@
 import { NextResponse } from "next/server"
 import { adminActionAuthorized } from "@/lib/admin-auth"
 import { listDynamicUsers } from "@/lib/admin-users-db"
-import { getApprovalById, updateApprovalPayload, listAllApprovals } from "@/lib/approvals-db"
+import { getApprovalById, updateApprovalPayload, listAllApprovals, listApprovalsForUsers } from "@/lib/approvals-db"
 import { insertNotification } from "@/lib/notifications-db"
-import { resolveDataOwnerIdFor, resolveAccountProfileById } from "@/lib/session-user"
+import { resolveDataOwnerIdFor, resolveAccountProfileById, resolveEnvironmentMemberIds } from "@/lib/session-user"
+import { isLiveRequest } from "@/lib/live-request"
 import { upsertLedgerEntry } from "@/lib/ledger-db"
 import { partnerBankByKey } from "@/lib/partner-banks"
 import { logActivity } from "@/app/actions/log-activity"
@@ -61,6 +62,46 @@ function baseInstrument(p: Payload): InstrumentVM {
   return (base ?? {}) as InstrumentVM
 }
 
+// Which live facility, if any, this instrument is pledged / reserved / funding —
+// so it can NEVER be transformed while committed (a pledged MT760 backing a
+// leverage line invested into the Treuhand fund, PPP funding, loan collateral,
+// or monetization). Mirrors the client-side `instrumentPledgedElsewhere` /
+// `instrumentEngagementReason` guards, but lib-safe for this API route. Scans the
+// holder + their linked environment members. FAILS CLOSED (returns a blocking
+// reason) on a read error, so an unverifiable pledge can never be upgraded away.
+// Returns a human reason, or null when the instrument is free.
+async function instrumentEngagementReason(instrumentId: string, userId: string): Promise<string | null> {
+  if (!instrumentId) return null
+  let ids = [userId]
+  try {
+    ids = Array.from(new Set([userId, ...(await resolveEnvironmentMemberIds(userId))]))
+  } catch {
+    ids = [userId]
+  }
+  const checks: Array<{ kind: "leverage" | "internal_loan" | "monetization" | "ppp" | "trading_fund"; fields: string[]; reason: string }> = [
+    { kind: "leverage", fields: ["pledgedInstrumentId"], reason: "pledged to an active leverage line (its borrowed funds are deployed — e.g. reserved into the Treuhand AG Hedge Fund)" },
+    { kind: "internal_loan", fields: ["collateralInstrumentId"], reason: "pledged as collateral on an active internal loan" },
+    { kind: "monetization", fields: ["instrumentId"], reason: "committed to an active monetization facility" },
+    { kind: "ppp", fields: ["fundingInstrumentId"], reason: "funding an active yield / PPP program" },
+    { kind: "trading_fund", fields: ["fundingInstrumentId", "pledgedInstrumentId", "instrumentId"], reason: "reserved into an active Treuhand AG Hedge Fund position" },
+  ]
+  for (const { kind, fields, reason } of checks) {
+    let rows: Awaited<ReturnType<typeof listApprovalsForUsers>> = []
+    try {
+      rows = await listApprovalsForUsers(ids, kind)
+    } catch {
+      return "its current pledges could not be verified — please try again shortly"
+    }
+    for (const row of rows) {
+      if (row.status === "rejected") continue
+      const rec = ((row.payload ?? {}) as { record?: Record<string, unknown> }).record ?? {}
+      if (!fields.some((f) => rec[f] === instrumentId)) continue
+      if (isLiveRequest(rec)) return reason
+    }
+  }
+  return null
+}
+
 export async function POST(req: Request) {
   let body: Record<string, unknown>
   try {
@@ -89,7 +130,7 @@ export async function POST(req: Request) {
 
     if (op === "list") {
       const approvals = await listAllApprovals({ kind: "instrument", status: "approved" })
-      const instruments = approvals
+      const mapped = approvals
         .map((a) => {
           const payload = (a.payload ?? {}) as Payload
           const inst = baseInstrument(payload)
@@ -104,6 +145,14 @@ export async function POST(req: Request) {
           }
         })
         .filter((i) => !!i.instrument.id)
+      // Annotate each with whether it is currently pledged/reserved to a live
+      // facility, so the UI can disable "Propose upgrade" up-front.
+      const instruments = await Promise.all(
+        mapped.map(async (i) => ({
+          ...i,
+          engagedReason: await instrumentEngagementReason(String(i.instrument.id ?? ""), i.userId),
+        })),
+      )
       return NextResponse.json({ ok: true, instruments, clients, feeRate: INSTRUMENT_UPGRADE_FEE_RATE }, { status: 200 })
     }
 
@@ -122,6 +171,26 @@ export async function POST(req: Request) {
         return NextResponse.json({ ok: false, error: "There is no open upgrade to revise." }, { status: 200 })
       }
       const inst = baseInstrument(payload)
+
+      // AUTHORITATIVE ENGAGEMENT GUARD — an instrument that is pledged/reserved
+      // to a live facility (leverage line whose funds are deployed into the
+      // Treuhand fund, loan collateral, monetization, PPP) can NEVER be
+      // transformed, even by the administrator: upgrading it would swap out
+      // collateral that is actively securing borrowed funds. Only blocks a NEW
+      // proposal; an already-open negotiation may still be revised/withdrawn.
+      if (op === "start") {
+        const engaged = await instrumentEngagementReason(String(inst.id ?? ""), existing.userId)
+        if (engaged) {
+          return NextResponse.json(
+            {
+              ok: false,
+              error: `This instrument can't be upgraded — it is ${engaged}. Release it (close/settle the facility) before proposing a transformation.`,
+            },
+            { status: 200 },
+          )
+        }
+      }
+
       const oldFaceValue = Number(inst.faceValue ?? existing.amount) || 0
       const feeCurrency = String(inst.currency ?? existing.currency ?? "USD")
       const fee = instrumentUpgradeFee(oldFaceValue)
