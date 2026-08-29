@@ -34,6 +34,9 @@ export function instrumentUpgradeFee(faceValue: number): number {
 
 /**
  * Lifecycle of an instrument upgrade.
+ * - `requested` — the CUSTOMER asked to have this instrument upgraded; no terms
+ *   yet, nothing blocked or charged. The Administrator reviews it and proposes a
+ *   deal (which moves it to `negotiating`) or declines it.
  * - `negotiating` — admin proposed a deal; old instrument stays usable, NO fee
  *   charged. Customer can counter / discuss; admin can revise / withdraw.
  * - `proposed` — LEGACY: old flow where the fee was charged and the instrument
@@ -42,7 +45,7 @@ export function instrumentUpgradeFee(faceValue: number): number {
  *   old one retired.
  * - `declined` — offer withdrawn/declined; any charged fee refunded.
  */
-export type InstrumentUpgradeStatus = "negotiating" | "proposed" | "accepted" | "declined"
+export type InstrumentUpgradeStatus = "requested" | "negotiating" | "proposed" | "accepted" | "declined"
 
 /**
  * The upgrade deal stored on the OLD instrument approval's `payload.upgrade`.
@@ -61,6 +64,14 @@ export interface InstrumentUpgrade {
   oldFaceValue: number
   /** Whether the upfront fee has actually been charged yet. */
   feeCharged?: boolean
+
+  // --- Customer-initiated request (status "requested") ----------------------
+  /** True when the CUSTOMER asked for the upgrade (vs an admin-initiated offer). */
+  requestedByCustomer?: boolean
+  /** ISO timestamp of the customer's upgrade request. */
+  requestedAt?: string
+  /** Optional note the customer attached to their request. */
+  customerRequestNote?: string
 
   // --- Customer counter-offer (during negotiation) --------------------------
   /** Face value the customer proposed back to the administrator, if any. */

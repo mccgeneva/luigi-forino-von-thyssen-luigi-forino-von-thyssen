@@ -295,6 +295,7 @@ export function InstrumentUpgradeManager() {
               const negotiating = u?.status === "negotiating"
               const legacyProposed = u?.status === "proposed"
               const open = negotiating || legacyProposed
+              const requested = u?.status === "requested"
               const counter = u?.customerCounterFaceValue
               const engaged = !open && u?.status !== "accepted" && !!it.engagedReason
               return (
@@ -323,6 +324,10 @@ export function InstrumentUpgradeManager() {
                           <Badge variant="outline" className="gap-1 border-amber-500/40 text-amber-600">
                             <Lock className="size-3" /> Reserved
                           </Badge>
+                        ) : requested ? (
+                          <Badge className="gap-1 bg-primary/15 text-primary">
+                            <Sparkles className="size-3" /> Customer requested
+                          </Badge>
                         ) : null}
                       </div>
                       <p className="truncate text-sm text-muted-foreground">
@@ -336,6 +341,12 @@ export function InstrumentUpgradeManager() {
                       {engaged && it.engagedReason ? (
                         <p className="flex items-center gap-1 text-xs text-amber-600">
                           <Lock className="size-3" /> {it.engagedReason}
+                        </p>
+                      ) : null}
+                      {requested && !engaged ? (
+                        <p className="rounded-md bg-primary/10 px-2 py-1 text-xs text-primary">
+                          <Sparkles className="mr-1 inline size-3" />
+                          Customer requested this upgrade{u?.customerRequestNote ? ` — "${u.customerRequestNote}"` : ""}. Propose terms below.
                         </p>
                       ) : null}
                       {open && counter ? (
