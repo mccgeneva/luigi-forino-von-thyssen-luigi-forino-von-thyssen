@@ -880,7 +880,17 @@ export default function TradingPage() {
             <TabsTrigger value="signals">AI Signals</TabsTrigger>
             <TabsTrigger value="positions">Positions</TabsTrigger>
             <TabsTrigger value="tiers">ROI Tiers</TabsTrigger>
-            <TabsTrigger value="fund">Treuhand Fund</TabsTrigger>
+            <TabsTrigger value="fund" className="gap-1.5">
+              Treuhand Fund
+              {activePositions.length > 0 && (
+                <span
+                  className="inline-flex min-w-5 items-center justify-center rounded-full bg-primary px-1.5 text-[11px] font-semibold leading-5 text-primary-foreground"
+                  aria-label={`${activePositions.length} active Treuhand position${activePositions.length === 1 ? "" : "s"}`}
+                >
+                  {activePositions.length}
+                </span>
+              )}
+            </TabsTrigger>
           </TabsList>
         </div>
 
