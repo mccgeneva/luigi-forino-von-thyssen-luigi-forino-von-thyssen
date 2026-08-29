@@ -5,6 +5,7 @@ import {
   getApprovalById,
   listApprovalsForUser,
   updateApprovalPayload,
+  insertApproval,
 } from "@/lib/approvals-db"
 import {
   readLedgerEntries,
@@ -12,9 +13,13 @@ import {
   upsertLedgerEntry,
   assertOwnerSolvent,
 } from "@/lib/ledger-db"
+import { getOverdraftStatusForOwner, chargeWithinOverdraft } from "@/lib/overdraft"
+import { convertCurrency } from "@/lib/fx"
 import { query } from "@/lib/db"
 import { logActivity } from "@/app/actions/log-activity"
 import { insertNotification } from "@/lib/notifications-db"
+import { adminEmails } from "@/lib/admin-auth"
+import { getDynamicUserByEmail } from "@/lib/admin-users-db"
 import { round2 } from "@/lib/interest-accrual"
 import type { LedgerEntry } from "@/lib/ledger-store"
 import type { DebitKind } from "@/lib/debit-schedule"
@@ -221,6 +226,20 @@ export interface QuoteResult {
   covered: boolean
   /** Shortfall (payoff − available), 0 when covered. */
   shortfall: number
+  /**
+   * True when the payoff can be settled instantly by the client — either the
+   * balance covers it, OR the resulting negative stays within the account's
+   * AUTHORIZED OVERDRAFT (8% of the treasury deposit).
+   */
+  settleableNow: boolean
+  /** True when settling would go BEYOND the overdraft ceiling ⇒ admin approval. */
+  needsApproval: boolean
+  /** Authorized overdraft ceiling in EUR (0 when none). */
+  overdraftLimitEur: number
+  /** An administrator has already APPROVED a deep-negative settlement for this facility. */
+  approvalGranted: boolean
+  /** A deep-negative settlement request for this facility is awaiting the admin. */
+  approvalPending: boolean
 }
 export type SettlementActionResult =
   | QuoteResult
@@ -231,6 +250,12 @@ export interface TerminateResult {
   quote: SettlementQuote
   /** Number of ledger rows posted (catch-up + settlement legs). */
   posted: number
+}
+/** Returned when a deep-negative termination was routed to the administrator. */
+export interface TerminatePendingResult {
+  ok: false
+  pendingApproval: true
+  error: string
 }
 export interface ReconcileResult {
   ok: true
@@ -269,7 +294,31 @@ export async function quoteDebitSettlement(
     const available = round2(avail)
     const covered = available + 0.01 >= quote.payoff
     const shortfall = covered ? 0 : round2(quote.payoff - available)
-    return { ok: true, quote, available, covered, shortfall }
+
+    // Overdraft routing: can the client settle now (balance covers it, OR the
+    // resulting negative stays within the authorized overdraft ceiling), or does
+    // the deep negative need administrator approval?
+    const overdraft = await getOverdraftStatusForOwner(resolved.ledgerOwnerId)
+    const payoffEur = convertCurrency(quote.payoff, quote.currency, "EUR")
+    const withinOverdraft = chargeWithinOverdraft(overdraft, payoffEur)
+    const grants = await loadTerminationGrants(resolved.accountId)
+    const approvalGranted = !!findGrant(grants, kind, facilityId, "approved")
+    const approvalPending = !!findGrant(grants, kind, facilityId, "pending")
+    const settleableNow = covered || withinOverdraft || approvalGranted
+    const needsApproval = !settleableNow
+
+    return {
+      ok: true,
+      quote,
+      available,
+      covered,
+      shortfall,
+      settleableNow,
+      needsApproval,
+      overdraftLimitEur: round2(overdraft.limitEur),
+      approvalGranted,
+      approvalPending,
+    }
   } catch (err) {
     console.log("[v0] quoteDebitSettlement failed:", kind, facilityId, (err as Error).message, (err as Error).stack)
     return { ok: false, error: "Could not compute the settlement. Please try again." }
@@ -287,7 +336,9 @@ export async function quoteDebitSettlement(
 async function postAndAssert(
   ledgerOwnerId: string,
   posts: SettlePost[],
-): Promise<{ ok: true } | { ok: false; error: string }> {
+  /** EUR overdraft ceiling the settlement may draw into (0 = strict positive). */
+  overdraftAllowanceEur = 0,
+): Promise<{ ok: true } | { ok: false; error: string; overdrawn?: boolean }> {
   const written: string[] = []
   for (const p of posts) {
     const entry: LedgerEntry = { ...p.entry, direction: p.direction }
@@ -295,7 +346,10 @@ async function postAndAssert(
     written.push(entry.id)
   }
   try {
-    await assertOwnerSolvent(ledgerOwnerId)
+    await assertOwnerSolvent(
+      ledgerOwnerId,
+      overdraftAllowanceEur > 0 ? { overdraftAllowance: overdraftAllowanceEur, allowanceCurrency: "EUR" } : undefined,
+    )
     return { ok: true }
   } catch (err) {
     // Roll back everything we just posted so no partial debit can remain.
@@ -307,10 +361,131 @@ async function postAndAssert(
       }
     }
     const msg = (err as Error).message
-    if (msg.startsWith("INSUFFICIENT_FUNDS")) {
-      return { ok: false, error: "Your master account balance can't cover this. Nothing was charged." }
+    // Both codes mean "the payoff would push the account past what's allowed";
+    // the caller uses `overdrawn` to route the client to administrator approval.
+    if (msg.startsWith("INSUFFICIENT_FUNDS") || msg.startsWith("OVERDRAFT_LIMIT")) {
+      return {
+        ok: false,
+        overdrawn: true,
+        error: "Your master account balance can't cover this. Nothing was charged.",
+      }
     }
     return { ok: false, error: "The settlement could not be completed. Please try again." }
+  }
+}
+
+// --- Overdraft routing & administrator grants -------------------------------
+
+/**
+ * A deep-negative settlement (one that would push the master account beyond its
+ * authorized overdraft) is routed to the administrator as a `debit_termination`
+ * GRANT request. The grant carries NO ledger effect — approving it only records
+ * the administrator's authorization; the actual settlement is still performed by
+ * the client's own settlement path (below), which then posts with an unbounded
+ * allowance because the deep negative has been authorized.
+ */
+interface TerminationGrant {
+  id: string
+  status: string
+  facilityId: string
+  kind: DebitKind
+  consumedAt?: string
+}
+
+async function loadTerminationGrants(accountId: string): Promise<TerminationGrant[]> {
+  let rows: Awaited<ReturnType<typeof listApprovalsForUser>> = []
+  try {
+    rows = await listApprovalsForUser(accountId, "debit_termination")
+  } catch {
+    return []
+  }
+  return rows.map((r) => {
+    const rec = ((r.payload ?? {}) as { record?: Record<string, unknown> }).record ?? {}
+    return {
+      id: r.id,
+      status: r.status,
+      facilityId: String(rec.facilityId ?? ""),
+      kind: rec.kind as DebitKind,
+      consumedAt: typeof rec.consumedAt === "string" ? rec.consumedAt : undefined,
+    }
+  })
+}
+
+/** An approved, not-yet-consumed grant for exactly this facility, if any. */
+function findGrant(
+  grants: TerminationGrant[],
+  kind: DebitKind,
+  facilityId: string,
+  status: "approved" | "pending",
+): TerminationGrant | undefined {
+  return grants.find(
+    (g) => g.kind === kind && g.facilityId === facilityId && g.status === status && !g.consumedAt,
+  )
+}
+
+/** Create a pending administrator grant for a deep-negative termination. */
+async function createTerminationGrant(
+  accountId: string,
+  kind: DebitKind,
+  facilityId: string,
+  quote: SettlementQuote,
+): Promise<void> {
+  const title = `Terminate ${labelForKind(kind)} — ${quote.title}`
+  const summary =
+    `Client-requested early settlement that would draw the master account beyond its authorized overdraft. ` +
+    `Payoff ${quote.currency} ${quote.payoff.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}.`
+  await insertApproval({
+    userId: accountId,
+    kind: "debit_termination",
+    title,
+    summary,
+    amount: quote.payoff,
+    currency: quote.currency,
+    payload: {
+      record: {
+        id: `DTERM-${facilityId}`,
+        kind,
+        facilityId,
+        title: quote.title,
+        payoff: quote.payoff,
+        currency: quote.currency,
+        requestedAt: new Date().toISOString(),
+      },
+    },
+  })
+  // Best-effort: alert every administrator so the request is actioned.
+  try {
+    const emails = await adminEmails()
+    const seen = new Set<string>()
+    for (const email of emails) {
+      const admin = await getDynamicUserByEmail(email)
+      if (!admin || seen.has(admin.id)) continue
+      seen.add(admin.id)
+      await insertNotification({
+        userId: admin.id,
+        tone: "info",
+        title: "Debit termination needs approval",
+        body: `${title} — ${summary}`,
+        href: "/dashboard/admin",
+      })
+    }
+  } catch {
+    /* notification is best-effort */
+  }
+}
+
+/** Mark an approved grant consumed once its settlement has posted (audit only). */
+async function consumeGrant(accountId: string, grantId: string): Promise<void> {
+  try {
+    const approval = await getApprovalById(grantId)
+    if (!approval || approval.userId !== accountId) return
+    const payload = (approval.payload ?? {}) as { record?: Record<string, unknown> }
+    await updateApprovalPayload(grantId, {
+      ...payload,
+      record: { ...(payload.record ?? {}), consumedAt: new Date().toISOString() },
+    })
+  } catch {
+    /* best-effort */
   }
 }
 
@@ -369,7 +544,7 @@ export async function reconcileDebitFacility(
 export async function terminateDebitFacility(
   kind: DebitKind,
   facilityId: string,
-): Promise<TerminateResult | { ok: false; error: string }> {
+): Promise<TerminateResult | TerminatePendingResult | { ok: false; error: string }> {
   try {
     const res = await resolveFacility(kind, facilityId)
     if (!res.ok) return res
@@ -385,26 +560,66 @@ export async function terminateDebitFacility(
     })
     if (!plan) return { ok: false, error: "This facility has already been settled." }
 
-    // Server-authoritative balance gate: block (post nothing) on a shortfall.
-    const available = availableByCurrency(entries)[plan.quote.currency] ?? 0
-    if (round2(available) + 0.01 < plan.quote.payoff) {
-      const shortfall = round2(plan.quote.payoff - available)
+    // Overdraft-aware routing (server-authoritative). The client may settle when:
+    //   • the balance covers the payoff, OR
+    //   • the resulting negative stays within the AUTHORIZED OVERDRAFT (8% of the
+    //     treasury deposit), OR
+    //   • an administrator has APPROVED a deep-negative grant for this facility.
+    // Otherwise the settlement is routed to the administrator (nothing posted).
+    const overdraft = await getOverdraftStatusForOwner(resolved.ledgerOwnerId)
+    const payoffEur = convertCurrency(plan.quote.payoff, plan.quote.currency, "EUR")
+    const withinOverdraft = chargeWithinOverdraft(overdraft, payoffEur)
+
+    const grants = await loadTerminationGrants(resolved.accountId)
+    const approvedGrant = findGrant(grants, kind, facilityId, "approved")
+
+    if (!withinOverdraft && !approvedGrant) {
+      // Beyond the overdraft ceiling and not yet authorized → administrator.
+      const existingPending = findGrant(grants, kind, facilityId, "pending")
+      if (existingPending) {
+        return {
+          ok: false,
+          pendingApproval: true,
+          error:
+            "This settlement is still awaiting administrator approval — it would take your account beyond your authorized overdraft. Nothing was charged.",
+        }
+      }
+      await createTerminationGrant(resolved.accountId, kind, facilityId, plan.quote)
       return {
         ok: false,
+        pendingApproval: true,
         error:
-          `Your master account balance can't cover this termination. ` +
-          `Payoff is ${plan.quote.currency} ${plan.quote.payoff.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}, ` +
-          `available is ${plan.quote.currency} ${round2(available).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ` +
-          `(short by ${plan.quote.currency} ${shortfall.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}). ` +
-          `Nothing was charged.`,
+          "This settlement would take your master account beyond your authorized overdraft, so it was sent to the administrator for approval. Nothing was charged — you'll be notified once it's approved.",
       }
     }
 
-    // Post catch-up + settlement legs together, then assert solvency (rolls back
-    // on any overdraft). All ids deterministic ⇒ idempotent.
+    // Allowance: an approved grant authorizes an UNBOUNDED deep negative; a
+    // within-overdraft settlement is capped at the authorized ceiling.
+    const allowanceEur = approvedGrant
+      ? Math.max(overdraft.limitEur, payoffEur) + Math.abs(overdraft.balanceEur) + 1_000_000
+      : overdraft.limitEur
+
+    // Post catch-up + settlement legs together, then assert solvency within the
+    // allowance (rolls back on breach). All ids deterministic ⇒ idempotent.
     const allPosts = [...plan.reconcilePosts, ...plan.settlementPosts]
-    const write = await postAndAssert(resolved.ledgerOwnerId, allPosts)
-    if (!write.ok) return write
+    const write = await postAndAssert(resolved.ledgerOwnerId, allPosts, allowanceEur)
+    if (!write.ok) {
+      // A within-overdraft attempt that nonetheless breached the ceiling (FX /
+      // hold rounding) degrades gracefully to an administrator request rather
+      // than a dead error.
+      if (write.overdrawn && !approvedGrant && !findGrant(grants, kind, facilityId, "pending")) {
+        await createTerminationGrant(resolved.accountId, kind, facilityId, plan.quote)
+        return {
+          ok: false,
+          pendingApproval: true,
+          error:
+            "This settlement would take your master account beyond your authorized overdraft, so it was sent to the administrator for approval. Nothing was charged.",
+        }
+      }
+      return { ok: false, error: write.error }
+    }
+
+    if (approvedGrant) void consumeGrant(resolved.accountId, approvedGrant.id)
 
     // Persist the closed state on the facility record so it stops accruing and
     // is reflected on every device.

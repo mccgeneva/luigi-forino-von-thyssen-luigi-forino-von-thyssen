@@ -6,6 +6,7 @@ import { cn } from "@/lib/utils"
 import { formatMoney } from "@/lib/fund-reservation"
 import { KIND_META } from "@/components/dashboard/debits/debit-meta"
 import { DebitFacilityActions } from "@/components/dashboard/debits/debit-facility-actions"
+import { SettleAllButton } from "@/components/dashboard/debits/settle-all-button"
 import type { DebitFacility } from "@/lib/debit-schedule"
 
 /** The loans, leverage lines and debits this account carries. */
