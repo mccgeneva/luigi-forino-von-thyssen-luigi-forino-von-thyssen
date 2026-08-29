@@ -4,12 +4,14 @@
  * A client can monetize a bank instrument at any Loan-to-Value (LTV) from 1% to
  * 100%. The upfront EQUITY DEPOSIT they must post scales LINEARLY with the LTV:
  *
- *   - at   1% LTV the equity rate is 0.75%
- *   - at 100% LTV the equity rate is 5.00%
+ *   - at   1% LTV the equity rate is 0.0625%  (0.75% / 12)
+ *   - at 100% LTV the equity rate is 0.41667% (5.00% / 12)
  *
  * so a client asking for a mid-range LTV pays a proportionally interpolated
- * rate. On top of the equity, the deal carries PPI (Payment Protection
- * Insurance) worth 1% of the advance, funded from the same upfront deposit.
+ * rate. (The whole equity scale was reduced 12× to make the upfront deposit
+ * twelve times cheaper at every LTV.) On top of the equity, the deal carries PPI
+ * (Payment Protection Insurance) worth 1% of the advance, funded from the same
+ * upfront deposit.
  *
  * Everything is expressed against the ADVANCE amount (the LTV proceeds =
  * faceValue × LTV%), consistent with how the reserve was always quoted.
@@ -17,8 +19,8 @@
 
 import { ppiFromTrustScore } from "@/lib/ppi-trust"
 
-export const EQUITY_RATE_AT_MIN_LTV = 0.0075 // 0.75% at 1% LTV
-export const EQUITY_RATE_AT_MAX_LTV = 0.05 // 5% at 100% LTV
+export const EQUITY_RATE_AT_MIN_LTV = 0.0075 / 12 // 0.0625% at 1% LTV (12× cheaper)
+export const EQUITY_RATE_AT_MAX_LTV = 0.05 / 12 // ~0.41667% at 100% LTV (12× cheaper)
 export const MIN_LTV = 1
 export const MAX_LTV = 100
 /** PPI premium as a fraction of the advance amount. */
