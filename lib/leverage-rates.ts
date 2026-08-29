@@ -43,6 +43,28 @@ export const DEBIT_INTEREST_SCALE: LeverageRateAnchor[] = [
   { ratio: 30, rate: 0.22 },
 ]
 
+/**
+ * Borrowed / deployable / interest-bearing funds for a leverage line — the
+ * SINGLE definition every surface reads (credited-on-approval amount, deployable
+ * figure, and the debit-interest base all key off this).
+ *
+ * INSTRUMENT-BACKED lines (funding account "instruments") pledge a bank
+ * instrument as BLOCKED collateral held entirely separately. That collateral is
+ * never deployed and produces no usable money, so the ENTIRE leveraged position
+ * — equity × ratio — is borrowed, credited, deployable, and interest-bearing.
+ * (e.g. 25M pledged @ 1:10 → 250M borrowed, interest on all 250M.)
+ *
+ * CASH-FUNDED lines (Treasury / Master / NAFTAhub) commit the client's OWN cash
+ * as margin, which is real deployed capital that must NOT be charged interest,
+ * so only the top-up above it — equity × (ratio − 1) — is borrowed.
+ * (e.g. 25M own cash @ 1:10 → 225M borrowed, own 25M works interest-free.)
+ */
+export function borrowedFundsFor(equity: number, ratio: number, account: string): number {
+  if (!Number.isFinite(equity) || !Number.isFinite(ratio) || equity <= 0 || ratio <= 0) return 0
+  const multiple = account === "instruments" ? ratio : Math.max(0, ratio - 1)
+  return equity * multiple
+}
+
 /** Full ladder of selectable leverage ratios (the anchor points): 1:2 … 1:30. */
 export const LEVERAGE_RATIOS: number[] = DEBIT_INTEREST_SCALE.map((a) => a.ratio)
 

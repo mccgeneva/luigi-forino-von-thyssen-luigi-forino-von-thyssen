@@ -65,6 +65,7 @@ import {
   LEVERAGE_RATIOS,
   MAX_LEVERAGE,
   debitInterestRateFor,
+  borrowedFundsFor,
   RISK_THRESHOLDS,
   maxLeverageFor,
   leverageRatiosFor,
@@ -589,7 +590,12 @@ export default function LeveragePage() {
   const selectedMax = account ? maxLeverageFor(account) : MAX_LEVERAGE
   const availableRatios = account ? leverageRatiosFor(account) : LEVERAGE_RATIOS
   const projectedBuyingPower = numericEquity * numericRatio
-  const projectedBorrowed = numericEquity * (numericRatio - 1)
+  // Borrowed = the funded/deployable/interest-bearing sum. Instrument-backed
+  // lines pledge blocked collateral (never deployed), so the ENTIRE position is
+  // borrowed (equity × ratio); cash-funded lines only borrow the top-up above
+  // the client's own committed cash (equity × (ratio − 1)). Single source of
+  // truth in lib/leverage-rates.ts, matching the credit + interest engines.
+  const projectedBorrowed = borrowedFundsFor(numericEquity, numericRatio, account)
   // Risk-based rate for the chosen ratio (higher leverage → higher rate).
   const projectedAnnualRate = debitInterestRateFor(numericRatio)
   const projectedAnnualInterest = projectedBorrowed * projectedAnnualRate
@@ -1100,12 +1106,14 @@ export default function LeveragePage() {
                 <div>
                   <h3 className="font-semibold text-foreground">How leverage works at MCC</h3>
                   <p className="mt-1 text-sm text-muted-foreground">
-                    Allocate your own equity and choose a ratio up to 1:{MAX_LEVERAGE}. On Administrator
-                    approval, the borrowed portion — equity × (ratio − 1) — is credited to your balance, and
-                    debit interest begins accruing on those borrowed funds under a risk-based scale where a
-                    higher ratio carries a higher rate (2% at 1:2, 3% at 1:5, up to 22% at 1:30). One twelfth
-                    of the annual interest is charged to your Master Account each month; the borrowed principal
-                    is repaid when you switch the line off.
+                    Allocate your equity and choose a ratio up to 1:{MAX_LEVERAGE}. On Administrator
+                    approval the borrowed funds are credited to your balance. When you pledge a bank instrument,
+                    that instrument is blocked collateral held separately, so the full leveraged amount —
+                    equity × ratio — is borrowed and deployable; a cash-funded line commits your own cash as
+                    margin, so only the top-up — equity × (ratio − 1) — is borrowed. Debit interest accrues on
+                    the borrowed funds under a risk-based scale where a higher ratio carries a higher rate (2% at
+                    1:2, 3% at 1:5, up to 22% at 1:30). One twelfth of the annual interest is charged to your
+                    Master Account each month; the borrowed principal is repaid when you switch the line off.
                   </p>
                 </div>
               </div>
@@ -1381,7 +1389,9 @@ export default function LeveragePage() {
                     </div>
                   )}
                   <div className="flex items-center justify-between text-sm">
-                    <span className="text-muted-foreground">Your Equity</span>
+                    <span className="text-muted-foreground">
+                      {instrumentFunded ? "Pledged collateral (blocked — separate)" : "Your Equity"}
+                    </span>
                     <span className="font-medium text-foreground">
                       {formatMoney(numericEquity, currency)}
                     </span>
@@ -1437,10 +1447,10 @@ export default function LeveragePage() {
                   </div>
 
                   {/* Deployable funds — the money actually credited and usable.
-                      For an instrument-funded line the pledged face value is
-                      BLOCKED collateral (never spendable), so only the borrowed
-                      funds are deployable; the full buying power is a notional
-                      position ceiling, not spendable cash. */}
+                      Instrument-funded: the pledged instrument is blocked
+                      collateral held separately (never deployed), so the ENTIRE
+                      leveraged amount is borrowed, credited, and deployable.
+                      Cash-funded: own committed cash + borrowed top-up. */}
                   <div className="mt-2 flex items-center justify-between border-t border-primary/20 pt-2">
                     <span className="flex items-center gap-1 text-sm font-medium text-foreground">
                       <TrendingUp className="h-4 w-4 text-primary" />
@@ -1451,21 +1461,15 @@ export default function LeveragePage() {
                     </span>
                   </div>
                   {instrumentFunded && (
-                    <>
-                      <div className="mt-1 flex items-center justify-between text-xs">
-                        <span className="text-muted-foreground">Notional position ceiling (incl. pledged collateral)</span>
-                        <span className="font-medium text-muted-foreground">
-                          {formatMoney(projectedBuyingPower, currency)}
-                        </span>
-                      </div>
-                      <p className="mt-2 text-[11px] leading-relaxed text-muted-foreground">
-                        Your pledged {formatMoney(numericEquity, currency)} instrument is{" "}
-                        <span className="font-medium text-foreground">blocked collateral</span> — it is never spendable
-                        cash. Only the {formatMoney(projectedBorrowed, currency)} of borrowed funds is credited and
-                        deployable, and these funds are ring-fenced for on-platform investing tools &amp; services and
-                        facility repayment — they cannot be paid out or transferred to third parties.
-                      </p>
-                    </>
+                    <p className="mt-2 text-[11px] leading-relaxed text-muted-foreground">
+                      Your pledged {formatMoney(numericEquity, currency)} instrument is{" "}
+                      <span className="font-medium text-foreground">blocked collateral held separately</span> — it is
+                      never deployed and produces no usable cash, so the full{" "}
+                      {formatMoney(projectedBorrowed, currency)} leveraged amount is borrowed, credited and deployable,
+                      and debit interest accrues on all of it. These funds are ring-fenced for on-platform investing
+                      tools &amp; services and facility repayment — they cannot be paid out or transferred to third
+                      parties.
+                    </p>
                   )}
                 </div>
 
@@ -1999,9 +2003,11 @@ export default function LeveragePage() {
                 Debit interest — risk-based scale, higher leverage means a higher rate
               </AccordionTrigger>
               <AccordionContent className="text-sm text-muted-foreground">
-                When a line is activated, the borrowed portion — equity × (ratio − 1) — is credited to your
-                balance. Debit interest follows a risk-based scale: a higher leverage multiple carries more
-                risk and a higher annual rate — 2% at 1:2, 3% at 1:5, 8% at 1:10, 10% at 1:15,
+                When a line is activated the borrowed funds are credited to your balance — the full leveraged
+                amount (equity × ratio) for an instrument-backed line whose pledged instrument is blocked
+                collateral held separately, or only the top-up (equity × (ratio − 1)) for a cash-funded line
+                where your own cash is committed margin. Debit interest follows a risk-based scale: a higher
+                leverage multiple carries more risk and a higher annual rate — 2% at 1:2, 3% at 1:5, 8% at 1:10, 10% at 1:15,
                 14% at 1:20, 18% at 1:25 and 22% at 1:30. One twelfth of the annual interest is automatically
                 charged to your Master Account each month (you receive a notification with the amount and
                 remaining balance), and any remainder is settled when you switch the line off.
