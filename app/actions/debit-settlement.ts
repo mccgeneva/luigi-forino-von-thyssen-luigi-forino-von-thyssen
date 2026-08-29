@@ -285,19 +285,26 @@ export interface ReconcileResult {
 // A leverage line's borrowed proceeds may have been deployed into an active
 // NAFTAhub investment (Treuhand fund / Yield-PPP). Once invested, that capital
 // has left the platform (it is with the fund), so the line's principal CANNOT be
-// repaid from the master account until the investment is exited. We detect any
-// ACTIVE, LEVERAGE-FUNDED investment position and use it to block a leverage
-// termination that the balance can't otherwise cover — instead of routing an
-// impossible payoff to the administrator.
+// repaid from the master account until the investment is exited. When the line
+// can't otherwise be covered (balance short + beyond the authorized overdraft),
+// that shortfall IS the invested money — so we block the termination and tell the
+// client to exit the investment first, instead of routing an impossible payoff to
+// the administrator.
+//
+// NOTE: we deliberately do NOT require the position to carry a `leverageFunded`
+// stamp. That flag is set best-effort at submission and can be absent on real
+// positions (and it isn't what makes the payoff impossible — the money being out
+// with the fund is). The block only ever runs in the "can't settle now" branch,
+// so a client who holds enough free cash to cover the line is never affected.
 
 const INVESTMENT_KINDS = ["trading_fund", "ppp"] as const
 
-/** EUR capital of ONE investment approval if it is approved, still live, and was
- *  funded by leverage/debit money; 0 otherwise. Treuhand stamps `leverageFunded`
- *  and its terminal markers at the payload root; PPP under `payload.record`. */
-function investmentActiveLeverageFundedEur(
-  approval: Awaited<ReturnType<typeof listApprovalsForUser>>[number],
-): number {
+/** EUR capital of ONE investment approval if it is approved and still live; 0
+ *  otherwise. Treuhand stamps its terminal markers (closedAt/exitedAt) at the
+ *  payload root; PPP under `payload.record` (cancelledAt/settledAt). The capital
+ *  amount is on the top-level `amount` column for Treuhand, or `record.amount`
+ *  for PPP. */
+function investmentActiveEur(approval: Awaited<ReturnType<typeof listApprovalsForUser>>[number]): number {
   if (approval.status !== "approved") return 0
   const payload = (approval.payload ?? {}) as Record<string, unknown>
   const record = (payload.record ?? {}) as Record<string, unknown>
@@ -305,8 +312,6 @@ function investmentActiveLeverageFundedEur(
   // payload root) AND cancelledAt/settledAt (PPP, record). DB status is authoritative.
   const liveCheck = { ...payload, ...record, status: approval.status }
   if (!isLiveRequest(liveCheck)) return 0
-  const leverageFunded = payload.leverageFunded === true || record.leverageFunded === true
-  if (!leverageFunded) return 0
   const amount = Number(record.amount ?? payload.amount ?? approval.amount ?? 0)
   if (!Number.isFinite(amount) || amount <= 0) return 0
   const currency = String(record.currency ?? payload.currency ?? approval.currency ?? "EUR")
@@ -317,8 +322,10 @@ function investmentActiveLeverageFundedEur(
   }
 }
 
-/** Total EUR of the account's active, leverage-funded investment capital. */
-async function activeLeverageFundedInvestmentEur(accountId: string, ledgerOwnerId: string): Promise<number> {
+/** Total EUR of the account's active (live, approved) investment capital across
+ *  the Treuhand fund + Yield/PPP programs. Queried for BOTH the session account
+ *  id AND the master ledger owner id (a sub's investments sit under the sub id). */
+async function activeInvestmentEur(accountId: string, ledgerOwnerId: string): Promise<number> {
   const ids = ledgerOwnerId && ledgerOwnerId !== accountId ? [accountId, ledgerOwnerId] : [accountId]
   let total = 0
   for (const id of ids) {
@@ -329,13 +336,13 @@ async function activeLeverageFundedInvestmentEur(accountId: string, ledgerOwnerI
       } catch {
         continue
       }
-      for (const a of rows) total += investmentActiveLeverageFundedEur(a)
+      for (const a of rows) total += investmentActiveEur(a)
     }
   }
   return round2(total)
 }
 
-/** The block message shown when leveraged funds are still deployed. */
+/** The block message shown when the borrowed funds are still deployed. */
 function investedBlockMessage(investedEur: number): string {
   const eur = `EUR ${investedEur.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
   return (
@@ -408,7 +415,7 @@ export async function quoteDebitSettlement(
     // leverage-funded investment, the payoff is IMPOSSIBLE until the investment is
     // exited — so block it here with a clear "exit first" message instead.
     if (kind === "leverage" && needsApproval) {
-      const investedEur = await activeLeverageFundedInvestmentEur(resolved.accountId, resolved.ledgerOwnerId)
+      const investedEur = await activeInvestmentEur(resolved.accountId, resolved.ledgerOwnerId)
       if (investedEur > 0.01) {
         return { ok: false, blocked: true, error: investedBlockMessage(investedEur) }
       }
@@ -696,7 +703,7 @@ export async function terminateDebitFacility(
       // fund, not on the platform. Block instead of routing an impossible payoff
       // to the administrator; the client must exit the investment first.
       if (kind === "leverage") {
-        const investedEur = await activeLeverageFundedInvestmentEur(resolved.accountId, resolved.ledgerOwnerId)
+        const investedEur = await activeInvestmentEur(resolved.accountId, resolved.ledgerOwnerId)
         if (investedEur > 0.01) {
           return { ok: false, blocked: true, error: investedBlockMessage(investedEur) }
         }
