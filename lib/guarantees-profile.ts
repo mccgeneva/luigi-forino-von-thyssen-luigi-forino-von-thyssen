@@ -1,8 +1,8 @@
 import "server-only"
 import { query } from "@/lib/db"
 import { readLedgerEntries, availableByCurrency } from "@/lib/ledger-db"
-import { listApprovalsForUser } from "@/lib/approvals-db"
-import { resolveDataOwnerIdFor } from "@/lib/session-user"
+import { listApprovalsForUsers } from "@/lib/approvals-db"
+import { resolveDataOwnerIdFor, resolveFinancialMemberIds } from "@/lib/session-user"
 import { getDynamicUserById } from "@/lib/admin-users-db"
 import { convertCurrency } from "@/lib/fx"
 import { readEquitySavingsEur } from "@/lib/equity-savings"
@@ -96,7 +96,14 @@ export interface GuaranteeProfileResult {
  * Fully defensive — any sub-read that fails degrades that figure to 0.
  */
 export async function gatherGuaranteeProfile(userId: string, config: GuaranteeConfig): Promise<GuaranteeProfileResult> {
+  // The MASTER (shared-ledger owner) — availableBalance / equity / overdraft
+  // read here, and the account age / treasury base prefer this identity.
   const ownerId = await resolveDataOwnerIdFor(userId)
+  // The WHOLE financial pool — master + every sub + every joint. Pooled risk
+  // factors (exposure, guarantees, instruments, treasury, arrears) aggregate
+  // across ALL of these so every member of one account gets the SAME score,
+  // instead of only the member who happens to hold a facility showing exposure.
+  const poolIds = await resolveFinancialMemberIds(userId)
 
   // --- Available balance (master ledger) --------------------------------
   let availableBalance = 0
@@ -115,7 +122,7 @@ export async function gatherGuaranteeProfile(userId: string, config: GuaranteeCo
   const financingKinds = ["leverage", "monetization", "project_funding", "treasury_lending", "internal_loan"] as const
   for (const kind of financingKinds) {
     try {
-      const rows = await listApprovalsForUser(userId, kind)
+      const rows = await listApprovalsForUsers(poolIds, kind)
       for (const row of rows) {
         if (row.status !== "approved") continue
         const payload = (row.payload ?? {}) as Record<string, unknown>
@@ -160,6 +167,11 @@ export async function gatherGuaranteeProfile(userId: string, config: GuaranteeCo
   // at 1:5 → a 500k secured deposit → 8% = 40k ceiling), per policy.
   let treasuryDepositBaseEur = 0
   try {
+    // The security deposit is one attribute of the shared account, but it is
+    // stored per-member in `treasury_accounts` (a joint member may have set it
+    // up under their own id). Read every pool member's row and pick the SINGLE
+    // largest secured deposit as the pool's deposit — do NOT sum, or two members
+    // recording the same shared deposit would double-count it.
     const { rows } = await query<{
       status: string
       financed_amount: string | number | null
@@ -167,20 +179,27 @@ export async function gatherGuaranteeProfile(userId: string, config: GuaranteeCo
       skr_collateral: string | number | null
       currency: string | null
     }>(
-      `SELECT status, financed_amount, customer_contribution, skr_collateral, currency FROM treasury_accounts WHERE user_id = $1`,
-      [userId],
+      `SELECT status, financed_amount, customer_contribution, skr_collateral, currency FROM treasury_accounts WHERE user_id = ANY($1)`,
+      [poolIds],
     )
-    const t = rows[0]
-    if (t && t.status !== "none" && t.status !== "closed") {
+    let bestBase = -1
+    for (const t of rows) {
+      if (!t || t.status === "none" || t.status === "closed") continue
       const ccy = String(t.currency || BASE)
-      treasuryFinanced = toEur(num(t.financed_amount), ccy)
-      treasuryContribution = toEur(num(t.customer_contribution), ccy)
-      // Secured deposit base = paid-in (contribution + SKR) + financed portion.
-      treasuryDepositBaseEur = treasuryContribution + toEur(num(t.skr_collateral), ccy) + treasuryFinanced
-      if (treasuryFinanced > 0) {
-        totalExposure += treasuryFinanced
-        leverageLoad += treasuryFinanced
+      const financed = toEur(num(t.financed_amount), ccy)
+      const contribution = toEur(num(t.customer_contribution), ccy)
+      const base = contribution + toEur(num(t.skr_collateral), ccy) + financed
+      if (base > bestBase) {
+        bestBase = base
+        treasuryFinanced = financed
+        treasuryContribution = contribution
+        // Secured deposit base = paid-in (contribution + SKR) + financed portion.
+        treasuryDepositBaseEur = base
       }
+    }
+    if (treasuryFinanced > 0) {
+      totalExposure += treasuryFinanced
+      leverageLoad += treasuryFinanced
     }
   } catch {
     treasuryFinanced = 0
@@ -203,7 +222,7 @@ export async function gatherGuaranteeProfile(userId: string, config: GuaranteeCo
   }
   // (b) Face value of active bank instruments held.
   try {
-    const instruments = await listApprovalsForUser(userId, "instrument")
+    const instruments = await listApprovalsForUsers(poolIds, "instrument")
     for (const row of instruments) {
       if (row.status !== "approved") continue
       const payload = (row.payload ?? {}) as Record<string, unknown>
@@ -238,7 +257,7 @@ export async function gatherGuaranteeProfile(userId: string, config: GuaranteeCo
   let monthlyFinancingCost = 0
   try {
     for (const kind of financingKinds) {
-      const rows = await listApprovalsForUser(userId, kind)
+      const rows = await listApprovalsForUsers(poolIds, kind)
       const rate =
         kind === "leverage" || kind === "treasury_lending" || kind === "internal_loan"
           ? LEVERAGE_TREASURY_RATE
@@ -269,9 +288,12 @@ export async function gatherGuaranteeProfile(userId: string, config: GuaranteeCo
   }
 
   // --- Account age ------------------------------------------------------
+  // Use the MASTER's age (the account's true age) so the track-record /
+  // seasoning factor is identical for every member of the pool — otherwise a
+  // newer joint member would score as a riskier "new account" than the master.
   let accountAgeDays = 0
   try {
-    const user = await getDynamicUserById(userId)
+    const user = await getDynamicUserById(ownerId)
     if (user?.createdAt) {
       const created = new Date(user.createdAt).getTime()
       if (Number.isFinite(created)) accountAgeDays = Math.max(0, (Date.now() - created) / 86_400_000)
