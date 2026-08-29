@@ -182,6 +182,16 @@ export async function submitApproval(input: SubmitApprovalInput): Promise<Submit
   // is a policy control, not the solvency guard, so a transient failure must
   // not block all financing.
   const GUARANTEE_GATED_KINDS = new Set(["leverage", "monetization", "project_funding", "treasury_lending"])
+  // Collects human-readable reasons a LEVERAGE application tripped a protective
+  // FINANCIAL gate (controlled overdraft, high guarantee risk, thin margin, or
+  // unaffordable upfront charges). Policy: leverage is NEVER silently dropped for
+  // these — the request is still created as PENDING, EVERY administrator is
+  // notified, and these flags travel on the payload so the admin sees exactly why
+  // it needs a decision and can approve or reject. (Genuine INTEGRITY failures —
+  // malformed equity, double-pledged collateral — still hard-fail below.) Other
+  // credit-sensitive kinds keep their automatic hard block.
+  const leverageReviewFlags: string[] = []
+
   if (GUARANTEE_GATED_KINDS.has(input.kind)) {
     try {
       const config = await getGuaranteeConfig()
@@ -198,20 +208,33 @@ export async function submitApproval(input: SubmitApprovalInput): Promise<Submit
         // Controlled-overdraft HARD BLOCK: an overdrawn (negative) Master
         // Account cannot open ANY new credit-sensitive facility until it
         // returns to positive — regardless of the numeric risk score.
+        const eur = (n: number) =>
+          `EUR ${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
         if (overdraft.inOverdraft) {
-          const eur = (n: number) =>
-            `EUR ${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
-          return {
-            ok: false,
-            error:
-              `This ${productLabel} request cannot be opened while your Master Account is in a controlled ` +
-              `overdraft (currently ${eur(overdraft.negativeEur)} negative). New credit-sensitive facilities ` +
-              `are unavailable until your account returns to a positive balance. Fund your account to clear the ` +
-              `overdraft, then try again.`,
+          if (input.kind === "leverage") {
+            // Do NOT drop it — route to the administrators with a clear flag.
+            leverageReviewFlags.push(
+              `Master Account was in a controlled overdraft (${eur(overdraft.negativeEur)} negative) at submission.`,
+            )
+          } else {
+            return {
+              ok: false,
+              error:
+                `This ${productLabel} request cannot be opened while your Master Account is in a controlled ` +
+                `overdraft (currently ${eur(overdraft.negativeEur)} negative). New credit-sensitive facilities ` +
+                `are unavailable until your account returns to a positive balance. Fund your account to clear the ` +
+                `overdraft, then try again.`,
+            }
           }
         }
         if (score.highRisk) {
-          return { ok: false, error: guaranteeBlockMessage(score, config.highRiskThreshold, productLabel) }
+          if (input.kind === "leverage") {
+            leverageReviewFlags.push(
+              `Guarantee risk score was HIGH (above the ${config.highRiskThreshold} threshold) at submission.`,
+            )
+          } else {
+            return { ok: false, error: guaranteeBlockMessage(score, config.highRiskThreshold, productLabel) }
+          }
         }
       }
     } catch (err) {
@@ -258,18 +281,16 @@ export async function submitApproval(input: SubmitApprovalInput): Promise<Submit
         if (equityEur > netFreeEur + 0.01) {
           const fmtEur = (n: number) =>
             `EUR ${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
-          return {
-            ok: false,
-            error: `Insufficient free equity to open this leveraged line. It pledges ${fmtEur(
+          // Route to the administrators rather than dropping the request.
+          leverageReviewFlags.push(
+            `Free equity (${fmtEur(netFreeEur)}) did not cover the ${fmtEur(
               equityEur,
-            )} of your own margin, but your free equity (available balance less outstanding borrowed/financed funds) is only ${fmtEur(
-              netFreeEur,
-            )}. Borrowed or financed funds cannot be used as leverage margin — fund your account with fresh funds, repay outstanding financing, or pledge a bank instrument instead.`,
-          }
+            )} own-cash margin pledged for this cash-funded line at submission.`,
+          )
         }
       } catch (err) {
-        console.log("[v0] leverage margin solvency gate failed (failing closed):", (err as Error).message)
-        return { ok: false, error: "Your available margin could not be verified. Please try again." }
+        console.log("[v0] leverage margin solvency gate could not verify (flagging for admin):", (err as Error).message)
+        leverageReviewFlags.push("Available margin could not be automatically verified at submission.")
       }
     }
   }
@@ -323,20 +344,21 @@ export async function submitApproval(input: SubmitApprovalInput): Promise<Submit
         if (requiredNow > availableInFeeCcy + 0.01) {
           const fmt = (n: number) =>
             `${feeCurrency} ${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
-          return {
-            ok: false,
-            error: `This leverage application carries non-refundable charges of ${fmt(
-              charges.total,
-            )} (${fmt(charges.auditFee)} audit & compliance + ${fmt(
-              charges.ppi,
-            )} PPI, based on ${fmt(charges.buyingPower)} buying power), charged whether the line is accepted or rejected. Your Master Account has only ${fmt(
+          // The upfront charges are reserved as reversible HOLDS below, so the
+          // line can still go to the administrators even when the balance can't
+          // cover them right now. Flag it so the admin knows the charges are held
+          // against an insufficient balance pending their decision.
+          leverageReviewFlags.push(
+            `Master Account (${fmt(
               Math.max(0, availableInFeeCcy),
-            )} available, so the operation was denied. Please fund your account or submit a PPI cost appeal.`,
-          }
+            )} available) could not cover the ${fmt(charges.total)} non-refundable upfront charges (${fmt(
+              charges.auditFee,
+            )} audit & compliance + ${fmt(charges.ppi)} PPI) at submission — reserved as holds pending review.`,
+          )
         }
       } catch (err) {
-        console.log("[v0] leverage upfront charges solvency gate failed (failing closed):", (err as Error).message)
-        return { ok: false, error: "Your available balance could not be verified. Please try again." }
+        console.log("[v0] leverage upfront charges could not verify (flagging for admin):", (err as Error).message)
+        leverageReviewFlags.push("Upfront-charge affordability could not be automatically verified at submission.")
       }
     }
   }
@@ -587,6 +609,18 @@ export async function submitApproval(input: SubmitApprovalInput): Promise<Submit
   // authority — which `requiresMasterConsent` encodes (sub only).
   const requiresMasterApproval =
     requiresMasterConsent(session.relationship) && !!session.masterId && MASTER_CONSENT_KINDS.has(input.kind)
+
+  // Persist any leverage review flags onto the record so the administrators see
+  // WHY the pending line needs attention (overdraft, thin margin, unaffordable
+  // charges) — a durable trace, not just a transient notification.
+  if (leverageReviewFlags.length > 0) {
+    const payloadObj = (input.payload ?? {}) as Record<string, unknown>
+    const rec = (payloadObj.record ?? {}) as Record<string, unknown>
+    rec.adminReviewFlags = leverageReviewFlags
+    rec.needsAdminReview = true
+    payloadObj.record = rec
+    input.payload = payloadObj
+  }
 
   try {
     const request = await insertApproval({

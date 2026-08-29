@@ -1,7 +1,8 @@
 "use client"
 
 import { createContext, useContext } from "react"
-import { mirrorSubmission, mapApprovalStatus, type ApprovalRecord } from "@/lib/approval-sync"
+import { mirrorSubmissionDetailed, mapApprovalStatus, type ApprovalRecord } from "@/lib/approval-sync"
+import { toast } from "sonner"
 import { useServerRequestList } from "@/lib/use-server-request-list"
 import { updateMyApprovalRecord, withdrawMyLeverageApplication } from "@/app/actions/approvals"
 import {
@@ -280,14 +281,27 @@ export function LeverageRequestsProvider({ children }: { children: React.ReactNo
     setRequests([full, ...requests])
     // Mirror the activation request into the DB for cross-client review; persist
     // the COMPLETE record under `payload.record` so the server rebuilds it anywhere.
-    void mirrorSubmission({
+    // Use the DETAILED variant so a genuine server refusal (e.g. double-pledged
+    // collateral) doesn't leave a phantom "pending" row: on failure we roll the
+    // optimistic entry back and tell the customer exactly why. Protective gates
+    // (overdraft, thin margin, unaffordable charges) no longer refuse — the
+    // server creates the pending line and notifies the administrators — so those
+    // return ok:true and simply refresh.
+    void mirrorSubmissionDetailed({
       kind: "leverage",
       title: `${full.accountLabel} · 1:${full.leverageRatio}`,
       summary: `${full.currency} ${full.equity.toLocaleString("en-US")} equity at 1:${full.leverageRatio} on ${full.accountLabel} (buying power ${full.currency} ${full.buyingPower.toLocaleString("en-US")})`,
       amount: full.equity,
       currency: full.currency,
       payload: { localId: full.id, account: full.account, leverageRatio: full.leverageRatio, instrumentType: full.instrumentType, record: full },
-    }).then(() => {
+    }).then((res) => {
+      if (!res.ok) {
+        setRequests((prev) => prev.filter((r) => r.id !== full.id))
+        toast.error("Leverage request not submitted", {
+          description: res.error || "Please review the details and try again.",
+        })
+        return
+      }
       void refresh()
     })
     return full

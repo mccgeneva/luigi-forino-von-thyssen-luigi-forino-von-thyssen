@@ -57,6 +57,7 @@ import {
   FileText,
   Download,
   ArrowLeft,
+  AlertTriangle,
 } from "lucide-react"
 import { ADMIN_PASSCODE } from "@/lib/admin-config"
 import { blobFileUrl } from "@/lib/kyc-types"
@@ -1251,6 +1252,26 @@ export function PendingApprovals({ initialKind }: { initialKind?: ApprovalKind }
                       </div>
                       <p className="truncate text-sm font-medium text-foreground">{req.title}</p>
                       {req.summary && <p className="text-xs text-muted-foreground text-pretty">{req.summary}</p>}
+                      {(() => {
+                        // Review flags stamped at submission when a protective
+                        // financial gate was tripped but the request was routed
+                        // here for a decision instead of being blocked.
+                        const flags = (req.payload?.record as { adminReviewFlags?: unknown } | undefined)?.adminReviewFlags
+                        if (!Array.isArray(flags) || flags.length === 0) return null
+                        return (
+                          <div className="mt-1.5 rounded-md border border-amber-500/30 bg-amber-500/10 p-2.5">
+                            <div className="mb-1 flex items-center gap-1.5 text-[11px] font-semibold text-amber-700 dark:text-amber-400">
+                              <AlertTriangle className="h-3.5 w-3.5" />
+                              Needs your decision — flagged at submission
+                            </div>
+                            <ul className="list-disc space-y-0.5 pl-4 text-[11px] text-amber-800 dark:text-amber-200">
+                              {flags.map((f, i) => (
+                                <li key={i}>{String(f)}</li>
+                              ))}
+                            </ul>
+                          </div>
+                        )
+                      })()}
                       {req.kind === "commodity_amendment" && <AmendmentDiff payload={req.payload} />}
                       {funding && <FundingDocuments docs={funding.uploadedDocuments} />}
                       {ppi && (
