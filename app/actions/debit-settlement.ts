@@ -36,6 +36,7 @@ import type { LeverageRequest } from "@/lib/leverage-requests-store"
 import type { TreasuryAccount, TreasuryTransaction } from "@/lib/treasury-store"
 import { treasuryFinancingTxns } from "@/lib/treasury-financing"
 import type { InternalLoanRecordLike } from "@/lib/internal-loan"
+import { isLiveRequest } from "@/lib/live-request"
 
 // ---------------------------------------------------------------------------
 // Client self-service debit-facility settlement (Debits & Financing page).
@@ -241,8 +242,22 @@ export interface QuoteResult {
   /** A deep-negative settlement request for this facility is awaiting the admin. */
   approvalPending: boolean
 }
+/**
+ * Returned when a leverage line CANNOT be terminated because its borrowed
+ * proceeds are still deployed in an active NAFTAhub investment (Treuhand fund /
+ * Yield program). The money has left the platform and is held by the fund, so
+ * there is nothing in the master account to repay the line with — the client
+ * must EXIT the investment first (which returns the capital), then settle.
+ * A hard block, distinct from the deep-negative admin-approval routing.
+ */
+export interface SettlementBlockedResult {
+  ok: false
+  blocked: true
+  error: string
+}
 export type SettlementActionResult =
   | QuoteResult
+  | SettlementBlockedResult
   | { ok: false; error: string }
 
 export interface TerminateResult {
@@ -263,6 +278,72 @@ export interface ReconcileResult {
   posted: number
   /** Number of ledger rows posted. */
   rows: number
+}
+
+// --- Deployed-investment guard (leverage) -----------------------------------
+//
+// A leverage line's borrowed proceeds may have been deployed into an active
+// NAFTAhub investment (Treuhand fund / Yield-PPP). Once invested, that capital
+// has left the platform (it is with the fund), so the line's principal CANNOT be
+// repaid from the master account until the investment is exited. We detect any
+// ACTIVE, LEVERAGE-FUNDED investment position and use it to block a leverage
+// termination that the balance can't otherwise cover — instead of routing an
+// impossible payoff to the administrator.
+
+const INVESTMENT_KINDS = ["trading_fund", "ppp"] as const
+
+/** EUR capital of ONE investment approval if it is approved, still live, and was
+ *  funded by leverage/debit money; 0 otherwise. Treuhand stamps `leverageFunded`
+ *  and its terminal markers at the payload root; PPP under `payload.record`. */
+function investmentActiveLeverageFundedEur(
+  approval: Awaited<ReturnType<typeof listApprovalsForUser>>[number],
+): number {
+  if (approval.status !== "approved") return 0
+  const payload = (approval.payload ?? {}) as Record<string, unknown>
+  const record = (payload.record ?? {}) as Record<string, unknown>
+  // Merge root + record markers so isLiveRequest sees closedAt/exitedAt (Treuhand,
+  // payload root) AND cancelledAt/settledAt (PPP, record). DB status is authoritative.
+  const liveCheck = { ...payload, ...record, status: approval.status }
+  if (!isLiveRequest(liveCheck)) return 0
+  const leverageFunded = payload.leverageFunded === true || record.leverageFunded === true
+  if (!leverageFunded) return 0
+  const amount = Number(record.amount ?? payload.amount ?? approval.amount ?? 0)
+  if (!Number.isFinite(amount) || amount <= 0) return 0
+  const currency = String(record.currency ?? payload.currency ?? approval.currency ?? "EUR")
+  try {
+    return round2(convertCurrency(amount, currency, "EUR"))
+  } catch {
+    return round2(amount)
+  }
+}
+
+/** Total EUR of the account's active, leverage-funded investment capital. */
+async function activeLeverageFundedInvestmentEur(accountId: string, ledgerOwnerId: string): Promise<number> {
+  const ids = ledgerOwnerId && ledgerOwnerId !== accountId ? [accountId, ledgerOwnerId] : [accountId]
+  let total = 0
+  for (const id of ids) {
+    for (const kind of INVESTMENT_KINDS) {
+      let rows: Awaited<ReturnType<typeof listApprovalsForUser>> = []
+      try {
+        rows = await listApprovalsForUser(id, kind)
+      } catch {
+        continue
+      }
+      for (const a of rows) total += investmentActiveLeverageFundedEur(a)
+    }
+  }
+  return round2(total)
+}
+
+/** The block message shown when leveraged funds are still deployed. */
+function investedBlockMessage(investedEur: number): string {
+  const eur = `EUR ${investedEur.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+  return (
+    `This leverage line can't be reversed while its borrowed funds are deployed in an active NAFTAhub ` +
+    `investment (${eur} committed to the Treuhand fund / Yield program). Those funds have left the platform ` +
+    `and are held by the fund, so there is nothing in your master account to repay the line with. Exit the ` +
+    `investment first — that returns the capital to your master account — then settle this leverage line.`
+  )
 }
 
 // --- Quote (read-only) ------------------------------------------------------
@@ -319,6 +400,18 @@ export async function quoteDebitSettlement(
       overdraftLimitEur = round2(overdraft.limitEur)
     } catch (enrichErr) {
       console.log("[v0] quote overdraft enrichment failed (non-fatal):", (enrichErr as Error).message)
+    }
+
+    // A leverage line whose payoff can't be settled now (balance short AND beyond
+    // the authorized overdraft) is normally routed to the administrator. But if
+    // that shortfall is because the borrowed funds are deployed in an active
+    // leverage-funded investment, the payoff is IMPOSSIBLE until the investment is
+    // exited — so block it here with a clear "exit first" message instead.
+    if (kind === "leverage" && needsApproval) {
+      const investedEur = await activeLeverageFundedInvestmentEur(resolved.accountId, resolved.ledgerOwnerId)
+      if (investedEur > 0.01) {
+        return { ok: false, blocked: true, error: investedBlockMessage(investedEur) }
+      }
     }
 
     return {
@@ -558,7 +651,7 @@ export async function reconcileDebitFacility(
 export async function terminateDebitFacility(
   kind: DebitKind,
   facilityId: string,
-): Promise<TerminateResult | TerminatePendingResult | { ok: false; error: string }> {
+): Promise<TerminateResult | TerminatePendingResult | SettlementBlockedResult | { ok: false; error: string }> {
   try {
     const res = await resolveFacility(kind, facilityId)
     if (!res.ok) return res
@@ -598,6 +691,16 @@ export async function terminateDebitFacility(
     const approvedGrant = findGrant(grants, kind, facilityId, "approved")
 
     if (!withinOverdraft && !approvedGrant) {
+      // A leverage line can't be settled at all while its borrowed proceeds are
+      // deployed in an active leverage-funded investment — the money is with the
+      // fund, not on the platform. Block instead of routing an impossible payoff
+      // to the administrator; the client must exit the investment first.
+      if (kind === "leverage") {
+        const investedEur = await activeLeverageFundedInvestmentEur(resolved.accountId, resolved.ledgerOwnerId)
+        if (investedEur > 0.01) {
+          return { ok: false, blocked: true, error: investedBlockMessage(investedEur) }
+        }
+      }
       // Beyond the overdraft ceiling and not yet authorized → administrator.
       const existingPending = findGrant(grants, kind, facilityId, "pending")
       if (existingPending) {
