@@ -27,6 +27,7 @@ import { gatherGuaranteeProfile, getFinancingRingfence } from "@/lib/guarantees-
 import { guaranteeBlockMessage } from "@/lib/guarantees-accumulator"
 import { planReservation, formatMoney, type ReservationPlan } from "@/lib/fund-reservation"
 import { cardFeeFor, formatCardFee, CARD_FEE_CURRENCY } from "@/lib/card-fees"
+import { instrumentManagementFee, INSTRUMENT_MANAGEMENT_FEE_LABEL } from "@/lib/instrument-fees"
 import { leverageApplicationCharges } from "@/lib/leverage-audit-fee"
 import { computeMonetizationEquity } from "@/lib/monetization-equity"
 import { buildTradingFundPosts, TRADING_FUND_MONTHLY_ROI, type TradingFundPauseWindow } from "@/lib/trading-fund"
@@ -2092,7 +2093,13 @@ async function instrumentPledgedElsewhere(instrumentId: string, userId: string):
  */
 export async function deleteMyInstrument(
   approvalId: string,
-): Promise<{ ok: boolean; error?: string }> {
+  options?: { chargeManagementFee?: boolean },
+): Promise<{ ok: boolean; error?: string; feeCharged?: number; feeCurrency?: string }> {
+  // The 0.035% management / settlement fee is charged when a client "settles out"
+  // (DELETES) an instrument. It is NOT charged when the instrument is returned to
+  // the marketplace (that path passes chargeManagementFee: false), nor for a
+  // still-pending request (which the store cancels via cancelMyApproval instead).
+  const chargeManagementFee = options?.chargeManagementFee !== false
   const session = await resolveCurrentSession()
   if (!session) return { ok: false, error: "Your session has expired. Please sign in again." }
   try {
@@ -2103,6 +2110,19 @@ export async function deleteMyInstrument(
     if (existing.kind !== "instrument") {
       return { ok: false, error: "Only bank instruments can be deleted here." }
     }
+
+    // Snapshot the face value + currency BEFORE deletion so the management fee
+    // can be computed after the row is gone. Base shape mirrors the rest of the
+    // instrument handling: admin-issued → payload.instrument, else payload.record.
+    const p = (existing.payload ?? {}) as {
+      instrument?: { faceValue?: number; currency?: string; typeFull?: string; id?: string }
+      record?: { faceValue?: number; currency?: string; typeFull?: string; id?: string }
+      issuedByAdmin?: boolean
+    }
+    const base = (p.issuedByAdmin ? p.instrument : p.record ?? p.instrument) ?? {}
+    const faceValue = Number(base.faceValue ?? existing.amount ?? 0)
+    const feeCurrency = String(base.currency ?? "EUR")
+    const instrLabel = `${String(base.typeFull ?? "Instrument")} ${String(base.id ?? "")}`.trim()
 
     // AUTHORITATIVE "in use" guard. An instrument pledged as collateral / funding
     // for a LIVE facility (internal loan, leverage line, monetization, PPP) must
@@ -2120,6 +2140,47 @@ export async function deleteMyInstrument(
     const deleted = await deleteApprovalForUser(approvalId, session.id)
     if (!deleted) return { ok: false, error: "This instrument could not be deleted." }
 
+    // Charge the one-time management / settlement fee (0.035% of face value) to
+    // the client's Master Account, in the instrument's own currency. Best-effort
+    // and NON-blocking: the deletion already succeeded, so a fee-posting hiccup
+    // must never fail the whole operation. The debit posts like other platform
+    // charges (the ledger reconciler covers any resulting currency shortfall).
+    let feeCharged = 0
+    if (chargeManagementFee) {
+      const fee = instrumentManagementFee(faceValue)
+      if (fee > 0) {
+        try {
+          const ownerId = await resolveDataOwnerIdFor(session.id)
+          await upsertLedgerEntry(ownerId, {
+            id: `INSTR-MGMT-FEE-${approvalId}`,
+            direction: "debit",
+            amount: fee,
+            currency: feeCurrency,
+            status: "completed",
+            date: new Date().toISOString(),
+            counterparty: instrLabel || "Bank Instrument",
+            reference: approvalId,
+            category: `Bank Instrument — Management & Settlement Fee (${INSTRUMENT_MANAGEMENT_FEE_LABEL})`,
+            comment: `${INSTRUMENT_MANAGEMENT_FEE_LABEL} management fee on settling out ${feeCurrency} ${faceValue.toLocaleString("en-US")} instrument.`,
+          })
+          feeCharged = fee
+          try {
+            await insertNotification({
+              userId: session.id,
+              tone: "info",
+              title: "Instrument settled out",
+              body: `A ${INSTRUMENT_MANAGEMENT_FEE_LABEL} management fee of ${feeCurrency} ${fee.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} was charged to your Master Account for removing ${instrLabel || "the instrument"}.`,
+              href: "/dashboard/instruments",
+            })
+          } catch {
+            /* notification is best-effort */
+          }
+        } catch (err) {
+          console.log("[v0] instrument management fee charge failed:", (err as Error).message)
+        }
+      }
+    }
+
     try {
       const profile = await resolveAccountProfileById(session.id)
       await logActivity({
@@ -2130,12 +2191,15 @@ export async function deleteMyInstrument(
           referenceId: existing.id,
           summary: existing.summary || existing.title,
           decision: "Deleted",
+          ...(feeCharged > 0
+            ? { fee: `${feeCurrency} ${feeCharged.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` }
+            : {}),
         },
       })
     } catch (err) {
       console.log("[v0] instrument delete activity log failed:", (err as Error).message)
     }
-    return { ok: true }
+    return { ok: true, feeCharged, feeCurrency }
   } catch (err) {
     console.log("[v0] deleteMyInstrument failed:", (err as Error).message)
     return { ok: false, error: "The instrument could not be deleted. Please try again." }

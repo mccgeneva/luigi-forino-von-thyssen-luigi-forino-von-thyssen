@@ -331,8 +331,13 @@ export function InstrumentRequestsProvider({ children }: { children: React.React
     // via the owner-scoped delete — mirroring deleteInstrument's persistence.
     setInstruments(instruments.filter((i) => i.id !== id))
     if (target?.approvalId) {
-      const persist = target.status === "pending" ? cancelMyApproval : deleteMyInstrument
-      void persist(target.approvalId).then(() => void refresh())
+      // Returning to the marketplace is NOT a "settle out" deletion, so the
+      // 0.035% management fee is explicitly skipped here (unlike deleteInstrument).
+      const persist =
+        target.status === "pending"
+          ? cancelMyApproval(target.approvalId)
+          : deleteMyInstrument(target.approvalId, { chargeManagementFee: false })
+      void persist.then(() => void refresh())
     }
   }
 

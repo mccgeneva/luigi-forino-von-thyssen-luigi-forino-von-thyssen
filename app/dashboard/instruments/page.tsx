@@ -95,6 +95,11 @@ import {
 import { resolveTransferRecipient } from "@/app/actions/transfers"
 import { acceptInstrumentUpgrade, declineInstrumentUpgrade, counterInstrumentUpgrade } from "@/app/actions/approvals"
 import { INSTRUMENT_UPGRADE_FEE_LABEL, isUpgradeOpen } from "@/lib/instrument-upgrade"
+import {
+  instrumentManagementFee,
+  formatInstrumentFee,
+  INSTRUMENT_MANAGEMENT_FEE_LABEL,
+} from "@/lib/instrument-fees"
 import type { TransferDirectoryEntry } from "@/lib/users"
 import { useLeverageRequests } from "@/lib/leverage-requests-store"
 import { usePPPRequests } from "@/lib/ppp-requests-store"
@@ -2827,6 +2832,21 @@ export default function InstrumentsPage() {
                   or monetization request, so it can be safely removed. This action cannot be undone.
                 </DialogDescription>
               </DialogHeader>
+              {(() => {
+                const fee = instrumentManagementFee(deleteTarget.faceValue)
+                if (fee <= 0) return null
+                return (
+                  <div className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-600 dark:text-amber-400">
+                    <Percent className="mt-0.5 h-4 w-4 shrink-0" />
+                    <p className="text-pretty">
+                      A one-time management &amp; settlement fee of{" "}
+                      <span className="font-semibold">{formatInstrumentFee(fee, deleteTarget.currency)}</span> (
+                      {INSTRUMENT_MANAGEMENT_FEE_LABEL} of the {formatInstrumentFee(deleteTarget.faceValue, deleteTarget.currency)}{" "}
+                      face value) will be debited from your Master Account when you settle out this instrument.
+                    </p>
+                  </div>
+                )
+              })()}
               <DialogFooter>
                 <Button variant="outline" onClick={() => setDeleteTarget(null)}>
                   Cancel
@@ -2835,6 +2855,7 @@ export default function InstrumentsPage() {
                   variant="destructive"
                   onClick={() => {
                     const target = deleteTarget
+                    const fee = instrumentManagementFee(target.faceValue)
                     deleteInstrument(target.id)
                     logActivity({
                       action: `Removed bank instrument ${target.id} from portfolio`,
@@ -2842,10 +2863,14 @@ export default function InstrumentsPage() {
                       details: {
                         summary: `Client removed ${target.typeFull} (${target.id}) issued by ${target.issuer} from their portfolio. The instrument was not pledged or monetized.`,
                         referenceId: target.id,
+                        ...(fee > 0 ? { fee: formatInstrumentFee(fee, target.currency) } : {}),
                       },
                     })
                     toast.success("Instrument removed", {
-                      description: `${target.type} ${target.id} has been removed from your portfolio.`,
+                      description:
+                        fee > 0
+                          ? `${target.type} ${target.id} removed. A management fee of ${formatInstrumentFee(fee, target.currency)} was charged to your Master Account.`
+                          : `${target.type} ${target.id} has been removed from your portfolio.`,
                     })
                     setDeleteTarget(null)
                   }}
