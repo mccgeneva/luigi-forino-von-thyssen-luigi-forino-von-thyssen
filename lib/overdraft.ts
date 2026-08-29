@@ -41,8 +41,15 @@ export interface OverdraftStatus {
   negativeEur: number
   /** Remaining overdraft headroom before the ceiling is reached. */
   remainingEur: number
-  /** Fraction of the ceiling currently used (0..1). */
+  /** Fraction of the ceiling currently used (0..1, for the display bar). */
   usageRatio: number
+  /**
+   * Negative balance relative to the ceiling, UNCLAMPED. 0 when positive, 1.0
+   * exactly at the ceiling, and >1 when the account has BREACHED the authorized
+   * overdraft (e.g. 5.0 = five times the ceiling). Drives risk escalation so a
+   * deep, illogical overdraft is reflected instead of saturating at the ceiling.
+   */
+  breachRatio: number
   /** True when the account is currently overdrawn (settled balance < 0). */
   inOverdraft: boolean
   /** True when an overdraft facility exists at all (a deposit is posted). */
@@ -60,6 +67,10 @@ export function computeOverdraftStatus(depositBaseEur: number, balanceEur: numbe
   const negativeEur = bal < 0 ? round2(-bal) : 0
   const remainingEur = round2(Math.max(0, limitEur - negativeEur))
   const usageRatio = limitEur > 0 ? Math.min(1, Math.max(0, negativeEur / limitEur)) : negativeEur > 0 ? 1 : 0
+  // Unclamped: how many times the ceiling the account is negative by. A value
+  // above 1 means the authorized overdraft has been BREACHED. When there is no
+  // ceiling (no deposit) any negative counts as a full breach.
+  const breachRatio = negativeEur <= 0 ? 0 : limitEur > 0 ? round2(negativeEur / limitEur) : 1
   return {
     depositBaseEur: base,
     limitEur,
@@ -67,6 +78,7 @@ export function computeOverdraftStatus(depositBaseEur: number, balanceEur: numbe
     negativeEur,
     remainingEur,
     usageRatio: round2(usageRatio),
+    breachRatio,
     inOverdraft: bal < -0.01,
     available: limitEur > 0,
   }

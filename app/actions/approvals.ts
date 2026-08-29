@@ -23,6 +23,7 @@ import {
   limitBlockMessage,
 } from "@/lib/account-limits-eval"
 import { getGuaranteeConfig } from "@/lib/guarantees-config-db"
+import { getOverdraftStatusForOwner, computeOverdraftStatus } from "@/lib/overdraft"
 import { gatherGuaranteeProfile, getFinancingRingfence } from "@/lib/guarantees-profile"
 import { guaranteeBlockMessage } from "@/lib/guarantees-accumulator"
 import { planReservation, formatMoney, type ReservationPlan } from "@/lib/fund-reservation"
@@ -3356,6 +3357,40 @@ export async function reconcileTradingFundTermination(
     const charges = Math.max(0, Number(input.chargesAmount) || 0)
     if (!Number.isFinite(penalty) || !Number.isFinite(charges)) {
       return { ok: false, error: "Penalty and charges must be valid amounts." }
+    }
+
+    // DEEP-DEBIT GUARD. The settlement returns the capital (+capital) but charges
+    // the 2% commission + penalty + charges. When the returned capital has already
+    // been consumed elsewhere (e.g. it repaid a leverage line funded against it),
+    // those exit costs have no cash behind them and would drive the Master Account
+    // millions negative — far beyond the authorized overdraft. Refuse in that case
+    // and ask the administrator to reduce the penalty/charges (or fund the account)
+    // instead of silently creating a deep illogical debit.
+    const round2 = (n: number) => Math.round((n + Number.EPSILON) * 100) / 100
+    try {
+      const posCurrency = loaded.req.currency ?? "EUR"
+      const capitalNow = Number(loaded.req.amount ?? (payload as { capital?: number }).capital) || 0
+      // The settlement's net cash effect on the account (returned capital minus the
+      // exit costs). A negative net is money that must come out of existing balance.
+      const netSettlementEur = round2(convertCurrency(capitalNow - penalty - charges - capitalNow * 0.02, posCurrency, "EUR"))
+      const ownerId = await resolveDataOwnerIdFor(loaded.req.userId)
+      const od = await getOverdraftStatusForOwner(ownerId)
+      // Projected settled balance after this reconcile, in EUR.
+      const projectedEur = round2(od.balanceEur + netSettlementEur)
+      const projected = computeOverdraftStatus(od.depositBaseEur, projectedEur)
+      if (projected.breachRatio > 1.0001) {
+        const overBy = `EUR ${round2(projected.negativeEur - projected.limitEur).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+        return {
+          ok: false,
+          error:
+            `This reconciliation would take the client's Master Account to about EUR ${projectedEur.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}, ` +
+            `which is ${overBy} beyond their authorized overdraft (EUR ${od.limitEur.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}). ` +
+            `The returned capital was already used elsewhere, so the exit costs have no funds behind them. ` +
+            `Reduce the penalty/charges, or have the client fund the account, before closing this position.`,
+        }
+      }
+    } catch (guardErr) {
+      console.log("[v0] reconcile deep-debit guard could not evaluate (proceeding):", (guardErr as Error).message)
     }
 
     const nowIso = new Date().toISOString()
