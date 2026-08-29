@@ -192,9 +192,22 @@ export function DebitFacilityActions({
               Calculating payoff…
             </div>
           ) : error && !state ? (
-            <div className="flex items-start gap-2 rounded-lg border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">
-              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
-              <p className="text-pretty">{error}</p>
+            <div className="space-y-3">
+              <div className="flex items-start gap-2 rounded-lg border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">
+                <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+                <p className="text-pretty">{error}</p>
+              </div>
+              {mode && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="w-full gap-1.5"
+                  onClick={() => void openDialog(mode)}
+                >
+                  <RotateCcw className="h-3.5 w-3.5" />
+                  Retry
+                </Button>
+              )}
             </div>
           ) : q && state ? (
             <div className="space-y-3">
