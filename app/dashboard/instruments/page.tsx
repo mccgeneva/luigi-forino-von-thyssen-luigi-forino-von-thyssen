@@ -330,6 +330,10 @@ export default function InstrumentsPage() {
 
   // Dedicated bank-instrument monetization request (MT760, advance rate, etc.)
   const [monetizeTarget, setMonetizeTarget] = useState<Instrument | null>(null)
+  // Guarantees Accumulator trust score, used to price the PPI premium in the
+  // monetization reserve. Fetched when the monetize dialog opens; undefined until
+  // then (falls back to the standard 1% premium in the preview).
+  const [monetizeTrustScore, setMonetizeTrustScore] = useState<number | undefined>(undefined)
   const [monetizeForm, setMonetizeForm] = useState({
     structure: "CreditLine" as MonetizationStructure,
     advanceRate: "65",
@@ -730,7 +734,7 @@ export default function InstrumentsPage() {
   const monetizeReserveCurrency = monetizeTarget?.currency ?? "EUR"
   const monetizeEquityQuote =
     monetizeTarget && Number.isFinite(monetizeAdvanceRate)
-      ? computeMonetizationEquity(monetizeProceeds, monetizeAdvanceRate)
+      ? computeMonetizationEquity(monetizeProceeds, monetizeAdvanceRate, monetizeTrustScore)
       : { ltvPercent: 0, equityRate: 0, equityDeposit: 0, ppi: 0, totalUpfront: 0 }
   const monetizeEquityRate = monetizeEquityQuote.equityRate
   const monetizeEquityDeposit = monetizeEquityQuote.equityDeposit
@@ -865,6 +869,27 @@ export default function InstrumentsPage() {
   // `MON-RSV-<id>` hold is deleted so the funds return to available. Guarded on
   // BOTH stores being hydrated so a slow requests-load can never release a
   // legitimately-pending reserve.
+  // Fetch the customer's Guarantees Accumulator trust score when the monetize
+  // dialog opens so the PPI premium in the reserve preview is priced by the
+  // adopted trust-score formula (and matches what the server stamps at submit).
+  useEffect(() => {
+    if (!monetizeTarget) return
+    let cancelled = false
+    ;(async () => {
+      try {
+        const res = await fetch("/api/guarantees", { credentials: "include", cache: "no-store" })
+        const data = res.ok ? await res.json() : null
+        const score = data?.ok ? Number(data?.score?.finalScore) : NaN
+        if (!cancelled) setMonetizeTrustScore(Number.isFinite(score) ? score : undefined)
+      } catch {
+        if (!cancelled) setMonetizeTrustScore(undefined)
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [monetizeTarget])
+
   const releasedReservesRef = useRef<Set<string>>(new Set())
   useEffect(() => {
     if (!ledgerHydrated || !monetizationHydrated) return

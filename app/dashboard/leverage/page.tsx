@@ -406,7 +406,9 @@ export default function LeveragePage() {
   // available balance − outstanding borrowed/financed funds (the only money that
   // can back a cash-funded line). Shown up-front and used to block Apply so a
   // client can never request more margin than they actually hold.
-  const [marginInfo, setMarginInfo] = useState<{ freeEur: number; availableEur: number } | null>(null)
+  const [marginInfo, setMarginInfo] = useState<{ freeEur: number; availableEur: number; trustScore: number } | null>(
+    null,
+  )
   const [marginLoading, setMarginLoading] = useState(false)
   const log = useActivityLog()
   const { requests, addRequest, unwindLine, requestSwitchOff, withdrawLine, hydrated } = useLeverageRequests()
@@ -487,7 +489,8 @@ export default function LeveragePage() {
           if (inp) {
             const availableEur = Number(inp.availableBalance) || 0
             const totalExposure = Number(inp.totalExposure) || 0
-            setMarginInfo({ freeEur: Math.max(0, availableEur - totalExposure), availableEur })
+            const trustScore = Number(data?.score?.finalScore) || 0
+            setMarginInfo({ freeEur: Math.max(0, availableEur - totalExposure), availableEur, trustScore })
           } else {
             setMarginInfo(null)
           }
@@ -613,7 +616,7 @@ export default function LeveragePage() {
   const deployableFunds = instrumentFunded ? projectedBorrowed : projectedBuyingPower
   // Upfront charges (audit & compliance fee + PPI premium), charged together to
   // the Master Account on confirmation whether the line is accepted or not.
-  const applicationCharges = leverageApplicationCharges(numericEquity, numericRatio)
+  const applicationCharges = leverageApplicationCharges(numericEquity, numericRatio, marginInfo?.trustScore)
   const auditFee = applicationCharges.auditFee
   const ppiPremium = applicationCharges.ppi
   const totalUpfrontCharge = applicationCharges.total

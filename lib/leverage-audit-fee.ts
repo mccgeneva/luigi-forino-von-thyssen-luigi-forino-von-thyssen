@@ -21,6 +21,8 @@
  * Account. Supported multiplier range is 1:2 … 1:30.
  */
 
+import { ppiFromTrustScore } from "@/lib/ppi-trust"
+
 /** 0.001% = 0.00001 as a decimal. */
 export const LEVERAGE_AUDIT_FEE_RATE = 0.00001
 
@@ -59,14 +61,22 @@ export function leverageAuditFee(equity: number, ratio: number): number {
 export const LEVERAGE_PPI_RATE = 0.0075
 
 /**
- * Compute the PPI premium for a leverage application (0.75% of buying power).
+ * Compute the PPI premium for a leverage application.
+ *
+ * The base premium is 0.75% of buying power. When a Guarantees Accumulator
+ * `trustScore` is supplied, the adopted trust-score formula is applied on top
+ * (PPI = base/100 × score, and 0 when the score is 0). When no score is passed
+ * (undefined) the base premium is returned unchanged — so any caller that has
+ * not been updated keeps the standard premium rather than silently zeroing.
  * Returns 0 for any non-finite or non-positive input.
  */
-export function leveragePpiPremium(equity: number, ratio: number): number {
+export function leveragePpiPremium(equity: number, ratio: number, trustScore?: number): number {
   if (!Number.isFinite(equity) || !Number.isFinite(ratio)) return 0
   if (equity <= 0 || ratio <= 0) return 0
   const buyingPower = equity * ratio
-  return round2(LEVERAGE_PPI_RATE * buyingPower)
+  const base = round2(LEVERAGE_PPI_RATE * buyingPower)
+  if (trustScore === undefined) return base
+  return round2(ppiFromTrustScore(base, trustScore))
 }
 
 /** The full set of upfront charges for a leverage application. */
@@ -86,9 +96,13 @@ export interface LeverageApplicationCharges {
  * compliance fee plus the PPI premium, both charged immediately to the Master
  * Account on confirmation whether the line is accepted or rejected.
  */
-export function leverageApplicationCharges(equity: number, ratio: number): LeverageApplicationCharges {
+export function leverageApplicationCharges(
+  equity: number,
+  ratio: number,
+  trustScore?: number,
+): LeverageApplicationCharges {
   const auditFee = leverageAuditFee(equity, ratio)
-  const ppi = leveragePpiPremium(equity, ratio)
+  const ppi = leveragePpiPremium(equity, ratio, trustScore)
   const buyingPower = Number.isFinite(equity) && Number.isFinite(ratio) && equity > 0 && ratio > 0 ? equity * ratio : 0
   return { buyingPower, auditFee, ppi, total: round2(auditFee + ppi) }
 }
