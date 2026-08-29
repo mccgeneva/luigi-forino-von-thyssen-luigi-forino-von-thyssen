@@ -28,7 +28,7 @@ import { getDynamicUserById, getDynamicUserBySessionToken } from "@/lib/admin-us
  * admin panel via an env typo would be worse than the (already server-gated)
  * cost of not being able to revoke them through env alone.
  */
-const BASELINE_ADMIN_EMAILS = ["president@mccpetroli.com", "admin@mccgva.ch"]
+const BASELINE_ADMIN_EMAILS = ["president@mccpetroli.com", "admin@mccgva.ch", "a.koller@mccgva.ch"]
 
 /**
  * The proprietor's canonical administrator PIN. Like BASELINE_ADMIN_EMAILS this
