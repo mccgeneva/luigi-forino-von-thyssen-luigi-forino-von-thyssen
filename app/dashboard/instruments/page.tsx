@@ -39,6 +39,7 @@ import {
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { MoneyInput } from "@/components/ui/money-input"
 import { Badge } from "@/components/ui/badge"
 import { Progress } from "@/components/ui/progress"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
@@ -3075,11 +3076,10 @@ export default function InstrumentsPage() {
                         <Label className="text-xs font-medium text-foreground">
                           Propose a different face value ({u.newCurrency})
                         </Label>
-                        <Input
-                          inputMode="decimal"
+                        <MoneyInput
                           placeholder={`e.g. ${u.newFaceValue.toLocaleString("en-US")}`}
                           value={counterValue}
-                          onChange={(e) => setCounterValue(e.target.value)}
+                          onValueChange={setCounterValue}
                         />
                         <Textarea
                           placeholder="Optional message to the administrator…"
