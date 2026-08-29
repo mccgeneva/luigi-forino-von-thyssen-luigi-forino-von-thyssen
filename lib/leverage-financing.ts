@@ -9,7 +9,7 @@ import { dueMonthEnds, round2, yearMonthKey } from "@/lib/interest-accrual"
  *
  * When a leverage line is activated, its borrowed funds are credited to the
  * client's balance. Those borrowed funds carry a debit interest set by the
- * risk-based scale (higher leverage → lower rate; see lib/leverage-rates.ts)
+ * risk-based scale (higher leverage → higher rate; see lib/leverage-rates.ts)
  * and must be charged MONTHLY from the activation date so the balance reflects
  * the accruing cost over time — not only as a single lump at switch-off.
  *

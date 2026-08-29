@@ -1,19 +1,19 @@
 /**
- * Risk-based inverse debit-interest scale for leverage.
+ * Risk-based debit-interest scale for leverage.
  *
- * Higher leverage signals higher trust / lower credit risk, so it carries a
- * LOWER annual debit interest; lower leverage carries a HIGHER rate. The scale
- * is the single source of truth for every leverage product (trading lines and
- * the treasury security-deposit facility).
+ * Higher leverage carries MORE risk, so it carries a HIGHER annual debit
+ * interest; lower leverage carries a lower rate. The scale is the single source
+ * of truth for every leverage product (trading lines and the treasury
+ * security-deposit facility).
  *
  *   Leverage   Annual debit interest
- *   1:2        14%
- *   1:5        10%
+ *   1:2         2%
+ *   1:5         3%
  *   1:10        8%
- *   1:15        7%
- *   1:20        6%
- *   1:25        4%
- *   1:30        3%
+ *   1:15       10%
+ *   1:20       14%
+ *   1:25       18%
+ *   1:30       22%
  *
  * Interest is calculated annually and charged monthly as 1/12 of the annual
  * rate, accruing from the day the funds are credited (handled by the accrual
@@ -34,13 +34,13 @@ export interface LeverageRateAnchor {
  * clamped to the table's ends.
  */
 export const DEBIT_INTEREST_SCALE: LeverageRateAnchor[] = [
-  { ratio: 2, rate: 0.14 },
-  { ratio: 5, rate: 0.1 },
+  { ratio: 2, rate: 0.02 },
+  { ratio: 5, rate: 0.03 },
   { ratio: 10, rate: 0.08 },
-  { ratio: 15, rate: 0.07 },
-  { ratio: 20, rate: 0.06 },
-  { ratio: 25, rate: 0.04 },
-  { ratio: 30, rate: 0.03 },
+  { ratio: 15, rate: 0.1 },
+  { ratio: 20, rate: 0.14 },
+  { ratio: 25, rate: 0.18 },
+  { ratio: 30, rate: 0.22 },
 ]
 
 /** Full ladder of selectable leverage ratios (the anchor points): 1:2 … 1:30. */
@@ -54,7 +54,7 @@ export const TREASURY_LEVERAGE_RATIOS: number[] = [...LEVERAGE_RATIOS]
 
 /**
  * Annual debit interest rate for a given leverage ratio under the risk-based
- * inverse scale. Exact anchor ratios return their table value; intermediate
+ * scale. Exact anchor ratios return their table value; intermediate
  * ratios are linearly interpolated; out-of-range values clamp to the ends.
  * Rounded to 6 dp to avoid float noise.
  */

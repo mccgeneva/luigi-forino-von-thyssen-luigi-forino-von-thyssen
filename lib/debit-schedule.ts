@@ -36,7 +36,7 @@ import type { TreasuryAccount } from "@/lib/treasury-store"
  *
  *   • Project Funding (AES)   — 1.8% p.a. flat cost of capital
  *   • Credit facilities       — progressive/tiered loan interest (1.8%–3.5%)
- *   • Leverage lines          — risk-based inverse scale (14% at 1:2 … 3% at 1:30)
+ *   • Leverage lines          — risk-based scale (2% at 1:2 … 22% at 1:30)
  *   • Treasury Financing       — 3% p.a. flat on the drawn deposit facility
  *
  * This module does NOT re-derive any interest math. It calls each product's own
@@ -220,7 +220,7 @@ export function buildDebitSchedule(input: BuildDebitScheduleInput): DebitSchedul
     }
   }
 
-  // --- 3. Leverage lines — risk-based inverse scale (14% at 1:2 … 3% at 1:30) --
+  // --- 3. Leverage lines — risk-based scale (2% at 1:2 … 22% at 1:30) --
   const leverage = (input.leverage ?? []).filter(
     (l) => (l.status === "approved" || l.status === "switchoff_pending") && !!l.activatedAt && !l.closedAt,
   )
@@ -410,12 +410,12 @@ export const DEBIT_SCENARIOS: Record<DebitKind, DebitScenarioExplainer> = {
   leverage: {
     kind: "leverage",
     title: "Leverage Line — Debit Interest on Borrowed Funds",
-    rate: "Risk-based inverse scale: 14% p.a. at 1:2, 10% at 1:5, 8% at 1:10, 7% at 1:15, 6% at 1:20, 4% at 1:25, 3% at 1:30 — a higher leverage multiple carries a lower rate.",
+    rate: "Risk-based scale: 2% p.a. at 1:2, 3% at 1:5, 8% at 1:10, 10% at 1:15, 14% at 1:20, 18% at 1:25, 22% at 1:30 — a higher leverage multiple carries more risk and a higher rate.",
     whenCharged: "At the end of every calendar month while the line is live.",
     accrualStart: "The activation date, when the borrowed funds are credited to your balance.",
     conditions: [
       "Applies to active leverage lines. Interest is charged on the borrowed amount (equity × (ratio − 1)), not on your own equity.",
-      "Higher leverage signals lower risk, so the annual rate DECREASES as the ratio increases (1:2 is the most expensive, 1:30 the cheapest).",
+      "Higher leverage carries more risk, so the annual rate INCREASES as the ratio increases (1:2 is the cheapest, 1:30 the most expensive).",
       "If an administrator adjusts your ratio, interest is billed segment-by-segment at the ratio in force during each window.",
       "The first month is pro-rated from the activation date; a switch-off settles any interest not yet collected monthly.",
     ],

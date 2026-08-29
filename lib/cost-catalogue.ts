@@ -297,7 +297,7 @@ export const COST_SECTIONS: CostSection[] = [
       {
         item: "Debit interest — leverage line",
         fee: interestScaleLabel(),
-        when: "Annual rate charged monthly as 1/12, accruing from the day funds are credited. The rate is lower at higher (lower-risk) leverage.",
+        when: "Annual rate charged monthly as 1/12, accruing from the day funds are credited. Higher leverage carries more risk and a higher rate.",
       },
       {
         item: "Special Treasury Financing",
@@ -391,7 +391,7 @@ export const COST_SECTIONS: CostSection[] = [
   },
 ]
 
-/** Human label for the leverage debit-interest scale, e.g. "1:2 14% … 1:30 3%". */
+/** Human label for the leverage debit-interest scale, e.g. "1:2 2% … 1:30 22%". */
 function interestScaleLabel(): string {
   const first = DEBIT_INTEREST_SCALE[0]
   const last = DEBIT_INTEREST_SCALE[DEBIT_INTEREST_SCALE.length - 1]

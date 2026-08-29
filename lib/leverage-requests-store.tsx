@@ -90,8 +90,8 @@ export function leverageRatiosFor(account: LeverageAccountKey): number[] {
 }
 
 // Annual debit interest on the borrowed (leveraged) funds follows the
-// risk-based INVERSE scale in `lib/leverage-rates.ts` (higher leverage = lower
-// rate): 1:2 → 14% … 1:30 → 3%, charged monthly as (annual ÷ 12). This is
+// risk-based scale in `lib/leverage-rates.ts` (higher leverage = higher risk =
+// higher rate): 1:2 → 2% … 1:30 → 22%, charged monthly as (annual ÷ 12). This is
 // distinct from Project Finance, which is an INVESTMENT product carrying a 1.8%
 // p.a. ROI, not a debit rate. `debitInterestRateFor` is re-exported above.
 
