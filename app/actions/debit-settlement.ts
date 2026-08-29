@@ -295,17 +295,31 @@ export async function quoteDebitSettlement(
     const covered = available + 0.01 >= quote.payoff
     const shortfall = covered ? 0 : round2(quote.payoff - available)
 
-    // Overdraft routing: can the client settle now (balance covers it, OR the
-    // resulting negative stays within the authorized overdraft ceiling), or does
-    // the deep negative need administrator approval?
-    const overdraft = await getOverdraftStatusForOwner(resolved.ledgerOwnerId)
-    const payoffEur = convertCurrency(quote.payoff, quote.currency, "EUR")
-    const withinOverdraft = chargeWithinOverdraft(overdraft, payoffEur)
-    const grants = await loadTerminationGrants(resolved.accountId)
-    const approvalGranted = !!findGrant(grants, kind, facilityId, "approved")
-    const approvalPending = !!findGrant(grants, kind, facilityId, "pending")
-    const settleableNow = covered || withinOverdraft || approvalGranted
-    const needsApproval = !settleableNow
+    // Overdraft routing is an ENRICHMENT, never a blocker: can the client settle
+    // now (balance covers it, OR the resulting negative stays within the
+    // authorized overdraft ceiling), or does the deep negative need admin
+    // approval? If any of these reads fail, we still return a usable quote —
+    // defaulting to "settle only when covered" and letting the (authoritative)
+    // terminate path decide overdraft/approval. This guarantees the client is
+    // NEVER dead-ended on "Could not compute" just because an ancillary read hiccuped.
+    let settleableNow = covered
+    let needsApproval = !covered
+    let overdraftLimitEur = 0
+    let approvalGranted = false
+    let approvalPending = false
+    try {
+      const overdraft = await getOverdraftStatusForOwner(resolved.ledgerOwnerId)
+      const payoffEur = convertCurrency(quote.payoff, quote.currency, "EUR")
+      const withinOverdraft = chargeWithinOverdraft(overdraft, payoffEur)
+      const grants = await loadTerminationGrants(resolved.accountId)
+      approvalGranted = !!findGrant(grants, kind, facilityId, "approved")
+      approvalPending = !!findGrant(grants, kind, facilityId, "pending")
+      settleableNow = covered || withinOverdraft || approvalGranted
+      needsApproval = !settleableNow
+      overdraftLimitEur = round2(overdraft.limitEur)
+    } catch (enrichErr) {
+      console.log("[v0] quote overdraft enrichment failed (non-fatal):", (enrichErr as Error).message)
+    }
 
     return {
       ok: true,
@@ -315,7 +329,7 @@ export async function quoteDebitSettlement(
       shortfall,
       settleableNow,
       needsApproval,
-      overdraftLimitEur: round2(overdraft.limitEur),
+      overdraftLimitEur,
       approvalGranted,
       approvalPending,
     }
@@ -566,9 +580,19 @@ export async function terminateDebitFacility(
     //     treasury deposit), OR
     //   • an administrator has APPROVED a deep-negative grant for this facility.
     // Otherwise the settlement is routed to the administrator (nothing posted).
-    const overdraft = await getOverdraftStatusForOwner(resolved.ledgerOwnerId)
+    // The overdraft read is defensive: if it fails, fall back to a strict
+    // positive-balance decision (covered ⇒ settle with no allowance; short ⇒
+    // route to admin) so a transient read can never dead-end the termination.
     const payoffEur = convertCurrency(plan.quote.payoff, plan.quote.currency, "EUR")
-    const withinOverdraft = chargeWithinOverdraft(overdraft, payoffEur)
+    let overdraft: Awaited<ReturnType<typeof getOverdraftStatusForOwner>> | null = null
+    try {
+      overdraft = await getOverdraftStatusForOwner(resolved.ledgerOwnerId)
+    } catch (odErr) {
+      console.log("[v0] terminate overdraft read failed (fallback to strict):", (odErr as Error).message)
+    }
+    const availStrict = availableByCurrency(entries)[plan.quote.currency] ?? 0
+    const coveredStrict = round2(availStrict) + 0.01 >= plan.quote.payoff
+    const withinOverdraft = overdraft ? chargeWithinOverdraft(overdraft, payoffEur) : coveredStrict
 
     const grants = await loadTerminationGrants(resolved.accountId)
     const approvedGrant = findGrant(grants, kind, facilityId, "approved")
@@ -594,10 +618,13 @@ export async function terminateDebitFacility(
     }
 
     // Allowance: an approved grant authorizes an UNBOUNDED deep negative; a
-    // within-overdraft settlement is capped at the authorized ceiling.
+    // within-overdraft settlement is capped at the authorized ceiling (0 when
+    // the overdraft status couldn't be read — a covered settlement needs none).
+    const limitEur = overdraft?.limitEur ?? 0
+    const balanceEur = overdraft?.balanceEur ?? 0
     const allowanceEur = approvedGrant
-      ? Math.max(overdraft.limitEur, payoffEur) + Math.abs(overdraft.balanceEur) + 1_000_000
-      : overdraft.limitEur
+      ? Math.max(limitEur, payoffEur) + Math.abs(balanceEur) + 1_000_000
+      : limitEur
 
     // Post catch-up + settlement legs together, then assert solvency within the
     // allowance (rolls back on breach). All ids deterministic ⇒ idempotent.
