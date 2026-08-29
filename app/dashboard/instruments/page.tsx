@@ -299,7 +299,15 @@ export default function InstrumentsPage() {
     }
     return ids
   }, [monetizationRequests])
-  const isMonetized = (inst: Instrument) => monetizedInstrumentIds.has(inst.id)
+
+  // An instrument is ENGAGED — and therefore cannot be transferred/assigned or
+  // (re)monetized — when it is committed to ANY live financing: a leverage line,
+  // a monetization, a yield/PPP application, or an internal loan. `isMonetized`
+  // alone missed leverage-pledged collateral (e.g. a BG pledged 1:5 for a credit
+  // line), which wrongly kept the Assign/Transfer and Monetize actions live even
+  // though the instrument is already in use. `inUseInstrumentIds` is that full
+  // engagement set, so it gates every transfer/monetize entry point below.
+  const isEngaged = (inst: Instrument) => inUseInstrumentIds.has(inst.id)
 
   // Map each pledged instrument id -> its active leverage line, so a BG that was
   // pledged to an approved leverage facility (e.g. 1:5) surfaces its leveraged
@@ -633,12 +641,14 @@ export default function InstrumentsPage() {
       return
     }
     if (action === "Monetize") {
-      // Guard: an instrument with a live (pending or approved) monetization is
-      // already pledged and cannot be monetized again until that request is
-      // rejected. Prevents double-advancing against the same collateral.
-      if (isMonetized(instrument)) {
-        toast.error("Already monetized", {
-          description: `${instrument.id} already has an active monetization request. It can't be monetized again unless that request is rejected.`,
+      // Guard: an instrument already committed to ANY live financing (a
+      // monetization, a leverage line, a yield/PPP application, or an internal
+      // loan) is pledged collateral and cannot be monetized. Prevents
+      // double-advancing against the same instrument.
+      if (isEngaged(instrument)) {
+        const reasons = usageReasons(instrument)
+        toast.error("Instrument in use", {
+          description: `${instrument.id} is already committed to ${reasons.join(", and ") || "an active facility"}. It can't be monetized until that is released.`,
         })
         return
       }
@@ -662,14 +672,15 @@ export default function InstrumentsPage() {
       setMonetizeTarget(instrument)
       return
     }
-    // Guard: an instrument with a live (pending or approved) monetization is
-    // pledged as collateral — proceeds have been advanced against it. It cannot
-    // be assigned or transferred away, otherwise the client would keep the cash
-    // AND hand off the underlying instrument (a double-spend). The pledge must
-    // be released (monetization rejected/unwound) before any transfer.
-    if (isMonetized(instrument)) {
+    // Guard: an instrument committed to ANY live financing (monetization,
+    // leverage line, yield/PPP, or internal loan) is pledged collateral. It
+    // cannot be assigned or transferred away, otherwise the client would keep
+    // the advanced/borrowed funds AND hand off the underlying instrument (a
+    // double-spend). The engagement must be released before any transfer.
+    if (isEngaged(instrument)) {
+      const reasons = usageReasons(instrument)
       toast.error("Instrument is pledged", {
-        description: `${instrument.id} has an active monetization and can't be transferred or assigned until that monetization is released.`,
+        description: `${instrument.id} is committed to ${reasons.join(", and ") || "an active facility"} and can't be transferred or assigned until that is released.`,
       })
       return
     }
@@ -991,11 +1002,13 @@ export default function InstrumentsPage() {
   const confirmInstrumentAction = async () => {
     if (!actionTarget || !recipient) return
     const { instrument } = actionTarget
-    // Defense-in-depth: never let a pledged (monetized) instrument leave the
-    // portfolio, even if this dialog was opened before the monetization landed.
-    if (isMonetized(instrument)) {
+    // Defense-in-depth: never let an engaged instrument (pledged to a
+    // monetization, leverage line, yield/PPP, or loan) leave the portfolio, even
+    // if this dialog was opened before the engagement landed.
+    if (isEngaged(instrument)) {
+      const reasons = usageReasons(instrument)
       toast.error("Instrument is pledged", {
-        description: `${instrument.id} has an active monetization and can't be transferred until it is released.`,
+        description: `${instrument.id} is committed to ${reasons.join(", and ") || "an active facility"} and can't be transferred until it is released.`,
       })
       setActionTarget(null)
       return
@@ -1630,10 +1643,10 @@ export default function InstrumentsPage() {
                             )}
                             {instrument.status === "active" &&
                               instrument.assignable &&
-                              (isMonetized(instrument) ? (
+                              (isEngaged(instrument) ? (
                                 <DropdownMenuItem disabled>
                                   <ArrowRight className="mr-2 h-4 w-4" />
-                                  Transfer (pledged)
+                                  Transfer (in use)
                                 </DropdownMenuItem>
                               ) : (
                                 <DropdownMenuItem
@@ -1645,10 +1658,10 @@ export default function InstrumentsPage() {
                               ))}
                             {instrument.status === "active" &&
                               instrument.monetizable &&
-                              (isMonetized(instrument) ? (
+                              (isEngaged(instrument) ? (
                                 <DropdownMenuItem disabled>
                                   <TrendingUp className="mr-2 h-4 w-4" />
-                                  Monetized
+                                  Monetize (in use)
                                 </DropdownMenuItem>
                               ) : (
                                 <DropdownMenuItem
@@ -1828,13 +1841,13 @@ export default function InstrumentsPage() {
                             <>
                               {instrument.assignable &&
                                 (instrument.status === "active" ? (
-                                  isMonetized(instrument) ? (
+                                  isEngaged(instrument) ? (
                                     <Badge
                                       variant="outline"
                                       className="text-[10px] bg-muted text-muted-foreground border-border"
                                     >
                                       <Lock className="mr-1 h-3 w-3" />
-                                      Pledged
+                                      In use
                                     </Badge>
                                   ) : (
                                     <button
@@ -1860,13 +1873,13 @@ export default function InstrumentsPage() {
                                 ))}
                               {instrument.monetizable &&
                                 (instrument.status === "active" ? (
-                                  isMonetized(instrument) ? (
+                                  isEngaged(instrument) ? (
                                     <Badge
                                       variant="outline"
                                       className="text-[10px] bg-muted text-muted-foreground border-border"
                                     >
-                                      <TrendingUp className="mr-1 h-3 w-3" />
-                                      Monetized
+                                      <Lock className="mr-1 h-3 w-3" />
+                                      In use
                                     </Badge>
                                   ) : (
                                     <button
