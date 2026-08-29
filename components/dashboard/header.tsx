@@ -113,6 +113,26 @@ export function DashboardHeader() {
   const notifications = data?.items ?? []
   const unread = data?.unread ?? 0
 
+  // Persistent "to-do" count of everything awaiting ANY administrator's action.
+  // Shown as a badge on a dedicated Administrator button so every admin — incl.
+  // sub-account admins whose transient notification bell may already be marked
+  // read — always sees pending work and can jump straight to the panel. Only
+  // polled for admins (the endpoint returns 0/false for everyone else anyway).
+  const { data: adminTodo } = useSWR<{ ok: boolean; total: number }>(
+    isAdmin ? "admin-pending-count" : null,
+    async () => {
+      try {
+        const res = await fetch("/api/admin/pending-count")
+        if (!res.ok) return { ok: false, total: 0 }
+        return (await res.json()) as { ok: boolean; total: number }
+      } catch {
+        return { ok: false, total: 0 }
+      }
+    },
+    { refreshInterval: 30000, revalidateOnFocus: false },
+  )
+  const adminPending = adminTodo?.total ?? 0
+
   const markAllRead = async () => {
     // Optimistically clear the unread badge, then persist via the Route Handler.
     mutate(
@@ -191,6 +211,23 @@ export function DashboardHeader() {
 
         {/* Bankeka Messenger */}
         <BankekaHeaderButton />
+
+        {/* Administrator to-do — persistent pending-tasks indicator for admins.
+            Independent of the notification bell's read state, so an admin who
+            has cleared their bell can still see and reach pending admin work. */}
+        {isAdmin && (
+          <Button asChild variant="ghost" size="icon" className="relative">
+            <Link href="/dashboard/admin" aria-label={`Administrator panel${adminPending > 0 ? ` — ${adminPending} pending` : ""}`}>
+              <ShieldCheck className="h-5 w-5" />
+              {adminPending > 0 && (
+                <Badge className="absolute -right-1 -top-1 h-5 w-5 rounded-full p-0 text-[10px] bg-primary text-primary-foreground flex items-center justify-center">
+                  {adminPending > 9 ? "9+" : adminPending}
+                </Badge>
+              )}
+              <span className="sr-only">Administrator tasks</span>
+            </Link>
+          </Button>
+        )}
 
         {/* Notifications */}
         <DropdownMenu open={notifOpen} onOpenChange={setNotifOpen} modal={false}>
