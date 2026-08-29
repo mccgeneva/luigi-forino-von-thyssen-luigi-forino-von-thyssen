@@ -56,6 +56,23 @@ import type { InternalLoanRecordLike } from "@/lib/internal-loan"
 
 const DEBITS_HREF = "/dashboard/debits"
 
+/**
+ * Run a database read with one short retry. Serverless cold starts and brief
+ * connection blips are the usual cause of an otherwise-valid settlement quote
+ * failing with "could not compute" — a single retry turns that dead-end into a
+ * reliable read without masking a genuine logic error (the money math is pure
+ * and unaffected). Throws the last error only if BOTH attempts fail.
+ */
+async function readWithRetry<T>(fn: () => Promise<T>, label: string): Promise<T> {
+  try {
+    return await fn()
+  } catch (err) {
+    console.log(`[v0] ${label} read failed, retrying once:`, (err as Error).message)
+    await new Promise((r) => setTimeout(r, 150))
+    return await fn()
+  }
+}
+
 /** The five-product record bundle the pure engine needs, read server-side. */
 interface OwnerFacilities {
   funding: ProjectFundingRequest[]
@@ -136,7 +153,7 @@ async function resolveFacility(
 
   // Approval-backed products: load by approval id (facilityId IS the approval id
   // for these; the client passes the facility's approvalId).
-  const approval = await getApprovalById(facilityId)
+  const approval = await readWithRetry(() => getApprovalById(facilityId), "getApprovalById")
   if (!approval) return { ok: false, error: "This facility could not be found." }
   // Ownership: the facility must belong to the signed-in account or its owner.
   if (approval.userId !== accountId && approval.userId !== ledgerOwnerId) {
@@ -237,7 +254,7 @@ export async function quoteDebitSettlement(
     const res = await resolveFacility(kind, facilityId)
     if (!res.ok) return res
     const { resolved } = res
-    const entries = await readLedgerEntries(resolved.ledgerOwnerId)
+    const entries = await readWithRetry(() => readLedgerEntries(resolved.ledgerOwnerId), "readLedgerEntries")
     const engId = kind === "treasury" ? facilityId : engineFacilityId(resolved, kind)
 
     const quote = quoteFacility({
@@ -254,7 +271,7 @@ export async function quoteDebitSettlement(
     const shortfall = covered ? 0 : round2(quote.payoff - available)
     return { ok: true, quote, available, covered, shortfall }
   } catch (err) {
-    console.log("[v0] quoteDebitSettlement failed:", (err as Error).message)
+    console.log("[v0] quoteDebitSettlement failed:", kind, facilityId, (err as Error).message, (err as Error).stack)
     return { ok: false, error: "Could not compute the settlement. Please try again." }
   }
 }
@@ -312,7 +329,7 @@ export async function reconcileDebitFacility(
     const res = await resolveFacility(kind, facilityId)
     if (!res.ok) return res
     const { resolved } = res
-    const entries = await readLedgerEntries(resolved.ledgerOwnerId)
+    const entries = await readWithRetry(() => readLedgerEntries(resolved.ledgerOwnerId), "readLedgerEntries")
     const engId = kind === "treasury" ? facilityId : engineFacilityId(resolved, kind)
 
     const posts = buildReconcilePosts({
@@ -336,7 +353,7 @@ export async function reconcileDebitFacility(
 
     return { ok: true, posted, rows: posts.length }
   } catch (err) {
-    console.log("[v0] reconcileDebitFacility failed:", (err as Error).message)
+    console.log("[v0] reconcileDebitFacility failed:", kind, facilityId, (err as Error).message, (err as Error).stack)
     return { ok: false, error: "The reconciliation could not be completed. Please try again." }
   }
 }
@@ -357,7 +374,7 @@ export async function terminateDebitFacility(
     const res = await resolveFacility(kind, facilityId)
     if (!res.ok) return res
     const { resolved } = res
-    const entries = await readLedgerEntries(resolved.ledgerOwnerId)
+    const entries = await readWithRetry(() => readLedgerEntries(resolved.ledgerOwnerId), "readLedgerEntries")
     const engId = kind === "treasury" ? facilityId : engineFacilityId(resolved, kind)
 
     const plan = buildTerminationPlan({
@@ -434,7 +451,7 @@ export async function terminateDebitFacility(
 
     return { ok: true, quote: plan.quote, posted: allPosts.length }
   } catch (err) {
-    console.log("[v0] terminateDebitFacility failed:", (err as Error).message)
+    console.log("[v0] terminateDebitFacility failed:", kind, facilityId, (err as Error).message, (err as Error).stack)
     return { ok: false, error: "The termination could not be completed. Please try again." }
   }
 }
