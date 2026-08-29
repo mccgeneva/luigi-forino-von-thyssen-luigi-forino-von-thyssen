@@ -116,14 +116,20 @@ export function LedgerProvider({ children }: { children: React.ReactNode }) {
     const onVisible = () => {
       if (document.visibilityState === "visible") void load()
     }
+    // pageshow covers bfcache restore + installed-PWA resume, where a
+    // backgrounded interval is throttled and `focus` may never fire — so the
+    // balance re-syncs the moment the user returns after an admin operation.
+    const onPageShow = () => void load()
     window.addEventListener("focus", onFocus)
     document.addEventListener("visibilitychange", onVisible)
-    const id = setInterval(() => void load(), 30000)
+    window.addEventListener("pageshow", onPageShow)
+    const id = setInterval(() => void load(), 12000)
 
     return () => {
       cancelled = true
       window.removeEventListener("focus", onFocus)
       document.removeEventListener("visibilitychange", onVisible)
+      window.removeEventListener("pageshow", onPageShow)
       clearInterval(id)
     }
   }, [])

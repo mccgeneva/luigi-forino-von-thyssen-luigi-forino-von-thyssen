@@ -107,7 +107,7 @@ export function DashboardHeader() {
   // has no such coupling: a slow DB only makes this background fetch slow.
   // revalidateOnFocus stays off for the same historical reason.
   const { data, mutate } = useSWR<NotificationsSnapshot>("my-notifications", fetchNotifications, {
-    refreshInterval: 30000,
+    refreshInterval: 12000,
     revalidateOnFocus: false,
   })
   const notifications = data?.items ?? []
@@ -118,7 +118,7 @@ export function DashboardHeader() {
   // sub-account admins whose transient notification bell may already be marked
   // read — always sees pending work and can jump straight to the panel. Only
   // polled for admins (the endpoint returns 0/false for everyone else anyway).
-  const { data: adminTodo } = useSWR<{ ok: boolean; total: number }>(
+  const { data: adminTodo, mutate: mutateAdminTodo } = useSWR<{ ok: boolean; total: number }>(
     isAdmin ? "admin-pending-count" : null,
     async () => {
       try {
@@ -129,9 +129,28 @@ export function DashboardHeader() {
         return { ok: false, total: 0 }
       }
     },
-    { refreshInterval: 30000, revalidateOnFocus: false },
+    { refreshInterval: 12000, revalidateOnFocus: false },
   )
   const adminPending = adminTodo?.total ?? 0
+
+  // Force an immediate resync the instant the app is re-shown. SWR pauses its
+  // interval while the tab is hidden and revalidateOnFocus is off, so on a
+  // mobile / installed-PWA resume nothing would refresh until the next tick —
+  // making an admin operation appear "out of sync for a long time". Revalidating
+  // on visibilitychange + pageshow (bfcache / PWA resume) fixes that.
+  useEffect(() => {
+    const resync = () => {
+      if (document.visibilityState !== "visible") return
+      void mutate()
+      void mutateAdminTodo()
+    }
+    document.addEventListener("visibilitychange", resync)
+    window.addEventListener("pageshow", resync)
+    return () => {
+      document.removeEventListener("visibilitychange", resync)
+      window.removeEventListener("pageshow", resync)
+    }
+  }, [mutate, mutateAdminTodo])
 
   const markAllRead = async () => {
     // Optimistically clear the unread badge, then persist via the Route Handler.
