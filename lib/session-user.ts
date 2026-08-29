@@ -165,6 +165,41 @@ export async function resolveEnvironmentMemberIds(userId: string | undefined | n
 }
 
 /**
+ * Resolve ALL account ids that share a FINANCIAL POOL with `userId` — the
+ * Master plus every Sub (S) AND Joint (J) account linked under it. Sub and
+ * Joint accounts both operate on the Master's shared balance/instruments, so a
+ * pool-wide risk/exposure figure (Guarantees Accumulator) must aggregate across
+ * every member — otherwise the same account scores differently depending on
+ * which member is viewed (e.g. a financed treasury deposit recorded under one
+ * joint member makes only that member show exposure).
+ *
+ * A "child" (C) account is deliberately EXCLUDED — it is financially
+ * independent (its dataOwnerId is itself), so it must never pool with the
+ * master. Always includes `userId`, de-duplicates, and falls back to
+ * `[userId]` on any lookup failure.
+ */
+export async function resolveFinancialMemberIds(userId: string | undefined | null): Promise<string[]> {
+  if (!userId) return []
+  const ids = new Set<string>([userId])
+  try {
+    // The pool's Master: the account itself if it's a master/standalone, else
+    // its linked masterId (sub/joint resolve to the master via dataOwner rules).
+    const masterId = await resolveDataOwnerIdFor(userId)
+    ids.add(masterId)
+    // Every Sub and Joint linked under that master shares the financial pool.
+    const [subs, joints] = await Promise.all([
+      listAccountsByMaster(masterId, "sub"),
+      listAccountsByMaster(masterId, "joint"),
+    ])
+    for (const s of subs) ids.add(s.id)
+    for (const j of joints) ids.add(j.id)
+  } catch {
+    // DB unavailable — operate on just the account's own id.
+  }
+  return [...ids]
+}
+
+/**
  * Resolve a session token to a user. Every account lives in the database, so
  * this requires Postgres to be reachable. Accounts are only granted access
  * while their status is "active".
