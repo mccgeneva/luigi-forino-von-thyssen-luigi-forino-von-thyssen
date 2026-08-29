@@ -47,6 +47,7 @@ import {
 import { convertCurrency } from "@/lib/fx"
 import { getOverdraftStatusForOwner } from "@/lib/overdraft"
 import { insertNotification } from "@/lib/notifications-db"
+import { notifyAllAdminsOfSubmission } from "@/lib/notify-admins"
 import { logActivity } from "@/app/actions/log-activity"
 import { getGuaranteeConfig } from "@/lib/guarantees-config-db"
 import { gatherGuaranteeProfile } from "@/lib/guarantees-profile"
@@ -224,6 +225,17 @@ export async function applyForInternalLoan(input: {
         amount: formatLoanMoney(amount, currency),
         purpose: purpose || "(not specified)",
       },
+    })
+
+    // Alert EVERY administrator so any of them can run the risk evaluation and
+    // decide — not just the proprietor. Best-effort; never blocks the request.
+    await notifyAllAdminsOfSubmission({
+      customerName: holder,
+      kind: "internal_loan",
+      title: `Internal loan — ${formatLoanMoney(amount, currency)}`,
+      amount,
+      currency,
+      excludeIds: [session.id],
     })
 
     return { ok: true, approvalId: id }

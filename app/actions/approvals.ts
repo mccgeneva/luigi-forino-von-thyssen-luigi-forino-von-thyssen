@@ -78,6 +78,7 @@ import {
 import { KIND_LABELS, KIND_HREF, type ApprovalKind } from "@/lib/approval-kinds"
 import { parseQuantityString } from "@/lib/petroleum-products"
 import { getDynamicUserByEmail } from "@/lib/admin-users-db"
+import { notifyAllAdminsOfSubmission } from "@/lib/notify-admins"
 import { getVessel as dbGetVessel } from "@/lib/spot-deals-db"
 import { fetchVesselByImo, screenVesselImo } from "@/lib/vessel-providers"
 import { isValidImo, VESSEL_TYPE_LABELS, type Vessel } from "@/lib/spot-deals-shared"
@@ -747,6 +748,23 @@ export async function submitApproval(input: SubmitApprovalInput): Promise<Submit
     // `user`, it fell back to a hardcoded demo name, misattributing the action
     // to the wrong client. The approvals backbone's role is DB persistence for
     // administrator review, not activity notification.
+
+    // Alert EVERY administrator (not just the proprietor) so any of them can
+    // review and act. Skip when the request still needs the Master's consent
+    // first (`awaiting_master`) — it isn't pending admin review yet; the Master
+    // was already notified above, and the admins will be alerted when the
+    // Master approves and the request advances to pending. Best-effort.
+    if (!requiresMasterApproval) {
+      const ownerId = await resolveDataOwnerIdFor(session.id).catch(() => session.id)
+      await notifyAllAdminsOfSubmission({
+        customerName: session.profile.fullName,
+        kind: input.kind,
+        title: input.title?.trim() || KIND_LABELS[input.kind],
+        amount: input.amount,
+        currency: input.currency,
+        excludeIds: [session.id, ownerId],
+      })
+    }
 
     return { ok: true, request }
   } catch (err) {
@@ -5240,8 +5258,25 @@ export async function masterDecideApproval(
       console.log("[v0] master decision notification failed:", (err as Error).message)
     }
 
-    // Audit trail.
     const target = await resolveAccountProfileById(updated.userId)
+
+    // When the Master consented but the request now advances to pending
+    // administrator review (not yet fully approved), alert EVERY admin so any
+    // of them can act. A fully-approved request needed no admin gate, so no
+    // admin alert is due. Best-effort.
+    if (decision === "approved" && !fullyApproved) {
+      const ownerId = await resolveDataOwnerIdFor(updated.userId).catch(() => updated.userId)
+      await notifyAllAdminsOfSubmission({
+        customerName: target?.fullName ?? updated.title,
+        kind: updated.kind,
+        title: updated.title,
+        amount: updated.amount,
+        currency: updated.currency,
+        excludeIds: [updated.userId, ownerId, session.id],
+      })
+    }
+
+    // Audit trail.
     await logActivity({
       action: `Master ${session.profile.fullName} ${decision} a ${label} request from ${target.fullName}`,
       category: "Account Hierarchy / Approvals",
