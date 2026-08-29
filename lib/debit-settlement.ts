@@ -14,7 +14,8 @@ import { computeTieredInterest } from "@/lib/tiered-debit-interest"
 import type { MonetizationRequest } from "@/lib/monetization-requests-store"
 
 import { buildLeverageInterestPosts } from "@/lib/leverage-financing"
-import { accruedInterest, type LeverageRequest } from "@/lib/leverage-requests-store"
+import { accruedInterest } from "@/lib/leverage-interest"
+import { type LeverageRequest } from "@/lib/leverage-requests-store"
 
 import {
   buildTreasuryFinancingLedgerPosts,

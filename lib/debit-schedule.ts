@@ -7,7 +7,8 @@ import {
 import { buildMonetizationInterestPosts } from "@/lib/monetization-financing"
 import { computeTieredInterest } from "@/lib/tiered-debit-interest"
 import { buildLeverageInterestPosts } from "@/lib/leverage-financing"
-import { debitInterestRateFor, type LeverageRequest } from "@/lib/leverage-requests-store"
+import { debitInterestRateFor } from "@/lib/leverage-rates"
+import { type LeverageRequest } from "@/lib/leverage-requests-store"
 import {
   buildTreasuryFinancingLedgerPosts,
   treasuryFinancingTxns,
