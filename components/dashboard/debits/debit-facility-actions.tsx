@@ -62,6 +62,9 @@ export function DebitFacilityActions({
   const [error, setError] = useState<string | null>(null)
   /** Set when a deep-negative termination was routed to the administrator. */
   const [pendingApproval, setPendingApproval] = useState<string | null>(null)
+  /** True when the action is HARD-BLOCKED (leverage funds deployed in an active
+   *  investment): show the reason with no Retry / "settle anyway" escape. */
+  const [blocked, setBlocked] = useState(false)
 
   // Treasury facilities are keyed by their drawdown txn id; the other three by
   // their backing approval id.
@@ -74,11 +77,13 @@ export function DebitFacilityActions({
       setState(null)
       setError(null)
       setPendingApproval(null)
+      setBlocked(false)
       setLoading(true)
       const res = await quoteDebitSettlement(facility.kind, settleId)
       setLoading(false)
       if (!res.ok) {
         setError(res.error)
+        setBlocked("blocked" in res && res.blocked === true)
         return
       }
       setState({
@@ -102,6 +107,7 @@ export function DebitFacilityActions({
     setState(null)
     setError(null)
     setPendingApproval(null)
+    setBlocked(false)
   }, [working])
 
   const runTerminate = useCallback(async () => {
@@ -110,6 +116,16 @@ export function DebitFacilityActions({
     const res = await terminateDebitFacility(facility.kind, settleId)
     setWorking(false)
     if (!res.ok) {
+      // Hard block: leveraged funds are deployed in an active investment — no
+      // admin escape, the client must exit the investment first.
+      if ("blocked" in res && res.blocked) {
+        setBlocked(true)
+        setState(null)
+        setError(res.error)
+        setPendingApproval(null)
+        toast.error("Exit your investment first to settle this line.")
+        return
+      }
       // Routed to the administrator (deep negative beyond authorized overdraft):
       // show an informational pending state, not a red error.
       if ("pendingApproval" in res && res.pendingApproval) {
@@ -231,6 +247,11 @@ export function DebitFacilityActions({
               <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
               <p className="text-pretty">{pendingApproval}</p>
             </div>
+          ) : blocked && error ? (
+            <div className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-700 dark:text-amber-400">
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+              <p className="text-pretty">{error}</p>
+            </div>
           ) : error && !state ? (
             <div className="space-y-3">
               <div className="flex items-start gap-2 rounded-lg border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">
@@ -338,9 +359,9 @@ export function DebitFacilityActions({
 
           <DialogFooter className="gap-2 sm:gap-2">
             <Button variant="ghost" size="sm" onClick={close} disabled={working}>
-              {pendingApproval ? "Close" : "Cancel"}
+              {pendingApproval || blocked ? "Close" : "Cancel"}
             </Button>
-            {!pendingApproval && (
+            {!pendingApproval && !blocked && (
               <Button
                 size="sm"
                 variant={isApprovalRequest ? "default" : isTerminate ? "destructive" : "default"}
