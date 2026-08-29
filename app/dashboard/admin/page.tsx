@@ -113,6 +113,7 @@ import {
   accruedInterest,
   maxLeverageFor,
   leverageRatiosFor,
+  borrowedFundsFor,
   LEVERAGE_ACCOUNTS,
   type LeverageRequest,
 } from "@/lib/leverage-requests-store"
@@ -1377,7 +1378,7 @@ export default function AdminPage() {
       return
     }
 
-    const newBorrowed = request.equity * (toRatio - 1)
+    const newBorrowed = borrowedFundsFor(request.equity, toRatio, request.account)
     const delta = newBorrowed - request.borrowedAmount // >0 credit, <0 repay
     const interestToDate = accruedInterest(request, Date.now())
     const now = new Date().toISOString()
@@ -6205,7 +6206,7 @@ export default function AdminPage() {
               const cap = maxLeverageFor(r.account)
               const options = leverageRatiosFor(r.account)
               const toRatio = Number(modifyRatioValue) || r.leverageRatio
-              const newBorrowed = r.equity * (toRatio - 1)
+              const newBorrowed = borrowedFundsFor(r.equity, toRatio, r.account)
               const newBuyingPower = r.equity * toRatio
               const delta = newBorrowed - r.borrowedAmount
               return (

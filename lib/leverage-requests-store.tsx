@@ -8,11 +8,12 @@ import {
   LEVERAGE_RATIOS,
   TREASURY_LEVERAGE_RATIOS,
   debitInterestRateFor,
+  borrowedFundsFor,
 } from "@/lib/leverage-rates"
 
 // Re-export the shared, configurable rate model so existing importers of the
 // leverage store keep working unchanged.
-export { LEVERAGE_RATIOS, TREASURY_LEVERAGE_RATIOS, debitInterestRateFor }
+export { LEVERAGE_RATIOS, TREASURY_LEVERAGE_RATIOS, debitInterestRateFor, borrowedFundsFor }
 
 export type LeverageRequestStatus =
   | "pending" // activation requested, awaiting admin
@@ -342,7 +343,7 @@ export function LeverageRequestsProvider({ children }: { children: React.ReactNo
         const toRatio = Math.max(1, Math.min(payload.toRatio, cap))
         if (toRatio === r.leverageRatio) return r
         const newBuyingPower = r.equity * toRatio
-        const newBorrowed = r.equity * (toRatio - 1)
+        const newBorrowed = borrowedFundsFor(r.equity, toRatio, r.account)
         const modification: LeverageModification = {
           appliedAt: now,
           fromRatio: r.leverageRatio,
