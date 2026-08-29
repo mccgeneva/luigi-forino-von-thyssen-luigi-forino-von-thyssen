@@ -1,6 +1,6 @@
 "use server"
 
-import { adminActionAuthorized } from "@/lib/admin-auth"
+import { adminActionAuthorized, adminEmails } from "@/lib/admin-auth"
 import {
   resolveCurrentSession,
   resolveAccountProfileById,
@@ -5901,8 +5901,10 @@ export async function counterInstrumentUpgrade(
       },
     })
 
+    let holderName = existing.userId
     try {
       const profile = await resolveAccountProfileById(existing.userId)
+      holderName = profile.fullName
       await logActivity({
         action: `Counter-offer on instrument upgrade`,
         category: "Bank Instruments",
@@ -5915,6 +5917,33 @@ export async function counterInstrumentUpgrade(
       })
     } catch (err) {
       console.log("[v0] counterInstrumentUpgrade activity failed:", (err as Error).message)
+    }
+
+    // Alert EVERY administrator that the customer countered — this negotiation
+    // event does NOT go through submitApproval's fan-out, so without this the
+    // counter-offer only showed passively in the upgrade panel and no admin was
+    // notified. Best-effort: a notification failure never fails the counter-offer.
+    try {
+      const admins = await Promise.all(adminEmails().map((e) => getDynamicUserByEmail(e).catch(() => undefined)))
+      const seen = new Set<string>()
+      await Promise.all(
+        admins
+          .filter(
+            (a): a is NonNullable<typeof a> =>
+              !!a && a.id !== existing.userId && !seen.has(a.id) && (seen.add(a.id), true),
+          )
+          .map((admin) =>
+            insertNotification({
+              userId: admin.id,
+              tone: "warning",
+              title: "Instrument upgrade — customer counter-offer",
+              body: `${holderName} countered with a new face value of ${upgrade.newCurrency} ${counterFaceValue.toLocaleString("en-US")}${note?.trim() ? ` — "${note.trim()}"` : ""}. Open the Instrument Upgrade panel to revise or accept.`,
+              href: "/dashboard/admin",
+            }).catch(() => undefined),
+          ),
+      )
+    } catch (err) {
+      console.log("[v0] counterInstrumentUpgrade admin fan-out failed:", (err as Error).message)
     }
 
     return { ok: true }
