@@ -1,5 +1,7 @@
 import type { LedgerEntry } from "@/lib/ledger-store"
-import { accruedInterest, debitInterestRateFor, type LeverageRequest } from "@/lib/leverage-requests-store"
+import { accruedInterest } from "@/lib/leverage-interest"
+import { debitInterestRateFor } from "@/lib/leverage-rates"
+import { type LeverageRequest } from "@/lib/leverage-requests-store"
 import { dueMonthEnds, round2, yearMonthKey } from "@/lib/interest-accrual"
 
 /**

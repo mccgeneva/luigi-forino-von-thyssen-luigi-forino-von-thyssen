@@ -190,51 +190,13 @@ function leverageFromApproval(rec: ApprovalRecord): LeverageRequest | null {
   }
 }
 
-const MS_PER_YEAR = 365 * 24 * 60 * 60 * 1000
-
-// Compute the debit interest accrued on a line's borrowed amount between
-// activation and the given point in time (defaults to now). For closed lines
-// the accrual stops at the close timestamp. Returns 0 for lines that were
-// never activated.
-//
-// When an admin has modified the ratio, interest accrues in segments: each
-// segment runs at the borrowed amount that was in force during that window, so
-// the position is charged fairly across every ratio it has carried.
-export function accruedInterest(request: LeverageRequest, asOf: number = Date.now()): number {
-  if (!request.activatedAt) return 0
-  const start = new Date(request.activatedAt).getTime()
-  const end = request.closedAt ? new Date(request.closedAt).getTime() : asOf
-  if (end <= start) return 0
-
-  const mods = (request.modifications ?? [])
-    .slice()
-    .sort((a, b) => new Date(a.appliedAt).getTime() - new Date(b.appliedAt).getTime())
-
-  let total = 0
-  let cursor = start
-  // The borrowed amount and ratio in force at activation are the first
-  // modification's "from" values (if any modifications exist), otherwise the
-  // line's current borrowed amount and ratio. Each segment is charged at the
-  // risk-based rate of the ratio that was actually in force during that window.
-  let borrowed = mods.length > 0 ? mods[0].fromBorrowed : request.borrowedAmount
-  let ratio = mods.length > 0 ? mods[0].fromRatio : request.leverageRatio
-
-  for (const mod of mods) {
-    const boundary = Math.min(new Date(mod.appliedAt).getTime(), end)
-    if (boundary > cursor) {
-      total += borrowed * debitInterestRateFor(ratio) * ((boundary - cursor) / MS_PER_YEAR)
-      cursor = boundary
-    }
-    borrowed = mod.toBorrowed
-    ratio = mod.toRatio
-    if (cursor >= end) break
-  }
-
-  if (end > cursor) {
-    total += borrowed * debitInterestRateFor(ratio) * ((end - cursor) / MS_PER_YEAR)
-  }
-  return total
-}
+// `accruedInterest` (and MS_PER_YEAR) now live in the SERVER-SAFE module
+// `lib/leverage-interest.ts` so server actions (settlement / termination) can
+// call them. It is re-exported here so existing client consumers that import it
+// from this store keep working unchanged. Keeping the pure math out of this
+// "use client" module is what fixes the leverage termination throw
+// ("Attempted to call accruedInterest() from the server ...").
+export { accruedInterest, MS_PER_YEAR } from "@/lib/leverage-interest"
 
 interface ApproveSwitchOffPayload {
   settledInterest: number
