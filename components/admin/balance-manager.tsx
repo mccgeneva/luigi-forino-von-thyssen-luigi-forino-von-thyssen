@@ -5,6 +5,7 @@ import { ArrowDownLeft, ArrowUpRight, Trash2, Wallet, Plus, Loader2, Pencil, Und
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { MoneyInput } from "@/components/ui/money-input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { Badge } from "@/components/ui/badge"
@@ -505,15 +506,11 @@ export function BalanceManager() {
         <div className="grid gap-3 sm:grid-cols-3">
           <div className="space-y-2 sm:col-span-2">
             <Label htmlFor="bm-amount">Amount</Label>
-            <Input
+            <MoneyInput
               id="bm-amount"
-              type="number"
-              min="0"
-              step="0.01"
-              inputMode="decimal"
               placeholder="0.00"
               value={amount}
-              onChange={(e) => setAmount(e.target.value)}
+              onValueChange={setAmount}
             />
           </div>
           <div className="space-y-2">
@@ -794,14 +791,10 @@ export function BalanceManager() {
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
               <div className="space-y-2">
                 <Label htmlFor="edit-amount">Amount ({editEntry?.currency})</Label>
-                <Input
+                <MoneyInput
                   id="edit-amount"
-                  type="number"
-                  min="0"
-                  step="0.01"
-                  inputMode="decimal"
                   value={editAmount}
-                  onChange={(ev) => setEditAmount(ev.target.value)}
+                  onValueChange={setEditAmount}
                 />
               </div>
               <div className="space-y-2">
