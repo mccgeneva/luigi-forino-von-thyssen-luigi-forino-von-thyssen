@@ -7,6 +7,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Input } from "@/components/ui/input"
+import { MoneyInput } from "@/components/ui/money-input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import {
@@ -510,12 +511,11 @@ export function InstrumentUpgradeManager() {
 
             <div className="space-y-2">
               <Label htmlFor="up-face">Negotiated new face value</Label>
-              <Input
+              <MoneyInput
                 id="up-face"
-                inputMode="numeric"
                 value={newFaceValue}
-                onChange={(e) => setNewFaceValue(e.target.value)}
-                placeholder="e.g. 150000000"
+                onValueChange={setNewFaceValue}
+                placeholder="e.g. 150,000,000"
                 className="text-base"
               />
             </div>
