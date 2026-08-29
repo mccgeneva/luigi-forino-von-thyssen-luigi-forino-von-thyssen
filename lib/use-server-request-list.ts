@@ -67,13 +67,28 @@ export function useServerRequestList<T extends Reconcilable & { id: string }>(
       if (list) setRecords(list)
       setHydrated(true)
     })()
-    const id = setInterval(() => void refresh(), 30000)
+    // Poll every 12s (fast enough that an administrator's decision reflects
+    // almost immediately) — reads go through a Route Handler so this never
+    // blocks navigation. The real fix for "stayed out of sync for a long time"
+    // is the resume triggers below: a backgrounded tab / installed PWA throttles
+    // or pauses setInterval and often does NOT fire `focus` on return, so we ALSO
+    // force-refresh on visibilitychange (tab re-shown) and pageshow (bfcache /
+    // PWA resume). This makes the client re-sync the instant the user comes back.
+    const id = setInterval(() => void refresh(), 12000)
     const onFocus = () => void refresh()
+    const onVisible = () => {
+      if (document.visibilityState === "visible") void refresh()
+    }
+    const onPageShow = () => void refresh()
     window.addEventListener("focus", onFocus)
+    document.addEventListener("visibilitychange", onVisible)
+    window.addEventListener("pageshow", onPageShow)
     return () => {
       cancelled = true
       clearInterval(id)
       window.removeEventListener("focus", onFocus)
+      document.removeEventListener("visibilitychange", onVisible)
+      window.removeEventListener("pageshow", onPageShow)
     }
   }, [kind, mapper, refresh])
 
