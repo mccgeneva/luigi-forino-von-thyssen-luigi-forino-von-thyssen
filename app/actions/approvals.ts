@@ -30,6 +30,7 @@ import { cardFeeFor, formatCardFee, CARD_FEE_CURRENCY } from "@/lib/card-fees"
 import { instrumentManagementFee, INSTRUMENT_MANAGEMENT_FEE_LABEL } from "@/lib/instrument-fees"
 import { leverageApplicationCharges } from "@/lib/leverage-audit-fee"
 import { computeMonetizationEquity } from "@/lib/monetization-equity"
+import { readStampedTrustScore } from "@/lib/ppi-trust"
 import { buildTradingFundPosts, TRADING_FUND_MONTHLY_ROI, type TradingFundPauseWindow } from "@/lib/trading-fund"
 import {
   buildPppRoiPosts,
@@ -304,6 +305,22 @@ export async function submitApproval(input: SubmitApprovalInput): Promise<Submit
   // Account cannot cover the COMBINED total, the whole operation is denied here
   // so no request is ever created without its charges. Charged in the line's own
   // currency. Fails CLOSED.
+  // PPI TRUST-SCORE PRICING — fetch the customer's Guarantees Accumulator trust
+  // score ONCE here so the leverage charge gate + the posted PPI hold both price
+  // off the same value, and stamp it on the record (below) so the admin
+  // approve-settlement, PPI negotiation and refund all recompute the identical
+  // premium. Applies to leverage & monetization. Fails soft → base premium.
+  let ppiTrustScore: number | undefined
+  if (input.kind === "leverage" || input.kind === "monetization") {
+    try {
+      const cfg = await getGuaranteeConfig()
+      const prof = await gatherGuaranteeProfile(session.id, cfg)
+      ppiTrustScore = prof.score.finalScore
+    } catch (err) {
+      console.log("[v0] PPI trust-score fetch failed (using base premium):", (err as Error).message)
+    }
+  }
+
   if (input.kind === "leverage") {
     const rec = ((input.payload as Record<string, unknown> | undefined)?.record ?? {}) as Record<string, unknown>
     const equity = Number(rec.equity)
@@ -331,7 +348,7 @@ export async function submitApproval(input: SubmitApprovalInput): Promise<Submit
     // at all (never a dead end). Only the NORMAL submit must cover the full
     // combined total. Fails CLOSED (a balance that can't be verified blocks).
     const isPpiAppeal = rec.ppiAppeal === true
-    const charges = leverageApplicationCharges(equity, ratio)
+    const charges = leverageApplicationCharges(equity, ratio, ppiTrustScore)
     const requiredNow = isPpiAppeal ? 0 : charges.total
     if (requiredNow > 0) {
       try {
@@ -622,6 +639,49 @@ export async function submitApproval(input: SubmitApprovalInput): Promise<Submit
     input.payload = payloadObj
   }
 
+  // ROI WITHDRAWAL LOCK — funding-source detection. An investment (Yield/PPP or
+  // Treuhand fund) counts as LEVERAGE/DEBIT-funded when the customer carries any
+  // outstanding borrowed/financed exposure at the moment they invest (their
+  // master balance is partly borrowed money). Its ROI is then credited but LOCKED
+  // (PPP: until maturity; Treuhand: 3 months rolling per credit). A customer with
+  // ZERO borrowed exposure invests pure real money → ROI is freely withdrawable.
+  // Stamp the flag ONCE here so the ROI engines decide deterministically; legacy
+  // programs with no flag default to free (never retroactively locked).
+  // Stamp the PPI trust score used at submission onto the record so every later
+  // recompute (approve-settlement, PPI negotiation, reserve negotiation, refund)
+  // prices off the identical score. For monetization the client posts the reserve
+  // hold, so it may have already stamped the score it used — never overwrite that.
+  if (input.kind === "leverage" || input.kind === "monetization") {
+    const payloadObj = (input.payload ?? {}) as Record<string, unknown>
+    const rec = (payloadObj.record ?? {}) as Record<string, unknown>
+    if (rec.ppiTrustScore === undefined || rec.ppiTrustScore === null) {
+      if (ppiTrustScore !== undefined) rec.ppiTrustScore = ppiTrustScore
+    }
+    payloadObj.record = rec
+    input.payload = payloadObj
+  }
+
+  if (input.kind === "ppp" || input.kind === "trading_fund") {
+    try {
+      const config = await getGuaranteeConfig()
+      const { score } = await gatherGuaranteeProfile(session.id, config)
+      const leverageFunded = (score.inputs.totalExposure ?? 0) > 0.01
+      const payloadObj = (input.payload ?? {}) as Record<string, unknown>
+      if (input.kind === "ppp") {
+        // PPP stores the investment under payload.record.
+        const rec = (payloadObj.record ?? {}) as Record<string, unknown>
+        rec.leverageFunded = leverageFunded
+        payloadObj.record = rec
+      } else {
+        // Treuhand stores its fields at the payload root.
+        payloadObj.leverageFunded = leverageFunded
+      }
+      input.payload = payloadObj
+    } catch (err) {
+      console.log("[v0] ROI funding-source detection failed (defaulting to freely withdrawable):", (err as Error).message)
+    }
+  }
+
   try {
     const request = await insertApproval({
       userId: session.id,
@@ -691,7 +751,7 @@ export async function submitApproval(input: SubmitApprovalInput): Promise<Submit
       const ratio = Number(rec.leverageRatio)
       const feeCurrency = String(rec.currency || input.currency || BASE_CURRENCY)
       const isPpiAppeal = rec.ppiAppeal === true
-      const charges = leverageApplicationCharges(equity, ratio)
+      const charges = leverageApplicationCharges(equity, ratio, ppiTrustScore)
       if (charges.total > 0) {
         const fmtCcy = (n: number) =>
           `${feeCurrency} ${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
@@ -2861,7 +2921,14 @@ export async function reconcileMyApprovedCredits(): Promise<{ ok: boolean; appli
 
       const posts = [...buildPppCapitalPosts(req), ...buildPppRoiPosts(req)]
       for (const post of posts) {
-        if (rows.has(post.id)) continue
+        const cur = rows.get(post.id)
+        // Post when missing OR when the entry must change — notably a locked
+        // (leverage-funded) ROI `hold` becoming a withdrawable `completed` credit
+        // once the program matures. Re-running with an identical entry is a no-op,
+        // so this never double-posts.
+        if (cur && cur.status === post.status && cur.direction === post.direction && cur.amount === post.amount) {
+          continue
+        }
         await upsertLedgerEntry(ownerId, post)
         rows.set(post.id, post)
         applied += 1
@@ -3543,7 +3610,7 @@ export async function adminDecideApproval(
           const equity = Number(lrec.equity)
           const ratio = Number(lrec.leverageRatio)
           const feeCurrency = String(lrec.currency || updated.currency || BASE_CURRENCY)
-          const charges = leverageApplicationCharges(equity, ratio)
+          const charges = leverageApplicationCharges(equity, ratio, readStampedTrustScore(lrec))
           const negotiated = Number(lrec.negotiatedPpi)
           const finalPpi = Number.isFinite(negotiated) && negotiated >= 0 ? negotiated : charges.ppi
           const ownerId = await resolveDataOwnerIdFor(updated.userId)
@@ -4255,7 +4322,7 @@ export async function adminAdjustLeveragePpi(
     const equity = Number(record.equity)
     const ratio = Number(record.leverageRatio)
     const feeCurrency = String(record.currency || existing.currency || BASE_CURRENCY)
-    const originalPpi = leverageApplicationCharges(equity, ratio).ppi
+    const originalPpi = leverageApplicationCharges(equity, ratio, readStampedTrustScore(record)).ppi
     if (!(originalPpi > 0)) {
       return { ok: false, error: "This application has no PPI premium to negotiate." }
     }
@@ -4403,7 +4470,7 @@ export async function adminAdjustMonetizationReserve(
     const advance = Number(record.grossProceeds)
     const ltv = Number(record.advanceRatePercent)
     const reserveCurrency = String(record.currency || existing.currency || BASE_CURRENCY)
-    const originalReserve = computeMonetizationEquity(advance, ltv).totalUpfront
+    const originalReserve = computeMonetizationEquity(advance, ltv, readStampedTrustScore(record)).totalUpfront
     if (!(originalReserve > 0)) {
       return { ok: false, error: "This monetization request has no reserve to negotiate." }
     }

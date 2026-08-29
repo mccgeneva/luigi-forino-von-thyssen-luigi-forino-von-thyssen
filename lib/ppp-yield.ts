@@ -177,6 +177,10 @@ interface PppRecord {
   fundingInstrumentLabel?: string
   mccBenefitRate?: number
   clientBenefitRate?: number
+  /** True when the program was funded with leverage/debit money (stamped at
+   *  submission). Leverage-funded ROI is credited but locked until the program
+   *  matures; real-money ROI is freely withdrawable. */
+  leverageFunded?: boolean
 }
 
 /**
@@ -219,21 +223,31 @@ export function buildPppRoiPosts(req: ApprovalRequest, now: Date = new Date()): 
     ? ` Gross ${formatMoney(grossPerPeriod, currency)} split ${Math.round(mccRate * 100)}% to MCC HOLDING SA / ${Math.round(clientRate * 100)}% to you${record.fundingInstrumentLabel ? ` (funded by ${record.fundingInstrumentLabel})` : ""}.`
     : ""
 
+  // Leverage/debit-funded programs (stamped at submission) LOCK their ROI: each
+  // credit reflects on the master account but is not withdrawable until the whole
+  // program matures (term end). Real-money programs pay freely-withdrawable ROI.
+  // A held credit shows on the ledger yet is excluded from the spendable balance,
+  // and flips to `completed` automatically once the program matures (same id → the
+  // reconciler updates it).
+  const leverageFunded = record.leverageFunded === true
+  const unlockNote = ` Leverage-funded: credited but locked (not withdrawable) until the program matures on ${termEnd.toISOString().slice(0, 10)}.`
+
   // Determine matured payout dates (in arrears): the first one full period after
   // activation, then each cycle, capped at the program term end.
   const posts: LedgerEntry[] = []
   const pushPost = (index: number, date: Date) => {
+    const locked = leverageFunded && nowMs < termEndMs
     posts.push({
       id: pppRoiId(req.id, index),
       direction: "credit",
       amount: clientPerPeriod,
       currency,
-      status: "completed",
+      status: locked ? "hold" : "completed",
       date: date.toISOString(),
       counterparty: programName,
       reference: req.id,
       category: "NAFTAhub Yield — ROI",
-      comment: `${periodLabel(unit)} ROI on ${programName} (${ratePct}% per period).${splitNote}`,
+      comment: `${periodLabel(unit)} ROI on ${programName} (${ratePct}% per period).${splitNote}${locked ? unlockNote : ""}`,
     })
   }
 

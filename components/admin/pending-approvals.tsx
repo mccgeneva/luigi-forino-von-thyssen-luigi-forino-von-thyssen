@@ -79,6 +79,7 @@ import {
 } from "@/app/actions/approvals"
 import { leverageApplicationCharges } from "@/lib/leverage-audit-fee"
 import { computeMonetizationEquity } from "@/lib/monetization-equity"
+import { readStampedTrustScore } from "@/lib/ppi-trust"
 import { yieldCancellationPenalty, YIELD_EARLY_CANCELLATION_PENALTY_RATE } from "@/lib/ppp-yield"
 import {
   getClientFinancialSnapshotAdmin,
@@ -147,7 +148,7 @@ function leveragePpiInfo(req: ApprovalRequest): {
   >
   const equity = Number(rec.equity)
   const ratio = Number(rec.leverageRatio)
-  const original = leverageApplicationCharges(equity, ratio).ppi
+  const original = leverageApplicationCharges(equity, ratio, readStampedTrustScore(rec)).ppi
   if (!(original > 0)) return null
   const currency = String(rec.currency || req.currency || "EUR")
   const neg = Number(rec.negotiatedPpi)
@@ -177,7 +178,7 @@ function monetizationReserveInfo(req: ApprovalRequest): {
   >
   const advance = Number(rec.grossProceeds)
   const ltv = Number(rec.advanceRatePercent)
-  const original = computeMonetizationEquity(advance, ltv).totalUpfront
+  const original = computeMonetizationEquity(advance, ltv, readStampedTrustScore(rec)).totalUpfront
   if (!(original > 0)) return null
   const currency = String(rec.currency || req.currency || "EUR")
   const neg = Number(rec.negotiatedReserve)

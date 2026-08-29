@@ -56,7 +56,7 @@ function formatDate(iso: string): string {
 }
 
 export function PortfolioOverview() {
-  const { balanceFor, reservedFor, entries, currencies } = useLedger()
+  const { balanceFor, reservedFor, lockedCreditsFor, entries, currencies } = useLedger()
   const { instruments } = useInstrumentRequests()
   const { beneficiaries } = useBeneficiaries()
 
@@ -107,6 +107,8 @@ export function PortfolioOverview() {
       formatted: formatMoney(available, cur),
       reserved: reservedFor(cur),
       reservedFormatted: formatMoney(reservedFor(cur), cur),
+      locked: lockedCreditsFor(cur),
+      lockedFormatted: formatMoney(lockedCreditsFor(cur), cur),
     }
   })
 
@@ -222,6 +224,16 @@ export function PortfolioOverview() {
                       <ChevronRight className="h-3 w-3" />
                     </span>
                   </button>
+                )}
+                {cb.locked > 0 && (
+                  <div
+                    className="mt-1 flex w-full items-center gap-1 text-[11px] font-medium text-sky-600"
+                    title="Program ROI credited to your account but not yet withdrawable — it unlocks when the program matures (or after the fund's lock period)."
+                  >
+                    <Lock className="h-3 w-3" />
+                    <span>{cb.lockedFormatted} locked ROI</span>
+                    <span className="ml-auto text-sky-600/80">credited · not yet withdrawable</span>
+                  </div>
                 )}
               </div>
             ))}

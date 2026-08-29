@@ -65,6 +65,11 @@ interface LedgerContextValue {
   balanceFor: (currency: string) => number
   /** Funds currently reserved/blocked (sum of held debits) for a currency. */
   reservedFor: (currency: string) => number
+  /** Credited-but-LOCKED funds (sum of held CREDITS) for a currency — e.g. ROI
+   *  from a leverage/debit-funded program that reflects on the account but is not
+   *  yet withdrawable. Shown so the customer sees the credit even though it is
+   *  excluded from the spendable balance. */
+  lockedCreditsFor: (currency: string) => number
   /** Aggregated MAIN balance of every currency converted into the target currency. */
   totalIn: (currency: string) => number
   /** Net balance of a specific SUB-ACCOUNT compartment in a currency: settled
@@ -168,6 +173,17 @@ export function LedgerProvider({ children }: { children: React.ReactNode }) {
     [entries],
   )
 
+  // Credited-but-locked funds: held CREDITS (e.g. leverage-funded program ROI
+  // that reflects on the account but is not yet withdrawable). Excluded from the
+  // spendable balance below, surfaced separately so the customer sees the credit.
+  const lockedCreditsFor = useCallback(
+    (currency: string) =>
+      entries
+        .filter((e) => e.currency === currency && e.status === "hold" && e.direction === "credit" && !e.subAccountId)
+        .reduce((sum, e) => sum + e.amount, 0),
+    [entries],
+  )
+
   // Available (spendable) MAIN balance: settled credits minus settled debits,
   // minus anything currently on hold. Reserved funds cannot be spent, so they
   // reduce the available balance everywhere it is read (send, payments…).
@@ -233,13 +249,14 @@ export function LedgerProvider({ children }: { children: React.ReactNode }) {
       addDebit,
       balanceFor,
       reservedFor,
+      lockedCreditsFor,
       totalIn,
       subAccountBalanceFor,
       currencies,
       refresh,
       hydrated,
     }),
-    [entries, addReceipt, addDebit, balanceFor, reservedFor, totalIn, subAccountBalanceFor, currencies, refresh, hydrated],
+    [entries, addReceipt, addDebit, balanceFor, reservedFor, lockedCreditsFor, totalIn, subAccountBalanceFor, currencies, refresh, hydrated],
   )
 
   return <LedgerContext.Provider value={value}>{children}</LedgerContext.Provider>

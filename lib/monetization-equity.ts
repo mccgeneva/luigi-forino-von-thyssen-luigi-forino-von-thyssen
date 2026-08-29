@@ -15,6 +15,8 @@
  * faceValue × LTV%), consistent with how the reserve was always quoted.
  */
 
+import { ppiFromTrustScore } from "@/lib/ppi-trust"
+
 export const EQUITY_RATE_AT_MIN_LTV = 0.0075 // 0.75% at 1% LTV
 export const EQUITY_RATE_AT_MAX_LTV = 0.05 // 5% at 100% LTV
 export const MIN_LTV = 1
@@ -49,13 +51,22 @@ export interface EquityQuote {
  * Full upfront cost breakdown for monetizing at a given LTV.
  * @param advanceAmount the LTV proceeds (faceValue × LTV%), in the instrument currency
  * @param ltvPercent    the adopted LTV in percent (1..100)
+ * @param trustScore    the Guarantees Accumulator trust score. When supplied, the
+ *                      adopted PPI formula is applied to the 1%-of-advance base
+ *                      premium (PPI = base/100 × score, 0 when the score is 0).
+ *                      When omitted, the standard 1% premium is used unchanged.
  */
-export function computeMonetizationEquity(advanceAmount: number, ltvPercent: number): EquityQuote {
+export function computeMonetizationEquity(
+  advanceAmount: number,
+  ltvPercent: number,
+  trustScore?: number,
+): EquityQuote {
   const ltv = Math.min(MAX_LTV, Math.max(MIN_LTV, ltvPercent))
   const equityRate = equityRateForLtv(ltv)
   const advance = Math.max(0, advanceAmount)
   const equityDeposit = Math.round(advance * equityRate)
-  const ppi = Math.round(advance * PPI_RATE)
+  const basePpi = advance * PPI_RATE
+  const ppi = trustScore === undefined ? Math.round(basePpi) : Math.round(ppiFromTrustScore(basePpi, trustScore))
   return {
     ltvPercent: ltv,
     equityRate,
