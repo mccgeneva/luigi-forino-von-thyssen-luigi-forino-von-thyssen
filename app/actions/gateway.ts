@@ -1,7 +1,8 @@
 "use server"
 
 import { query } from "@/lib/db"
-import { adminActionAuthorized } from "@/lib/admin-auth"
+import { adminActionAuthorized, adminEmails } from "@/lib/admin-auth"
+import { getDynamicUserByEmail } from "@/lib/admin-users-db"
 import { type UserProfile } from "@/lib/users"
 import { resolveAccountProfileById, resolveCurrentSession, resolveDataOwnerIdFor } from "@/lib/session-user"
 import { logActivity } from "@/app/actions/log-activity"
@@ -324,6 +325,31 @@ export async function requestGatewayAccountWithFee(input: {
       })
     } catch {
       // notification is non-critical
+    }
+
+    // Alert EVERY administrator so any of them can review and approve the new
+    // account request — this request form does NOT go through the approvals
+    // backbone (which fans out via notifyAllAdminsOfSubmission), so without this
+    // no admin was notified when a client added a bank account. Best-effort:
+    // a notification failure must never fail the client's request.
+    try {
+      const admins = await Promise.all(adminEmails().map((e) => getDynamicUserByEmail(e).catch(() => undefined)))
+      const seen = new Set<string>()
+      await Promise.all(
+        admins
+          .filter((a): a is NonNullable<typeof a> => !!a && a.id !== ownerId && !seen.has(a.id) && (seen.add(a.id), true))
+          .map((admin) =>
+            insertNotification({
+              userId: admin.id,
+              tone: "warning",
+              title: "New bank account request needs review",
+              body: `${user.fullName} requested a new ${ACCOUNT_TYPES[type].label} (${account.id}, ${currency}) via the Payment Gateway — pending administrator approval. Open the Administrator panel to review and action it.`,
+              href: "/dashboard/admin",
+            }).catch(() => undefined),
+          ),
+      )
+    } catch {
+      // Admin fan-out is best-effort — never affect the client's request.
     }
 
     return { ok: true, account, feeReference }
