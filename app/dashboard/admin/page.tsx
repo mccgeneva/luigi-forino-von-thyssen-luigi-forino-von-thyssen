@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   ShieldCheck,
   Lock,
@@ -218,6 +218,25 @@ export default function AdminPage() {
   // Which admin view is open. "menu" shows the dashboard of clickable section
   // cards; any other value renders that single section with a back-to-menu bar.
   const [activeView, setActiveView] = useState<string>("menu")
+
+  // Deep-link support: a `?view=<section>` query param (used by notification
+  // links, e.g. "Incoming SWIFT" alerts pointing at `?view=incomingswift`)
+  // opens that section directly once the panel is unlocked, so an admin lands
+  // on the exact queue that needs action instead of the generic menu / the
+  // wrong SWIFT surface. Runs once; never fights a later manual navigation.
+  const deepLinkedRef = useRef(false)
+  useEffect(() => {
+    if (!unlocked || deepLinkedRef.current) return
+    try {
+      const view = new URLSearchParams(window.location.search).get("view")
+      if (view) {
+        deepLinkedRef.current = true
+        setActiveView(view)
+      }
+    } catch {
+      // ignore — deep-linking is a convenience, never block the panel
+    }
+  }, [unlocked])
 
   const { requests, approveRequest, rejectRequest, markDelivered } = usePaymentRequests()
   const {

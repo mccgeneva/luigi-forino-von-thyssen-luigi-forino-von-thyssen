@@ -73,8 +73,8 @@ async function notifyAdminsOfCustomerSwift(opts: {
             title: `New SWIFT ${opts.messageType} awaiting verification`,
             body: `${opts.holder} uploaded a SWIFT ${opts.messageType} printout${
               opts.amountStr ? ` (${opts.amountStr})` : ""
-            } for verification. Open SWIFT Operations → Receive & deliver to review and action it.`,
-            href: "/dashboard/admin/swift",
+            } for verification. Open the Administrator panel → Incoming SWIFT to review and action it.`,
+            href: "/dashboard/admin?view=incomingswift",
           }).catch(() => undefined),
         ),
     )
