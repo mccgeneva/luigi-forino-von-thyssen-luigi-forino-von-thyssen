@@ -1410,33 +1410,32 @@ export default function LeveragePage() {
                       leveraged instrument in place, on the borrowed amount.
                       Broken down per year / month / day so it's unambiguous. */}
                   <div className="mt-2 rounded-md border border-orange-500/30 bg-orange-500/5 p-2.5">
-                    <div className="flex items-center justify-between text-sm">
-                      <span className="font-medium text-foreground">
+                    <div className="flex flex-wrap items-baseline justify-between gap-x-2 gap-y-0.5">
+                      <span className="text-sm font-medium text-foreground">
                         Debit Interest on borrowed funds
                       </span>
-                      <span className="font-medium text-orange-400">
+                      <span className="shrink-0 whitespace-nowrap text-xs font-semibold text-orange-400">
                         {(projectedAnnualRate * 100).toFixed(2)}% / yr · 1:{numericRatio}
                       </span>
                     </div>
-                    <div className="mt-2 grid grid-cols-3 gap-2 text-center">
-                      <div className="rounded bg-background/40 py-1.5">
-                        <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Per year</div>
-                        <div className="font-mono text-sm font-bold tabular-nums text-orange-400">
-                          {formatMoney2(projectedAnnualInterest, currency)}
+                    <div className="mt-2 space-y-1">
+                      {[
+                        { label: "Per year", value: projectedAnnualInterest },
+                        { label: "Per month", value: projectedMonthlyInterest },
+                        { label: "Per day", value: projectedDailyInterest },
+                      ].map((row) => (
+                        <div
+                          key={row.label}
+                          className="flex items-baseline justify-between gap-3 rounded bg-background/40 px-2.5 py-1.5"
+                        >
+                          <span className="shrink-0 text-[10px] uppercase tracking-wide text-muted-foreground">
+                            {row.label}
+                          </span>
+                          <span className="min-w-0 text-right font-mono text-sm font-bold tabular-nums text-orange-400">
+                            {formatMoney2(row.value, currency)}
+                          </span>
                         </div>
-                      </div>
-                      <div className="rounded bg-background/40 py-1.5">
-                        <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Per month</div>
-                        <div className="font-mono text-sm font-bold tabular-nums text-orange-400">
-                          {formatMoney2(projectedMonthlyInterest, currency)}
-                        </div>
-                      </div>
-                      <div className="rounded bg-background/40 py-1.5">
-                        <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Per day</div>
-                        <div className="font-mono text-sm font-bold tabular-nums text-orange-400">
-                          {formatMoney2(projectedDailyInterest, currency)}
-                        </div>
-                      </div>
+                      ))}
                     </div>
                     <p className="mt-2 text-[11px] leading-relaxed text-muted-foreground">
                       Charged monthly as 1/12 of the annual rate on the{" "}
