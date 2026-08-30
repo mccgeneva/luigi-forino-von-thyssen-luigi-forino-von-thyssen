@@ -138,7 +138,7 @@ export async function POST(req: Request) {
           return {
             approvalId: a.id,
             userId: a.userId,
-            holderLabel: who?.label ?? String(inst.issuer ?? a.userId),
+            holderLabel: who?.label ?? "",
             holderEmail: who?.email ?? "",
             instrument: inst,
             upgrade: payload.upgrade ?? null,
@@ -146,12 +146,34 @@ export async function POST(req: Request) {
         })
         .filter((i) => !!i.instrument.id)
       // Annotate each with whether it is currently pledged/reserved to a live
-      // facility, so the UI can disable "Propose upgrade" up-front.
+      // facility, so the UI can disable "Propose upgrade" up-front. Also resolve
+      // the holder's real name/email when they are NOT in the active
+      // dynamic-users map (a sub/joint account, a non-"active" status, or a
+      // static account) — otherwise the admin sees the instrument's issuer BIC
+      // (e.g. "DEUTDEDD" for a customer-uploaded MT760) or a raw user id instead
+      // of the customer who requested the upgrade.
       const instruments = await Promise.all(
-        mapped.map(async (i) => ({
-          ...i,
-          engagedReason: await instrumentEngagementReason(String(i.instrument.id ?? ""), i.userId),
-        })),
+        mapped.map(async (i) => {
+          let holderLabel = i.holderLabel
+          let holderEmail = i.holderEmail
+          if (!holderLabel) {
+            try {
+              const p = await resolveAccountProfileById(i.userId)
+              const name = (p.fullName ?? "").trim()
+              const company = ((p as { company?: string }).company ?? "").trim()
+              holderLabel = company ? `${name || i.userId} · ${company}` : name || i.userId
+              holderEmail = holderEmail || (p.email ?? "")
+            } catch {
+              holderLabel = i.userId
+            }
+          }
+          return {
+            ...i,
+            holderLabel,
+            holderEmail,
+            engagedReason: await instrumentEngagementReason(String(i.instrument.id ?? ""), i.userId),
+          }
+        }),
       )
       return NextResponse.json({ ok: true, instruments, clients, feeRate: INSTRUMENT_UPGRADE_FEE_RATE }, { status: 200 })
     }

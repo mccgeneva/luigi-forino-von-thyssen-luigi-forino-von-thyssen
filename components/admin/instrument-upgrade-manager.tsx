@@ -330,8 +330,12 @@ export function InstrumentUpgradeManager() {
                           </Badge>
                         ) : null}
                       </div>
-                      <p className="truncate text-sm text-muted-foreground">
-                        {it.holderLabel} · {it.instrument.issuer ?? "—"} · {it.instrument.isin ?? it.instrument.id}
+                      <p className="text-sm">
+                        <span className="font-medium text-foreground">{it.holderLabel}</span>
+                        {it.holderEmail ? <span className="text-muted-foreground"> · {it.holderEmail}</span> : null}
+                      </p>
+                      <p className="truncate text-xs text-muted-foreground">
+                        {it.instrument.issuer ?? "—"} · {it.instrument.isin ?? it.instrument.id}
                       </p>
                       {open && u ? (
                         <p className="text-xs text-muted-foreground">
@@ -346,7 +350,10 @@ export function InstrumentUpgradeManager() {
                       {requested && !engaged ? (
                         <p className="rounded-md bg-primary/10 px-2 py-1 text-xs text-primary">
                           <Sparkles className="mr-1 inline size-3" />
-                          Customer requested this upgrade{u?.customerRequestNote ? ` — "${u.customerRequestNote}"` : ""}. Propose terms below.
+                          <span className="font-semibold">{it.holderLabel}</span>
+                          {it.holderEmail ? ` (${it.holderEmail})` : ""} requested this upgrade
+                          {u?.newTypeFull ? ` into a ${u.newTypeFull}` : ""}
+                          {u?.customerRequestNote ? ` — "${u.customerRequestNote}"` : ""}. Propose terms below.
                         </p>
                       ) : null}
                       {open && counter ? (
