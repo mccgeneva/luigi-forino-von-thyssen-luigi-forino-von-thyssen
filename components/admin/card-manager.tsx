@@ -17,6 +17,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Input } from "@/components/ui/input"
+import { MoneyInput } from "@/components/ui/money-input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { Checkbox } from "@/components/ui/checkbox"
@@ -597,13 +598,10 @@ export function CardManager() {
             </div>
             <div className="grid gap-2 sm:col-span-2">
               <Label htmlFor="issue-card-limit">Monthly limit</Label>
-              <Input
+              <MoneyInput
                 id="issue-card-limit"
-                type="number"
-                min="0"
-                step="1000"
                 value={issueLimit}
-                onChange={(e) => setIssueLimit(e.target.value)}
+                onValueChange={setIssueLimit}
               />
             </div>
           </div>
