@@ -205,6 +205,7 @@ export default function InstrumentsPage() {
   // Customer-initiated upgrade REQUEST (distinct from responding to an admin offer).
   const [upgradeRequestTarget, setUpgradeRequestTarget] = useState<Instrument | null>(null)
   const [upgradeRequestNote, setUpgradeRequestNote] = useState("")
+  const [upgradeRequestType, setUpgradeRequestType] = useState("BG")
   const [requestingUpgrade, setRequestingUpgrade] = useState(false)
   const [upgradeBusy, setUpgradeBusy] = useState(false)
   const [upgradeDiscuss, setUpgradeDiscuss] = useState(false)
@@ -603,7 +604,11 @@ export default function InstrumentsPage() {
     if (!target || requestingUpgrade) return
     setRequestingUpgrade(true)
     try {
-      const res = await requestInstrumentUpgrade(target.approvalId ?? target.id, upgradeRequestNote.trim() || undefined)
+      const res = await requestInstrumentUpgrade(
+        target.approvalId ?? target.id,
+        upgradeRequestNote.trim() || undefined,
+        upgradeRequestType,
+      )
       if (!res.ok) {
         toast.error("Request failed", { description: res.error })
         return
@@ -615,12 +620,13 @@ export default function InstrumentsPage() {
         action: `Requested an upgrade of ${target.id}`,
         category: "Bank Instruments",
         details: {
-          summary: `Requested a transformation upgrade of ${target.typeFull} (${target.id}).`,
+          summary: `Requested a transformation upgrade of ${target.typeFull} (${target.id}) into a ${upgradeRequestType}.`,
           referenceId: target.id,
         },
       })
       setUpgradeRequestTarget(null)
       setUpgradeRequestNote("")
+      setUpgradeRequestType("BG")
       void refreshInstruments()
     } finally {
       setRequestingUpgrade(false)
@@ -3086,6 +3092,7 @@ export default function InstrumentsPage() {
           if (!o && !requestingUpgrade) {
             setUpgradeRequestTarget(null)
             setUpgradeRequestNote("")
+            setUpgradeRequestType("BG")
           }
         }}
       >
@@ -3113,12 +3120,33 @@ export default function InstrumentsPage() {
                 </p>
               </div>
               <div className="space-y-1.5">
-                <Label htmlFor="upgrade-request-note">What would you like? (optional)</Label>
+                <Label htmlFor="upgrade-request-type">Upgrade into a real bank instrument</Label>
+                <Select value={upgradeRequestType} onValueChange={setUpgradeRequestType}>
+                  <SelectTrigger id="upgrade-request-type">
+                    <SelectValue placeholder="Choose the target instrument" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {MARKET_INSTRUMENT_TYPES.filter((t) =>
+                      ["BG", "SBLC", "DLC", "MTN", "EMTN", "EUROBOND"].includes(t.code),
+                    ).map((t) => (
+                      <SelectItem key={t.code} value={t.code}>
+                        {t.code} — {t.full}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-muted-foreground">
+                  Your blocked-funds MT760 will be transformed into this fresh, tradable instrument from a reputable
+                  partner bank once you accept the administrator&apos;s terms.
+                </p>
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="upgrade-request-note">Anything else? (optional)</Label>
                 <Textarea
                   id="upgrade-request-note"
                   value={upgradeRequestNote}
                   onChange={(e) => setUpgradeRequestNote(e.target.value)}
-                  placeholder="e.g. a higher face value, a specific issuing bank, or a different instrument type"
+                  placeholder="e.g. a higher face value or a specific issuing bank"
                   rows={3}
                 />
               </div>
@@ -3130,6 +3158,7 @@ export default function InstrumentsPage() {
               onClick={() => {
                 setUpgradeRequestTarget(null)
                 setUpgradeRequestNote("")
+                setUpgradeRequestType("BG")
               }}
               disabled={requestingUpgrade}
             >

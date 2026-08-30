@@ -5673,6 +5673,7 @@ export type InstrumentUpgradeResult =
 export async function requestInstrumentUpgrade(
   approvalId: string,
   note?: string,
+  desiredType?: string,
 ): Promise<{ ok: true } | { ok: false; error: string }> {
   const session = await resolveCurrentSession()
   if (!session) return { ok: false, error: "Your session has expired. Please sign in again." }
@@ -5708,6 +5709,14 @@ export async function requestInstrumentUpgrade(
     const oldTypeFull = String((base as { typeFull?: string }).typeFull ?? "Bank Instrument")
     const oldIssuer = String((base as { issuer?: string }).issuer ?? "")
     const trimmedNote = (note ?? "").trim() || undefined
+    // Customer's requested target instrument type (e.g. BG / SBLC). When it
+    // resolves to a real marketplace type we seed the upgrade's new-type fields
+    // with it (instead of a like-for-like copy of the old MT760), so the admin's
+    // Propose dialog is pre-directed at the real BG/SBLC the customer asked for.
+    const desired = desiredType ? findInstrumentType(desiredType) : undefined
+    const targetType = desired?.code ?? oldType
+    const targetTypeFull = desired?.full ?? oldTypeFull
+    const targetLabel = desired ? ` into a ${desired.full} (${desired.code})` : ""
 
     // Placeholder new-instrument fields (copy of the current instrument) so the
     // record satisfies the InstrumentUpgrade type; the admin's Propose upgrade
@@ -5723,8 +5732,8 @@ export async function requestInstrumentUpgrade(
       requestedByCustomer: true,
       requestedAt: new Date().toISOString(),
       customerRequestNote: trimmedNote,
-      newType: oldType,
-      newTypeFull: oldTypeFull,
+      newType: targetType,
+      newTypeFull: targetTypeFull,
       newIssuer: oldIssuer,
       newFaceValue: oldFaceValue,
       newCurrency: oldCurrency,
@@ -5755,7 +5764,7 @@ export async function requestInstrumentUpgrade(
               userId: admin.id,
               tone: "warning",
               title: "Customer requested an instrument upgrade",
-              body: `${holderName} requested an upgrade of their ${oldTypeFull} (${oldCurrency} ${oldFaceValue.toLocaleString("en-US")})${trimmedNote ? ` — "${trimmedNote}"` : ""}. Open the Instrument Upgrade panel to review and propose terms.`,
+              body: `${holderName} requested an upgrade of their ${oldTypeFull} (${oldCurrency} ${oldFaceValue.toLocaleString("en-US")})${targetLabel}${trimmedNote ? ` — "${trimmedNote}"` : ""}. Open the Instrument Upgrade panel to review and propose terms.`,
               href: "/dashboard/admin",
             }).catch(() => undefined),
           ),
@@ -5771,7 +5780,7 @@ export async function requestInstrumentUpgrade(
         user: holderName,
         details: {
           referenceId: String((base as { id?: string }).id ?? approvalId),
-          summary: `Customer requested an upgrade of ${oldTypeFull} (${oldCurrency} ${oldFaceValue.toLocaleString("en-US")})${trimmedNote ? ` — "${trimmedNote}"` : ""}.`,
+          summary: `Customer requested an upgrade of ${oldTypeFull} (${oldCurrency} ${oldFaceValue.toLocaleString("en-US")})${targetLabel}${trimmedNote ? ` — "${trimmedNote}"` : ""}.`,
           action: "Upgrade requested",
         },
       })
