@@ -181,6 +181,7 @@ import { YieldProgramManager } from "@/components/admin/yield-program-manager"
 import { MarketplaceInstrumentManager } from "@/components/admin/marketplace-instrument-manager"
 import { CardManager } from "@/components/admin/card-manager"
 import { IssuedCardsManager } from "@/components/admin/issued-cards-manager"
+import { CardTransactionRecorder } from "@/components/admin/card-transaction-recorder"
 import { CertificateManager } from "@/components/admin/certificate-manager"
 import { BankekaBroadcastManager } from "@/components/admin/bankeka-broadcast-manager"
 import {
@@ -2943,6 +2944,7 @@ export default function AdminPage() {
       <div className="space-y-6">
         <CardManager />
         <IssuedCardsManager />
+        <CardTransactionRecorder />
       </div>
       )}
 
