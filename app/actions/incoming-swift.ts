@@ -870,8 +870,13 @@ export async function recordGuaranteeInstrumentAdmin(passcode: string, id: strin
       currency,
       rating: "AAA",
       purpose: "Blocked-funds guarantee — pledgeable as treasury leverage collateral",
+      // A blocked-funds guarantee is single-use collateral: it can be MONETIZED
+      // (raise liquidity against it) and pledged for a Leverage/PPP line, but it
+      // must NEVER be assigned/transferred to a third party — the funds are
+      // blocked on behalf of this holder, so handing off the guarantee is not
+      // permitted. Hence monetizable:true, assignable:false.
       assignable: false,
-      monetizable: false,
+      monetizable: true,
       blocked: false, // pledgeable for leverage; "blocked" here means an upgrade-in-progress lock, which does NOT apply
       owner: message.matchedAccountHolder || applicantName || undefined,
       issuedDate,
