@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { toast } from "sonner"
 import {
   CreditCard,
@@ -11,6 +11,8 @@ import {
   Snowflake,
   Search,
   ShieldAlert,
+  ReceiptText,
+  Upload,
 } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -35,6 +37,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { ADMIN_PASSCODE } from "@/lib/admin-config"
+import { adminRecordCardTransaction, CARD_TRANSACTION_FEE_RATE, CARD_TRANSACTION_FEE_LABEL } from "@/app/actions/cards"
 import {
   TIER_LABELS,
   CARD_FEATURES,
@@ -145,6 +148,87 @@ export function IssuedCardsManager() {
 
   const [revokeTarget, setRevokeTarget] = useState<IssuedCard | null>(null)
   const [revoking, setRevoking] = useState(false)
+
+  // --- Record card transaction (receipt OCR → charge Master + 2% fee) --------
+  const [txnTarget, setTxnTarget] = useState<IssuedCard | null>(null)
+  const [txnAmount, setTxnAmount] = useState("")
+  const [txnMerchant, setTxnMerchant] = useState("")
+  const [txnCurrency, setTxnCurrency] = useState("EUR")
+  const [txnDate, setTxnDate] = useState("")
+  const [txnReference, setTxnReference] = useState("")
+  const [analyzing, setAnalyzing] = useState(false)
+  const [recording, setRecording] = useState(false)
+  const [receiptName, setReceiptName] = useState("")
+  const receiptRef = useRef<HTMLInputElement>(null)
+
+  const openTxn = (card: IssuedCard) => {
+    setTxnAmount("")
+    setTxnMerchant("")
+    setTxnCurrency(card.card.currency ?? "EUR")
+    setTxnDate("")
+    setTxnReference("")
+    setReceiptName("")
+    if (receiptRef.current) receiptRef.current.value = ""
+    setTxnTarget(card)
+  }
+
+  const handleReceipt = async (file: File) => {
+    setReceiptName(file.name)
+    setAnalyzing(true)
+    try {
+      const fd = new FormData()
+      fd.append("file", file)
+      fd.append("passcode", ADMIN_PASSCODE)
+      const res = await fetch("/api/admin/card-transaction/extract", { method: "POST", body: fd })
+      const data = await res.json()
+      if (!res.ok || !data.ok) {
+        toast.error("Could not read the receipt", { description: data.error || "Enter the details manually." })
+        return
+      }
+      const d = data.data ?? {}
+      if (d.amount) setTxnAmount(String(d.amount))
+      if (d.merchant) setTxnMerchant(String(d.merchant))
+      if (d.currency) setTxnCurrency(String(d.currency).toUpperCase().slice(0, 3))
+      if (d.date) setTxnDate(String(d.date))
+      if (d.reference) setTxnReference(String(d.reference))
+      toast.success("Receipt analyzed", { description: "Review the details, then record." })
+    } catch {
+      toast.error("Could not analyze the receipt", { description: "Enter the details manually." })
+    } finally {
+      setAnalyzing(false)
+    }
+  }
+
+  const txnAmountNum = Number((txnAmount || "").replace(/[^0-9.]/g, ""))
+  const txnFee = Number.isFinite(txnAmountNum) ? Math.round(txnAmountNum * CARD_TRANSACTION_FEE_RATE * 100) / 100 : 0
+  const txnTotal = Math.round((txnAmountNum + txnFee) * 100) / 100
+  const txnValid = Number.isFinite(txnAmountNum) && txnAmountNum > 0
+
+  const submitTxn = async () => {
+    if (!txnTarget || !txnValid) return
+    setRecording(true)
+    try {
+      const res = await adminRecordCardTransaction(ADMIN_PASSCODE, txnTarget.userId, {
+        amount: txnAmountNum,
+        currency: txnCurrency,
+        merchant: txnMerchant,
+        date: txnDate || undefined,
+        last4: txnTarget.card.last4,
+        reference: txnReference || undefined,
+        network: txnTarget.card.network,
+      })
+      if (!res.ok) {
+        toast.error("Could not record transaction", { description: res.error })
+        return
+      }
+      toast.success("Transaction recorded", {
+        description: `${res.currency} ${res.amount.toLocaleString("en-US")} + ${CARD_TRANSACTION_FEE_LABEL} fee (${res.currency} ${res.fee.toLocaleString("en-US")}) charged to ${txnTarget.holderLabel}.`,
+      })
+      setTxnTarget(null)
+    } finally {
+      setRecording(false)
+    }
+  }
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -391,6 +475,14 @@ export function IssuedCardsManager() {
                   <Button
                     size="sm"
                     variant="outline"
+                    className="h-8 gap-1 text-primary"
+                    onClick={() => openTxn(c)}
+                  >
+                    <ReceiptText className="h-3.5 w-3.5" /> Record txn
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
                     className="h-8 gap-1 text-destructive"
                     onClick={() => setRevokeTarget(c)}
                   >
@@ -606,6 +698,110 @@ export function IssuedCardsManager() {
             <Button variant="destructive" onClick={confirmRevoke} disabled={revoking}>
               {revoking ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Trash2 className="mr-2 h-4 w-4" />}
               Remove card
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Record card transaction dialog */}
+      <Dialog open={txnTarget !== null} onOpenChange={(o) => !o && !recording && setTxnTarget(null)}>
+        <DialogContent className="flex max-h-[88dvh] max-w-md flex-col overflow-hidden">
+          <DialogHeader className="shrink-0">
+            <DialogTitle className="flex items-center gap-2">
+              <ReceiptText className="h-4 w-4 text-primary" /> Record card transaction
+            </DialogTitle>
+            <DialogDescription className="text-pretty">
+              {txnTarget
+                ? `Charge ${txnTarget.holderLabel}'s Master Account${txnTarget.card.last4 ? ` (card ····${txnTarget.card.last4})` : ""}. A ${CARD_TRANSACTION_FEE_LABEL} fee is added automatically.`
+                : ""}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="min-h-0 flex-1 space-y-4 overflow-y-auto pr-1">
+            <div className="space-y-1.5">
+              <Label>Upload receipt (optional)</Label>
+              <input
+                ref={receiptRef}
+                type="file"
+                accept=".pdf,.png,.jpg,.jpeg,.webp,.heic"
+                className="hidden"
+                onChange={(e) => {
+                  const f = e.target.files?.[0]
+                  if (f) void handleReceipt(f)
+                }}
+              />
+              <Button
+                type="button"
+                variant="outline"
+                className="w-full gap-2"
+                disabled={analyzing}
+                onClick={() => receiptRef.current?.click()}
+              >
+                {analyzing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
+                {analyzing ? "Reading receipt…" : receiptName || "Upload PDF / image receipt"}
+              </Button>
+              <p className="text-[11px] text-muted-foreground">
+                The receipt is read automatically (OCR) to fill the fields below — review before recording.
+              </p>
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="txn-merchant">Merchant / description</Label>
+              <Input id="txn-merchant" value={txnMerchant} onChange={(e) => setTxnMerchant(e.target.value)} placeholder="e.g. Hotel Le Richemond" />
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1.5">
+                <Label htmlFor="txn-amount">Amount</Label>
+                <MoneyInput id="txn-amount" value={txnAmount} onValueChange={setTxnAmount} />
+              </div>
+              <div className="space-y-1.5">
+                <Label>Currency</Label>
+                <Select value={txnCurrency} onValueChange={setTxnCurrency}>
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {CURRENCIES.map((c) => (
+                      <SelectItem key={c} value={c}>
+                        {c}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1.5">
+                <Label htmlFor="txn-date">Date (optional)</Label>
+                <Input id="txn-date" type="date" value={txnDate} onChange={(e) => setTxnDate(e.target.value)} />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="txn-ref">Reference (optional)</Label>
+                <Input id="txn-ref" value={txnReference} onChange={(e) => setTxnReference(e.target.value)} placeholder="Receipt ref" />
+              </div>
+            </div>
+            {txnValid && (
+              <div className="space-y-1 rounded-lg border border-border bg-muted/30 p-3 text-sm">
+                <div className="flex items-center justify-between">
+                  <span className="text-muted-foreground">Transaction</span>
+                  <span className="font-mono">{txnCurrency} {txnAmountNum.toLocaleString("en-US", { minimumFractionDigits: 2 })}</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-muted-foreground">Fee ({CARD_TRANSACTION_FEE_LABEL})</span>
+                  <span className="font-mono">{txnCurrency} {txnFee.toLocaleString("en-US", { minimumFractionDigits: 2 })}</span>
+                </div>
+                <div className="flex items-center justify-between border-t border-border pt-1 font-semibold">
+                  <span>Charged to Master Account</span>
+                  <span className="font-mono">{txnCurrency} {txnTotal.toLocaleString("en-US", { minimumFractionDigits: 2 })}</span>
+                </div>
+              </div>
+            )}
+          </div>
+          <DialogFooter className="shrink-0 border-t border-border pt-4">
+            <Button variant="ghost" onClick={() => setTxnTarget(null)} disabled={recording}>
+              Cancel
+            </Button>
+            <Button onClick={submitTxn} disabled={!txnValid || recording}>
+              {recording ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <ReceiptText className="mr-2 h-4 w-4" />}
+              Record transaction
             </Button>
           </DialogFooter>
         </DialogContent>
