@@ -59,6 +59,7 @@ import {
   Download,
   ArrowLeft,
   AlertTriangle,
+  CreditCard,
 } from "lucide-react"
 import { ADMIN_PASSCODE } from "@/lib/admin-config"
 import { blobFileUrl } from "@/lib/kyc-types"
@@ -78,6 +79,7 @@ import {
   adminConfirmYieldTermination,
   type DealHoldState,
 } from "@/app/actions/approvals"
+import { adminDecideCardRequest } from "@/app/actions/cards"
 import { leverageApplicationCharges } from "@/lib/leverage-audit-fee"
 import { computeMonetizationEquity } from "@/lib/monetization-equity"
 import { readStampedTrustScore } from "@/lib/ppi-trust"
@@ -643,6 +645,66 @@ export function PendingApprovals({ initialKind }: { initialKind?: ApprovalKind }
     mutate()
   }
 
+  // --- Card issuance: the admin must enter the physical/virtual card number,
+  // expiry and CVV before a card request can be approved. -------------------
+  const [cardApproveTarget, setCardApproveTarget] = useState<ApprovalRequest | null>(null)
+  const [cardNumber, setCardNumber] = useState("")
+  const [cardExpiry, setCardExpiry] = useState("")
+  const [cardCvv, setCardCvv] = useState("")
+  const [cardBusy, setCardBusy] = useState(false)
+
+  const formatCardNumber = (raw: string) =>
+    raw
+      .replace(/\D/g, "")
+      .slice(0, 19)
+      .replace(/(.{4})/g, "$1 ")
+      .trim()
+  const formatExpiry = (raw: string) => {
+    const d = raw.replace(/\D/g, "").slice(0, 4)
+    return d.length <= 2 ? d : `${d.slice(0, 2)}/${d.slice(2)}`
+  }
+
+  const openCardApprove = (req: ApprovalRequest) => {
+    const existing = (req.payload as { card?: Record<string, unknown> } | undefined)?.card ?? {}
+    setCardNumber(existing.number ? formatCardNumber(String(existing.number)) : "")
+    setCardExpiry(existing.expiry ? String(existing.expiry) : "")
+    setCardCvv(existing.cvv ? String(existing.cvv) : "")
+    setCardApproveTarget(req)
+  }
+
+  const cardDigits = cardNumber.replace(/\s/g, "")
+  const cardExpiryOk = /^(0[1-9]|1[0-2])\/\d{2}$/.test(cardExpiry)
+  const cardNumberOk = cardDigits.length >= 15 && cardDigits.length <= 19
+  const cardCvvOk = /^\d{3,4}$/.test(cardCvv)
+  const cardFormValid = cardNumberOk && cardExpiryOk && cardCvvOk
+
+  const submitCardApprove = async () => {
+    if (!cardApproveTarget || !cardFormValid) return
+    setCardBusy(true)
+    const existing = (cardApproveTarget.payload as { card?: Record<string, unknown> } | undefined)?.card ?? {}
+    const finalCard = {
+      ...existing,
+      number: cardDigits,
+      last4: cardDigits.slice(-4),
+      expiry: cardExpiry,
+      cvv: cardCvv,
+    }
+    const res = await adminDecideCardRequest(ADMIN_PASSCODE, cardApproveTarget.id, "approved", finalCard)
+    setCardBusy(false)
+    if (!res.ok) {
+      toast.error(res.error)
+      return
+    }
+    toast.success("Card approved and issued.")
+    setSelected((prev) => {
+      const next = new Set(prev)
+      next.delete(cardApproveTarget.id)
+      return next
+    })
+    setCardApproveTarget(null)
+    mutate()
+  }
+
   const openReject = (id: string) => {
     setRejectReason("")
     setRejectTarget({ id, bulk: false })
@@ -933,8 +995,20 @@ export function PendingApprovals({ initialKind }: { initialKind?: ApprovalKind }
 
   const bulkApprove = async () => {
     if (selected.size === 0) return
+    // Card requests need the number/expiry/CVV entered individually — never
+    // bulk-approve them. Skip any selected card and tell the admin to open it.
+    const selectedCardIds = filtered.filter((r) => selected.has(r.id) && r.kind === "card").map((r) => r.id)
+    const approvable = Array.from(selected).filter((id) => !selectedCardIds.includes(id))
+    if (selectedCardIds.length > 0) {
+      toast.info(
+        `${selectedCardIds.length} card request${selectedCardIds.length === 1 ? "" : "s"} skipped — open each card to enter its number, expiry and CVV before approving.`,
+      )
+    }
+    if (approvable.length === 0) {
+      return
+    }
     setActing(true)
-    const res = await adminBulkDecide(ADMIN_PASSCODE, Array.from(selected), "approved")
+    const res = await adminBulkDecide(ADMIN_PASSCODE, approvable, "approved")
     setActing(false)
     if (res.decided > 0) toast.success(`Approved ${res.decided} request${res.decided === 1 ? "" : "s"}.`)
     if (res.failed > 0) toast.error(`${res.failed} could not be approved.`)
@@ -1387,11 +1461,13 @@ export function PendingApprovals({ initialKind }: { initialKind?: ApprovalKind }
                         variant="outline"
                         className="h-8 gap-1 text-emerald-600"
                         disabled={acting || fundingNeedsDiscussion}
-                        onClick={() => approveOne(req.id)}
+                        onClick={() => (req.kind === "card" ? openCardApprove(req) : approveOne(req.id))}
                         title={
                           fundingNeedsDiscussion
                             ? "Open the discussion with the applicant before activating this facility."
-                            : undefined
+                            : req.kind === "card"
+                              ? "Enter the card number, expiry and CVV to issue this card."
+                              : undefined
                         }
                       >
                         <Check className="h-3.5 w-3.5" /> Approve
@@ -1743,6 +1819,81 @@ export function PendingApprovals({ initialKind }: { initialKind?: ApprovalKind }
       </Dialog>
 
       {/* Reject reason dialog */}
+      {/* Card issuance — enter the physical/virtual card credentials before approval */}
+      <Dialog open={cardApproveTarget !== null} onOpenChange={(o) => !o && !cardBusy && setCardApproveTarget(null)}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <CreditCard className="h-4 w-4 text-primary" />
+              Issue card
+            </DialogTitle>
+            <DialogDescription>
+              {cardApproveTarget?.title
+                ? `Enter the card details to issue "${cardApproveTarget.title}". These are shown to the client on their card.`
+                : "Enter the card number, expiry and CVV to issue this card to the client."}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-1">
+            <div className="space-y-1.5">
+              <Label htmlFor="card-number">Card number</Label>
+              <Input
+                id="card-number"
+                inputMode="numeric"
+                autoComplete="off"
+                placeholder="4111 1111 1111 1111"
+                value={cardNumber}
+                onChange={(e) => setCardNumber(formatCardNumber(e.target.value))}
+                className="font-mono tracking-wider"
+              />
+              {cardNumber.length > 0 && !cardNumberOk && (
+                <p className="text-xs text-destructive">Enter a valid 15–19 digit card number.</p>
+              )}
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1.5">
+                <Label htmlFor="card-expiry">Expiry (MM/YY)</Label>
+                <Input
+                  id="card-expiry"
+                  inputMode="numeric"
+                  autoComplete="off"
+                  placeholder="09/29"
+                  value={cardExpiry}
+                  onChange={(e) => setCardExpiry(formatExpiry(e.target.value))}
+                  className="font-mono"
+                />
+                {cardExpiry.length > 0 && !cardExpiryOk && (
+                  <p className="text-xs text-destructive">Use MM/YY.</p>
+                )}
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="card-cvv">CVV</Label>
+                <Input
+                  id="card-cvv"
+                  inputMode="numeric"
+                  autoComplete="off"
+                  placeholder="123"
+                  value={cardCvv}
+                  onChange={(e) => setCardCvv(e.target.value.replace(/\D/g, "").slice(0, 4))}
+                  className="font-mono"
+                />
+                {cardCvv.length > 0 && !cardCvvOk && (
+                  <p className="text-xs text-destructive">3–4 digits.</p>
+                )}
+              </div>
+            </div>
+          </div>
+          <DialogFooter className="flex-col gap-2 sm:flex-row">
+            <Button variant="outline" disabled={cardBusy} onClick={() => setCardApproveTarget(null)}>
+              Cancel
+            </Button>
+            <Button className="gap-1 text-emerald-600" variant="outline" disabled={!cardFormValid || cardBusy} onClick={submitCardApprove}>
+              {cardBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}
+              Approve &amp; issue card
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       <Dialog open={rejectTarget !== null} onOpenChange={(o) => !o && setRejectTarget(null)}>
         <DialogContent className="max-w-md">
           <DialogHeader>
