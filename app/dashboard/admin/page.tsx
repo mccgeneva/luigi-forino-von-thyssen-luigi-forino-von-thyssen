@@ -37,6 +37,7 @@ import {
   ArrowLeft,
   ClipboardList,
   CreditCard,
+  ReceiptText,
   Send,
   Inbox,
   PiggyBank,
@@ -2389,6 +2390,7 @@ export default function AdminPage() {
         { id: "dof", label: "Download of Funds", description: "Authorize download-of-funds requests.", icon: Banknote, count: pendingDOF.length },
         { id: "monetization", label: "Monetization", description: "Review instrument monetization requests.", icon: Layers, count: pendingMonetization.length },
         { id: "cards", label: "Payment Cards", description: "Issue, review, edit and delete client payment cards.", icon: CreditCard, count: dbPending.card ?? 0 },
+        { id: "cardtxn", label: "Record Card Transaction", description: "Upload a receipt (OCR) to record a card transaction — charges the client's Master Account plus a 2% fee.", icon: ReceiptText, count: 0 },
       ],
     },
     {
@@ -2942,9 +2944,14 @@ export default function AdminPage() {
       {/* Payment Cards section */}
       {activeView === "cards" && (
       <div className="space-y-6">
-        <CardTransactionRecorder />
         <CardManager />
         <IssuedCardsManager />
+      </div>
+      )}
+
+      {activeView === "cardtxn" && (
+      <div className="space-y-6">
+        <CardTransactionRecorder />
       </div>
       )}
 
