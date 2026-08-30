@@ -338,52 +338,40 @@ export function riskBandLabel(band: RiskBand): string {
 }
 
 /**
- * Administrator manual override of a single account's trust score. Applied
- * silently on top of the computed score — the customer only ever sees the
- * resulting gauge/score, never that it was set by hand. Money `inputs` are left
- * untouched (so the borrowed-funds ring-fence and other money gates stay
+ * Administrator manual override of a single account's trust score. The admin
+ * drags a bar to force the displayed risk score to an EXACT number; this is
+ * applied silently on top of the computed score — the customer only ever sees
+ * the resulting gauge/score, never that it was set by hand. Money `inputs` are
+ * left untouched (so the borrowed-funds ring-fence and other money gates stay
  * accurate); only the risk verdict is forced.
- *   • "green" → forced healthy: every factor 0, finalScore 0, low band, not
- *      high risk (silently allows new financing).
- *   • "red"   → forced stressed: a believable elevated factor spread whose
- *      √(weighted) sits comfortably above the high-risk gate, high band, high
- *      risk (silently blocks new financing).
+ *
+ * `forcedScore` is the exact number the admin dragged to (0..100). Band,
+ * highRisk and creditScore are derived from it with the SAME formulas as
+ * computeGuaranteeScore, so the card, the gauge and every financing gate treat
+ * the account as that score. A lower number silently ALLOWS new financing; a
+ * number above the high-risk threshold silently BLOCKS it.
  */
-export type GuaranteeOverrideMode = "green" | "red"
-
 export function applyGuaranteeOverride(
   score: GuaranteeScore,
-  mode: GuaranteeOverrideMode,
+  forcedScore: number,
   threshold: number,
 ): GuaranteeScore {
   const t = threshold > 0 ? threshold : 10
+  const s = round2(clamp(Number.isFinite(forcedScore) ? forcedScore : 0, 0, 100))
+  // weightedSum so √(weighted) = s keeps the admin's "√(weighted) = risk" line
+  // self-consistent (ageCredit/equityCredit are zeroed under an override).
+  const sum = round2(s * s)
 
-  if (mode === "green") {
-    return {
-      ...score,
-      factors: { securityDeposit: 0, leverageLoad: 0, exposure: 0, paymentPenalty: 0, trackRecord: 0, overdraft: 0 },
-      weightedSum: 0,
-      riskScore: 0,
-      ageCredit: 0,
-      equityCredit: 0,
-      finalScore: 0,
-      creditScore: 100,
-      band: "low",
-      highRisk: false,
-    }
-  }
-
-  // "red": build a believable, self-consistent elevated factor spread. Target a
-  // weighted sum of (2×threshold)² so √(weighted) ≈ 2×threshold (clearly above
-  // the gate), capped at 750 so the numbers stay believable and the Overdraft
-  // factor stays 0 (no false "you are overdrawn" tell on the customer card).
-  const target = Math.min(t * 2 * (t * 2), 750)
+  // Illustrative factor spread that grows with the forced score, so the factor
+  // rows never look empty on a forced-high account (they are informational and
+  // are NOT summed on the customer card). Overdraft stays 0 — no false
+  // "you are overdrawn" tell.
   const order: Array<[keyof GuaranteeFactors, number]> = [
-    ["exposure", 150],
-    ["leverageLoad", 150],
-    ["trackRecord", 150],
-    ["securityDeposit", 100],
-    ["paymentPenalty", 200],
+    ["exposure", 300],
+    ["leverageLoad", 300],
+    ["trackRecord", 300],
+    ["securityDeposit", 200],
+    ["paymentPenalty", 300],
   ]
   const factors: GuaranteeFactors = {
     securityDeposit: 0,
@@ -393,27 +381,28 @@ export function applyGuaranteeOverride(
     trackRecord: 0,
     overdraft: 0,
   }
-  let remaining = target
+  let remaining = sum
   for (const [key, cap] of order) {
     const v = Math.max(0, Math.min(cap, remaining))
     factors[key] = round2(v)
     remaining -= v
   }
-  const sum =
-    factors.securityDeposit + factors.leverageLoad + factors.exposure + factors.paymentPenalty + factors.trackRecord
-  const riskScore = round2(Math.sqrt(Math.max(0, sum)))
+
+  const highRisk = s > t
+  const band: RiskBand = s > t ? "high" : s > t * 0.5 ? "moderate" : "low"
+  const creditScore = Math.round(clamp(100 - (s / t) * 50, 0, 100))
 
   return {
     ...score,
     factors,
-    weightedSum: round2(sum),
-    riskScore,
+    weightedSum: sum,
+    riskScore: s,
     ageCredit: 0,
     equityCredit: 0,
-    finalScore: riskScore,
-    creditScore: 0,
-    band: "high",
-    highRisk: true,
+    finalScore: s,
+    creditScore,
+    band,
+    highRisk,
   }
 }
 
