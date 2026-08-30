@@ -15,6 +15,7 @@ import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Input } from "@/components/ui/input"
+import { MoneyInput } from "@/components/ui/money-input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import {
@@ -1797,15 +1798,10 @@ export function PendingApprovals({ initialKind }: { initialKind?: ApprovalKind }
               </div>
               <div className="space-y-1.5">
                 <Label htmlFor="ppi-new">New agreed premium ({ppiTarget.currency})</Label>
-                <Input
+                <MoneyInput
                   id="ppi-new"
-                  type="number"
-                  inputMode="decimal"
-                  min={0}
-                  max={ppiTarget.original}
-                  step="0.01"
                   value={ppiValue}
-                  onChange={(e) => setPpiValue(e.target.value)}
+                  onValueChange={setPpiValue}
                   className="text-base md:text-sm"
                   autoFocus
                 />
@@ -1869,15 +1865,10 @@ export function PendingApprovals({ initialKind }: { initialKind?: ApprovalKind }
               </div>
               <div className="space-y-1.5">
                 <Label htmlFor="res-new">New agreed reserve ({resTarget.currency})</Label>
-                <Input
+                <MoneyInput
                   id="res-new"
-                  type="number"
-                  inputMode="decimal"
-                  min={0}
-                  max={resTarget.original}
-                  step="0.01"
                   value={resValue}
-                  onChange={(e) => setResValue(e.target.value)}
+                  onValueChange={setResValue}
                   className="text-base md:text-sm"
                   autoFocus
                 />
