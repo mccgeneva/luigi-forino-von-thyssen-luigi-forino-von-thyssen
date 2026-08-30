@@ -378,6 +378,12 @@ export const COST_SECTIONS: CostSection[] = [
         when: "Automatic platform charges & fees may draw the Master Account negative up to this ceiling when positive funds are exhausted. Ordinary outgoing money movement still requires positive funds.",
       },
       {
+        item: "Overdraft debit interest",
+        // from lib/overdraft-interest.ts OVERDRAFT_DEBIT_ANNUAL_RATE (0.22)
+        fee: "22% p.a.",
+        when: "Debit interest on the used (negative) overdraft balance, accrued daily (22% p.a. ÷ 365) while the Master Account is in overdraft and charged to the Master Account. Stops as soon as the balance returns to positive.",
+      },
+      {
         item: "Document generation",
         fee: "Included",
         when: "Statements, certificates, receipts, SKR, corporate offers (FCO) and confirmations are generated at no additional charge.",
