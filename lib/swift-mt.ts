@@ -348,12 +348,41 @@ function parseApplicationHeader(raw?: string): ApplicationHeader | undefined {
 // Field value parsing helpers
 // ---------------------------------------------------------------------------
 
-/** Parse a SWIFT decimal ("1500,00" / "1.500,00") into a JS number. */
+/**
+ * Parse a monetary amount into a JS number, tolerant of BOTH the strict SWIFT
+ * convention (comma = decimal separator, e.g. "25000000,00") AND the
+ * human/printout convention that PDF-extracted specimens use (comma = thousands
+ * separator, period = decimal, e.g. "25,000,000.00"), plus European
+ * "25.000.000,00" and plain "25000000.00" / "25000000".
+ */
 export function parseSwiftAmount(raw: string): number | undefined {
   if (!raw) return undefined
-  // SWIFT uses comma as the decimal separator and no thousands separators.
-  const cleaned = raw.trim().replace(/\./g, "").replace(",", ".")
-  const n = Number(cleaned)
+  // Drop currency letters, spaces and any stray characters — keep only digits/separators.
+  let s = raw.trim().replace(/[^\d.,]/g, "")
+  if (!s) return undefined
+  const hasComma = s.includes(",")
+  const hasDot = s.includes(".")
+  if (hasComma && hasDot) {
+    // Both separators present: the LAST one is the decimal point, the other is a
+    // thousands grouping. Handles "25,000,000.00" (US/printout) and "25.000.000,00" (EU).
+    if (s.lastIndexOf(",") > s.lastIndexOf(".")) {
+      s = s.replace(/\./g, "").replace(/,/g, ".")
+    } else {
+      s = s.replace(/,/g, "")
+    }
+  } else if (hasComma) {
+    const parts = s.split(",")
+    // Multiple commas → thousands separators ("25,000,000"). A single comma whose
+    // tail is exactly 3 digits is also thousands ("25,000"); otherwise it is the
+    // SWIFT decimal separator ("25000000,00" → 25000000.00, "1,50" → 1.50).
+    if (parts.length > 2 || parts[parts.length - 1].length === 3) {
+      s = s.replace(/,/g, "")
+    } else {
+      s = s.replace(/,/g, ".")
+    }
+  }
+  // (only dots or plain digits pass through unchanged: "25000000.00" / "25000000")
+  const n = Number(s)
   return Number.isFinite(n) ? n : undefined
 }
 
