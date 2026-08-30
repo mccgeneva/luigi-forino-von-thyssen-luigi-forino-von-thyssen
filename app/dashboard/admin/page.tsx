@@ -2941,9 +2941,11 @@ export default function AdminPage() {
       </div>
       )}
 
-      {/* Payment Cards section */}
+      {/* Payment Cards section — the transaction recorder shows here too so it is
+          reachable both from the dedicated tile and from the Cards page. */}
       {activeView === "cards" && (
       <div className="space-y-6">
+        <CardTransactionRecorder />
         <CardManager />
         <IssuedCardsManager />
       </div>
