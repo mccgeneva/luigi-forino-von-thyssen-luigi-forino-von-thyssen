@@ -2942,9 +2942,9 @@ export default function AdminPage() {
       {/* Payment Cards section */}
       {activeView === "cards" && (
       <div className="space-y-6">
+        <CardTransactionRecorder />
         <CardManager />
         <IssuedCardsManager />
-        <CardTransactionRecorder />
       </div>
       )}
 
