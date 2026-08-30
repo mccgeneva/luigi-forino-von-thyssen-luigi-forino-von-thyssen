@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from "react"
 import { Lock, Loader2, ShieldAlert, Undo2, Ban } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
+import { MoneyInput } from "@/components/ui/money-input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { Badge } from "@/components/ui/badge"
@@ -271,15 +271,11 @@ export function FundBlockManager() {
           <div className="grid gap-3 sm:grid-cols-3">
             <div className="space-y-2 sm:col-span-2">
               <Label htmlFor="fb-amount">Amount</Label>
-              <Input
+              <MoneyInput
                 id="fb-amount"
-                type="number"
-                min="0"
-                step="0.01"
-                inputMode="decimal"
                 placeholder="0.00"
                 value={amount}
-                onChange={(e) => setAmount(e.target.value)}
+                onValueChange={setAmount}
                 disabled={!hasTarget}
               />
               {hasTarget && (
