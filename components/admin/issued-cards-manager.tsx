@@ -405,15 +405,15 @@ export function IssuedCardsManager() {
 
       {/* Edit dialog */}
       <Dialog open={edit !== null} onOpenChange={(o) => !o && setEdit(null)}>
-        <DialogContent className="max-w-lg">
-          <DialogHeader>
+        <DialogContent className="flex max-h-[88dvh] max-w-lg flex-col overflow-hidden">
+          <DialogHeader className="shrink-0">
             <DialogTitle>Edit card</DialogTitle>
             <DialogDescription className="text-pretty">
               Changes apply immediately to the customer&apos;s wallet across devices.
             </DialogDescription>
           </DialogHeader>
           {edit && (
-            <div className="space-y-4">
+            <div className="min-h-0 flex-1 space-y-4 overflow-y-auto pr-1">
               <p className="text-xs text-muted-foreground">
                 Linked to <span className="font-medium text-foreground">{edit.target.holderLabel}</span>
                 {edit.target.card.last4 ? ` · •••• ${edit.target.card.last4}` : ""}
@@ -569,7 +569,7 @@ export function IssuedCardsManager() {
               </div>
             </div>
           )}
-          <DialogFooter>
+          <DialogFooter className="shrink-0 border-t border-border pt-4">
             <Button variant="ghost" onClick={() => setEdit(null)} disabled={saving}>
               Cancel
             </Button>
