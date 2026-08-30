@@ -193,6 +193,9 @@ export function CardManager() {
 
   const pending = requests.filter((r) => r.status === "pending")
   const decided = requests.filter((r) => r.status !== "pending")
+  // The Issue form fulfils a pending request for the chosen client instead of
+  // creating a second card, so surface when that will happen.
+  const pendingForIssueClient = issueClient ? pending.find((r) => r.userId === issueClient) ?? null : null
 
   const openCustomize = (req: ApprovalRequest) => {
     const c = readCard(req)
@@ -343,8 +346,14 @@ export function CardManager() {
       return
     }
     const fullNumber = cardDigits(issueNumber)
+    // If this client already has a PENDING card request, fulfil THAT request in
+    // place (preserving its card id) instead of issuing a second card — issuing
+    // a fresh card here while the request stays pending is what produced two
+    // cards (one auto-fake-numbered pending, one with the real numbers).
+    const existingPending = pending.find((r) => r.userId === issueClient)
+    const existingCardId = existingPending ? readCard(existingPending).id : ""
     const card = {
-      id: genCardId(),
+      id: existingCardId || genCardId(),
       holder: client.fullName,
       network: issueNetwork,
       tier: issueTier,
@@ -363,15 +372,20 @@ export function CardManager() {
       status: "active",
     }
     setIssuing(true)
-    const res = await adminIssueCard(ADMIN_PASSCODE, issueClient, card)
+    const res = existingPending
+      ? await adminDecideCardRequest(ADMIN_PASSCODE, existingPending.id, "approved", card)
+      : await adminIssueCard(ADMIN_PASSCODE, issueClient, card)
     setIssuing(false)
     if (!res.ok) {
       toast.error("Could not issue card", { description: res.error })
       return
     }
-    toast.success("Card issued", {
-      description: `${card.label} card delivered to ${client.fullName}.`,
+    toast.success(existingPending ? "Pending request approved & activated" : "Card issued", {
+      description: existingPending
+        ? `${card.label} card delivered to ${client.fullName} — their pending request was fulfilled (no duplicate).`
+        : `${card.label} card delivered to ${client.fullName}.`,
     })
+    if (existingPending) mutate()
     log({
       action: `Administrator issued a ${card.label} card to ${client.fullName}`,
       category: "Administration / Cards",
@@ -669,14 +683,15 @@ export function CardManager() {
           <div className="flex items-start gap-2 rounded-lg border border-primary/30 bg-primary/5 p-3">
             <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
             <p className="text-xs text-muted-foreground text-pretty">
-              Issuance is recorded on the approvals backbone and delivered to the client&apos;s wallet across
-              devices. The client can then manage limits and controls themselves.
+              {pendingForIssueClient
+                ? "This client has a pending card request — issuing here will fulfil that request with the details above (updating their existing pending card), so no duplicate card is created."
+                : "Issuance is recorded on the approvals backbone and delivered to the client's wallet across devices. The client can then manage limits and controls themselves."}
             </p>
           </div>
 
           <Button onClick={handleIssue} disabled={issuing} className="w-full sm:w-auto">
             {issuing ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <CreditCard className="mr-2 h-4 w-4" />}
-            Issue card
+            {pendingForIssueClient ? "Approve pending request" : "Issue card"}
           </Button>
         </CardContent>
       </Card>
