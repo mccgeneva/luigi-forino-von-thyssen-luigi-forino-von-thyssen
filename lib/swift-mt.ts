@@ -241,6 +241,19 @@ export function splitBlocks(raw: string): SwiftBlocks {
     }
   }
 
+  // Fallback: many printouts / PDF-extracted specimens dump the message fields
+  // loosely WITHOUT a proper `{4:...-}` text block (or with a malformed `{3`
+  // that swallows them, e.g. `{2:I760...}{3\n:20:...`). Standard block matching
+  // then finds no text fields and every party/amount comes back blank. If we
+  // recovered no text but the raw clearly carries `:tag:` field lines, parse
+  // them by scanning the whole message — parseTextFields only matches lines
+  // that start with `:NN[A-Z]?:`, so the `{1..}`/`{2:..}` header lines and any
+  // trailing human-readable tables are safely ignored.
+  if (!blocks.text.length) {
+    const recovered = parseTextFields(text)
+    if (recovered.length) blocks.text = recovered
+  }
+
   return blocks
 }
 
