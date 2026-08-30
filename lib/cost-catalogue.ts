@@ -60,7 +60,7 @@ export const COST_CATALOGUE_META = {
   title: "Terms & Costs — Complete Fee Catalogue",
   subtitle:
     "A certified, self-explanatory schedule of every fee, charge and interest rate that can apply across the platform, and exactly when each one applies.",
-  version: "Version 1.0",
+  version: "Version 1.1",
   effectiveDate: new Date().toLocaleDateString("en-GB", { day: "2-digit", month: "long", year: "numeric" }),
   legalEntity: "MCC Capital — software platform operator",
   address: "Rue du Rhone 14, 1204 Geneva, Switzerland",
@@ -79,6 +79,12 @@ export interface CatalogueRevision {
  * past one — whenever a rate changes and the version is bumped).
  */
 export const COST_CATALOGUE_REVISIONS: CatalogueRevision[] = [
+  {
+    version: "Version 1.1",
+    date: COST_CATALOGUE_META.effectiveDate,
+    summary:
+      "Introduced overdraft debit interest: a used (negative) Master Account overdraft balance now accrues 22% p.a., charged daily on the outstanding negative balance until it returns to positive. Also documented the clean-profile authorized overdraft grant (PRO EUR 250,000 / Avant-Garde EUR 500,000).",
+  },
   {
     version: "Version 1.0",
     date: COST_CATALOGUE_META.effectiveDate,
@@ -376,6 +382,12 @@ export const COST_SECTIONS: CostSection[] = [
         item: "Controlled overdraft",
         fee: `Up to ${pct(OVERDRAFT_CEILING_RATE)} of the secured treasury deposit`,
         when: "Automatic platform charges & fees may draw the Master Account negative up to this ceiling when positive funds are exhausted. Ordinary outgoing money movement still requires positive funds.",
+      },
+      {
+        item: "Overdraft debit interest",
+        // from lib/overdraft-interest.ts OVERDRAFT_DEBIT_ANNUAL_RATE (0.22)
+        fee: "22% p.a.",
+        when: "Debit interest on the used (negative) overdraft balance, accrued daily (22% p.a. ÷ 365) while the Master Account is in overdraft and charged to the Master Account. Stops as soon as the balance returns to positive.",
       },
       {
         item: "Document generation",

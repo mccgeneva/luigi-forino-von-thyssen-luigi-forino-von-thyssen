@@ -23,7 +23,8 @@ import {
   limitBlockMessage,
 } from "@/lib/account-limits-eval"
 import { getGuaranteeConfig } from "@/lib/guarantees-config-db"
-import { getOverdraftStatusForOwner, computeOverdraftStatus } from "@/lib/overdraft"
+import { getOverdraftStatusForOwner, computeOverdraftStatus, getSettledBalanceEur } from "@/lib/overdraft"
+import { buildOverdraftInterestPosts } from "@/lib/overdraft-interest"
 import { gatherGuaranteeProfile, getFinancingRingfence } from "@/lib/guarantees-profile"
 import { guaranteeBlockMessage } from "@/lib/guarantees-accumulator"
 import { planReservation, formatMoney, type ReservationPlan } from "@/lib/fund-reservation"
@@ -2974,6 +2975,29 @@ export async function reconcileMyApprovedCredits(): Promise<{ ok: boolean; appli
         rows.set(entry.id, entry)
         applied += 1
       }
+    }
+
+    // OVERDRAFT DEBIT INTEREST. A Master Account in overdraft (aggregate settled
+    // EUR balance negative) accrues 22% p.a. debit interest, charged DAILY on the
+    // used (negative) balance. Posted lazily here (no scheduler) with a
+    // deterministic per-day id `OD-INT-<YYYY-MM-DD>`, so it never double-charges
+    // and self-heals across devices. Runs BEFORE auto-cover so the fresh charge
+    // is rebalanced across currencies in the same pass. Best-effort: an accrual
+    // failure must never break the rest of the reconcile.
+    try {
+      const odOwnerId = await resolveDataOwnerIdFor(session.id)
+      const odRows = await readLedgerEntries(odOwnerId)
+      const settledEur = await getSettledBalanceEur(odOwnerId)
+      const odPosts = buildOverdraftInterestPosts({
+        entries: odRows,
+        negativeEur: settledEur < 0 ? -settledEur : 0,
+      })
+      for (const post of odPosts) {
+        await upsertLedgerEntry(odOwnerId, post)
+        applied += 1
+      }
+    } catch (err) {
+      console.log("[v0] overdraft interest accrual failed:", (err as Error).message)
     }
 
     // AUTO-COVER negative currencies. Leverage fees (audit, PPI) and debit
