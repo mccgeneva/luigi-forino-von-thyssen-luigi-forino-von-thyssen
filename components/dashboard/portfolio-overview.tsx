@@ -27,7 +27,7 @@ import {
 import { cn } from "@/lib/utils"
 import { useLedger, convertCurrency, type LedgerEntry } from "@/lib/ledger-store"
 import { useInstrumentRequests } from "@/lib/instrument-requests-store"
-import { useMonetizationRequests } from "@/lib/monetization-requests-store"
+import { useMonetizationRequests, type MonetizationRequest } from "@/lib/monetization-requests-store"
 import { useBeneficiaries } from "@/lib/beneficiaries-store"
 import { cancelMyApproval } from "@/app/actions/approvals"
 import { removeMyLedgerEntry } from "@/app/actions/ledger"
@@ -75,7 +75,8 @@ export function PortfolioOverview() {
   const { balanceFor, reservedFor, lockedCreditsFor, entries, currencies, refresh: refreshLedger } =
     useLedger()
   const { instruments } = useInstrumentRequests()
-  const { requests: monetizationRequests, refresh: refreshMon } = useMonetizationRequests()
+  const { requests: monetizationRequests, refresh: refreshMon, hydrated: monetizationHydrated } =
+    useMonetizationRequests()
   const { beneficiaries } = useBeneficiaries()
 
   // Which currency's reserved-funds breakdown is open (null = dialog closed).
@@ -85,34 +86,45 @@ export function PortfolioOverview() {
   const [confirmingId, setConfirmingId] = useState<string | null>(null)
   const [releasingId, setReleasingId] = useState<string | null>(null)
 
-  // A held reserve is "self-releasable" straight from this card only when it is
-  // a MONETIZATION RESERVE whose request is still PENDING (nothing was credited
-  // yet, so cancelling it is safe and simply unblocks the equity + PPI). An
-  // APPROVED/credited facility is a live loan — that is unwound in Debits &
-  // Financing, never released here. Returns the linked pending request or null.
-  const pendingMonReserveFor = (e: LedgerEntry) => {
+  // Decide whether a held MONETIZATION RESERVE can be released in one tap from
+  // this card, and whether doing so must also cancel the underlying request.
+  // SAFE cases (no outstanding advance to protect):
+  //   • pending                      → nothing credited yet → CANCEL + release
+  //   • rejected / reversed          → already unwound       → release stale hold
+  //   • approved AND closedAt set    → facility already settled (principal repaid)
+  //                                    → release the stale hold left behind
+  // BLOCKED: approved AND NOT closed = a LIVE facility with an outstanding
+  // advance → must be repaid in Debits & Financing first, never released here.
+  const releasableReserveFor = (e: LedgerEntry): { req: MonetizationRequest | null; cancel: boolean } | null => {
     if (e.category !== "Monetization Reserve" || typeof e.id !== "string" || !e.id.startsWith("MON-RSV-")) {
       return null
     }
+    // Wait for the monetization list so we never offer to release a hold that
+    // actually backs a live facility we simply haven't loaded yet.
+    if (!monetizationHydrated) return null
     const localId = e.reference || e.id.slice("MON-RSV-".length)
-    const req = monetizationRequests.find((r) => r.id === localId)
-    return req && req.status === "pending" ? req : null
+    const req = monetizationRequests.find((r) => r.id === localId) ?? null
+    if (!req) return null // can't verify the facility → don't offer release
+    if (req.status === "pending") return { req, cancel: true }
+    if (req.status === "rejected" || req.status === "reversed") return { req, cancel: false }
+    if (req.status === "approved" && req.closedAt) return { req, cancel: false }
+    return null
   }
 
-  // Cancel the pending monetization request (no proceeds were posted) AND delete
-  // the equity+PPI hold, so the blocked funds return to the available balance
-  // immediately — one intuitive action instead of hunting through Instruments.
+  // Release the equity+PPI hold back to the available balance immediately — one
+  // intuitive action instead of hunting through Instruments / Debits. Cancels
+  // the underlying request too ONLY when it is still pending (nothing credited).
   const releaseReserve = async (e: LedgerEntry) => {
-    const req = pendingMonReserveFor(e)
-    if (!req) {
+    const info = releasableReserveFor(e)
+    if (!info) {
       toast.error("This reservation can no longer be released here.")
       setConfirmingId(null)
       return
     }
     setReleasingId(e.id)
     try {
-      if (req.approvalId) {
-        const res = await cancelMyApproval(req.approvalId)
+      if (info.cancel && info.req?.approvalId) {
+        const res = await cancelMyApproval(info.req.approvalId)
         if (!res.ok) {
           toast.error("Couldn't release the reservation", { description: res.error })
           return
@@ -121,7 +133,9 @@ export function PortfolioOverview() {
       await removeMyLedgerEntry(e.id)
       await Promise.all([refreshLedger(), refreshMon()])
       toast.success("Reservation released", {
-        description: `${formatMoney(e.amount, e.currency)} returned to your available ${e.currency} balance. The monetization request was cancelled.`,
+        description: `${formatMoney(e.amount, e.currency)} returned to your available ${e.currency} balance.${
+          info.cancel ? " The monetization request was cancelled." : ""
+        }`,
       })
       setConfirmingId(null)
       setReservedCurrency(null)
@@ -438,7 +452,7 @@ export function PortfolioOverview() {
                       <p className="mt-1 text-[10px] font-mono text-muted-foreground/70">
                         Ref {e.reference || e.id}
                       </p>
-                      {pendingMonReserveFor(e) &&
+                      {releasableReserveFor(e) &&
                         (confirmingId === e.id ? (
                           <div className="mt-2.5 flex items-center gap-2">
                             <Button
@@ -478,7 +492,9 @@ export function PortfolioOverview() {
                             onClick={() => setConfirmingId(e.id)}
                           >
                             <Unlock className="mr-1.5 h-4 w-4" />
-                            Release &amp; cancel this reservation
+                            {releasableReserveFor(e)?.cancel
+                              ? "Release & cancel this reservation"
+                              : "Release these reserved funds"}
                           </Button>
                         ))}
                     </li>
