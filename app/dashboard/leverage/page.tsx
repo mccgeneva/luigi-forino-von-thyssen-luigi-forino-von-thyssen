@@ -48,6 +48,7 @@ import {
 } from "@/components/ui/accordion"
 import { Label } from "@/components/ui/label"
 import { Input } from "@/components/ui/input"
+import { MoneyInput } from "@/components/ui/money-input"
 import {
   Select,
   SelectContent,
@@ -1276,11 +1277,10 @@ export default function LeveragePage() {
                         </span>
                       )}
                     </div>
-                    <Input
-                      inputMode="decimal"
+                    <MoneyInput
                       placeholder="e.g. 250,000"
                       value={equity}
-                      onChange={(e) => setEquity(e.target.value)}
+                      onValueChange={setEquity}
                     />
                     {equityExceedsMargin && (
                       <p className="text-xs text-red-400">
