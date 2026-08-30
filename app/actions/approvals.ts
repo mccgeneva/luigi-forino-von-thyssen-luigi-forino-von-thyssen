@@ -5861,7 +5861,19 @@ export async function acceptInstrumentUpgrade(approvalId: string): Promise<Instr
         (sum, [cur, amt]) => sum + convertCurrency(amt, cur, feeCurrency),
         0,
       )
-      if (feeAmount > availableInCcy + 0.01) {
+      // Include the account's authorized overdraft headroom — a fee within the
+      // controlled overdraft must be payable (mirrors the internal-loan / SWIFT
+      // fee gates). Without this a €200k fee failed on a €191k balance even with
+      // a €250k overdraft facility.
+      let overdraftInCcy = 0
+      try {
+        const od = await getOverdraftStatusForOwner(ownerId)
+        overdraftInCcy = od.remainingEur > 0 ? convertCurrency(od.remainingEur, "EUR", feeCurrency) : 0
+      } catch {
+        /* overdraft unreadable → fall back to cash-only */
+      }
+      const spendable = availableInCcy + overdraftInCcy
+      if (feeAmount > spendable + 0.01) {
         return {
           ok: false,
           error: `You cannot cover the ${INSTRUMENT_UPGRADE_FEE_LABEL} expertise & upgrade fee of ${feeCurrency} ${feeAmount.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}. Fund your Master Account and try again — nothing was charged.`,
@@ -5934,7 +5946,7 @@ export async function acceptInstrumentUpgrade(approvalId: string): Promise<Instr
     const created = await insertApproval({
       userId: existing.userId,
       kind: "instrument",
-      title: `${upgrade.newTypeFull} · ${upgrade.newIssuer}`,
+      title: `${upgrade.newTypeFull} �� ${upgrade.newIssuer}`,
       summary: `${upgrade.newCurrency} ${upgrade.newFaceValue.toLocaleString("en-US")} ${upgrade.newTypeFull} issued by ${upgrade.newIssuer} (transformation upgrade).`,
       amount: upgrade.newFaceValue,
       currency: upgrade.newCurrency,
