@@ -82,6 +82,7 @@ import { riskScoreTone } from "@/lib/instrument-audit"
 import { useLedger } from "@/lib/ledger-store"
 import { removeMyLedgerEntry } from "@/app/actions/ledger"
 import { computeMonetizationEquity } from "@/lib/monetization-equity"
+import { convertCurrency } from "@/lib/fx"
 import { InstrumentMarketplace } from "@/components/dashboard/instrument-marketplace"
 import { IsinTools, type IsinAcquisitionRequest } from "@/components/instruments/isin-tools"
 import { EdgarTools } from "@/components/instruments/edgar-tools"
@@ -348,6 +349,9 @@ export default function InstrumentsPage() {
   // monetization reserve. Fetched when the monetize dialog opens; undefined until
   // then (falls back to the standard 1% premium in the preview).
   const [monetizeTrustScore, setMonetizeTrustScore] = useState<number | undefined>(undefined)
+  // Authorized overdraft headroom (EUR), so the upfront-reserve gate counts the
+  // client's overdraft facility on top of cash — not cash only.
+  const [monetizeOverdraftEur, setMonetizeOverdraftEur] = useState<number>(0)
   const [monetizeForm, setMonetizeForm] = useState({
     structure: "CreditLine" as MonetizationStructure,
     advanceRate: "65",
@@ -801,7 +805,15 @@ export default function InstrumentsPage() {
   const monetizeEquityDeposit = monetizeEquityQuote.equityDeposit
   const monetizePpi = monetizeEquityQuote.ppi
   const monetizeReserve = monetizeEquityQuote.totalUpfront
-  const monetizeReserveAvailable = monetizeTarget ? balanceFor(monetizeReserveCurrency) : 0
+  // Spendable = same-currency cash PLUS the authorized overdraft headroom
+  // (converted EUR→reserve currency). A reserve within the overdraft facility
+  // must be allowed — e.g. €205,800 upfront on €3,681 cash + €250,000 overdraft.
+  const monetizeReserveCash = monetizeTarget ? balanceFor(monetizeReserveCurrency) : 0
+  const monetizeReserveOverdraft =
+    monetizeTarget && monetizeOverdraftEur > 0
+      ? convertCurrency(monetizeOverdraftEur, "EUR", monetizeReserveCurrency)
+      : 0
+  const monetizeReserveAvailable = monetizeReserveCash + monetizeReserveOverdraft
   const monetizeReserveShortfall = Math.max(0, monetizeReserve - monetizeReserveAvailable)
   const canCoverMonetizeReserve =
     monetizeReserve <= 0 || monetizeReserveAvailable + 0.01 >= monetizeReserve
@@ -941,9 +953,16 @@ export default function InstrumentsPage() {
         const res = await fetch("/api/guarantees", { credentials: "include", cache: "no-store" })
         const data = res.ok ? await res.json() : null
         const score = data?.ok ? Number(data?.score?.finalScore) : NaN
-        if (!cancelled) setMonetizeTrustScore(Number.isFinite(score) ? score : undefined)
+        const remaining = data?.ok ? Number(data?.overdraft?.remainingEur) : NaN
+        if (!cancelled) {
+          setMonetizeTrustScore(Number.isFinite(score) ? score : undefined)
+          setMonetizeOverdraftEur(Number.isFinite(remaining) && remaining > 0 ? remaining : 0)
+        }
       } catch {
-        if (!cancelled) setMonetizeTrustScore(undefined)
+        if (!cancelled) {
+          setMonetizeTrustScore(undefined)
+          setMonetizeOverdraftEur(0)
+        }
       }
     })()
     return () => {
