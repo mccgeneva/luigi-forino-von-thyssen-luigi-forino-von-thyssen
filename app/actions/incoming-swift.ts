@@ -168,19 +168,30 @@ function firstLine(lines?: string[]): string {
 
 function extractIncoming(raw: string) {
   const msg = parseSwiftMessage(raw)
-  const beneficiaryParty = msg.beneficiary ?? msg.beneficiaryInstitution
+  // An MT760 (bank guarantee / SBLC) carries its parties + amount inside the
+  // guarantee block (:50: applicant, :59: beneficiary, :32B:), NOT the MT103
+  // fields (msg.beneficiary / msg.orderingCustomer), so we must fall back to it
+  // — otherwise the beneficiary IBAN comes back blank and the ordering party
+  // wrongly shows the header sender BIC instead of the applicant's name.
+  const g = msg.guarantee
+  const beneficiaryParty = msg.beneficiary ?? g?.beneficiary ?? msg.beneficiaryInstitution
   const beneficiaryIban = beneficiaryParty?.account ?? ""
-  const beneficiaryName = firstLine(msg.beneficiary?.nameAndAddress) || beneficiaryParty?.bic || ""
+  const beneficiaryName = firstLine(beneficiaryParty?.nameAndAddress) || beneficiaryParty?.bic || ""
   // The receiving institution: the account-with-institution (:57a:) is the
   // beneficiary's bank; fall back to the message destination in the header.
   const receiverBic =
     msg.accountWithInstitution?.bic ??
     msg.beneficiaryInstitution?.bic ??
+    g?.beneficiary?.bic ??
     msg.applicationHeader?.counterpartyBic ??
     ""
   const senderBic =
-    msg.orderingInstitution?.bic ?? msg.orderingCustomer?.bic ?? msg.basicHeader?.senderBic ?? ""
-  const orderingCustomer = firstLine(msg.orderingCustomer?.nameAndAddress) || senderBic || ""
+    msg.orderingInstitution?.bic ?? msg.orderingCustomer?.bic ?? g?.applicant?.bic ?? msg.basicHeader?.senderBic ?? ""
+  // Instructing / ordering party: MT103 :50a: (msg.orderingCustomer) or an
+  // MT760 applicant (:50:). Only fall back to the sender BIC when there is NO
+  // named party — otherwise the card shows a BIC where a name belongs.
+  const orderingParty = msg.orderingCustomer ?? g?.applicant
+  const orderingCustomer = firstLine(orderingParty?.nameAndAddress) || orderingParty?.bic || senderBic || ""
   const reference =
     (msg.remittanceInfo?.replace(/\n/g, " ").trim() || msg.senderReference || msg.relatedReference || "") ?? ""
   return {
