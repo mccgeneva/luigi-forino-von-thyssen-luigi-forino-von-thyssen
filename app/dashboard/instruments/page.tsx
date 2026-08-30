@@ -1909,6 +1909,21 @@ export default function InstrumentsPage() {
                                     Monetizable
                                   </Badge>
                                 ))}
+                              {canRequestUpgrade(instrument) && (
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation()
+                                    setUpgradeRequestNote("")
+                                    setUpgradeRequestTarget(instrument)
+                                  }}
+                                  aria-label={`Request upgrade of ${instrument.type} ${instrument.id}`}
+                                  className="inline-flex items-center gap-1 rounded-md border border-primary/30 bg-primary/10 px-2 py-1 text-[10px] font-medium text-primary transition-colors hover:bg-primary/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
+                                >
+                                  <Sparkles className="h-3 w-3" />
+                                  Request upgrade
+                                </button>
+                              )}
                             </>
                           )}
                         </div>
