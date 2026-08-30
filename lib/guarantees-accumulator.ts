@@ -338,6 +338,86 @@ export function riskBandLabel(band: RiskBand): string {
 }
 
 /**
+ * Administrator manual override of a single account's trust score. Applied
+ * silently on top of the computed score — the customer only ever sees the
+ * resulting gauge/score, never that it was set by hand. Money `inputs` are left
+ * untouched (so the borrowed-funds ring-fence and other money gates stay
+ * accurate); only the risk verdict is forced.
+ *   • "green" → forced healthy: every factor 0, finalScore 0, low band, not
+ *      high risk (silently allows new financing).
+ *   • "red"   → forced stressed: a believable elevated factor spread whose
+ *      √(weighted) sits comfortably above the high-risk gate, high band, high
+ *      risk (silently blocks new financing).
+ */
+export type GuaranteeOverrideMode = "green" | "red"
+
+export function applyGuaranteeOverride(
+  score: GuaranteeScore,
+  mode: GuaranteeOverrideMode,
+  threshold: number,
+): GuaranteeScore {
+  const t = threshold > 0 ? threshold : 10
+
+  if (mode === "green") {
+    return {
+      ...score,
+      factors: { securityDeposit: 0, leverageLoad: 0, exposure: 0, paymentPenalty: 0, trackRecord: 0, overdraft: 0 },
+      weightedSum: 0,
+      riskScore: 0,
+      ageCredit: 0,
+      equityCredit: 0,
+      finalScore: 0,
+      creditScore: 100,
+      band: "low",
+      highRisk: false,
+    }
+  }
+
+  // "red": build a believable, self-consistent elevated factor spread. Target a
+  // weighted sum of (2×threshold)² so √(weighted) ≈ 2×threshold (clearly above
+  // the gate), capped at 750 so the numbers stay believable and the Overdraft
+  // factor stays 0 (no false "you are overdrawn" tell on the customer card).
+  const target = Math.min(t * 2 * (t * 2), 750)
+  const order: Array<[keyof GuaranteeFactors, number]> = [
+    ["exposure", 150],
+    ["leverageLoad", 150],
+    ["trackRecord", 150],
+    ["securityDeposit", 100],
+    ["paymentPenalty", 200],
+  ]
+  const factors: GuaranteeFactors = {
+    securityDeposit: 0,
+    leverageLoad: 0,
+    exposure: 0,
+    paymentPenalty: 0,
+    trackRecord: 0,
+    overdraft: 0,
+  }
+  let remaining = target
+  for (const [key, cap] of order) {
+    const v = Math.max(0, Math.min(cap, remaining))
+    factors[key] = round2(v)
+    remaining -= v
+  }
+  const sum =
+    factors.securityDeposit + factors.leverageLoad + factors.exposure + factors.paymentPenalty + factors.trackRecord
+  const riskScore = round2(Math.sqrt(Math.max(0, sum)))
+
+  return {
+    ...score,
+    factors,
+    weightedSum: round2(sum),
+    riskScore,
+    ageCredit: 0,
+    equityCredit: 0,
+    finalScore: riskScore,
+    creditScore: 0,
+    band: "high",
+    highRisk: true,
+  }
+}
+
+/**
  * The message shown when a high-risk account is blocked from opening new
  * financing/exposure.
  */

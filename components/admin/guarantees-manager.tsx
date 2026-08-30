@@ -25,6 +25,7 @@ import {
   riskBandLabel,
   type GuaranteeConfig,
   type GuaranteeScore,
+  type GuaranteeOverrideMode,
 } from "@/lib/guarantees-accumulator"
 import type { OverdraftStatus } from "@/lib/overdraft"
 
@@ -35,6 +36,7 @@ type ScoredUser = {
   email: string
   score: GuaranteeScore | null
   overdraft?: OverdraftStatus | null
+  override?: GuaranteeOverrideMode | null
 }
 
 function eur(n: number) {
@@ -65,6 +67,40 @@ export function GuaranteesManager({ passcode }: { passcode: string }) {
   const [draftBusy, setDraftBusy] = useState(false)
   const [draftMessage, setDraftMessage] = useState("")
   const [copied, setCopied] = useState(false)
+
+  // Silent per-customer gauge override (green/red/auto).
+  const [overrideBusy, setOverrideBusy] = useState<string | null>(null)
+
+  async function setOverride(u: ScoredUser, mode: GuaranteeOverrideMode | "auto") {
+    setOverrideBusy(u.id)
+    try {
+      const res = await fetch("/api/admin/guarantees", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        credentials: "include",
+        cache: "no-store",
+        body: JSON.stringify({ op: "set-override", pin: passcode, userId: u.id, mode }),
+      })
+      const data = await res.json()
+      if (!data.ok) {
+        toast.error(data.reason === "unauthorized" ? "Authorization required." : data.error || "Could not apply.")
+        return
+      }
+      const next: GuaranteeOverrideMode | null = mode === "auto" ? null : mode
+      setUsers((prev) => prev.map((x) => (x.id === u.id ? { ...x, override: next } : x)))
+      toast.success(
+        next === "green"
+          ? "Gauge forced GREEN — silently applied to the client's account."
+          : next === "red"
+            ? "Gauge forced RED — silently applied to the client's account."
+            : "Override cleared — automatic scoring restored.",
+      )
+    } catch (err) {
+      toast.error((err as Error)?.message || "Could not apply.")
+    } finally {
+      setOverrideBusy(null)
+    }
+  }
 
   function openDraft(u: ScoredUser) {
     setDraftTarget(u)
@@ -395,6 +431,19 @@ export function GuaranteesManager({ passcode }: { passcode: string }) {
                             {s.highRisk ? <ShieldAlert className="mr-1 h-3 w-3" /> : null}
                             {riskBandLabel(s.band)}
                           </Badge>
+                          {u.override && (
+                            <Badge
+                              variant="outline"
+                              className={cn(
+                                "text-[10px] uppercase tracking-wide",
+                                u.override === "green"
+                                  ? "border-green-500/40 text-green-600 dark:text-green-500"
+                                  : "border-red-500/40 text-red-600 dark:text-red-500",
+                              )}
+                            >
+                              Forced {u.override}
+                            </Badge>
+                          )}
                         </div>
                       ) : (
                         <Badge variant="outline">no data</Badge>
@@ -451,7 +500,43 @@ export function GuaranteesManager({ passcode }: { passcode: string }) {
                       </p>
                     )}
 
-                    <div className="mt-3 flex justify-end">
+                    <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-border pt-3">
+                      <div className="flex items-center gap-1.5">
+                        <span className="mr-1 text-[11px] font-medium text-muted-foreground">Gauge override</span>
+                        <Button
+                          size="sm"
+                          variant={u.override === "green" ? "default" : "outline"}
+                          className={cn(
+                            "h-7 px-2.5 text-xs",
+                            u.override === "green" && "border-transparent bg-green-600 text-white hover:bg-green-600/90",
+                          )}
+                          disabled={overrideBusy === u.id}
+                          onClick={() => void setOverride(u, "green")}
+                        >
+                          <ShieldCheck className="mr-1 h-3.5 w-3.5" />
+                          Green
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant={u.override === "red" ? "destructive" : "outline"}
+                          className="h-7 px-2.5 text-xs"
+                          disabled={overrideBusy === u.id}
+                          onClick={() => void setOverride(u, "red")}
+                        >
+                          <ShieldAlert className="mr-1 h-3.5 w-3.5" />
+                          Red
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant={u.override ? "ghost" : "secondary"}
+                          className="h-7 px-2.5 text-xs"
+                          disabled={overrideBusy === u.id}
+                          onClick={() => void setOverride(u, "auto")}
+                        >
+                          Auto
+                        </Button>
+                        {overrideBusy === u.id && <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />}
+                      </div>
                       <Button variant="outline" size="sm" onClick={() => openDraft(u)}>
                         <Sparkles className="h-4 w-4" />
                         <span className="ml-1">Draft client message</span>
