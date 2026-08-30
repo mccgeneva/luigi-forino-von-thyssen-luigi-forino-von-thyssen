@@ -2,8 +2,21 @@
 
 import Link from "next/link"
 import { useState } from "react"
-import { ArrowUpRight, ArrowDownRight, TrendingUp, Wallet, Building2, FileText, ChevronRight, Lock } from "lucide-react"
+import {
+  ArrowUpRight,
+  ArrowDownRight,
+  TrendingUp,
+  Wallet,
+  Building2,
+  FileText,
+  ChevronRight,
+  Lock,
+  Unlock,
+  Loader2,
+} from "lucide-react"
+import { toast } from "sonner"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Button } from "@/components/ui/button"
 import {
   Dialog,
   DialogContent,
@@ -14,7 +27,10 @@ import {
 import { cn } from "@/lib/utils"
 import { useLedger, convertCurrency, type LedgerEntry } from "@/lib/ledger-store"
 import { useInstrumentRequests } from "@/lib/instrument-requests-store"
+import { useMonetizationRequests } from "@/lib/monetization-requests-store"
 import { useBeneficiaries } from "@/lib/beneficiaries-store"
+import { cancelMyApproval } from "@/app/actions/approvals"
+import { removeMyLedgerEntry } from "@/app/actions/ledger"
 import { BlockedFundsNotice } from "@/components/dashboard/blocked-funds-notice"
 import { OverdraftAuthorizedBadge } from "@/components/dashboard/overdraft-authorized-badge"
 
@@ -56,12 +72,65 @@ function formatDate(iso: string): string {
 }
 
 export function PortfolioOverview() {
-  const { balanceFor, reservedFor, lockedCreditsFor, entries, currencies } = useLedger()
+  const { balanceFor, reservedFor, lockedCreditsFor, entries, currencies, refresh: refreshLedger } =
+    useLedger()
   const { instruments } = useInstrumentRequests()
+  const { requests: monetizationRequests, refresh: refreshMon } = useMonetizationRequests()
   const { beneficiaries } = useBeneficiaries()
 
   // Which currency's reserved-funds breakdown is open (null = dialog closed).
   const [reservedCurrency, setReservedCurrency] = useState<string | null>(null)
+  // One-tap release flow: first tap arms the confirm on that reserve line, the
+  // second tap actually releases it. `releasingId` shows a spinner while it runs.
+  const [confirmingId, setConfirmingId] = useState<string | null>(null)
+  const [releasingId, setReleasingId] = useState<string | null>(null)
+
+  // A held reserve is "self-releasable" straight from this card only when it is
+  // a MONETIZATION RESERVE whose request is still PENDING (nothing was credited
+  // yet, so cancelling it is safe and simply unblocks the equity + PPI). An
+  // APPROVED/credited facility is a live loan — that is unwound in Debits &
+  // Financing, never released here. Returns the linked pending request or null.
+  const pendingMonReserveFor = (e: LedgerEntry) => {
+    if (e.category !== "Monetization Reserve" || typeof e.id !== "string" || !e.id.startsWith("MON-RSV-")) {
+      return null
+    }
+    const localId = e.reference || e.id.slice("MON-RSV-".length)
+    const req = monetizationRequests.find((r) => r.id === localId)
+    return req && req.status === "pending" ? req : null
+  }
+
+  // Cancel the pending monetization request (no proceeds were posted) AND delete
+  // the equity+PPI hold, so the blocked funds return to the available balance
+  // immediately — one intuitive action instead of hunting through Instruments.
+  const releaseReserve = async (e: LedgerEntry) => {
+    const req = pendingMonReserveFor(e)
+    if (!req) {
+      toast.error("This reservation can no longer be released here.")
+      setConfirmingId(null)
+      return
+    }
+    setReleasingId(e.id)
+    try {
+      if (req.approvalId) {
+        const res = await cancelMyApproval(req.approvalId)
+        if (!res.ok) {
+          toast.error("Couldn't release the reservation", { description: res.error })
+          return
+        }
+      }
+      await removeMyLedgerEntry(e.id)
+      await Promise.all([refreshLedger(), refreshMon()])
+      toast.success("Reservation released", {
+        description: `${formatMoney(e.amount, e.currency)} returned to your available ${e.currency} balance. The monetization request was cancelled.`,
+      })
+      setConfirmingId(null)
+      setReservedCurrency(null)
+    } catch (err) {
+      toast.error("Couldn't release the reservation", { description: (err as Error).message })
+    } finally {
+      setReleasingId(null)
+    }
+  }
 
   // The individual held debits that make up the reserved total for the open
   // currency. Each one carries the counterparty / category / reference that
@@ -304,7 +373,15 @@ export function PortfolioOverview() {
 
       {/* Reserved-funds breakdown: shows every held debit that locks part of the
           balance, so the client can see exactly what each reservation is for. */}
-      <Dialog open={reservedCurrency !== null} onOpenChange={(open) => !open && setReservedCurrency(null)}>
+      <Dialog
+        open={reservedCurrency !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setReservedCurrency(null)
+            setConfirmingId(null)
+          }
+        }}
+      >
         <DialogContent className="w-[calc(100vw-2rem)] max-w-lg overflow-hidden">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
@@ -361,6 +438,49 @@ export function PortfolioOverview() {
                       <p className="mt-1 text-[10px] font-mono text-muted-foreground/70">
                         Ref {e.reference || e.id}
                       </p>
+                      {pendingMonReserveFor(e) &&
+                        (confirmingId === e.id ? (
+                          <div className="mt-2.5 flex items-center gap-2">
+                            <Button
+                              size="sm"
+                              variant="destructive"
+                              className="h-9 flex-1"
+                              disabled={releasingId === e.id}
+                              onClick={() => void releaseReserve(e)}
+                            >
+                              {releasingId === e.id ? (
+                                <>
+                                  <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
+                                  Releasing…
+                                </>
+                              ) : (
+                                <>
+                                  <Unlock className="mr-1.5 h-4 w-4" />
+                                  Confirm — release {formatMoney(e.amount, e.currency)}
+                                </>
+                              )}
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              className="h-9"
+                              disabled={releasingId === e.id}
+                              onClick={() => setConfirmingId(null)}
+                            >
+                              Keep
+                            </Button>
+                          </div>
+                        ) : (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="mt-2.5 h-9 w-full border-amber-500/40 text-amber-600 hover:bg-amber-500/10 hover:text-amber-600"
+                            onClick={() => setConfirmingId(e.id)}
+                          >
+                            <Unlock className="mr-1.5 h-4 w-4" />
+                            Release &amp; cancel this reservation
+                          </Button>
+                        ))}
                     </li>
                   ))}
                 </ul>
