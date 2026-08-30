@@ -6,12 +6,7 @@ import { getGuaranteeConfig, saveGuaranteeConfig } from "@/lib/guarantees-config
 import { gatherGuaranteeProfile } from "@/lib/guarantees-profile"
 import { getGuaranteeOverridesFor, setGuaranteeOverride } from "@/lib/guarantee-overrides-db"
 import { nqaiChatModel } from "@/lib/ai-models"
-import {
-  DEFAULT_GUARANTEE_CONFIG,
-  riskBandLabel,
-  type GuaranteeConfig,
-  type GuaranteeOverrideMode,
-} from "@/lib/guarantees-accumulator"
+import { DEFAULT_GUARANTEE_CONFIG, riskBandLabel, type GuaranteeConfig } from "@/lib/guarantees-accumulator"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -44,8 +39,8 @@ type SetOverridePayload = {
   op: "set-override"
   pin: string
   userId: string
-  /** "green" | "red" force the verdict; "auto" clears the override. */
-  mode: GuaranteeOverrideMode | "auto"
+  /** Exact risk score (0..100) to force; null clears the override (automatic). */
+  forcedScore: number | null
 }
 type Payload = SavePayload | LoadPayload | DraftPayload | SetOverridePayload
 
@@ -100,10 +95,11 @@ export async function POST(req: Request) {
       if (!userId) {
         return NextResponse.json({ ok: false, error: "Missing client." }, { status: 200 })
       }
-      const mode: GuaranteeOverrideMode | null =
-        body.mode === "green" || body.mode === "red" ? body.mode : null
-      await setGuaranteeOverride(userId, mode)
-      return NextResponse.json({ ok: true, userId, override: mode })
+      const raw = body.forcedScore
+      const forcedScore =
+        raw === null || raw === undefined ? null : Math.max(0, Math.min(100, Number(raw) || 0))
+      await setGuaranteeOverride(userId, forcedScore)
+      return NextResponse.json({ ok: true, userId, override: forcedScore })
     }
 
     if (body.op === "load") {

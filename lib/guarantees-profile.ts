@@ -379,14 +379,15 @@ export async function gatherGuaranteeProfile(
   }
 
   // --- Administrator manual override (silent, per-customer) -------------
-  // If an admin has forced this account green/red, apply it on top of the
-  // computed score so the customer card + all financing gates reflect the
-  // forced verdict. Money `inputs` are untouched (ring-fence stays accurate).
-  // The admin manager passes { applyOverride: false } to read the TRUE score.
+  // If an admin has dragged this account's score to a forced number, apply it
+  // on top of the computed score so the customer card + all financing gates
+  // reflect the forced verdict. Money `inputs` are untouched (ring-fence stays
+  // accurate). The admin manager passes { applyOverride: false } to read the
+  // TRUE score it is overriding.
   if (opts?.applyOverride !== false) {
     try {
-      const mode = await getGuaranteeOverride(userId)
-      if (mode) score = applyGuaranteeOverride(score, mode, config.highRiskThreshold)
+      const forced = await getGuaranteeOverride(userId)
+      if (forced != null) score = applyGuaranteeOverride(score, forced, config.highRiskThreshold)
     } catch {
       /* no override on error */
     }

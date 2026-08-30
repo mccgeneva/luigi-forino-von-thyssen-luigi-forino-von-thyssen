@@ -1,12 +1,13 @@
 "use client"
 
-import { useEffect, useMemo, useState } from "react"
-import { Loader2, Save, ShieldAlert, ShieldCheck, Search, RefreshCw, Sparkles, Copy, Check } from "lucide-react"
+import { useEffect, useMemo, useRef, useState } from "react"
+import { Loader2, Save, ShieldAlert, ShieldCheck, Search, RefreshCw, Sparkles, Copy, Check, RotateCcw } from "lucide-react"
 import { toast } from "sonner"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Label } from "@/components/ui/label"
 import { Input } from "@/components/ui/input"
+import { Slider } from "@/components/ui/slider"
 import { Switch } from "@/components/ui/switch"
 import { Badge } from "@/components/ui/badge"
 import { Textarea } from "@/components/ui/textarea"
@@ -23,9 +24,9 @@ import { cn } from "@/lib/utils"
 import {
   DEFAULT_GUARANTEE_CONFIG,
   riskBandLabel,
+  applyGuaranteeOverride,
   type GuaranteeConfig,
   type GuaranteeScore,
-  type GuaranteeOverrideMode,
 } from "@/lib/guarantees-accumulator"
 import type { OverdraftStatus } from "@/lib/overdraft"
 
@@ -36,7 +37,8 @@ type ScoredUser = {
   email: string
   score: GuaranteeScore | null
   overdraft?: OverdraftStatus | null
-  override?: GuaranteeOverrideMode | null
+  /** Forced risk score (0..100) set by the admin slider, or null = automatic. */
+  override?: number | null
 }
 
 function eur(n: number) {
@@ -68,10 +70,16 @@ export function GuaranteesManager({ passcode }: { passcode: string }) {
   const [draftMessage, setDraftMessage] = useState("")
   const [copied, setCopied] = useState(false)
 
-  // Silent per-customer gauge override (green/red/auto).
+  // Silent per-customer gauge override — a draggable score bar per row.
+  // `dragScore` holds the LIVE value while a row's bar is being dragged (so the
+  // headline number + band update instantly); it clears once committed.
+  const [dragScore, setDragScore] = useState<Record<string, number>>({})
   const [overrideBusy, setOverrideBusy] = useState<string | null>(null)
+  const commitTimer = useRef<Record<string, ReturnType<typeof setTimeout>>>({})
 
-  async function setOverride(u: ScoredUser, mode: GuaranteeOverrideMode | "auto") {
+  // Persist a forced score (or null to clear → automatic). Optimistically writes
+  // the override onto the row so it survives the next reload.
+  async function commitOverride(u: ScoredUser, forcedScore: number | null) {
     setOverrideBusy(u.id)
     try {
       const res = await fetch("/api/admin/guarantees", {
@@ -79,27 +87,53 @@ export function GuaranteesManager({ passcode }: { passcode: string }) {
         headers: { "content-type": "application/json" },
         credentials: "include",
         cache: "no-store",
-        body: JSON.stringify({ op: "set-override", pin: passcode, userId: u.id, mode }),
+        body: JSON.stringify({ op: "set-override", pin: passcode, userId: u.id, forcedScore }),
       })
       const data = await res.json()
       if (!data.ok) {
         toast.error(data.reason === "unauthorized" ? "Authorization required." : data.error || "Could not apply.")
         return
       }
-      const next: GuaranteeOverrideMode | null = mode === "auto" ? null : mode
-      setUsers((prev) => prev.map((x) => (x.id === u.id ? { ...x, override: next } : x)))
+      setUsers((prev) => prev.map((x) => (x.id === u.id ? { ...x, override: forcedScore } : x)))
       toast.success(
-        next === "green"
-          ? "Gauge forced GREEN — silently applied to the client's account."
-          : next === "red"
-            ? "Gauge forced RED — silently applied to the client's account."
-            : "Override cleared — automatic scoring restored.",
+        forcedScore === null
+          ? "Override cleared — automatic scoring restored."
+          : `Score forced to ${forcedScore.toFixed(2)} — silently applied to the client's account.`,
       )
     } catch (err) {
       toast.error((err as Error)?.message || "Could not apply.")
     } finally {
       setOverrideBusy(null)
     }
+  }
+
+  // Dragging the bar: update the live value immediately, then debounce the save
+  // so we persist once the admin settles on a value (not on every pixel).
+  function onDragScore(u: ScoredUser, value: number) {
+    const v = Math.max(0, Math.min(100, Math.round(value * 100) / 100))
+    setDragScore((prev) => ({ ...prev, [u.id]: v }))
+    if (commitTimer.current[u.id]) clearTimeout(commitTimer.current[u.id])
+    commitTimer.current[u.id] = setTimeout(() => {
+      void commitOverride(u, v)
+    }, 500)
+  }
+
+  function clearOverride(u: ScoredUser) {
+    if (commitTimer.current[u.id]) clearTimeout(commitTimer.current[u.id])
+    setDragScore((prev) => {
+      const next = { ...prev }
+      delete next[u.id]
+      return next
+    })
+    void commitOverride(u, null)
+  }
+
+  /** The score the row should DISPLAY: live drag > saved override > computed. */
+  function displayScoreFor(u: ScoredUser): { score: GuaranteeScore | null; forced: boolean } {
+    const live = dragScore[u.id]
+    const forcedVal = live != null ? live : u.override != null ? u.override : null
+    if (forcedVal == null || !u.score) return { score: u.score, forced: false }
+    return { score: applyGuaranteeOverride(u.score, forcedVal, config.highRiskThreshold), forced: true }
   }
 
   function openDraft(u: ScoredUser) {
@@ -409,7 +443,7 @@ export function GuaranteesManager({ passcode }: { passcode: string }) {
           ) : (
             <div className="space-y-3">
               {filtered.map((u) => {
-                const s = u.score
+                const { score: s, forced } = displayScoreFor(u)
                 return (
                   <div key={u.id} className="rounded-lg border border-border bg-secondary/20 p-3">
                     <div className="flex flex-wrap items-center justify-between gap-2">
@@ -431,17 +465,12 @@ export function GuaranteesManager({ passcode }: { passcode: string }) {
                             {s.highRisk ? <ShieldAlert className="mr-1 h-3 w-3" /> : null}
                             {riskBandLabel(s.band)}
                           </Badge>
-                          {u.override && (
+                          {forced && (
                             <Badge
                               variant="outline"
-                              className={cn(
-                                "text-[10px] uppercase tracking-wide",
-                                u.override === "green"
-                                  ? "border-green-500/40 text-green-600 dark:text-green-500"
-                                  : "border-red-500/40 text-red-600 dark:text-red-500",
-                              )}
+                              className="border-primary/40 text-[10px] uppercase tracking-wide text-primary"
                             >
-                              Forced {u.override}
+                              Forced
                             </Badge>
                           )}
                         </div>
@@ -500,48 +529,59 @@ export function GuaranteesManager({ passcode }: { passcode: string }) {
                       </p>
                     )}
 
-                    <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-border pt-3">
-                      <div className="flex items-center gap-1.5">
-                        <span className="mr-1 text-[11px] font-medium text-muted-foreground">Gauge override</span>
-                        <Button
-                          size="sm"
-                          variant={u.override === "green" ? "default" : "outline"}
-                          className={cn(
-                            "h-7 px-2.5 text-xs",
-                            u.override === "green" && "border-transparent bg-green-600 text-white hover:bg-green-600/90",
-                          )}
+                    {s && (
+                      <div className="mt-3 border-t border-border pt-3">
+                        <div className="mb-1.5 flex items-center justify-between">
+                          <span className="flex items-center gap-1.5 text-[11px] font-medium text-muted-foreground">
+                            Drag to set risk score
+                            {forced ? (
+                              <Badge variant="outline" className="border-primary/40 px-1.5 py-0 text-[9px] uppercase text-primary">
+                                forced
+                              </Badge>
+                            ) : (
+                              <span className="text-[10px] text-muted-foreground/70">(automatic)</span>
+                            )}
+                          </span>
+                          <span className={cn("text-sm font-bold tabular-nums", bandTone(s.band))}>
+                            {s.finalScore.toFixed(2)}
+                          </span>
+                        </div>
+                        <Slider
+                          value={[s.finalScore]}
+                          min={0}
+                          max={100}
+                          step={0.5}
                           disabled={overrideBusy === u.id}
-                          onClick={() => void setOverride(u, "green")}
-                        >
-                          <ShieldCheck className="mr-1 h-3.5 w-3.5" />
-                          Green
-                        </Button>
-                        <Button
-                          size="sm"
-                          variant={u.override === "red" ? "destructive" : "outline"}
-                          className="h-7 px-2.5 text-xs"
-                          disabled={overrideBusy === u.id}
-                          onClick={() => void setOverride(u, "red")}
-                        >
-                          <ShieldAlert className="mr-1 h-3.5 w-3.5" />
-                          Red
-                        </Button>
-                        <Button
-                          size="sm"
-                          variant={u.override ? "ghost" : "secondary"}
-                          className="h-7 px-2.5 text-xs"
-                          disabled={overrideBusy === u.id}
-                          onClick={() => void setOverride(u, "auto")}
-                        >
-                          Auto
-                        </Button>
-                        {overrideBusy === u.id && <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />}
+                          onValueChange={(vals) => onDragScore(u, vals[0] ?? 0)}
+                          aria-label="Force risk score"
+                        />
+                        <div className="mt-1 flex items-center justify-between text-[10px] text-muted-foreground/70">
+                          <span className="text-green-600 dark:text-green-500">0 · low</span>
+                          <span>high-risk above {config.highRiskThreshold.toFixed(0)}</span>
+                          <span className="text-red-600 dark:text-red-500">100 · high</span>
+                        </div>
+                        <div className="mt-2.5 flex flex-wrap items-center justify-between gap-2">
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="h-7 px-2 text-xs text-muted-foreground"
+                            disabled={overrideBusy === u.id || (u.override == null && dragScore[u.id] == null)}
+                            onClick={() => clearOverride(u)}
+                          >
+                            {overrideBusy === u.id ? (
+                              <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+                            ) : (
+                              <RotateCcw className="mr-1 h-3.5 w-3.5" />
+                            )}
+                            Reset to automatic
+                          </Button>
+                          <Button variant="outline" size="sm" onClick={() => openDraft(u)}>
+                            <Sparkles className="h-4 w-4" />
+                            <span className="ml-1">Draft client message</span>
+                          </Button>
+                        </div>
                       </div>
-                      <Button variant="outline" size="sm" onClick={() => openDraft(u)}>
-                        <Sparkles className="h-4 w-4" />
-                        <span className="ml-1">Draft client message</span>
-                      </Button>
-                    </div>
+                    )}
                   </div>
                 )
               })}
