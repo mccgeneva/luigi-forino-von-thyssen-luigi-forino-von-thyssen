@@ -14,7 +14,12 @@ import {
   type GuaranteeInputs,
   type GuaranteeScore,
 } from "@/lib/guarantees-accumulator"
-import { computeOverdraftStatus, type OverdraftStatus } from "@/lib/overdraft"
+import {
+  computeOverdraftStatus,
+  applyOverdraftFloor,
+  cleanOverdraftGrantForTier,
+  type OverdraftStatus,
+} from "@/lib/overdraft"
 import { getGuaranteeConfig } from "@/lib/guarantees-config-db"
 
 /**
@@ -292,8 +297,12 @@ export async function gatherGuaranteeProfile(userId: string, config: GuaranteeCo
   // seasoning factor is identical for every member of the pool — otherwise a
   // newer joint member would score as a riskier "new account" than the master.
   let accountAgeDays = 0
+  // The account's membership badge ("PRO Account" / "Avant-Garde" / ...) drives
+  // the clean-profile overdraft grant below. Read from the same master fetch.
+  let accountBadge = ""
   try {
     const user = await getDynamicUserById(ownerId)
+    accountBadge = String(user?.profile?.accountBadge ?? "")
     if (user?.createdAt) {
       const created = new Date(user.createdAt).getTime()
       if (Number.isFinite(created)) accountAgeDays = Math.max(0, (Date.now() - created) / 86_400_000)
@@ -318,7 +327,7 @@ export async function gatherGuaranteeProfile(userId: string, config: GuaranteeCo
   } catch {
     settledBalanceEur = 0
   }
-  const overdraft = computeOverdraftStatus(treasuryDepositBaseEur, settledBalanceEur)
+  let overdraft = computeOverdraftStatus(treasuryDepositBaseEur, settledBalanceEur)
 
   const inputs: GuaranteeInputs = {
     guarantees,
@@ -334,7 +343,36 @@ export async function gatherGuaranteeProfile(userId: string, config: GuaranteeCo
     currency: BASE,
   }
 
-  return { score: computeGuaranteeScore(inputs, config), currency: BASE, overdraft }
+  let score = computeGuaranteeScore(inputs, config)
+
+  // --- Clean-profile overdraft grant ------------------------------------
+  // A spotless risk profile — zero on every factor EXCEPT the overdraft itself
+  // (no under-collateralisation, no leverage load, no exposure, no payment
+  // penalty, a seasoned track record) — earns a FLAT tier-based authorized
+  // overdraft (PRO 250k / Avant-Garde 500k) instead of the deposit-based 8%
+  // ceiling. Excluding the overdraft factor from the clean test keeps the grant
+  // STABLE: merely USING the granted headroom (going negative within it) does
+  // not revoke it — only real risk (exposure / arrears / penalties) does, which
+  // is exactly "back to normal overdraft as this risk-score condition is lost".
+  const f = score.factors
+  const cleanExcludingOverdraft =
+    f.securityDeposit + f.leverageLoad + f.exposure + f.paymentPenalty + f.trackRecord <= 0.01
+  const badge = accountBadge.toLowerCase()
+  const tierId =
+    badge.includes("avant") || badge.includes("institutional")
+      ? "avantgarde"
+      : badge.includes("pro")
+        ? "pro"
+        : "other"
+  const cleanGrant = cleanExcludingOverdraft ? cleanOverdraftGrantForTier(tierId) : 0
+  if (cleanGrant > 0) {
+    overdraft = applyOverdraftFloor(overdraft, cleanGrant)
+    // Re-measure the overdraft risk factor against the GRANTED ceiling so the
+    // displayed score stays consistent (and low) when the granted headroom is used.
+    score = computeGuaranteeScore({ ...inputs, overdraftUsageRatio: overdraft.breachRatio }, config)
+  }
+
+  return { score, currency: BASE, overdraft }
 }
 
 export interface FinancingRingfence {

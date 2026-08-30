@@ -85,6 +85,53 @@ export function computeOverdraftStatus(depositBaseEur: number, balanceEur: numbe
 }
 
 /**
+ * CLEAN-PROFILE OVERDRAFT GRANT.
+ *
+ * A customer whose Guarantees Accumulator is spotless (zero risk on every
+ * factor except the overdraft itself — no exposure, no arrears, no payment
+ * penalty, seasoned track record) is granted a FLAT authorized overdraft by
+ * membership tier, INSTEAD of the deposit-based 8% ceiling:
+ *   • PRO          → EUR 250,000
+ *   • Avant-Garde  → EUR 500,000
+ * The moment that clean risk-score condition is lost (real exposure/arrears/
+ * penalties appear), the account reverts to the normal 8%-of-deposit ceiling.
+ * The floor is applied via `applyOverdraftFloor` (max of the two), so a clean
+ * account with a large deposit keeps its higher deposit-based ceiling.
+ */
+export const CLEAN_OVERDRAFT_GRANT_EUR: Record<string, number> = {
+  pro: 250_000,
+  avantgarde: 500_000,
+}
+
+/** The clean-profile overdraft grant (EUR) for a platform tier id, else 0. */
+export function cleanOverdraftGrantForTier(tierId: string | null | undefined): number {
+  return CLEAN_OVERDRAFT_GRANT_EUR[(tierId ?? "").toLowerCase()] ?? 0
+}
+
+/**
+ * Raise an overdraft ceiling to at least `floorEur`, recomputing the derived
+ * fields (remaining / usage / breach / available). A no-op when the floor does
+ * not exceed the existing (deposit-based) limit. Pure.
+ */
+export function applyOverdraftFloor(status: OverdraftStatus, floorEur: number): OverdraftStatus {
+  const floor = Math.max(0, floorEur || 0)
+  if (floor <= status.limitEur) return status
+  const limitEur = round2(floor)
+  const negativeEur = status.negativeEur
+  const remainingEur = round2(Math.max(0, limitEur - negativeEur))
+  const usageRatio = limitEur > 0 ? Math.min(1, Math.max(0, negativeEur / limitEur)) : negativeEur > 0 ? 1 : 0
+  const breachRatio = negativeEur <= 0 ? 0 : round2(negativeEur / limitEur)
+  return {
+    ...status,
+    limitEur,
+    remainingEur,
+    usageRatio: round2(usageRatio),
+    breachRatio,
+    available: true,
+  }
+}
+
+/**
  * Secured treasury security deposit for an owner, in EUR. This is the base the
  * overdraft ceiling is 8% of: the FULL security deposit securing the facility —
  * the customer's paid-in contribution + SKR collateral + the financed/leveraged
@@ -142,8 +189,24 @@ export async function getSettledBalanceEur(ownerId: string): Promise<number> {
 
 /** Full overdraft status for an owner (deposit base + current settled balance). */
 export async function getOverdraftStatusForOwner(ownerId: string): Promise<OverdraftStatus> {
-  const [base, bal] = await Promise.all([getTreasuryDepositBaseEur(ownerId), getSettledBalanceEur(ownerId)])
-  return computeOverdraftStatus(base, bal)
+  // Single source of truth: the Guarantees Accumulator profile computes the
+  // deposit-based 8% ceiling AND raises it to the clean-profile tier grant
+  // (PRO 250k / Avant-Garde 500k) when the account is spotless. Delegating here
+  // keeps the ENFORCED ceiling (charge/settlement gates) identical to the
+  // AUTHORIZED overdraft the customer sees on the trust-score badge. Lazy import
+  // to avoid an eval-time cycle (guarantees-profile imports this module).
+  try {
+    const [{ gatherGuaranteeProfile }, { getGuaranteeConfig }] = await Promise.all([
+      import("@/lib/guarantees-profile"),
+      import("@/lib/guarantees-config-db"),
+    ])
+    const { overdraft } = await gatherGuaranteeProfile(ownerId, await getGuaranteeConfig())
+    return overdraft
+  } catch {
+    // Fallback to the lean deposit-based ceiling if the profile can't be built.
+    const [base, bal] = await Promise.all([getTreasuryDepositBaseEur(ownerId), getSettledBalanceEur(ownerId)])
+    return computeOverdraftStatus(base, bal)
+  }
 }
 
 /**
