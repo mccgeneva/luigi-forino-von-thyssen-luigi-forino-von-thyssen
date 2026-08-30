@@ -152,9 +152,17 @@ export function computePppRoiInfo(input: PppRoiInfoInput, now: Date = new Date()
   const termEnd = parseTermEnd(input.duration, safeActivation)
 
   const grossPerPeriod = round2((amount * ratePct) / 100)
-  const hasSplit = !!input.fundingInstrumentId
-  const clientRate = hasSplit ? (input.clientBenefitRate ?? 0.25) : 1
-  const mccRate = hasSplit ? (input.mccBenefitRate ?? 0.75) : 0
+  // The 75/25 benefit split applies ONLY when the program is funded by an
+  // MCC HOLDING SA-owned instrument (acquired via "assign"). In that case the
+  // server stamps mccBenefitRate/clientBenefitRate onto the record. A LEASED or
+  // PURCHASED instrument (and cash) leaves those null → the client keeps 100%.
+  // Detect the split from the actually-stored rates, NOT merely the presence of
+  // a funding instrument (which is also set for leases/purchases).
+  const storedClient = typeof input.clientBenefitRate === "number" ? input.clientBenefitRate : null
+  const storedMcc = typeof input.mccBenefitRate === "number" ? input.mccBenefitRate : null
+  const hasSplit = storedClient != null || storedMcc != null
+  const clientRate = hasSplit ? (storedClient ?? (storedMcc != null ? 1 - storedMcc : 0.25)) : 1
+  const mccRate = hasSplit ? (storedMcc ?? 1 - clientRate) : 0
   const clientPerPeriod = round2(grossPerPeriod * clientRate)
   const mccPerPeriod = round2(grossPerPeriod * mccRate)
 
