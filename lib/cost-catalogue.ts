@@ -60,7 +60,7 @@ export const COST_CATALOGUE_META = {
   title: "Terms & Costs — Complete Fee Catalogue",
   subtitle:
     "A certified, self-explanatory schedule of every fee, charge and interest rate that can apply across the platform, and exactly when each one applies.",
-  version: "Version 1.0",
+  version: "Version 1.1",
   effectiveDate: new Date().toLocaleDateString("en-GB", { day: "2-digit", month: "long", year: "numeric" }),
   legalEntity: "MCC Capital — software platform operator",
   address: "Rue du Rhone 14, 1204 Geneva, Switzerland",
@@ -79,6 +79,12 @@ export interface CatalogueRevision {
  * past one — whenever a rate changes and the version is bumped).
  */
 export const COST_CATALOGUE_REVISIONS: CatalogueRevision[] = [
+  {
+    version: "Version 1.1",
+    date: COST_CATALOGUE_META.effectiveDate,
+    summary:
+      "Introduced overdraft debit interest: a used (negative) Master Account overdraft balance now accrues 22% p.a., charged daily on the outstanding negative balance until it returns to positive. Also documented the clean-profile authorized overdraft grant (PRO EUR 250,000 / Avant-Garde EUR 500,000).",
+  },
   {
     version: "Version 1.0",
     date: COST_CATALOGUE_META.effectiveDate,
