@@ -10,10 +10,12 @@ import { outstandingInternalLoan } from "@/lib/internal-loan"
 import type { ApprovalRequest } from "@/lib/approvals-db"
 import {
   computeGuaranteeScore,
+  applyGuaranteeOverride,
   type GuaranteeConfig,
   type GuaranteeInputs,
   type GuaranteeScore,
 } from "@/lib/guarantees-accumulator"
+import { getGuaranteeOverride } from "@/lib/guarantee-overrides-db"
 import {
   computeOverdraftStatus,
   applyOverdraftFloor,
@@ -100,7 +102,11 @@ export interface GuaranteeProfileResult {
  * Gather inputs for `userId` and compute the score with the given config.
  * Fully defensive — any sub-read that fails degrades that figure to 0.
  */
-export async function gatherGuaranteeProfile(userId: string, config: GuaranteeConfig): Promise<GuaranteeProfileResult> {
+export async function gatherGuaranteeProfile(
+  userId: string,
+  config: GuaranteeConfig,
+  opts?: { applyOverride?: boolean },
+): Promise<GuaranteeProfileResult> {
   // The MASTER (shared-ledger owner) — availableBalance / equity / overdraft
   // read here, and the account age / treasury base prefer this identity.
   const ownerId = await resolveDataOwnerIdFor(userId)
@@ -370,6 +376,20 @@ export async function gatherGuaranteeProfile(userId: string, config: GuaranteeCo
     // Re-measure the overdraft risk factor against the GRANTED ceiling so the
     // displayed score stays consistent (and low) when the granted headroom is used.
     score = computeGuaranteeScore({ ...inputs, overdraftUsageRatio: overdraft.breachRatio }, config)
+  }
+
+  // --- Administrator manual override (silent, per-customer) -------------
+  // If an admin has forced this account green/red, apply it on top of the
+  // computed score so the customer card + all financing gates reflect the
+  // forced verdict. Money `inputs` are untouched (ring-fence stays accurate).
+  // The admin manager passes { applyOverride: false } to read the TRUE score.
+  if (opts?.applyOverride !== false) {
+    try {
+      const mode = await getGuaranteeOverride(userId)
+      if (mode) score = applyGuaranteeOverride(score, mode, config.highRiskThreshold)
+    } catch {
+      /* no override on error */
+    }
   }
 
   return { score, currency: BASE, overdraft }

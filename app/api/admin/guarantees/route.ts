@@ -4,8 +4,14 @@ import { adminActionAuthorized } from "@/lib/admin-auth"
 import { listDynamicUsers, getDynamicUserById } from "@/lib/admin-users-db"
 import { getGuaranteeConfig, saveGuaranteeConfig } from "@/lib/guarantees-config-db"
 import { gatherGuaranteeProfile } from "@/lib/guarantees-profile"
+import { getGuaranteeOverridesFor, setGuaranteeOverride } from "@/lib/guarantee-overrides-db"
 import { nqaiChatModel } from "@/lib/ai-models"
-import { DEFAULT_GUARANTEE_CONFIG, riskBandLabel, type GuaranteeConfig } from "@/lib/guarantees-accumulator"
+import {
+  DEFAULT_GUARANTEE_CONFIG,
+  riskBandLabel,
+  type GuaranteeConfig,
+  type GuaranteeOverrideMode,
+} from "@/lib/guarantees-accumulator"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -34,7 +40,14 @@ type DraftPayload = {
   amount?: string
   note?: string
 }
-type Payload = SavePayload | LoadPayload | DraftPayload
+type SetOverridePayload = {
+  op: "set-override"
+  pin: string
+  userId: string
+  /** "green" | "red" force the verdict; "auto" clears the override. */
+  mode: GuaranteeOverrideMode | "auto"
+}
+type Payload = SavePayload | LoadPayload | DraftPayload | SetOverridePayload
 
 function sanitizeConfig(input: Partial<GuaranteeConfig> | undefined): GuaranteeConfig {
   const c = input ?? {}
@@ -82,16 +95,30 @@ export async function POST(req: Request) {
       return NextResponse.json({ ok: true, config })
     }
 
+    if (body.op === "set-override") {
+      const userId = typeof body.userId === "string" ? body.userId : ""
+      if (!userId) {
+        return NextResponse.json({ ok: false, error: "Missing client." }, { status: 200 })
+      }
+      const mode: GuaranteeOverrideMode | null =
+        body.mode === "green" || body.mode === "red" ? body.mode : null
+      await setGuaranteeOverride(userId, mode)
+      return NextResponse.json({ ok: true, userId, override: mode })
+    }
+
     if (body.op === "load") {
       const config = await getGuaranteeConfig()
       const users = await listDynamicUsers()
       const active = users.filter((u) => u.status === "active")
-      // Score every active user. Each gather is defensive; a single failure
-      // degrades to a zeroed score for that user rather than failing the load.
+      // Read the manual overrides for all active users up front so each row can
+      // show its current forced state (green/red/auto). Scores below are the
+      // TRUE computed scores (applyOverride:false) so the admin always sees the
+      // real risk they are overriding, not the forced verdict.
+      const overrides = await getGuaranteeOverridesFor(active.map((u) => u.id))
       const scored = await Promise.all(
         active.map(async (u) => {
           try {
-            const { score, overdraft } = await gatherGuaranteeProfile(u.id, config)
+            const { score, overdraft } = await gatherGuaranteeProfile(u.id, config, { applyOverride: false })
             return {
               id: u.id,
               fullName: u.profile.fullName,
@@ -99,6 +126,7 @@ export async function POST(req: Request) {
               email: u.email,
               score,
               overdraft,
+              override: overrides[u.id] ?? null,
             }
           } catch {
             return {
@@ -108,6 +136,7 @@ export async function POST(req: Request) {
               email: u.email,
               score: null,
               overdraft: null,
+              override: overrides[u.id] ?? null,
             }
           }
         }),
