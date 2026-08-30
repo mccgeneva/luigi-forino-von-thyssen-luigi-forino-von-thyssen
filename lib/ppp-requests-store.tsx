@@ -47,6 +47,9 @@ export interface PPPRequest {
   mccBenefitRate?: number
   /** Assignee client share of the RETURN (0.25) when funded by an MCC instrument. */
   clientBenefitRate?: number
+  /** True when funded with leverage/debit money (stamped at submission). Its ROI
+   *  is credited but locked (not withdrawable) until the program matures. */
+  leverageFunded?: boolean
 }
 
 interface PPPRequestsContextValue {

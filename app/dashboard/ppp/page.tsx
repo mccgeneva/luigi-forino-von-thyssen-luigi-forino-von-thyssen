@@ -73,6 +73,8 @@ import { useLedger } from "@/lib/ledger-store"
 import { MCC_HOLDING_OWNER, MCC_BENEFIT_SHARE, CLIENT_BENEFIT_SHARE } from "@/lib/instrument-marketplace"
 import { usePdfViewer } from "@/lib/pdf-viewer"
 import { generatePPPConfirmationPdf } from "@/lib/ppp-confirmation-pdf"
+import { computePppRoiInfo, type PppRoiInfo } from "@/lib/ppp-roi-info"
+import { generatePppRoiInfoPdf } from "@/lib/ppp-roi-info-pdf"
 import { Download } from "lucide-react"
 import { getActiveInstitutionalYields } from "@/app/actions/institutional-yields"
 import { type InstitutionalYield } from "@/lib/institutional-yields-shared"
@@ -162,6 +164,7 @@ export default function PPPPage() {
   const [fundingInstrumentId, setFundingInstrumentId] = useState("")
   const [formError, setFormError] = useState<string | null>(null)
   const [detailInvestment, setDetailInvestment] = useState<PPPRequest | null>(null)
+  const [roiInfoTarget, setRoiInfoTarget] = useState<PPPRequest | null>(null)
   // Early resignation from an ongoing (approved) program: the client requests it
   // and PROPOSES an exit cost + reason; the administrator negotiates the final
   // figure and confirms. `resignTarget` drives the request dialog; `resignCost`
@@ -554,6 +557,44 @@ export default function PPPPage() {
     })
     toast.success("Investment confirmation ready", {
       description: `Confirmation for ${investment.id} opened for download.`,
+    })
+  }
+
+  // Build the ROI explanation for a program using the SAME logic the ROI engine
+  // uses to post credits, so the client sees exactly what will land.
+  const roiInfoFor = (req: PPPRequest): PppRoiInfo =>
+    computePppRoiInfo({
+      amount: req.amount,
+      currency: req.currency,
+      expectedReturn: req.expectedReturn,
+      returnFrequency: req.returnFrequency,
+      duration: req.duration,
+      activationIso: req.decidedAt ?? req.submittedAt,
+      fundingInstrumentId: req.fundingInstrumentId,
+      fundingInstrumentLabel: req.fundingInstrumentLabel,
+      mccBenefitRate: req.mccBenefitRate,
+      clientBenefitRate: req.clientBenefitRate,
+      leverageFunded: req.leverageFunded,
+    })
+
+  const downloadRoiInfo = (req: PPPRequest) => {
+    const generated = generatePppRoiInfoPdf({
+      reference: req.id,
+      programName: req.programName,
+      info: roiInfoFor(req),
+    })
+    showPdf(generated)
+    log({
+      action: `Downloaded ROI summary for ${req.programName}`,
+      category: "PPP / Yield Programs",
+      details: {
+        summary: `Client generated the ROI & payout summary PDF for ${req.id} (${req.programName}).`,
+        investmentId: req.id,
+        program: req.programName,
+      },
+    })
+    toast.success("ROI summary ready", {
+      description: `ROI & payout summary for ${req.id} opened for download.`,
     })
   }
 
@@ -950,6 +991,14 @@ export default function PPPPage() {
                           {req.status === "approved" && (
                             <div className="space-y-2 pt-1">
                               <div className="flex flex-wrap gap-2">
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  onClick={() => setRoiInfoTarget(req)}
+                                >
+                                  <Info className="mr-2 h-4 w-4" />
+                                  ROI details
+                                </Button>
                                 {req.terminationRequestedAt ? (
                                   <Button
                                     variant="outline"
@@ -1091,6 +1140,14 @@ export default function PPPPage() {
                         )}
                       </div>
                       <div className="flex flex-col gap-2 sm:flex-row">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => setRoiInfoTarget(investment)}
+                        >
+                          <Info className="mr-2 h-4 w-4" />
+                          ROI details
+                        </Button>
                         <Button
                           variant="outline"
                           size="sm"
@@ -1447,6 +1504,143 @@ export default function PPPPage() {
               </DialogFooter>
             </>
           )}
+        </DialogContent>
+      </Dialog>
+
+      {/* ROI & payout details (on-demand explanation + PDF) */}
+      <Dialog open={!!roiInfoTarget} onOpenChange={(open) => !open && setRoiInfoTarget(null)}>
+        <DialogContent className="flex max-h-[88dvh] flex-col overflow-hidden sm:max-w-[560px]">
+          {roiInfoTarget &&
+            (() => {
+              const info = roiInfoFor(roiInfoTarget)
+              const d = (date: Date) => date.toLocaleDateString("en-GB")
+              const rows: [string, string][] = [
+                ["Invested capital", formatMoney(info.amount, info.currency)],
+                ["Expected return", `${info.ratePct}% ${info.periodLabel}`],
+                [
+                  "Payout frequency",
+                  info.periodUnit === "maturity" ? "Single payout at maturity" : `Paid ${info.periodLabel}, in arrears`,
+                ],
+                ["Program activated", d(info.activation)],
+                ["First payout", d(info.firstPayout)],
+                ...(info.periodUnit !== "maturity"
+                  ? ([["Next payout", d(info.nextPayout)]] as [string, string][])
+                  : []),
+                ["Term ends (maturity)", d(info.termEnd)],
+                ...(info.periodUnit !== "maturity"
+                  ? ([["Payouts over term", `${info.periodsInTerm} (${info.periodsElapsed} matured)`]] as [
+                      string,
+                      string,
+                    ][])
+                  : []),
+                ["Gross ROI per period", formatMoney(info.grossPerPeriod, info.currency)],
+                ...(info.hasSplit
+                  ? ([
+                      ["Benefit split", `${info.mccRatePct}% MCC HOLDING SA / ${info.clientRatePct}% you`],
+                      ["Your share per period", formatMoney(info.clientPerPeriod, info.currency)],
+                    ] as [string, string][])
+                  : ([["Your share", "100% (your own means)"]] as [string, string][])),
+                ["Projected total to you", formatMoney(info.totalClientProjected, info.currency)],
+                [
+                  "Funding",
+                  info.cashFunded
+                    ? "Cash from Master Account"
+                    : `Pledged instrument${info.fundingInstrumentLabel ? ` — ${info.fundingInstrumentLabel}` : ""}`,
+                ],
+              ]
+              return (
+                <>
+                  <DialogHeader className="shrink-0">
+                    <DialogTitle className="flex flex-wrap items-center gap-2">
+                      {roiInfoTarget.programName}
+                      <Badge variant="outline" className="border-green-500/20 bg-green-500/10 text-green-500">
+                        <CheckCircle2 className="mr-1 h-3 w-3" />
+                        Active
+                      </Badge>
+                    </DialogTitle>
+                    <DialogDescription>ROI &amp; payout summary · {roiInfoTarget.id}</DialogDescription>
+                  </DialogHeader>
+
+                  <div className="min-h-0 flex-1 space-y-4 overflow-y-auto py-1">
+                    <div className="grid grid-cols-2 gap-3">
+                      <div className="rounded-lg bg-secondary/30 p-3">
+                        <p className="text-xs text-muted-foreground">
+                          {info.periodUnit === "maturity" ? "ROI to you at maturity" : `ROI to you (${info.periodLabel})`}
+                        </p>
+                        <p className="mt-1 text-lg font-bold text-foreground">
+                          {formatMoney(info.clientPerPeriod, info.currency)}
+                        </p>
+                      </div>
+                      <div
+                        className={cn(
+                          "rounded-lg p-3",
+                          info.withdrawable ? "bg-green-500/10" : "bg-orange-500/10",
+                        )}
+                      >
+                        <p className="text-xs text-muted-foreground">Availability</p>
+                        <p
+                          className={cn(
+                            "mt-1 flex items-center gap-1 text-sm font-bold",
+                            info.withdrawable ? "text-green-500" : "text-orange-500",
+                          )}
+                        >
+                          {info.withdrawable ? (
+                            <>
+                              <CheckCircle2 className="h-4 w-4" /> Withdrawable
+                            </>
+                          ) : (
+                            <>
+                              <Lock className="h-4 w-4" /> Locked
+                            </>
+                          )}
+                        </p>
+                        <p className="text-xs text-muted-foreground">
+                          {info.withdrawable ? "spendable immediately" : `until ${d(info.termEnd)}`}
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="divide-y divide-border rounded-lg border border-border">
+                      {rows.map(([label, value]) => (
+                        <div
+                          key={label}
+                          className="flex items-center justify-between gap-4 px-3 py-2.5 text-sm"
+                        >
+                          <span className="text-muted-foreground">{label}</span>
+                          <span className="text-right font-medium text-foreground">{value}</span>
+                        </div>
+                      ))}
+                    </div>
+
+                    <div className="flex items-start gap-2 rounded-lg border border-primary/20 bg-primary/5 p-3">
+                      <Info className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
+                      <p className="text-xs text-muted-foreground text-pretty">
+                        {info.periodUnit === "maturity"
+                          ? `Your ROI is paid as a single payout at maturity on ${d(info.termEnd)}.`
+                          : `ROI is paid ${info.periodLabel}, in arrears: your first credit posts on ${d(info.firstPayout)}, then every cycle until maturity on ${d(info.termEnd)}.`}
+                        {info.hasSplit
+                          ? ` Each gross payout is split ${info.mccRatePct}% to MCC HOLDING SA / ${info.clientRatePct}% to you.`
+                          : " You keep 100% of the return."}
+                        {info.withdrawable
+                          ? " Each credit lands on your Master Account and is immediately withdrawable."
+                          : " Because this program is funded with leveraged money, each credit reflects on your Master Account but is locked (not withdrawable) until maturity, when it unlocks automatically. Your capital is returned at maturity or on a completed early exit."}
+                        {" Returns are projected, not guaranteed."}
+                      </p>
+                    </div>
+                  </div>
+
+                  <DialogFooter className="shrink-0 flex-col gap-2 sm:flex-row">
+                    <Button variant="outline" onClick={() => setRoiInfoTarget(null)}>
+                      Close
+                    </Button>
+                    <Button onClick={() => downloadRoiInfo(roiInfoTarget)}>
+                      <Download className="mr-2 h-4 w-4" />
+                      Download PDF
+                    </Button>
+                  </DialogFooter>
+                </>
+              )
+            })()}
         </DialogContent>
       </Dialog>
 
