@@ -1155,13 +1155,15 @@ export default function InstrumentsPage() {
       instrument.id.toLowerCase().includes(searchQuery.toLowerCase()) ||
       instrument.issuer.toLowerCase().includes(searchQuery.toLowerCase())
     const matchesType = filterType === "all" || instrument.type === filterType
-    // Transferred instruments have left this portfolio — the client no longer
-    // controls them. Keep them out of the default ("all") view so it reflects
-    // only current holdings, but still surface them when explicitly filtered
-    // to "Transferred" as a historical record.
+    // "Current Holdings" (the default) must show ONLY instruments the client
+    // actually still holds: active ones and in-flight pending requests. Old
+    // instruments the client no longer has — transferred out, rejected,
+    // cancelled or expired — are dropped from the default view but stay
+    // reachable as history via their own filter (Transferred / Rejected /
+    // Expired).
     const matchesStatus =
       filterStatus === "all"
-        ? instrument.status !== "transferred"
+        ? instrument.status === "active" || instrument.status === "pending"
         : instrument.status === filterStatus
     return matchesSearch && matchesType && matchesStatus
   })
