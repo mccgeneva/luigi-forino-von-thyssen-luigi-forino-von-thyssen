@@ -43,6 +43,7 @@ import {
   User,
   Wallet,
   PackageCheck,
+  PackageX,
   Ban,
   ArrowRight,
   Handshake,
@@ -70,6 +71,7 @@ import {
   adminBulkDecide,
   adminMarkCommodityDelivered,
   adminMarkPaymentDelivered,
+  adminMarkPaymentNotDelivered,
   adminRevokeCommodityDeal,
   adminShareCommodityDeal,
   adminSetCommodityDealHold,
@@ -929,6 +931,21 @@ export function PendingApprovals({ initialKind }: { initialKind?: ApprovalKind }
     mutate()
   }
 
+  // Reverse of stage 3: the funds were NOT received. Reverts the payment to
+  // "Approved & Initiated" so the admin can intervene (chase, re-confirm, or
+  // recall). No funds move here.
+  const markPaymentNotDelivered = async (id: string) => {
+    setActing(true)
+    const res = await adminMarkPaymentNotDelivered(ADMIN_PASSCODE, id)
+    setActing(false)
+    if (!res.ok) {
+      toast.error(res.error)
+      return
+    }
+    toast.success("Delivery reverted. The payment is back to Approved & Initiated.")
+    mutate()
+  }
+
   const confirmRevoke = async () => {
     if (!revokeTarget) return
     setActing(true)
@@ -1628,7 +1645,7 @@ export function PendingApprovals({ initialKind }: { initialKind?: ApprovalKind }
                       beneficiary, moving it from "Approved & Initiated" to
                       "Completed — Funds Delivered". No funds move here. */}
                   {isPayment && req.status === "approved" && (
-                    <div className="flex shrink-0 items-center justify-end">
+                    <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
                       {canMarkPaymentDelivered ? (
                         <Button
                           size="sm"
@@ -1640,14 +1657,26 @@ export function PendingApprovals({ initialKind }: { initialKind?: ApprovalKind }
                         >
                           <PackageCheck className="h-3.5 w-3.5" /> Mark funds delivered
                         </Button>
-                      ) : (
-                        <Badge
-                          variant="outline"
-                          className="gap-1 border-green-500/30 bg-green-500/10 text-green-600"
-                        >
-                          <PackageCheck className="h-3.5 w-3.5" /> Funds delivered
-                        </Badge>
-                      )}
+                      ) : isDelivered ? (
+                        <>
+                          <Badge
+                            variant="outline"
+                            className="gap-1 border-green-500/30 bg-green-500/10 text-green-600"
+                          >
+                            <PackageCheck className="h-3.5 w-3.5" /> Funds delivered
+                          </Badge>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="h-8 gap-1 text-amber-600"
+                            disabled={acting}
+                            onClick={() => markPaymentNotDelivered(req.id)}
+                            title="The funds were NOT received. Revert this payment to Approved & Initiated so you can intervene, re-confirm, or recall it."
+                          >
+                            <PackageX className="h-3.5 w-3.5" /> Mark funds not received
+                          </Button>
+                        </>
+                      ) : null}
                     </div>
                   )}
 
