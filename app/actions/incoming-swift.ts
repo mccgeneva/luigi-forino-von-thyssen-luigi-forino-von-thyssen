@@ -2,7 +2,8 @@
 
 import { query } from "@/lib/db"
 import { adminActionAuthorized, adminEmails } from "@/lib/admin-auth"
-import { getDynamicUserByEmail } from "@/lib/admin-users-db"
+import { getDynamicUserByEmail, listDynamicUsers } from "@/lib/admin-users-db"
+import { extractCurrencyBankingCoordinates, currenciesWithBankingRows } from "@/lib/banking-coordinates"
 import {
   resolveCurrentSession,
   resolveDataOwnerIdFor,
@@ -112,9 +113,15 @@ function round2(n: number): number {
 }
 
 // ---------------------------------------------------------------------------
-// Match targets — every user's ACTIVE gateway (bank) account carries an
-// assigned IBAN + BIC and is linked to an owning customer. Mirrors the reader
-// used by the reconciliation engine.
+// Match targets — an inbound SWIFT beneficiary IBAN can name EITHER:
+//   (1) a customer's ACTIVE gateway (Collect-funds) account, OR
+//   (2) a customer's OWN master-account banking (the primary EUR settlement
+//       account PLUS each per-currency USD/GBP/CHF account, which may each be a
+//       DIFFERENT IBAN) stored on their profile.
+// We scan BOTH so a message addressed to a customer's real bank IBAN matches —
+// previously only gateway accounts were scanned, so a genuine master-banking
+// IBAN (e.g. DE95…3521 25) came back "no active platform account holds it".
+// Mirrors the master-banking scan used by the outgoing-payment reconciler.
 // ---------------------------------------------------------------------------
 
 async function readActiveMatchAccounts(): Promise<MatchAccount[]> {
@@ -126,7 +133,7 @@ async function readActiveMatchAccounts(): Promise<MatchAccount[]> {
        PRIMARY KEY (user_id, request_id))`,
   )
   const { rows } = await query(`SELECT payload, request_id FROM gateway_accounts WHERE status = 'active'`)
-  return rows.map((row: Record<string, unknown>) => {
+  const accounts: MatchAccount[] = rows.map((row: Record<string, unknown>) => {
     const payload = (row.payload as GatewayAccount) ?? ({} as GatewayAccount)
     return {
       userId: payload.userId,
@@ -138,6 +145,47 @@ async function readActiveMatchAccounts(): Promise<MatchAccount[]> {
       currency: payload.currency,
     }
   })
+
+  // Add every customer's OWN master-account banking IBANs (primary + per
+  // currency). Dedup per (owner, IBAN) so a customer who lists the same IBAN
+  // under several currency labels — or an IBAN already present as a gateway
+  // account for that same owner — is not added twice (which would otherwise make
+  // the matcher see "multiple accounts share the IBAN" and refuse to match).
+  try {
+    const seen = new Set<string>(
+      accounts
+        .filter((a) => a.iban)
+        .map((a) => `${a.userId}::${normalizeIban(a.iban)}`),
+    )
+    const users = await listDynamicUsers()
+    for (const u of users) {
+      const bankingRows = u.profile?.banking
+      if (!bankingRows || bankingRows.length === 0) continue
+      const holder = u.profile?.fullName || u.profile?.company || u.email || ""
+      const currencies = ["EUR", ...currenciesWithBankingRows(bankingRows)]
+      for (const cur of currencies) {
+        const c = extractCurrencyBankingCoordinates(bankingRows, cur)
+        const iban = normalizeIban(c.iban)
+        if (!iban) continue
+        const key = `${u.id}::${iban}`
+        if (seen.has(key)) continue
+        seen.add(key)
+        accounts.push({
+          userId: u.id,
+          accountId: `master-${u.id}-${cur}`,
+          accountHolder: holder,
+          company: u.profile?.company,
+          iban: c.iban ?? undefined,
+          bic: c.bic ?? undefined,
+          currency: cur,
+        })
+      }
+    }
+  } catch (err) {
+    console.log("[v0] readActiveMatchAccounts master-banking scan failed:", (err as Error).message)
+  }
+
+  return accounts
 }
 
 /**
