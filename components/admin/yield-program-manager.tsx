@@ -339,20 +339,18 @@ export function YieldProgramManager({ passcode }: { passcode: string }) {
               <div className="grid grid-cols-2 gap-3">
                 <div className="space-y-1.5">
                   <Label htmlFor="yp-min">Min investment</Label>
-                  <Input
+                  <MoneyInput
                     id="yp-min"
-                    inputMode="numeric"
                     value={draft.minInvestment}
-                    onChange={(e) => setDraft({ ...draft, minInvestment: e.target.value })}
+                    onValueChange={(v) => setDraft({ ...draft, minInvestment: v })}
                   />
                 </div>
                 <div className="space-y-1.5">
                   <Label htmlFor="yp-max">Max investment</Label>
-                  <Input
+                  <MoneyInput
                     id="yp-max"
-                    inputMode="numeric"
                     value={draft.maxInvestment}
-                    onChange={(e) => setDraft({ ...draft, maxInvestment: e.target.value })}
+                    onValueChange={(v) => setDraft({ ...draft, maxInvestment: v })}
                   />
                 </div>
               </div>

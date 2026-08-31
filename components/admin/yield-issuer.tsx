@@ -5,6 +5,7 @@ import { Landmark, Loader2, TrendingUp, Check, X, Clock, Trash2, Pencil, Plus } 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { MoneyInput } from "@/components/ui/money-input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { Badge } from "@/components/ui/badge"
@@ -337,12 +338,11 @@ export function YieldIssuer({ passcode }: { passcode: string }) {
             </div>
             <div className="grid gap-1.5">
               <Label htmlFor="yld-min">Minimum investment *</Label>
-              <Input
+              <MoneyInput
                 id="yld-min"
-                inputMode="numeric"
-                placeholder="e.g. 5000000"
+                placeholder="e.g. 5,000,000"
                 value={draft.minInvestment}
-                onChange={(e) => set({ minInvestment: e.target.value })}
+                onValueChange={(v) => set({ minInvestment: v })}
               />
             </div>
             <div className="grid gap-1.5">

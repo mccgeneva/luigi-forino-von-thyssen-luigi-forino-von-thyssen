@@ -22,6 +22,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Input } from "@/components/ui/input"
+import { MoneyInput } from "@/components/ui/money-input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import {
@@ -531,12 +532,11 @@ export default function FiduciaryPage() {
                   <div className="grid grid-cols-3 gap-3">
                     <div className="col-span-2 space-y-2">
                       <Label htmlFor="fid-value">Indicative Value</Label>
-                      <Input
+                      <MoneyInput
                         id="fid-value"
-                        inputMode="decimal"
                         placeholder="e.g. 1,000,000"
                         value={estimatedValue}
-                        onChange={(e) => setEstimatedValue(e.target.value)}
+                        onValueChange={setEstimatedValue}
                       />
                     </div>
                     <div className="space-y-2">

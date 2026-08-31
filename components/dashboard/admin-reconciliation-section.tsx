@@ -17,6 +17,7 @@ import {
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { MoneyInput } from "@/components/ui/money-input"
 import { Badge } from "@/components/ui/badge"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
@@ -282,15 +283,11 @@ export function AdminReconciliationSection() {
           <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
             <div className="flex flex-col gap-2">
               <Label htmlFor="rcn-amount">Amount</Label>
-              <Input
+              <MoneyInput
                 id="rcn-amount"
-                type="number"
-                inputMode="decimal"
-                min="0"
-                step="0.01"
                 placeholder="0.00"
                 value={form.amount}
-                onChange={(e) => setForm((f) => ({ ...f, amount: e.target.value }))}
+                onValueChange={(v) => setForm((f) => ({ ...f, amount: v }))}
               />
             </div>
             <div className="flex flex-col gap-2">
