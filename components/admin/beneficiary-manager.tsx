@@ -5,6 +5,7 @@ import { Users, Check, Ban, Trash2, Plus, Loader2, Pencil, ShieldCheck } from "l
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { CountryCombobox } from "@/components/country-combobox"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { Badge } from "@/components/ui/badge"
@@ -586,16 +587,20 @@ export function BeneficiaryManager() {
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
               <div className="space-y-2">
                 <Label>Bank country</Label>
-                <Input
+                <CountryCombobox
+                  valueMode="name"
+                  placeholder="Select country"
                   value={form.bankCountry}
-                  onChange={(e) => setForm((f) => ({ ...f, bankCountry: e.target.value }))}
+                  onChange={(v) => setForm((f) => ({ ...f, bankCountry: v }))}
                 />
               </div>
               <div className="space-y-2">
                 <Label>Beneficiary country</Label>
-                <Input
+                <CountryCombobox
+                  valueMode="name"
+                  placeholder="Select country"
                   value={form.beneficiaryCountry}
-                  onChange={(e) => setForm((f) => ({ ...f, beneficiaryCountry: e.target.value }))}
+                  onChange={(v) => setForm((f) => ({ ...f, beneficiaryCountry: v }))}
                 />
               </div>
             </div>

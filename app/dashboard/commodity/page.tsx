@@ -45,6 +45,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Input } from "@/components/ui/input"
+import { CountryCombobox } from "@/components/country-combobox"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
@@ -1682,20 +1683,22 @@ export default function CommodityTradingPage() {
                   <div className="grid grid-cols-2 gap-3">
                     <div className="space-y-2">
                       <Label htmlFor="origin">Origin country</Label>
-                      <Input
+                      <CountryCombobox
                         id="origin"
+                        valueMode="name"
                         value={form.originCountry}
-                        onChange={(e) => set("originCountry", e.target.value)}
-                        placeholder="e.g. UAE"
+                        onChange={(v) => set("originCountry", v)}
+                        placeholder="Search and select country"
                       />
                     </div>
                     <div className="space-y-2">
                       <Label htmlFor="destination">Destination</Label>
-                      <Input
+                      <CountryCombobox
                         id="destination"
+                        valueMode="name"
                         value={form.destinationCountry}
-                        onChange={(e) => set("destinationCountry", e.target.value)}
-                        placeholder="e.g. Netherlands"
+                        onChange={(v) => set("destinationCountry", v)}
+                        placeholder="Search and select country"
                       />
                     </div>
                   </div>
@@ -1895,11 +1898,23 @@ export default function CommodityTradingPage() {
                     </div>
                     <div className="space-y-1.5">
                       <Label htmlFor="fco-origin-country">Origin country</Label>
-                      <Input id="fco-origin-country" value={fco.originCountry} onChange={(e) => setFcoField("originCountry", e.target.value)} />
+                      <CountryCombobox
+                        id="fco-origin-country"
+                        valueMode="name"
+                        value={fco.originCountry}
+                        onChange={(v) => setFcoField("originCountry", v)}
+                        placeholder="Search and select country"
+                      />
                     </div>
                     <div className="space-y-1.5">
                       <Label htmlFor="fco-dest-country">Destination country</Label>
-                      <Input id="fco-dest-country" value={fco.destinationCountry} onChange={(e) => setFcoField("destinationCountry", e.target.value)} />
+                      <CountryCombobox
+                        id="fco-dest-country"
+                        valueMode="name"
+                        value={fco.destinationCountry}
+                        onChange={(v) => setFcoField("destinationCountry", v)}
+                        placeholder="Search and select country"
+                      />
                     </div>
                     <div className="space-y-1.5">
                       <Label htmlFor="fco-payment">Payment instrument</Label>

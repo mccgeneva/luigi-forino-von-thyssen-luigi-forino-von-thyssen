@@ -5,6 +5,7 @@ import { Banknote, Building2, Loader2, ShieldCheck } from "lucide-react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { CountryCombobox } from "@/components/country-combobox"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { Badge } from "@/components/ui/badge"
@@ -222,12 +223,13 @@ export function ProjectFinanceAdmin({ onDone }: { onDone?: () => void }) {
             </div>
             <div className="space-y-2">
               <Label htmlFor="pf-jurisdiction">Jurisdiction</Label>
-              <Input
+              <CountryCombobox
                 id="pf-jurisdiction"
+                valueMode="name"
                 value={jurisdiction}
-                onChange={(e) => setJurisdiction(e.target.value)}
-                placeholder="e.g. Switzerland"
-                className="h-11"
+                onChange={setJurisdiction}
+                placeholder="Select country"
+                triggerClassName="h-11"
               />
             </div>
           </div>

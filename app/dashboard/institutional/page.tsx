@@ -19,6 +19,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Input } from "@/components/ui/input"
+import { CountryCombobox } from "@/components/country-combobox"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
@@ -416,11 +417,12 @@ export default function InstitutionalPage() {
               </div>
               <div className="space-y-2">
                 <Label htmlFor="originatorCountry">Originator Country</Label>
-                <Input
+                <CountryCombobox
                   id="originatorCountry"
+                  valueMode="name"
                   value={form.originatorCountry}
-                  onChange={(e) => set("originatorCountry", e.target.value)}
-                  placeholder="e.g. United Arab Emirates"
+                  onChange={(v) => set("originatorCountry", v)}
+                  placeholder="Search and select country"
                 />
               </div>
               <div className="space-y-2">

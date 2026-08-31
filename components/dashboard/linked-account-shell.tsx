@@ -1,6 +1,7 @@
 "use client"
 
 import { useCallback, useEffect, useRef, useState } from "react"
+import { CountryCombobox } from "@/components/country-combobox"
 import useSWR from "swr"
 import {
   AlertCircle,
@@ -475,7 +476,13 @@ function ActionSheet({
               <input value={swiftCode} onChange={(e) => setSwiftCode(e.target.value)} placeholder="XXXXXXXX" className={inputCls} />
             </Field>
             <Field label="Country">
-              <input value={country} onChange={(e) => setCountry(e.target.value)} placeholder="e.g. Ireland" className={inputCls} />
+              <CountryCombobox
+                valueMode="name"
+                value={country}
+                onChange={setCountry}
+                placeholder="Select country"
+                triggerClassName="rounded-lg border-white/15 bg-black/30 px-3 py-2.5 text-neutral-100 hover:bg-black/40 hover:text-neutral-100"
+              />
             </Field>
           </div>
           <Field label="IBAN / Account number">

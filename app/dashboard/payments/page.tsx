@@ -30,6 +30,7 @@ import {
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
  import { Input } from "@/components/ui/input"
+import { CountryCombobox } from "@/components/country-combobox"
  import { MoneyInput } from "@/components/ui/money-input"
 import { Badge } from "@/components/ui/badge"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
@@ -1055,7 +1056,13 @@ export default function PaymentsPage() {
                   />
                   <div className="grid gap-2">
                     <Label htmlFor="country">Beneficiary Country</Label>
-                    <Input id="country" placeholder="e.g. Ireland" value={payCountry} onChange={(e) => setPayCountry(e.target.value)} />
+                    <CountryCombobox
+                      id="country"
+                      valueMode="name"
+                      value={payCountry}
+                      onChange={setPayCountry}
+                      placeholder="Search and select country"
+                    />
                   </div>
                 </div>
                 <VerifiedBankField

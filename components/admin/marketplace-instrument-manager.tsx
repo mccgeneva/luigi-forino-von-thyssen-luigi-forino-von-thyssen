@@ -18,6 +18,7 @@ import {
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { CountryCombobox } from "@/components/country-combobox"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { Badge } from "@/components/ui/badge"
@@ -495,7 +496,13 @@ export function MarketplaceInstrumentManager() {
               </div>
               <div className="space-y-1.5">
                 <Label htmlFor="mkt-country">Country</Label>
-                <Input id="mkt-country" value={form.bankCountry} onChange={(e) => setField("bankCountry", e.target.value)} placeholder="United Kingdom" />
+                <CountryCombobox
+                  id="mkt-country"
+                  valueMode="name"
+                  value={form.bankCountry}
+                  onChange={(v) => setField("bankCountry", v)}
+                  placeholder="Search and select country"
+                />
               </div>
             </div>
 
@@ -826,7 +833,13 @@ function EditInstrumentDialog({
                 </div>
                 <div className="space-y-1.5">
                   <Label htmlFor="edit-country">Country</Label>
-                  <Input id="edit-country" value={str("bankCountry")} onChange={(e) => set("bankCountry", e.target.value)} />
+                  <CountryCombobox
+                    id="edit-country"
+                    valueMode="name"
+                    value={str("bankCountry")}
+                    onChange={(v) => set("bankCountry", v)}
+                    placeholder="Search and select country"
+                  />
                 </div>
                 <div className="space-y-1.5">
                   <Label>Instrument type</Label>
