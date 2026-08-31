@@ -37,7 +37,8 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { ADMIN_PASSCODE } from "@/lib/admin-config"
-import { adminRecordCardTransaction, CARD_TRANSACTION_FEE_RATE, CARD_TRANSACTION_FEE_LABEL } from "@/app/actions/cards"
+import { adminRecordCardTransaction } from "@/app/actions/cards"
+import { CARD_TRANSACTION_FEE_RATE, CARD_TRANSACTION_FEE_LABEL } from "@/lib/card-transaction-fees"
 import {
   TIER_LABELS,
   CARD_FEATURES,

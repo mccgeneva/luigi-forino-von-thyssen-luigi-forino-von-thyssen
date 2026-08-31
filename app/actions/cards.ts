@@ -14,6 +14,7 @@ import {
 import { adminDecideApproval } from "@/app/actions/approvals"
 import { addLedgerEntryForUserAdmin } from "@/app/actions/ledger"
 import type { LedgerEntry } from "@/lib/ledger-store"
+import { CARD_TRANSACTION_FEE_RATE, CARD_TRANSACTION_FEE_LABEL } from "@/lib/card-transaction-fees"
 import { KIND_HREF } from "@/lib/approval-kinds"
 
 async function adminOk(passcode: string): Promise<boolean> {
@@ -133,10 +134,6 @@ export async function adminIssueCard(
     return { ok: false, error: "The card could not be issued. Please try again." }
   }
 }
-
-/** The platform fee applied to every recorded card transaction. */
-export const CARD_TRANSACTION_FEE_RATE = 0.02
-export const CARD_TRANSACTION_FEE_LABEL = "2%"
 
 const round2 = (n: number) => Math.round(n * 100) / 100
 
