@@ -102,6 +102,38 @@ async function instrumentEngagementReason(instrumentId: string, userId: string):
   return null
 }
 
+// Whether this instrument has been MONETIZED (sold/discounted for proceeds) and
+// not reversed — in which case the customer no longer holds it and it must NOT
+// appear in the upgrade waiting list at all. This is DIFFERENT from the pledge
+// checks above: monetization is permanent (the instrument is consumed for cash),
+// so a CLOSED monetization still means "gone" — unlike a leverage/loan/PPP pledge
+// that returns when the facility closes. Mirrors the client rule (a monetization
+// with status not in rejected/reversed keeps the instrument locked/consumed).
+// FAILS CLOSED (treats as sold) on a read error so a stale row can't reappear.
+async function instrumentMonetizedAway(instrumentId: string, userId: string): Promise<boolean> {
+  if (!instrumentId) return false
+  let ids = [userId]
+  try {
+    ids = Array.from(new Set([userId, ...(await resolveEnvironmentMemberIds(userId))]))
+  } catch {
+    ids = [userId]
+  }
+  let rows: Awaited<ReturnType<typeof listApprovalsForUsers>> = []
+  try {
+    rows = await listApprovalsForUsers(ids, "monetization")
+  } catch {
+    return true
+  }
+  for (const row of rows) {
+    if (row.status === "rejected" || row.status === "reversed") continue
+    const rec = ((row.payload ?? {}) as { record?: Record<string, unknown> }).record ?? {}
+    const recStatus = String(rec.status ?? "")
+    if (recStatus === "rejected" || recStatus === "reversed") continue
+    if (rec.instrumentId === instrumentId) return true
+  }
+  return false
+}
+
 export async function POST(req: Request) {
   let body: Record<string, unknown>
   try {
@@ -167,15 +199,30 @@ export async function POST(req: Request) {
               holderLabel = i.userId
             }
           }
-          return {
-            ...i,
-            holderLabel,
-            holderEmail,
-            engagedReason: await instrumentEngagementReason(String(i.instrument.id ?? ""), i.userId),
-          }
+          const instrumentId = String(i.instrument.id ?? "")
+          const [engagedReason, monetizedAway] = await Promise.all([
+            instrumentEngagementReason(instrumentId, i.userId),
+            instrumentMonetizedAway(instrumentId, i.userId),
+          ])
+          return { ...i, holderLabel, holderEmail, engagedReason, monetizedAway }
         }),
       )
-      return NextResponse.json({ ok: true, instruments, clients, feeRate: INSTRUMENT_UPGRADE_FEE_RATE }, { status: 200 })
+      // Drop instruments the customer no longer holds because they were
+      // monetized/sold (permanent) — they should never sit in the upgrade
+      // waiting list. Pledged-but-returnable instruments (leverage/loan/PPP)
+      // stay, shown disabled via `engagedReason`.
+      const held = instruments
+        .filter((i) => !i.monetizedAway)
+        .map((i) => ({
+          approvalId: i.approvalId,
+          userId: i.userId,
+          holderLabel: i.holderLabel,
+          holderEmail: i.holderEmail,
+          instrument: i.instrument,
+          upgrade: i.upgrade,
+          engagedReason: i.engagedReason,
+        }))
+      return NextResponse.json({ ok: true, instruments: held, clients, feeRate: INSTRUMENT_UPGRADE_FEE_RATE }, { status: 200 })
     }
 
     if (op === "start" || op === "revise") {
