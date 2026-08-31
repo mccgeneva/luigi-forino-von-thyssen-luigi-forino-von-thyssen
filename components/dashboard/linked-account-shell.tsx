@@ -548,13 +548,7 @@ function ActionSheet({
           </Field>
 
           <Field label={`Amount (${view.currency})`}>
-            <input
-              inputMode="decimal"
-              value={amount}
-              onChange={(e) => setAmount(e.target.value)}
-              placeholder="0.00"
-              className={inputCls}
-            />
+            <MoneyInput value={amount} onValueChange={setAmount} placeholder="0.00" className={inputCls} />
           </Field>
 
           {amt > 0 && (
