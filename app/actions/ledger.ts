@@ -9,6 +9,7 @@ import { listApprovalsForUser } from "@/lib/approvals-db"
 import { reconcileSubAccountFees } from "@/lib/sub-account-db"
 import { getFinancingRingfence } from "@/lib/guarantees-profile"
 import { convertCurrency } from "@/lib/fx"
+import { internalTransferFee, INTERNAL_TRANSFER_FEE_LABEL } from "@/lib/incoming-fees"
 import { logActivity } from "@/app/actions/log-activity"
 import { resolvePaymentRecipientAdmin } from "@/app/actions/reconciliation"
 import { getMyMembership } from "@/app/actions/membership"
@@ -278,13 +279,19 @@ export async function sendInstantTransfer(input: {
   }
 
   try {
-    // Server-side balance enforcement: never allow an overdraft.
+    // 2% platform fee, charged to the SENDER on top of the amount. The recipient
+    // still receives the full amount; the sender pays amount + fee.
+    const fee = internalTransferFee(amount)
+    const totalDebit = Math.round((amount + fee + Number.EPSILON) * 100) / 100
+
+    // Server-side balance enforcement: never allow an overdraft. Must cover the
+    // amount PLUS the fee.
     const senderEntries = await readLedger(senderOwnerId)
     const available = availableBalanceFor(senderEntries, currency)
-    if (amount > available) {
+    if (totalDebit > available) {
       return {
         ok: false,
-        error: `Insufficient funds. This transfer needs ${currency} ${amount.toLocaleString("en-US")} but only ${currency} ${available.toLocaleString("en-US")} is available.`,
+        error: `Insufficient funds. This transfer needs ${currency} ${totalDebit.toLocaleString("en-US")} (incl. a ${INTERNAL_TRANSFER_FEE_LABEL} fee of ${currency} ${fee.toLocaleString("en-US")}) but only ${currency} ${available.toLocaleString("en-US")} is available.`,
       }
     }
 
@@ -320,12 +327,22 @@ export async function sendInstantTransfer(input: {
     const recipientLabel = `${recipient.profile.fullName || recipient.profile.company || recipient.email} (${recipient.email})`
     const note = (input.note || "").trim()
 
-    // Credit the recipient (shared owner ledger). Distinct entry id so it never
-    // collides with the sender's debit under the same (user_id, entry_id) key.
+    // 2% internal-transfer fee, DEDUCTED FROM THE RECIPIENT: the sender is
+    // debited the full amount and the recipient receives the net.
+    const transferFee = internalTransferFee(amount)
+    const netCredit = Math.round((amount - transferFee) * 100) / 100
+    const feeNote =
+      transferFee > 0
+        ? ` A ${INTERNAL_TRANSFER_FEE_LABEL} transfer fee (${currency} ${transferFee.toLocaleString("en-US")}) was deducted.`
+        : ""
+
+    // Credit the recipient (shared owner ledger) the NET amount. Distinct entry
+    // id so it never collides with the sender's debit under the same
+    // (user_id, entry_id) key.
     await upsertEntry(recipientOwnerId, {
       id: `${ref}-IN`,
       direction: "credit",
-      amount,
+      amount: netCredit,
       currency,
       status: "completed",
       date: nowIso,
@@ -333,7 +350,7 @@ export async function sendInstantTransfer(input: {
       account: senderProfile.email,
       bank: "MCC Capital — Internal Transfer",
       reference: ref,
-      comment: note || `Internal transfer received from ${senderLabel}.`,
+      comment: (note || `Internal transfer received from ${senderLabel}.`) + feeNote,
       category: "Internal Transfer",
     })
 
@@ -349,7 +366,7 @@ export async function sendInstantTransfer(input: {
       account: recipient.email,
       bank: "MCC Capital — Internal Transfer",
       reference: ref,
-      comment: note || `Internal transfer sent to ${recipientLabel}.`,
+      comment: (note || `Internal transfer sent to ${recipientLabel}.`) + feeNote,
       category: "Internal Transfer",
     })
 
@@ -357,7 +374,7 @@ export async function sendInstantTransfer(input: {
       action: `Sent an instant internal transfer of ${currency} ${amount.toLocaleString("en-US")} to ${recipient.email}`,
       category: "Payments",
       details: {
-        summary: `Instant internal P2P transfer of ${currency} ${amount.toLocaleString("en-US")} from ${senderLabel} to ${recipientLabel}. Settled in real time on the server ledger. Reference: ${ref}.`,
+        summary: `Instant internal P2P transfer of ${currency} ${amount.toLocaleString("en-US")} from ${senderLabel} to ${recipientLabel}. Settled in real time on the server ledger.${feeNote ? ` ${INTERNAL_TRANSFER_FEE_LABEL} fee ${currency} ${transferFee.toLocaleString("en-US")} deducted from the recipient (net ${currency} ${netCredit.toLocaleString("en-US")}).` : ""} Reference: ${ref}.`,
         referenceId: ref,
         recipientEmail: recipient.email,
         amount: `${currency} ${amount.toLocaleString("en-US")}`,

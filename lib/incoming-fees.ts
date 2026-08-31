@@ -24,3 +24,24 @@ export function incomingTransactionFee(grossInAccountCurrency: number): number {
   if (!Number.isFinite(grossInAccountCurrency) || grossInAccountCurrency <= 0) return 0
   return Math.round(grossInAccountCurrency * INCOMING_TRANSACTION_FEE_RATE * 100) / 100
 }
+
+// Platform-wide INTERNAL P2P TRANSFER FEE.
+//
+// A flat 2% fee is charged on internal account-to-account transfers between two
+// MCC accounts (the /dashboard/send flow). It is DEDUCTED FROM THE RECIPIENT:
+// the sender is debited the full amount and the recipient receives the net 98%.
+// (Outgoing EXTERNAL/SWIFT payments carry their own separate 2% platform fee
+// charged on top of the amount — that is unchanged and unrelated to this.)
+
+export const INTERNAL_TRANSFER_FEE_RATE = 0.02
+export const INTERNAL_TRANSFER_FEE_LABEL = "2%"
+
+/**
+ * The 2% internal-transfer fee, computed on the transfer amount, deducted from
+ * the recipient's credit. Rounded to 2 decimals. Returns 0 for a non-positive /
+ * non-finite base so it can never manufacture a negative credit.
+ */
+export function internalTransferFee(amount: number): number {
+  if (!Number.isFinite(amount) || amount <= 0) return 0
+  return Math.round(amount * INTERNAL_TRANSFER_FEE_RATE * 100) / 100
+}
