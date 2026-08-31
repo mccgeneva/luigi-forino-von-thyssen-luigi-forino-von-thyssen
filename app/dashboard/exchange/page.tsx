@@ -182,6 +182,27 @@ export default function ExchangePage() {
   const totalDebit = numericFrom + feeAmount
   const availableBalance = balanceFor(fromCurrency)
 
+  // True (natural) balance of a currency, EXCLUDING internal auto-cover rows
+  // (FX-COVER-*). The server's auto-cover reconciler silently converts EUR to
+  // fill any overdrawn pocket and pins it to exactly 0, which hides real
+  // deficits. On the FX screen we show the GENUINE position so a conversion
+  // INTO an overdrawn currency never looks like it "vanished" — it first repays
+  // the deficit before the visible balance can rise.
+  const naturalBalanceFor = (currency: string) =>
+    entries
+      .filter(
+        (e) =>
+          e.currency === currency &&
+          e.status === "completed" &&
+          !e.subAccountId &&
+          !(e.id ?? "").startsWith("FX-COVER-"),
+      )
+      .reduce((sum, e) => sum + (e.direction === "credit" ? e.amount : -e.amount), 0)
+
+  const toNaturalBalance = naturalBalanceFor(toCurrency)
+  const toIsOverdrawn = toNaturalBalance < -0.01
+  const toSymbol = currencies.find((c) => c.code === toCurrency)?.symbol ?? ""
+
   const handleExecuteExchange = () => {
     if (numericFrom <= 0) {
       toast.error("Enter an amount to convert")
@@ -265,8 +286,17 @@ export default function ExchangePage() {
       },
     })
 
+    // If the target pocket was overdrawn, the new funds first repay that
+    // shortfall, so the visible balance may not rise by the full amount (or at
+    // all). Say so plainly instead of implying a fresh positive balance.
+    const projectedNatural = toNaturalBalance + Math.round(receivedAmount * 100) / 100
+    const offsetNote = toIsOverdrawn
+      ? projectedNatural > 0.01
+        ? ` Your ${toCurrency} pocket was overdrawn, so ${toSymbol}${Math.abs(toNaturalBalance).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} of this first cleared the shortfall — visible ${toCurrency} balance is now about ${toSymbol}${projectedNatural.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}.`
+        : ` This reduced an existing ${toCurrency} overdraft — the visible ${toCurrency} balance stays near ${toSymbol}0.00 until the shortfall is fully covered.`
+      : ""
     toast.success("Exchange executed", {
-      description: `Converted ${fromCurrency} ${numericFrom.toLocaleString()} → ${toCurrency} ${receivedAmount.toLocaleString(undefined, { maximumFractionDigits: 2 })}. Balances updated.`,
+      description: `Converted ${fromCurrency} ${numericFrom.toLocaleString()} → ${toCurrency} ${receivedAmount.toLocaleString(undefined, { maximumFractionDigits: 2 })}.${offsetNote || " Balances updated."}`,
     })
     setIsExecuting(false)
   }
@@ -414,6 +444,43 @@ export default function ExchangePage() {
               {/* To Currency */}
               <div className="space-y-2">
                 <Label className="text-muted-foreground">You Receive</Label>
+                {/* True (natural) balance of the target currency, excluding
+                    internal auto-cover rows, so a conversion into an overdrawn
+                    pocket is honest rather than showing a masked 0.00. */}
+                <div className="flex items-center justify-between gap-3 rounded-lg border border-border/60 bg-secondary/30 px-3 py-2">
+                  <span className="text-[11px] uppercase tracking-wide text-muted-foreground">
+                    Current {toCurrency} balance
+                  </span>
+                  <span
+                    className={cn(
+                      "truncate font-mono text-sm font-semibold tabular-nums",
+                      toIsOverdrawn ? "text-red-500" : "text-foreground",
+                    )}
+                  >
+                    {toSymbol}
+                    {toNaturalBalance.toLocaleString("en-US", {
+                      minimumFractionDigits: 2,
+                      maximumFractionDigits: 2,
+                    })}
+                  </span>
+                </div>
+                {toIsOverdrawn && (
+                  <div className="flex items-start gap-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-[11px] leading-relaxed text-amber-600 dark:text-amber-400">
+                    <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                    <span>
+                      Your {toCurrency} pocket is currently overdrawn by{" "}
+                      <span className="font-mono font-semibold">
+                        {toSymbol}
+                        {Math.abs(toNaturalBalance).toLocaleString("en-US", {
+                          minimumFractionDigits: 2,
+                          maximumFractionDigits: 2,
+                        })}
+                      </span>
+                      . This conversion first repays that shortfall — your visible {toCurrency}{" "}
+                      balance only rises once you convert more than the overdrawn amount.
+                    </span>
+                  </div>
+                )}
                 <div className="flex gap-2">
                   <Select value={toCurrency} onValueChange={setToCurrency}>
                     <SelectTrigger className="w-[140px]">
