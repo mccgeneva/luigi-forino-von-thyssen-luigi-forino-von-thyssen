@@ -393,6 +393,27 @@ export function GuaranteesManager({ passcode }: { passcode: string }) {
             the <strong>Equity credit @</strong> amount (linear below it). It also counts as posted collateral.
           </p>
 
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+            <div>
+              <Label className="text-xs">Inflow credit @ (EUR)</Label>
+              <Input type="number" min="1" step="10000" value={config.inflowCreditFull} onChange={setNum("inflowCreditFull")} className="mt-1" />
+            </div>
+            <div>
+              <Label className="text-xs">Max inflow credit</Label>
+              <Input type="number" min="0" step="0.5" value={config.inflowCreditMax} onChange={setNum("inflowCreditMax")} className="mt-1" />
+            </div>
+            <div>
+              <Label className="text-xs">Inflow window (days)</Label>
+              <Input type="number" min="1" step="1" value={config.inflowWindowDays} onChange={setNum("inflowWindowDays")} className="mt-1" />
+            </div>
+          </div>
+          <p className="-mt-2 text-[11px] leading-relaxed text-muted-foreground">
+            Incoming funds: genuine EXTERNAL money received (incoming payments/SWIFT/gateway/inbound transfers) over the
+            trailing <strong>Inflow window</strong> earns up to <strong>Max inflow credit</strong> risk-score points,
+            reached at the <strong>Inflow credit @</strong> amount. Borrowed proceeds, ROI and internal moves are
+            excluded — they raise exposure instead.
+          </p>
+
           <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border bg-secondary/30 p-3">
             <div className="flex items-center gap-3">
               <Switch checked={config.enforce} onCheckedChange={(v) => setConfig((c) => ({ ...c, enforce: v }))} id="enforce" />
@@ -520,11 +541,13 @@ export function GuaranteesManager({ passcode }: { passcode: string }) {
                       <p className="mt-2 text-[11px] text-muted-foreground">
                         √(weighted {s.weightedSum.toFixed(0)}) = risk {s.riskScore.toFixed(2)} − age credit{" "}
                         {s.ageCredit.toFixed(2)}
-                        {(s.equityCredit ?? 0) > 0 ? ` − equity credit ${s.equityCredit.toFixed(2)}` : ""} ={" "}
+                        {(s.equityCredit ?? 0) > 0 ? ` − equity credit ${s.equityCredit.toFixed(2)}` : ""}
+                        {(s.inflowCredit ?? 0) > 0 ? ` − inflow credit ${s.inflowCredit.toFixed(2)}` : ""} ={" "}
                         <span className="font-medium text-foreground">{s.finalScore.toFixed(2)}</span>
                         {"  ·  "}exposure {eur(s.inputs.totalExposure)} · guarantees {eur(s.inputs.guarantees)} · available{" "}
                         {eur(s.inputs.availableBalance)}
                         {(s.inputs.equitySavings ?? 0) > 0 ? ` · equity ${eur(s.inputs.equitySavings)}` : ""}
+                        {(s.inputs.incomingInflow ?? 0) > 0 ? ` · inflow ${eur(s.inputs.incomingInflow)}` : ""}
                         {s.inputs.overdueCharges > 0 ? ` · ${s.inputs.overdueCharges} overdue` : ""}
                       </p>
                     )}

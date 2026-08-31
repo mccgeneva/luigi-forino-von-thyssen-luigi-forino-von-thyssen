@@ -44,6 +44,8 @@ export function GuaranteeScoreCard() {
   const ageCredit = Number.isFinite(score.ageCredit) ? score.ageCredit : 0
   const equityCredit = Number.isFinite(score.equityCredit) ? score.equityCredit : 0
   const equitySavings = Number.isFinite(score.inputs?.equitySavings) ? score.inputs.equitySavings : 0
+  const inflowCredit = Number.isFinite(score.inflowCredit) ? score.inflowCredit : 0
+  const incomingInflow = Number.isFinite(score.inputs?.incomingInflow) ? score.inputs.incomingInflow : 0
   const high = Boolean(score.highRisk)
 
   // Map the risk score onto a 0-100 bar relative to 2x the threshold so the
@@ -129,6 +131,19 @@ export function GuaranteeScoreCard() {
               ) : null}
             </span>
             <span className="text-sm font-semibold text-primary">−{equityCredit.toFixed(2)}</span>
+          </div>
+        ) : null}
+
+        {incomingInflow > 0 || inflowCredit > 0 ? (
+          <div className="flex items-center justify-between rounded-lg border border-primary/20 bg-primary/5 p-3">
+            <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
+              <TrendingUp className="h-3.5 w-3.5 text-primary" />
+              Incoming funds credit
+              {incomingInflow > 0 ? (
+                <span className="text-[11px] text-muted-foreground/80">({eur(incomingInflow)} received)</span>
+              ) : null}
+            </span>
+            <span className="text-sm font-semibold text-primary">−{inflowCredit.toFixed(2)}</span>
           </div>
         ) : null}
 

@@ -262,6 +262,37 @@ export async function gatherGuaranteeProfile(
     equitySavings = 0
   }
 
+  // --- Genuine external incoming funds (trailing window) ----------------
+  // "Real money" brought into the Master Account from OUTSIDE the platform.
+  // Strict ALLOWLIST of credit categories so borrowed proceeds (loan/leverage),
+  // ROI, card/internal moves and admin adjustments can NEVER inflate the score —
+  // those instead raise exposure (the opposite effect). Summed over the config's
+  // rolling window from the master ledger already loaded above.
+  let incomingInflow = 0
+  try {
+    const windowDays = config.inflowWindowDays > 0 ? config.inflowWindowDays : 365
+    const cutoff = Date.now() - windowDays * 86_400_000
+    const isExternalInflow = (category: string): boolean => {
+      const cat = category.toLowerCase()
+      return (
+        cat.startsWith("reconciled collection") || // matched incoming payments + gateway/registered deposits
+        cat.startsWith("inbound swift credit") || // verified inbound SWIFT (incl. FX)
+        cat === "gateway collection" || // gateway-collected inbound funds
+        cat === "inbound transfer" // inbound from a linked external account
+      )
+    }
+    for (const e of ledgerEntries) {
+      if (e.direction !== "credit" || e.status !== "completed") continue
+      if (e.subAccountId) continue // master-level inflows only
+      if (!isExternalInflow(String(e.category ?? ""))) continue
+      const when = e.date ? new Date(e.date).getTime() : NaN
+      if (Number.isFinite(when) && when < cutoff) continue // outside the rolling window
+      incomingInflow += toEur(num(e.amount), e.currency)
+    }
+  } catch {
+    incomingInflow = 0
+  }
+
   // --- Overdue charges (auto-derived arrears) ---------------------------
   // Current monthly financing cost across live facilities; if the available
   // balance cannot cover it, count the whole months of shortfall (capped).
@@ -341,6 +372,7 @@ export async function gatherGuaranteeProfile(
     leverageLoad,
     totalExposure,
     availableBalance,
+    incomingInflow,
     overdueCharges,
     accountAgeDays,
     // Feed the UNCLAMPED breach ratio so a deep overdraft (far beyond the 8%

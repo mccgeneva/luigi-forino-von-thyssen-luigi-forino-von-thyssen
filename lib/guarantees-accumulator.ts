@@ -110,6 +110,20 @@ export interface GuaranteeConfig {
   equityCreditFull: number
   /** Maximum risk-score points the equity-saving credit can ever subtract. */
   equityCreditMax: number
+  /**
+   * Genuine EXTERNAL incoming funds (in EUR, over the trailing inflow window)
+   * at which the maximum inflow credit is granted. "Real money" brought in from
+   * outside the platform — incoming payments/SWIFT/gateway/inbound transfers —
+   * is a strong positive signal and earns a direct risk-score credit that scales
+   * linearly up to this amount. Borrowed proceeds (loan/leverage), ROI and
+   * internal moves are DELIBERATELY excluded: they raise exposure and worsen the
+   * score instead of improving it.
+   */
+  inflowCreditFull: number
+  /** Maximum risk-score points the incoming-funds credit can ever subtract. */
+  inflowCreditMax: number
+  /** Rolling window (in days) over which genuine external inflows are summed. */
+  inflowWindowDays: number
   /** Risk points added per overdue monthly financing charge. */
   penaltyPerOverdue: number
   /**
@@ -137,6 +151,9 @@ export const DEFAULT_GUARANTEE_CONFIG: GuaranteeConfig = {
   ageCreditMax: 6,
   equityCreditFull: 250_000,
   equityCreditMax: 8,
+  inflowCreditFull: 1_000_000,
+  inflowCreditMax: 6,
+  inflowWindowDays: 365,
   penaltyPerOverdue: 25,
   targetCoverage: 1,
   enforce: true,
@@ -158,6 +175,13 @@ export interface GuaranteeInputs {
   totalExposure: number
   /** Spendable balance available to service financing. */
   availableBalance: number
+  /**
+   * Genuine EXTERNAL incoming funds (EUR) received over the trailing inflow
+   * window — real money brought in (incoming payments/SWIFT/gateway/inbound
+   * transfers), NEVER borrowed proceeds/ROI/internal moves. Drives the inflow
+   * credit.
+   */
+  incomingInflow: number
   /** Count of monthly financing charges currently in arrears (auto-derived). */
   overdueCharges: number
   /** Account age in days (drives the time credit). */
@@ -190,6 +214,8 @@ export interface GuaranteeScore {
   ageCredit: number
   /** Risk-score points removed by committed equity savings (0 when none). */
   equityCredit: number
+  /** Risk-score points removed by genuine external incoming funds (0 when none). */
+  inflowCredit: number
   finalScore: number
   /** 0–100 creditworthiness for display (higher = healthier). */
   creditScore: number
@@ -299,7 +325,17 @@ export function computeGuaranteeScore(inputs: GuaranteeInputs, config: Guarantee
   const equityCreditMax = Math.max(0, config.equityCreditMax || 0)
   const equityCredit = clamp((equitySavings / equityCreditFull) * equityCreditMax, 0, equityCreditMax)
 
-  const finalScore = Math.max(0, riskScore - ageCredit - equityCredit)
+  // Incoming-funds credit — genuine EXTERNAL money brought into the Master
+  // Account over the trailing window directly lowers the risk score. Scales
+  // linearly with the inflow up to `inflowCreditFull`. Borrowed proceeds/ROI/
+  // internal moves are NOT counted here (the profile gatherer only sums real
+  // external inflows) and they separately RAISE exposure — the opposite effect.
+  const incomingInflow = Math.max(0, inputs.incomingInflow || 0)
+  const inflowCreditFull = config.inflowCreditFull > 0 ? config.inflowCreditFull : 1_000_000
+  const inflowCreditMax = Math.max(0, config.inflowCreditMax || 0)
+  const inflowCredit = clamp((incomingInflow / inflowCreditFull) * inflowCreditMax, 0, inflowCreditMax)
+
+  const finalScore = Math.max(0, riskScore - ageCredit - equityCredit - inflowCredit)
 
   const threshold = config.highRiskThreshold > 0 ? config.highRiskThreshold : 10
   const highRisk = finalScore > threshold
@@ -315,6 +351,7 @@ export function computeGuaranteeScore(inputs: GuaranteeInputs, config: Guarantee
     riskScore: round2(riskScore),
     ageCredit: round2(ageCredit),
     equityCredit: round2(equityCredit),
+    inflowCredit: round2(inflowCredit),
     finalScore: round2(finalScore),
     creditScore: Math.round(creditScore),
     band,
@@ -325,6 +362,7 @@ export function computeGuaranteeScore(inputs: GuaranteeInputs, config: Guarantee
       leverageLoad: round2(leverageLoad),
       totalExposure: round2(totalExposure),
       availableBalance: round2(available),
+      incomingInflow: round2(incomingInflow),
       overdueCharges: overdue,
       accountAgeDays: Math.round(ageDays),
       overdraftUsageRatio: round2(overdraftUsage),
@@ -399,6 +437,7 @@ export function applyGuaranteeOverride(
     riskScore: s,
     ageCredit: 0,
     equityCredit: 0,
+    inflowCredit: 0,
     finalScore: s,
     creditScore,
     band,
