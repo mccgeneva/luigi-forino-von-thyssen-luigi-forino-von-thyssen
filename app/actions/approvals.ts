@@ -4308,6 +4308,84 @@ export async function adminMarkPaymentDelivered(
 }
 
 /**
+ * Administrator UNDOES a delivery confirmation — "the funds were NOT received".
+ * Reverts an outgoing payment from stage 3 ("Completed — Funds Delivered") back
+ * to stage 2 ("Approved & Initiated") so the admin can intervene: chase the
+ * wire, re-confirm once it truly lands, or process a recall. No funds move — the
+ * debit posted at approval and the delivery flag is only a status marker. The
+ * `deliveryInitiatedAt` stamp is preserved so the payment re-enters the
+ * awaiting-delivery queue and the "Mark funds delivered" action is available
+ * again.
+ */
+export async function adminMarkPaymentNotDelivered(
+  passcode: string,
+  id: string,
+): Promise<DecideResult> {
+  if (!(await adminOk(passcode))) return { ok: false, error: "Administrator authorization failed." }
+  try {
+    const existing = await getApprovalById(id)
+    if (!existing) return { ok: false, error: "Payment not found." }
+    if (existing.kind !== "payment") {
+      return { ok: false, error: "Only outgoing payments can be updated." }
+    }
+    if (existing.status !== "approved") {
+      return { ok: false, error: "Only an approved payment can be reverted." }
+    }
+    if (existing.payload?.delivered !== true) {
+      // Already not delivered — nothing to undo.
+      return { ok: true, request: existing }
+    }
+
+    const payload = (existing.payload ?? {}) as Record<string, unknown>
+    // Drop the top-level delivery flags. `updateApprovalPayload` replaces the
+    // whole payload, so omitting these keys clears them.
+    const { delivered: _d, deliveredAt: _da, deliveredBy: _db, ...rest } = payload
+    const record = { ...((payload.record ?? {}) as Record<string, unknown>) }
+    record.deliveryStatus = "initiated"
+    delete record.deliveredAt
+    delete record.deliveredBy
+
+    const updated = await updateApprovalPayload(id, { ...rest, record })
+    if (!updated) return { ok: false, error: "This payment could not be reverted." }
+
+    try {
+      await insertNotification({
+        userId: updated.userId,
+        tone: "warning",
+        title: "Payment delivery reverted",
+        body: `Your payment "${updated.title}" was marked as NOT yet received by the beneficiary. It is back to "Approved & Initiated" while the administrator resolves the delivery.`,
+        href: KIND_HREF.payment ?? "/dashboard/payments",
+      })
+    } catch (err) {
+      console.log("[v0] payment not-delivered notification failed:", (err as Error).message)
+    }
+
+    try {
+      const target = await resolveAccountProfileById(updated.userId)
+      await logActivity({
+        action: `Administrator reverted delivery on payment "${updated.title}" (funds NOT received) for ${target.fullName}`,
+        category: "Administration / Approvals",
+        user: "Administrator",
+        details: {
+          referenceId: updated.id,
+          targetAccount: `${target.fullName} — ${target.email}`,
+          summary: updated.summary || updated.title,
+          amount: updated.amount != null ? formatMoney(updated.amount, updated.currency ?? "") : "(n/a)",
+          decision: "Reverted to Approved & Initiated — funds not received",
+        },
+      })
+    } catch (err) {
+      console.log("[v0] payment not-delivered activity log failed:", (err as Error).message)
+    }
+
+    return { ok: true, request: updated }
+  } catch (err) {
+    console.log("[v0] adminMarkPaymentNotDelivered failed:", (err as Error).message)
+    return { ok: false, error: "The payment could not be reverted. Please try again." }
+  }
+}
+
+/**
  * Administrator REVOKES an approved commodity deal (before delivery) and REFUNDS
  * the reserved funds. Refuses a delivered deal (it is finalized). Releases only
  * the reservation hold (`APPR-<id>`), unfreezing the blocked money back to the
