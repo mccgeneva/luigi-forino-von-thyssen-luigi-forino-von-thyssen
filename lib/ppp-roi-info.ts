@@ -71,15 +71,24 @@ export function parseRatePct(expectedReturn: string | undefined): number {
   return Number.isFinite(pct) && pct > 0 ? pct : 0
 }
 
-export function parsePeriodUnit(returnFrequency: string | undefined): PppRoiPeriodUnit {
-  const f = (returnFrequency ?? "").toLowerCase()
-  if (f.includes("matur")) return "maturity"
-  if (f.includes("day") || f.includes("daily")) return "day"
-  if (f.includes("week")) return "week"
-  if (f.includes("quarter")) return "quarter"
-  if (f.includes("year") || f.includes("annual")) return "year"
-  if (f.includes("month")) return "month"
-  return "month"
+export function parsePeriodUnit(
+  returnFrequency: string | undefined,
+  expectedReturn?: string | undefined,
+): PppRoiPeriodUnit {
+  // An explicit cadence in the advertised expectedReturn ("8.8% weekly") is
+  // authoritative and wins over a separate returnFrequency field that can
+  // disagree (e.g. left on the default "Monthly"). Mirrors parseYieldPeriod so
+  // the ROI info card and the real payout engine stay in lock-step.
+  const match = (s: string): PppRoiPeriodUnit | null => {
+    if (s.includes("matur")) return "maturity"
+    if (s.includes("day") || s.includes("daily")) return "day"
+    if (s.includes("week")) return "week"
+    if (s.includes("quarter")) return "quarter"
+    if (s.includes("year") || s.includes("annual")) return "year"
+    if (s.includes("month")) return "month"
+    return null
+  }
+  return match((expectedReturn ?? "").toLowerCase()) ?? match((returnFrequency ?? "").toLowerCase()) ?? "month"
 }
 
 export function periodUnitLabel(unit: PppRoiPeriodUnit): string {
@@ -145,7 +154,7 @@ export function computePppRoiInfo(input: PppRoiInfoInput, now: Date = new Date()
   const currency = input.currency || "USD"
   const amount = Number.isFinite(input.amount) ? input.amount : 0
   const ratePct = parseRatePct(input.expectedReturn)
-  const periodUnit = parsePeriodUnit(input.returnFrequency)
+  const periodUnit = parsePeriodUnit(input.returnFrequency, input.expectedReturn)
 
   const activation = new Date(input.activationIso)
   const safeActivation = Number.isNaN(activation.getTime()) ? new Date() : activation

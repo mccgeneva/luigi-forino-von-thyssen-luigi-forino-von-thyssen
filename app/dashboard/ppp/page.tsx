@@ -124,6 +124,16 @@ const sourceLabels: Record<string, string> = {
   bg: "Bank Guarantee",
 }
 
+// The advertised expectedReturn often already states the cadence ("8.8% weekly").
+// When it does, showing the separate returnFrequency underneath is redundant and
+// can even contradict it (e.g. a program left on the default "Monthly"). Return a
+// subtitle only when it adds information.
+const cadenceSubtitle = (expectedReturn: string | undefined, returnFrequency: string | undefined): string => {
+  const er = (expectedReturn ?? "").toLowerCase()
+  const hasCadence = /(matur|day|daily|week|month|quarter|year|annual)/.test(er)
+  return hasCadence ? "" : returnFrequency || "At Maturity"
+}
+
 const payoutLabels: Record<string, string> = {
   master: "Master Account (NatWest)",
   trading: "Trading Account (JP Morgan)",
@@ -763,9 +773,11 @@ export default function PPPPage() {
                         </div>
                         <div className="shrink-0 text-right">
                           <p className="text-2xl font-bold text-primary">{y.expectedReturn}</p>
-                          <p className="text-xs text-muted-foreground">
-                            {y.returnFrequency || "At Maturity"}
-                          </p>
+                          {cadenceSubtitle(y.expectedReturn, y.returnFrequency) && (
+                            <p className="text-xs text-muted-foreground">
+                              {cadenceSubtitle(y.expectedReturn, y.returnFrequency)}
+                            </p>
+                          )}
                         </div>
                       </div>
                     </CardHeader>
@@ -839,9 +851,11 @@ export default function PPPPage() {
                         <p className="text-2xl font-bold text-primary">
                           {program.expectedReturn}
                         </p>
-                        <p className="text-xs text-muted-foreground">
-                          {program.returnFrequency}
-                        </p>
+                        {cadenceSubtitle(program.expectedReturn, program.returnFrequency) && (
+                          <p className="text-xs text-muted-foreground">
+                            {cadenceSubtitle(program.expectedReturn, program.returnFrequency)}
+                          </p>
+                        )}
                       </div>
                     </div>
                   </CardHeader>
@@ -1112,9 +1126,11 @@ export default function PPPPage() {
                         <p className="text-xl font-bold text-foreground mt-1">
                           {investment.expectedReturn}
                         </p>
-                        <p className="text-xs text-muted-foreground">
-                          {investment.returnFrequency}
-                        </p>
+                        {cadenceSubtitle(investment.expectedReturn, investment.returnFrequency) && (
+                          <p className="text-xs text-muted-foreground">
+                            {cadenceSubtitle(investment.expectedReturn, investment.returnFrequency)}
+                          </p>
+                        )}
                       </div>
                       <div className="rounded-lg bg-secondary/30 p-4">
                         <p className="text-xs text-muted-foreground">Duration</p>
