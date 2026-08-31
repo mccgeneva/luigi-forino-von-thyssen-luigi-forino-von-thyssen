@@ -19,6 +19,8 @@ import { parseSwiftMessage, toReconciliationInput } from "@/lib/swift-mt"
 import { getApprovalById } from "@/lib/approvals-db"
 import { deleteLedgerEntry } from "@/lib/ledger-db"
 import { convertCurrency } from "@/lib/fx"
+import { listDynamicUsers } from "@/lib/admin-users-db"
+import { extractCurrencyBankingCoordinates, currenciesWithBankingRows } from "@/lib/banking-coordinates"
 
 /**
  * FX conversion fee applied when an inbound payment is auto-converted into the
@@ -776,6 +778,205 @@ export async function reverseRegisteredAccountDepositForApproval(
     return { reversed: true }
   } catch (err) {
     console.log("[v0] reverseRegisteredAccountDepositForApproval failed:", (err as Error).message)
+    return { reversed: false }
+  }
+}
+
+/**
+ * Every platform customer's OWN master-account banking IBANs — the primary
+ * (EUR) settlement account PLUS each per-currency settlement account (USD / GBP
+ * / CHF …), which may each be a DIFFERENT IBAN. Scanned so an outgoing payment
+ * whose beneficiary IBAN is a customer's own registered bank details credits
+ * that customer's Master Account. Distinct from gateway (Collect-funds) accounts
+ * and client-registered EXTERNAL accounts — this is the customer's own bank.
+ */
+type MasterBankingIban = { ownerUserId: string; iban: string; bankName: string | null; currency: string }
+async function readMasterBankingIbans(): Promise<MasterBankingIban[]> {
+  const out: MasterBankingIban[] = []
+  try {
+    const users = await listDynamicUsers()
+    for (const u of users) {
+      const rows = u.profile?.banking
+      if (!rows || rows.length === 0) continue
+      // EUR (primary) + every currency that has "<CCY> …" rows on file.
+      const currencies = ["EUR", ...currenciesWithBankingRows(rows)]
+      for (const cur of currencies) {
+        const c = extractCurrencyBankingCoordinates(rows, cur)
+        const iban = normalizeIban(c.iban)
+        if (iban) out.push({ ownerUserId: u.id, iban, bankName: c.bankName, currency: cur })
+      }
+    }
+  } catch (err) {
+    console.log("[v0] readMasterBankingIbans failed:", (err as Error).message)
+  }
+  return out
+}
+
+/**
+ * When an APPROVED outgoing payment's beneficiary IBAN matches a platform
+ * customer's OWN master-account banking (primary or any per-currency IBAN),
+ * credit that customer's Master Account and notify them. Mirrors
+ * recordRegisteredAccountDepositForApproval, but:
+ *  - matches across the customer's per-currency settlement IBANs (not one fixed
+ *    currency), and credits in the PAYMENT currency with NO FX — the Master
+ *    Account is multi-currency, so the payee receives exactly what was sent.
+ *  - idempotent on `MBD-<approvalId>`; a wash to the payer's own Master is skipped;
+ *    requires a single unambiguous customer match before moving money.
+ */
+export async function recordMasterBankingDepositForApproval(
+  approvalId: string,
+): Promise<{ matched: boolean }> {
+  try {
+    const approval = await getApprovalById(approvalId)
+    if (!approval || approval.kind !== "payment" || approval.status !== "approved") {
+      return { matched: false }
+    }
+    const payload = (approval.payload ?? {}) as {
+      iban?: string
+      recalled?: boolean
+      recallStatus?: string
+      record?: { iban?: string; amount?: number; beneficiary?: string; reference?: string }
+    }
+    if (payload.recalled === true || payload.recallStatus === "recalled") return { matched: false }
+    const record = payload.record ?? {}
+    const beneficiaryIban = normalizeIban(payload.iban ?? record.iban)
+    if (!beneficiaryIban) return { matched: false }
+
+    // PRINCIPAL sent (excludes the 2% platform fee the payee never receives).
+    const sentAmount = Number(record.amount ?? approval.amount ?? 0)
+    if (!Number.isFinite(sentAmount) || sentAmount <= 0) return { matched: false }
+    const sentCurrency = (approval.currency ?? "").toUpperCase()
+    if (!sentCurrency) return { matched: false }
+
+    const ibans = await readMasterBankingIbans()
+    const matches = ibans.filter((a) => a.iban === beneficiaryIban)
+    // Distinct owners only — a single customer legitimately lists the same IBAN
+    // under several currency labels. Require ONE unambiguous customer.
+    const owners = Array.from(new Set(matches.map((m) => m.ownerUserId)))
+    if (owners.length !== 1) return { matched: false }
+    const ownerUserId = owners[0]
+    // Prefer the bank name of the row matching the payment currency, else any.
+    const bankName =
+      matches.find((m) => m.currency === sentCurrency)?.bankName ?? matches[0]?.bankName ?? "Registered bank"
+
+    // A payment settling to the SAME Master as the payer is a wash — skip.
+    const payerOwnerId = await resolveDataOwnerIdFor(approval.userId)
+    const recipientOwnerId = await resolveDataOwnerIdFor(ownerUserId)
+    if (payerOwnerId === recipientOwnerId) return { matched: false }
+
+    const ledgerEntryId = `MBD-${approval.id}`
+    // Master Account is multi-currency: credit the SENT currency directly, no FX.
+    const amount = round2(sentAmount)
+    if (!Number.isFinite(amount) || amount <= 0) return { matched: false }
+
+    const sender = await resolveAccountProfileById(approval.userId)
+    const reference = record.reference?.trim() || approval.id
+
+    const existing = await query(`SELECT 1 FROM ledger_entries WHERE user_id = $1 AND entry_id = $2`, [
+      recipientOwnerId,
+      ledgerEntryId,
+    ])
+    const alreadyPosted = existing.rows.length > 0
+
+    await query(
+      `INSERT INTO ledger_entries
+         (user_id, entry_id, direction, amount, currency, status, entry_date,
+          counterparty, account, bank, reference, comment, category, received_account)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+       ON CONFLICT (user_id, entry_id) DO NOTHING`,
+      [
+        recipientOwnerId,
+        ledgerEntryId,
+        "credit",
+        amount,
+        sentCurrency,
+        "completed",
+        new Date().toISOString(),
+        sender.fullName,
+        beneficiaryIban,
+        bankName,
+        reference,
+        `Inbound transfer from ${sender.fullName} (approved payment ${approval.id}, reference ${reference}) auto-matched by IBAN to your registered bank account (${bankName} · ${beneficiaryIban}) and credited to your Master Account.`,
+        "Reconciled Collection",
+        beneficiaryIban,
+      ],
+    )
+
+    if (!alreadyPosted) {
+      await logActivity({
+        action: `Approved payment ${approval.id} auto-matched by IBAN and credited ${sentCurrency} ${amount.toLocaleString("en-US")} to a customer's Master Account bank (${bankName})`,
+        category: "Administration",
+        details: {
+          summary: `Outgoing payment ${approval.id} from ${sender.fullName} was matched by beneficiary IBAN to a platform customer's own registered bank account (${bankName} · ${beneficiaryIban}) and credited to their Master Account under ledger reference ${ledgerEntryId}.`,
+          referenceId: approval.id,
+          amount: `${sentCurrency} ${amount.toLocaleString("en-US")}`,
+          ledgerReference: ledgerEntryId,
+          decision: "Auto-matched by IBAN to customer's Master Account",
+        },
+      })
+      try {
+        const creditedLabel = `${sentCurrency} ${amount.toLocaleString("en-US")}`
+        await insertNotification({
+          userId: ownerUserId,
+          tone: "success",
+          title: `Payment received — ${creditedLabel}`,
+          body: `You received ${creditedLabel} from ${sender.fullName} into ${bankName} (${beneficiaryIban}). The funds were credited to your Master Account.`,
+          href: "/dashboard",
+        })
+      } catch (err) {
+        console.log("[v0] master-banking deposit notification failed:", (err as Error).message)
+      }
+    }
+
+    return { matched: true }
+  } catch (err) {
+    console.log("[v0] recordMasterBankingDepositForApproval failed:", (err as Error).message)
+    return { matched: false }
+  }
+}
+
+/**
+ * REVERSE a master-banking deposit when its source payment is recalled. Deletes
+ * the `MBD-<approvalId>` credit from the receiving customer's Master ledger.
+ * Idempotent; a no-op when the payment never matched a customer's bank.
+ */
+export async function reverseMasterBankingDepositForApproval(
+  originalApprovalId: string,
+): Promise<{ reversed: boolean }> {
+  try {
+    const ledgerEntryId = `MBD-${originalApprovalId}`
+    const approval = await getApprovalById(originalApprovalId)
+    if (!approval) return { reversed: false }
+    const payload = (approval.payload ?? {}) as { iban?: string; record?: { iban?: string } }
+    const beneficiaryIban = normalizeIban(payload.iban ?? payload.record?.iban)
+    if (!beneficiaryIban) return { reversed: false }
+
+    const ibans = await readMasterBankingIbans()
+    const owners = Array.from(
+      new Set(ibans.filter((a) => a.iban === beneficiaryIban).map((m) => m.ownerUserId)),
+    )
+    if (owners.length !== 1) return { reversed: false }
+
+    const recipientOwnerId = await resolveDataOwnerIdFor(owners[0])
+    try {
+      await deleteLedgerEntry(recipientOwnerId, ledgerEntryId)
+    } catch (err) {
+      console.log("[v0] reverse master-banking credit delete failed:", (err as Error).message)
+    }
+
+    await logActivity({
+      action: `Recalled payment reversed master-banking credit ${ledgerEntryId}`,
+      category: "Administration",
+      details: {
+        summary: `The credit ${ledgerEntryId} previously auto-matched to a customer's Master Account bank (${beneficiaryIban}) was reversed because its source payment ${originalApprovalId} was recalled.`,
+        referenceId: originalApprovalId,
+        ledgerReference: ledgerEntryId,
+        decision: "Reversed on recall",
+      },
+    })
+    return { reversed: true }
+  } catch (err) {
+    console.log("[v0] reverseMasterBankingDepositForApproval failed:", (err as Error).message)
     return { reversed: false }
   }
 }
