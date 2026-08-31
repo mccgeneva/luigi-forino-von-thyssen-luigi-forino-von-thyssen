@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react"
 import { toast } from "sonner"
-import { ArrowUpCircle, Loader2, RefreshCw, Search, Sparkles, MessageSquare, Pencil, Undo2, Handshake, Lock } from "lucide-react"
+import { ArrowUpCircle, Loader2, RefreshCw, Search, Sparkles, MessageSquare, Pencil, Undo2, Handshake, Lock, EyeOff } from "lucide-react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -94,6 +94,9 @@ export function InstrumentUpgradeManager() {
   // Inline discussion + per-row busy state
   const [discussFor, setDiscussFor] = useState<string | null>(null)
   const [busyId, setBusyId] = useState<string | null>(null)
+
+  // Remove-from-list confirm state
+  const [dismissTarget, setDismissTarget] = useState<HeldInstrument | null>(null)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -247,6 +250,33 @@ export function InstrumentUpgradeManager() {
     },
     [load],
   )
+
+  const runDismiss = useCallback(async () => {
+    if (!dismissTarget) return
+    const it = dismissTarget
+    setBusyId(it.approvalId)
+    try {
+      const res = await fetch("/api/admin/instrument-upgrade", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        cache: "no-store",
+        body: JSON.stringify({ op: "dismiss", pin: ADMIN_PASSCODE, approvalId: it.approvalId }),
+      })
+      const data = await res.json()
+      if (!data.ok) {
+        toast.error(data.error ?? "Could not remove this instrument from the list.")
+        return
+      }
+      toast.success("Removed from the upgrade list.")
+      setDismissTarget(null)
+      void load()
+    } catch {
+      toast.error("Could not reach the server. Please try again.")
+    } finally {
+      setBusyId(null)
+    }
+  }, [dismissTarget, load])
 
   return (
     <Card className="bg-card border-border">
@@ -402,6 +432,23 @@ export function InstrumentUpgradeManager() {
                           <ArrowUpCircle className="mr-2 size-4" /> Propose upgrade
                         </Button>
                       )}
+                      {!open ? (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="text-muted-foreground hover:text-destructive"
+                          onClick={() => setDismissTarget(it)}
+                          disabled={busyId === it.approvalId}
+                          title="Remove this instrument from the upgrade list"
+                        >
+                          {busyId === it.approvalId ? (
+                            <Loader2 className="mr-2 size-4 animate-spin" />
+                          ) : (
+                            <EyeOff className="mr-2 size-4" />
+                          )}
+                          Remove
+                        </Button>
+                      ) : null}
                     </div>
                   </div>
 
@@ -570,6 +617,38 @@ export function InstrumentUpgradeManager() {
             <Button onClick={() => void submitDeal()} disabled={submitting}>
               {submitting ? <Loader2 className="mr-2 size-4 animate-spin" /> : <Handshake className="mr-2 size-4" />}
               {mode === "revise" ? "Send revised offer" : "Propose deal"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Remove-from-list confirmation */}
+      <Dialog open={!!dismissTarget} onOpenChange={(o) => !o && setDismissTarget(null)}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Remove from the upgrade list?</DialogTitle>
+            <DialogDescription>
+              {dismissTarget ? (
+                <>
+                  {dismissTarget.instrument.typeFull ?? "This instrument"} (
+                  {money(dismissTarget.instrument.faceValue, dismissTarget.instrument.currency)}) held by{" "}
+                  {dismissTarget.holderLabel} will no longer appear in the upgrade waiting list.
+                </>
+              ) : null}
+            </DialogDescription>
+          </DialogHeader>
+          <p className="rounded-lg border border-border bg-muted/40 p-3 text-xs text-muted-foreground">
+            This only hides it from this list — it does not touch the instrument, the customer&apos;s portfolio, any
+            ledger balance, or any facility. Use it when the customer no longer effectively holds the instrument. It can
+            be restored later.
+          </p>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDismissTarget(null)} disabled={!!busyId}>
+              Cancel
+            </Button>
+            <Button variant="destructive" onClick={() => void runDismiss()} disabled={!!busyId}>
+              {busyId ? <Loader2 className="mr-2 size-4 animate-spin" /> : <EyeOff className="mr-2 size-4" />}
+              Remove from list
             </Button>
           </DialogFooter>
         </DialogContent>
