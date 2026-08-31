@@ -1692,14 +1692,10 @@ export default function PPPPage() {
                     </div>
                     <div className="space-y-1.5">
                       <Label htmlFor="resign-cost">Your proposed exit cost ({resignTarget.currency})</Label>
-                      <Input
+                      <MoneyInput
                         id="resign-cost"
-                        type="number"
-                        inputMode="decimal"
-                        min={0}
-                        step="0.01"
                         value={resignCost}
-                        onChange={(e) => setResignCost(e.target.value)}
+                        onValueChange={setResignCost}
                         className="text-base md:text-sm"
                       />
                       <button
