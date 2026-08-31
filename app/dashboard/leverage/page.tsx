@@ -1,6 +1,7 @@
 "use client"
 
 import { useEffect, useMemo, useRef, useState } from "react"
+import Link from "next/link"
 import {
   Gauge,
   Shield,
@@ -24,6 +25,8 @@ import {
   Hourglass,
   Loader2,
   X,
+  ChevronRight,
+  ExternalLink,
 } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -466,6 +469,87 @@ export default function LeveragePage() {
     }
     return ids
   }, [requests, internalLoans, monetizationRequests, pppRequests])
+
+  // Which instrument the client tapped to understand "used where and why".
+  const [engagementTarget, setEngagementTarget] = useState<string | null>(null)
+
+  // Resolve WHERE and WHY a bank instrument is pledged, across every facility
+  // type, so the client can jump straight to the place to unwind/terminate/settle
+  // it. Returns the primary live engagement (single-use collateral → at most one),
+  // with a deep link to the surface that owns that action.
+  type Engagement = {
+    kind: "leverage" | "internal_loan" | "monetization" | "ppp"
+    label: string
+    reference: string
+    status: string
+    detail: string
+    href: string
+    manageLabel: string
+  }
+  const describeEngagement = (instrumentId: string): Engagement | null => {
+    const lev = requests.find(
+      (r) =>
+        r.pledgedInstrumentId === instrumentId &&
+        (r.status === "approved" || r.status === "switchoff_pending" || r.status === "pending"),
+    )
+    if (lev) {
+      return {
+        kind: "leverage",
+        label: "Leverage line",
+        reference: lev.id,
+        status: lev.status,
+        detail: `${lev.accountLabel} · 1:${lev.leverageRatio} · buying power ${formatMoney(lev.buyingPower, lev.currency)}`,
+        href: "/dashboard/leverage?tab=lines",
+        manageLabel: "Unwind or switch off this leverage line",
+      }
+    }
+    const loan = internalLoans.find((l) => l.collateralInstrumentId === instrumentId && isLiveRequest(l))
+    if (loan) {
+      return {
+        kind: "internal_loan",
+        label: "Internal loan collateral",
+        reference: (loan.approvalId ?? loan.id) as string,
+        status: (loan.status ?? "approved") as string,
+        detail: "This instrument is the collateral backing an internal loan.",
+        href: "/dashboard/treasury",
+        manageLabel: "Repay the loan in Treasury to release it",
+      }
+    }
+    const mon = monetizationRequests.find(
+      (m) => m.instrumentId === instrumentId && m.status !== "rejected" && m.status !== "reversed",
+    )
+    if (mon) {
+      return {
+        kind: "monetization",
+        label: "Monetization",
+        reference: mon.id,
+        status: mon.status,
+        detail: "This instrument was pledged to monetize it for proceeds.",
+        href: "/dashboard/instruments",
+        manageLabel: "Manage or unwind in Bank Instruments",
+      }
+    }
+    const ppp = pppRequests.find(
+      (p) => p.fundingInstrumentId === instrumentId && p.status !== "rejected" && p.status !== "cancelled",
+    )
+    if (ppp) {
+      return {
+        kind: "ppp",
+        label: "Yield / PPP funding",
+        reference: ppp.id,
+        status: ppp.status,
+        detail: "This instrument is funding a yield / PPP program.",
+        href: "/dashboard/ppp",
+        manageLabel: "Terminate the program in Yield / PPP",
+      }
+    }
+    return null
+  }
+
+  const engagedInstrument = engagementTarget
+    ? activeInstruments.find((i) => i.id === engagementTarget) ?? null
+    : null
+  const engagedInfo = engagedInstrument ? describeEngagement(engagedInstrument.id) : null
 
   // Live clock so accrued interest ticks up while the page is open.
   const [now, setNow] = useState(() => Date.now())
@@ -1677,17 +1761,19 @@ export default function LeveragePage() {
                   Bank Instrument Collateral
                 </CardTitle>
                 <p className="text-xs text-muted-foreground">
-                  Your active bank instruments eligible to fund a leverage line. Pledge one from the
-                  Request Leverage tab using its face value as equity.
+                  Your active bank instruments eligible to fund a leverage line. Tap any instrument to see where
+                  it&apos;s used and how to unwind, terminate or delete it.
                 </p>
               </CardHeader>
               <CardContent className="space-y-2">
                 {activeInstruments.map((inst) => {
                   const pledged = pledgedInstrumentIds.has(inst.id)
                   return (
-                    <div
+                    <button
                       key={inst.id}
-                      className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border bg-secondary/40 p-3"
+                      type="button"
+                      onClick={() => setEngagementTarget(inst.id)}
+                      className="flex w-full flex-wrap items-center justify-between gap-2 rounded-lg border border-border bg-secondary/40 p-3 text-left transition-colors hover:border-primary/40 hover:bg-secondary/70"
                     >
                       <div className="min-w-0">
                         <p className="truncate text-sm font-medium text-foreground">
@@ -1716,13 +1802,111 @@ export default function LeveragePage() {
                         >
                           {pledged ? "Pledged" : "Available"}
                         </Badge>
+                        <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />
                       </div>
-                    </div>
+                    </button>
                   )
                 })}
               </CardContent>
             </Card>
           ) : null}
+
+          {/* Where-is-this-instrument-used detail — explains an instrument's
+              engagement and routes to the exact place to unwind/terminate/settle
+              it, after which it becomes deletable in Bank Instruments. */}
+          <Dialog open={!!engagementTarget} onOpenChange={(o) => !o && setEngagementTarget(null)}>
+            <DialogContent className="max-w-md">
+              <DialogHeader>
+                <DialogTitle>Where is this instrument used?</DialogTitle>
+                <DialogDescription>
+                  {engagedInstrument
+                    ? `${engagedInstrument.type} · ${engagedInstrument.id}`
+                    : "Instrument details"}
+                </DialogDescription>
+              </DialogHeader>
+
+              {engagedInstrument ? (
+                <div className="space-y-4">
+                  <div className="rounded-lg border border-border bg-secondary/40 p-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-xs text-muted-foreground">{engagedInstrument.typeFull}</span>
+                      <span className="text-sm font-semibold text-foreground">
+                        {formatMoney(engagedInstrument.faceValue, engagedInstrument.currency)}
+                      </span>
+                    </div>
+                    <p className="mt-1 text-[11px] text-muted-foreground">
+                      {engagedInstrument.issuer} · Face value · {engagedInstrument.currency}
+                    </p>
+                  </div>
+
+                  {engagedInfo ? (
+                    <>
+                      <div className="space-y-1.5 rounded-lg border border-primary/20 bg-primary/5 p-3">
+                        <p className="flex items-center gap-2 text-sm font-medium text-primary">
+                          <Lock className="h-4 w-4" />
+                          Pledged to a {engagedInfo.label}
+                        </p>
+                        <p className="text-xs text-muted-foreground">{engagedInfo.detail}</p>
+                        <p className="text-[11px] text-muted-foreground">
+                          Ref {engagedInfo.reference} · {engagedInfo.status}
+                        </p>
+                      </div>
+                      <p className="text-xs leading-relaxed text-muted-foreground">
+                        A bank instrument is single-use collateral. To free it, first {engagedInfo.manageLabel.toLowerCase()}.
+                        Once released it turns <span className="text-green-500">Available</span> and can be transferred,
+                        returned to the marketplace, or deleted in Bank Instruments.
+                      </p>
+                      <DialogFooter className="flex-col gap-2 sm:flex-col">
+                        {engagedInfo.kind === "leverage" ? (
+                          <Button
+                            className="w-full"
+                            onClick={() => {
+                              setActiveTab("lines")
+                              setEngagementTarget(null)
+                            }}
+                          >
+                            {engagedInfo.manageLabel}
+                            <ArrowRight className="ml-2 h-4 w-4" />
+                          </Button>
+                        ) : (
+                          <Button asChild className="w-full">
+                            <Link href={engagedInfo.href} onClick={() => setEngagementTarget(null)}>
+                              {engagedInfo.manageLabel}
+                              <ExternalLink className="ml-2 h-4 w-4" />
+                            </Link>
+                          </Button>
+                        )}
+                        <Button asChild variant="outline" className="w-full">
+                          <Link href="/dashboard/instruments" onClick={() => setEngagementTarget(null)}>
+                            Open Bank Instruments
+                          </Link>
+                        </Button>
+                      </DialogFooter>
+                    </>
+                  ) : (
+                    <>
+                      <div className="flex items-start gap-2 rounded-lg border border-green-500/20 bg-green-500/5 p-3">
+                        <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-green-500" />
+                        <p className="text-xs leading-relaxed text-muted-foreground">
+                          This instrument is <span className="text-green-500">Available</span> — it isn&apos;t pledged
+                          to any leverage line, loan, monetization or program. You can transfer, monetize, return it to
+                          the marketplace, or delete it in Bank Instruments.
+                        </p>
+                      </div>
+                      <DialogFooter>
+                        <Button asChild className="w-full">
+                          <Link href="/dashboard/instruments" onClick={() => setEngagementTarget(null)}>
+                            Manage in Bank Instruments
+                            <ExternalLink className="ml-2 h-4 w-4" />
+                          </Link>
+                        </Button>
+                      </DialogFooter>
+                    </>
+                  )}
+                </div>
+              ) : null}
+            </DialogContent>
+          </Dialog>
 
           {myRequests.length === 0 ? (
             <Card className="border-border bg-card">
