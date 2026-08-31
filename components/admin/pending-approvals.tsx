@@ -2154,14 +2154,10 @@ export function PendingApprovals({ initialKind }: { initialKind?: ApprovalKind }
               </div>
               <div className="space-y-1.5">
                 <Label htmlFor="term-cost">Final agreed exit cost ({termTarget.currency})</Label>
-                <Input
+                <MoneyInput
                   id="term-cost"
-                  type="number"
-                  inputMode="decimal"
-                  min={0}
-                  step="0.01"
                   value={termValue}
-                  onChange={(e) => setTermValue(e.target.value)}
+                  onValueChange={setTermValue}
                   className="text-base md:text-sm"
                 />
                 <div className="flex flex-wrap gap-2 pt-0.5 text-xs">
