@@ -541,11 +541,11 @@ export function InstrumentUpgradeManager() {
               ) : null}
             </div>
 
-            <div className="grid grid-cols-2 gap-3">
-              <div className="space-y-2">
+            <div className="grid grid-cols-[minmax(0,1fr)_5rem] gap-3">
+              <div className="min-w-0 space-y-2">
                 <Label htmlFor="up-type">New instrument type</Label>
                 <Select value={newTypeCode} onValueChange={setNewTypeCode}>
-                  <SelectTrigger id="up-type">
+                  <SelectTrigger id="up-type" className="w-full [&>span]:truncate">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -557,10 +557,10 @@ export function InstrumentUpgradeManager() {
                   </SelectContent>
                 </Select>
               </div>
-              <div className="space-y-2">
+              <div className="min-w-0 space-y-2">
                 <Label htmlFor="up-ccy">Currency</Label>
                 <Select value={newCurrency} onValueChange={setNewCurrency}>
-                  <SelectTrigger id="up-ccy">
+                  <SelectTrigger id="up-ccy" className="w-full">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
