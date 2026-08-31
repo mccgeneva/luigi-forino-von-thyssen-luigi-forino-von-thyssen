@@ -82,7 +82,6 @@ import { riskScoreTone } from "@/lib/instrument-audit"
 import { useLedger } from "@/lib/ledger-store"
 import { removeMyLedgerEntry } from "@/app/actions/ledger"
 import { computeMonetizationEquity } from "@/lib/monetization-equity"
-import { convertCurrency } from "@/lib/fx"
 import { InstrumentMarketplace } from "@/components/dashboard/instrument-marketplace"
 import { IsinTools, type IsinAcquisitionRequest } from "@/components/instruments/isin-tools"
 import { EdgarTools } from "@/components/instruments/edgar-tools"
@@ -355,9 +354,6 @@ export default function InstrumentsPage() {
   // monetization reserve. Fetched when the monetize dialog opens; undefined until
   // then (falls back to the standard 1% premium in the preview).
   const [monetizeTrustScore, setMonetizeTrustScore] = useState<number | undefined>(undefined)
-  // Authorized overdraft headroom (EUR), so the upfront-reserve gate counts the
-  // client's overdraft facility on top of cash — not cash only.
-  const [monetizeOverdraftEur, setMonetizeOverdraftEur] = useState<number>(0)
   const [monetizeForm, setMonetizeForm] = useState({
     structure: "CreditLine" as MonetizationStructure,
     advanceRate: "65",
@@ -811,15 +807,12 @@ export default function InstrumentsPage() {
   const monetizeEquityDeposit = monetizeEquityQuote.equityDeposit
   const monetizePpi = monetizeEquityQuote.ppi
   const monetizeReserve = monetizeEquityQuote.totalUpfront
-  // Spendable = same-currency cash PLUS the authorized overdraft headroom
-  // (converted EUR→reserve currency). A reserve within the overdraft facility
-  // must be allowed — e.g. €205,800 upfront on €3,681 cash + €250,000 overdraft.
-  const monetizeReserveCash = monetizeTarget ? balanceFor(monetizeReserveCurrency) : 0
-  const monetizeReserveOverdraft =
-    monetizeTarget && monetizeOverdraftEur > 0
-      ? convertCurrency(monetizeOverdraftEur, "EUR", monetizeReserveCurrency)
-      : 0
-  const monetizeReserveAvailable = monetizeReserveCash + monetizeReserveOverdraft
+  // The upfront monetization costs (equity deposit + PPI) must be paid from the
+  // client's OWN money — real same-currency cash ONLY. The authorized overdraft
+  // is deliberately EXCLUDED here: a customer cannot borrow (overdraw) to fund
+  // the cost of monetizing. If real cash is short, the operation is rejected and
+  // the client must top up first, then monetize.
+  const monetizeReserveAvailable = monetizeTarget ? balanceFor(monetizeReserveCurrency) : 0
   const monetizeReserveShortfall = Math.max(0, monetizeReserve - monetizeReserveAvailable)
   const canCoverMonetizeReserve =
     monetizeReserve <= 0 || monetizeReserveAvailable + 0.01 >= monetizeReserve
@@ -837,7 +830,11 @@ export default function InstrumentsPage() {
   const transferFeeShortfall = Math.max(0, transferFee - transferFeeAvailable)
   const canCoverTransferFee = transferFee <= 0 || transferFeeAvailable + 0.01 >= transferFee
 
-  const canSubmitMonetization = !!monetizeTarget && monetizeLtvValid && canCoverMonetizeReserve
+  // No upfront funds are blocked to monetize. The advance is a credit facility
+  // that carries monthly debit interest for as long as it stays outstanding, so
+  // submission only needs a valid LTV — the client keeps full access to their
+  // balance (nothing is frozen).
+  const canSubmitMonetization = !!monetizeTarget && monetizeLtvValid
   // Progressive (tiered) debit-interest pricing on the gross proceeds — the
   // outstanding debit the client will owe. Shown live so the client sees the
   // blended effective rate and per-tranche breakdown before submitting.
@@ -858,14 +855,6 @@ export default function InstrumentsPage() {
     if (monetizedInstrumentIds.has(instrument.id)) {
       toast.error("Instrument already monetized", {
         description: `${instrument.id} already has a live monetization. Reverse it before monetizing again.`,
-      })
-      return
-    }
-    // Same-currency solvency gate: 0.75% of the advance must be reservable from
-    // the balance in the INSTRUMENT'S currency, or the operation is refused.
-    if (!canCoverMonetizeReserve) {
-      toast.error("Operation not possible — insufficient equity", {
-        description: `Monetizing ${instrument.id} at ${monetizeAdvanceRate}% LTV requires ${formatCurrency(monetizeReserve, monetizeReserveCurrency)} blocked in ${monetizeReserveCurrency} — a ${(monetizeEquityRate * 100).toFixed(2)}% equity deposit (${formatCurrency(monetizeEquityDeposit, monetizeReserveCurrency)}) plus 1% PPI (${formatCurrency(monetizePpi, monetizeReserveCurrency)}). You have ${formatCurrency(monetizeReserveAvailable, monetizeReserveCurrency)} available — short by ${formatCurrency(monetizeReserveShortfall, monetizeReserveCurrency)}. Fund your ${monetizeReserveCurrency} balance and try again.`,
       })
       return
     }
@@ -958,18 +947,15 @@ export default function InstrumentsPage() {
       try {
         const res = await fetch("/api/guarantees", { credentials: "include", cache: "no-store" })
         const data = res.ok ? await res.json() : null
-        const score = data?.ok ? Number(data?.score?.finalScore) : NaN
-        const remaining = data?.ok ? Number(data?.overdraft?.remainingEur) : NaN
-        if (!cancelled) {
-          setMonetizeTrustScore(Number.isFinite(score) ? score : undefined)
-          setMonetizeOverdraftEur(Number.isFinite(remaining) && remaining > 0 ? remaining : 0)
+          const score = data?.ok ? Number(data?.score?.finalScore) : NaN
+          if (!cancelled) {
+            setMonetizeTrustScore(Number.isFinite(score) ? score : undefined)
+          }
+        } catch {
+          if (!cancelled) {
+            setMonetizeTrustScore(undefined)
+          }
         }
-      } catch {
-        if (!cancelled) {
-          setMonetizeTrustScore(undefined)
-          setMonetizeOverdraftEur(0)
-        }
-      }
     })()
     return () => {
       cancelled = true
@@ -2758,7 +2744,7 @@ export default function InstrumentsPage() {
                       </span>
                     </div>
                     <div className="flex items-center justify-between gap-3">
-                      <span className="text-muted-foreground">Available {monetizeReserveCurrency} balance</span>
+                      <span className="text-muted-foreground">Available {monetizeReserveCurrency} cash (own funds)</span>
                       <span className={cn("font-medium", canCoverMonetizeReserve ? "text-foreground" : "text-destructive")}>
                         {formatCurrency(monetizeReserveAvailable, monetizeReserveCurrency)}
                       </span>
@@ -2777,12 +2763,13 @@ export default function InstrumentsPage() {
                     <div className="mt-2 flex items-start gap-1.5 rounded-md border border-destructive/40 bg-destructive/10 p-2 text-[11px] leading-relaxed text-destructive">
                       <AlertCircle className="mt-px h-3.5 w-3.5 shrink-0" />
                       <span>
-                        <strong>Operation not possible.</strong> You must reserve{" "}
-                        {formatCurrency(monetizeReserve, monetizeReserveCurrency)} upfront in {monetizeReserveCurrency} —
-                        a {(monetizeEquityRate * 100).toFixed(2)}% equity deposit plus 1% PPI — but only{" "}
-                        {formatCurrency(monetizeReserveAvailable, monetizeReserveCurrency)} is available, short by{" "}
-                        {formatCurrency(monetizeReserveShortfall, monetizeReserveCurrency)}. Fund your{" "}
-                        {monetizeReserveCurrency} balance before monetizing this instrument.
+                        <strong>Operation not possible.</strong> The upfront cost of{" "}
+                        {formatCurrency(monetizeReserve, monetizeReserveCurrency)} in {monetizeReserveCurrency} —
+                        a {(monetizeEquityRate * 100).toFixed(2)}% equity deposit plus 1% PPI — must be paid from your
+                        own funds, but you only hold{" "}
+                        {formatCurrency(monetizeReserveAvailable, monetizeReserveCurrency)} in cash, short by{" "}
+                        {formatCurrency(monetizeReserveShortfall, monetizeReserveCurrency)}. The overdraft cannot fund
+                        this. Top up your {monetizeReserveCurrency} balance first, then monetize.
                       </span>
                     </div>
                   )}
