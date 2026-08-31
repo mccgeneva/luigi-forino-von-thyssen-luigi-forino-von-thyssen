@@ -42,6 +42,10 @@ async function ensureTable(): Promise<void> {
   // Equity-saving credit columns — added with the Equity Saving feature.
   await query(`ALTER TABLE guarantee_config ADD COLUMN IF NOT EXISTS equity_credit_full double precision NOT NULL DEFAULT 250000`)
   await query(`ALTER TABLE guarantee_config ADD COLUMN IF NOT EXISTS equity_credit_max double precision NOT NULL DEFAULT 8`)
+  // Incoming-funds credit columns — added with the inflow-boost feature.
+  await query(`ALTER TABLE guarantee_config ADD COLUMN IF NOT EXISTS inflow_credit_full double precision NOT NULL DEFAULT 1000000`)
+  await query(`ALTER TABLE guarantee_config ADD COLUMN IF NOT EXISTS inflow_credit_max double precision NOT NULL DEFAULT 6`)
+  await query(`ALTER TABLE guarantee_config ADD COLUMN IF NOT EXISTS inflow_window_days double precision NOT NULL DEFAULT 365`)
   ensured = true
 }
 
@@ -63,6 +67,9 @@ function rowToConfig(row: Record<string, unknown>): GuaranteeConfig {
     ageCreditMax: Number(row.age_credit_max),
     equityCreditFull: row.equity_credit_full == null ? DEFAULT_GUARANTEE_CONFIG.equityCreditFull : Number(row.equity_credit_full),
     equityCreditMax: row.equity_credit_max == null ? DEFAULT_GUARANTEE_CONFIG.equityCreditMax : Number(row.equity_credit_max),
+    inflowCreditFull: row.inflow_credit_full == null ? DEFAULT_GUARANTEE_CONFIG.inflowCreditFull : Number(row.inflow_credit_full),
+    inflowCreditMax: row.inflow_credit_max == null ? DEFAULT_GUARANTEE_CONFIG.inflowCreditMax : Number(row.inflow_credit_max),
+    inflowWindowDays: row.inflow_window_days == null ? DEFAULT_GUARANTEE_CONFIG.inflowWindowDays : Number(row.inflow_window_days),
     penaltyPerOverdue: Number(row.penalty_per_overdue),
     targetCoverage: Number(row.target_coverage),
     enforce: Boolean(row.enforce),
@@ -90,8 +97,9 @@ export async function saveGuaranteeConfig(input: GuaranteeConfig): Promise<void>
        weight_payment_penalty, high_risk_threshold, age_credit_per_year,
        age_credit_max, penalty_per_overdue, target_coverage, enforce,
        weight_track_record, new_account_risk, seasoning_days, proven_capital,
-       weight_overdraft, overdraft_risk_full, equity_credit_full, equity_credit_max, updated_at
-     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19, now())
+       weight_overdraft, overdraft_risk_full, equity_credit_full, equity_credit_max,
+       inflow_credit_full, inflow_credit_max, inflow_window_days, updated_at
+     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22, now())
      ON CONFLICT (id) DO UPDATE SET
        weight_security_deposit = EXCLUDED.weight_security_deposit,
        weight_leverage_load    = EXCLUDED.weight_leverage_load,
@@ -111,6 +119,9 @@ export async function saveGuaranteeConfig(input: GuaranteeConfig): Promise<void>
        overdraft_risk_full     = EXCLUDED.overdraft_risk_full,
        equity_credit_full      = EXCLUDED.equity_credit_full,
        equity_credit_max       = EXCLUDED.equity_credit_max,
+       inflow_credit_full      = EXCLUDED.inflow_credit_full,
+       inflow_credit_max       = EXCLUDED.inflow_credit_max,
+       inflow_window_days      = EXCLUDED.inflow_window_days,
        updated_at              = now()`,
     [
       GLOBAL_ID,
@@ -132,6 +143,9 @@ export async function saveGuaranteeConfig(input: GuaranteeConfig): Promise<void>
       input.overdraftRiskFull,
       input.equityCreditFull,
       input.equityCreditMax,
+      input.inflowCreditFull,
+      input.inflowCreditMax,
+      input.inflowWindowDays,
     ],
   )
 }
