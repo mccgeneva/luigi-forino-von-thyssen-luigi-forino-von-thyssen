@@ -71,19 +71,55 @@ function fmtDate(iso: string): string {
 export function IncomingSwiftDelivery() {
   const [raw, setRaw] = useState("")
   const [ingesting, setIngesting] = useState(false)
+  const [scanning, setScanning] = useState(false)
   const [result, setResult] = useState<IngestResult | null>(null)
   const fileRef = useRef<HTMLInputElement>(null)
 
   const handleUpload = async (file: File | undefined) => {
     if (!file) return
+    const name = file.name.toLowerCase()
+    const isDocument =
+      file.type === "application/pdf" ||
+      file.type.startsWith("image/") ||
+      /\.(pdf|png|jpe?g|webp|heic)$/.test(name)
+
     try {
-      const text = await file.text()
-      setRaw(text)
-      setResult(null)
-      toast.success(`Loaded ${file.name}. Review then receive & match.`)
+      if (isDocument) {
+        // PDF or image bank receipt / SWIFT printout → OCR, understand & analyze
+        // into recoverable FIN text via the shared extraction endpoint.
+        setScanning(true)
+        const form = new FormData()
+        form.append("file", file)
+        const res = await fetch("/api/swift/extract", { method: "POST", body: form })
+        const json = (await res.json().catch(() => null)) as
+          | { ok: true; data: { finMessage?: string; messageType?: string; currency?: string; amount?: string } }
+          | { ok: false; error?: string }
+          | null
+        if (!res.ok || !json?.ok || !json.data?.finMessage?.trim()) {
+          toast.error(
+            (json && "error" in json && json.error) ||
+              "Could not read that receipt automatically. Paste the SWIFT FIN text manually.",
+          )
+          return
+        }
+        setRaw(json.data.finMessage.trim())
+        setResult(null)
+        const d = json.data
+        const detail = [d.messageType, d.amount && d.currency ? `${d.currency} ${d.amount}` : ""]
+          .filter(Boolean)
+          .join(" · ")
+        toast.success(`Scanned ${file.name}${detail ? ` — ${detail}` : ""}. Review then receive & match.`)
+      } else {
+        // Plain-text FIN printout (.txt/.fin/.swift/.dat) → read directly.
+        const text = await file.text()
+        setRaw(text)
+        setResult(null)
+        toast.success(`Loaded ${file.name}. Review then receive & match.`)
+      }
     } catch {
-      toast.error("Could not read that file. Upload a plain-text SWIFT printout.")
+      toast.error("Could not read that file. Upload a PDF, an image, or a plain-text SWIFT printout.")
     } finally {
+      setScanning(false)
       if (fileRef.current) fileRef.current.value = ""
     }
   }
@@ -236,7 +272,8 @@ export function IncomingSwiftDelivery() {
         <CardHeader>
           <CardTitle className="text-base">Analyze, verify &amp; credit an incoming SWIFT message</CardTitle>
           <CardDescription>
-            Paste (or upload) an inbound SWIFT FIN printout received from a customer. It is analyzed and cross-checked
+            Paste the FIN text, or upload an inbound SWIFT printout / PDF bank receipt (PDF or image) received from a
+            customer — it is scanned, understood and analyzed into the SWIFT FIN message. It is then cross-checked
             against every active bank account by beneficiary IBAN (:59:) and receiving bank BIC (:57a:). On a confident
             match it is delivered to that customer&apos;s SWIFT Messages inbox and they are notified; otherwise it goes
             to the review queue. Matched messages then appear under <strong>Awaiting credit</strong>, where you verify
@@ -259,7 +296,7 @@ export function IncomingSwiftDelivery() {
             <input
               ref={fileRef}
               type="file"
-              accept=".txt,.fin,.swift,.dat,text/plain"
+              accept=".txt,.fin,.swift,.dat,text/plain,application/pdf,.pdf,image/png,image/jpeg,image/webp,image/heic,.png,.jpg,.jpeg,.webp,.heic"
               className="hidden"
               onChange={(e) => handleUpload(e.target.files?.[0])}
             />
@@ -267,9 +304,11 @@ export function IncomingSwiftDelivery() {
               variant="outline"
               size="sm"
               onClick={() => fileRef.current?.click()}
+              disabled={scanning}
               className="gap-2 bg-transparent"
             >
-              <ArrowDownToLine className="h-4 w-4" /> Upload printout
+              {scanning ? <Loader2 className="h-4 w-4 animate-spin" /> : <ArrowDownToLine className="h-4 w-4" />}
+              {scanning ? "Scanning…" : "Upload printout (PDF / image)"}
             </Button>
             <Button variant="outline" size="sm" onClick={() => setRaw(SAMPLE)} className="bg-transparent">
               Load sample
