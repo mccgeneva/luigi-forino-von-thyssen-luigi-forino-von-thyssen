@@ -9,6 +9,7 @@ import {
   getApprovalById,
   decideApproval,
   updateApprovalPayload,
+  listApprovalsForUser,
   type ApprovalRequest,
 } from "@/lib/approvals-db"
 import { adminDecideApproval } from "@/app/actions/approvals"
@@ -167,6 +168,28 @@ export async function adminRecordCardTransaction(
 
   const amount = round2(Number(input.amount))
   if (!Number.isFinite(amount) || amount <= 0) return { ok: false, error: "Enter a valid transaction amount." }
+
+  // Reject if the client has NO issued card. An issued card is an APPROVED
+  // `card` approval whose payload carries a finalized card (a real card id) —
+  // the same definition the issued-cards admin list uses. This prevents
+  // recording a card payment against a user who was never issued a card.
+  try {
+    const cardApprovals = await listApprovalsForUser(userId, "card")
+    const hasIssuedCard = cardApprovals.some((a) => {
+      if (a.status !== "approved") return false
+      const payload = (a.payload ?? {}) as { card?: { id?: string }; record?: { id?: string } }
+      return Boolean(payload.card?.id || payload.record?.id)
+    })
+    if (!hasIssuedCard) {
+      return {
+        ok: false,
+        error: "This client has no issued card. Issue a card to this account before recording a card transaction.",
+      }
+    }
+  } catch (err) {
+    console.log("[v0] card issuance check failed:", (err as Error).message)
+    return { ok: false, error: "Could not verify the client's cards. Please try again." }
+  }
 
   const currency = String(input.currency || "EUR").toUpperCase().slice(0, 3)
   const fee = round2(amount * CARD_TRANSACTION_FEE_RATE)
