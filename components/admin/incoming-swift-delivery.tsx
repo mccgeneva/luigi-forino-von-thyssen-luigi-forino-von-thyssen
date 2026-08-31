@@ -137,6 +137,7 @@ export function IncomingSwiftDelivery() {
   const [rejecting, setRejecting] = useState<string | null>(null)
   const [rejectOpen, setRejectOpen] = useState<string | null>(null)
   const [rejectReason, setRejectReason] = useState<Record<string, string>>({})
+  const [reassignOpen, setReassignOpen] = useState<string | null>(null)
 
   const loadQueue = async () => {
     setLoadingQueue(true)
@@ -265,6 +266,28 @@ export function IncomingSwiftDelivery() {
     }
   }
 
+  // Switch a matched (awaiting-credit) message to a DIFFERENT customer before the
+  // credit is executed. Reuses the same admin assign action; the message stays
+  // in the Awaiting-credit queue under the newly selected owner.
+  const handleReassignCredit = async (id: string) => {
+    const userId = assignSel[id]
+    if (!userId) {
+      toast.error("Select the customer to switch this payment to.")
+      return
+    }
+    setAssigning(id)
+    const res = await assignIncomingSwiftAdmin(ADMIN_PASSCODE, id, userId)
+    setAssigning(null)
+    if (res.ok) {
+      toast.success("Payment switched to the selected customer. Review and execute the credit below.")
+      setReassignOpen(null)
+      setAssignSel((prev) => ({ ...prev, [id]: "" }))
+      void loadCreditable()
+    } else {
+      toast.error(res.error ?? "Could not switch the payment.")
+    }
+  }
+
   return (
     <div className="flex flex-col gap-6">
       {/* Ingest + auto-match */}
@@ -357,8 +380,9 @@ export function IncomingSwiftDelivery() {
                 {creditable.length > 0 && <Badge variant="secondary">{creditable.length}</Badge>}
               </CardTitle>
               <CardDescription>
-                Verified messages matched to a platform bank account. Review the details, then execute the credit to
-                the customer&apos;s Master Account. Crediting is idempotent — a message can only be credited once.
+                Verified messages matched to a platform bank account. Nothing is credited automatically — the
+                administrator must review each one and approve the credit, switch the payment to a different customer,
+                or reject it. Crediting is idempotent — a message can only be credited once.
               </CardDescription>
             </div>
             <Button
@@ -448,6 +472,7 @@ export function IncomingSwiftDelivery() {
                           )}
                           Record blocked-funds guarantee &amp; charge 0.2%
                         </Button>
+                        <SwitchCustomerButton id={m.id} open={reassignOpen === m.id} onToggle={setReassignOpen} />
                         <RejectButton id={m.id} open={rejectOpen === m.id} onToggle={setRejectOpen} />
                       </div>
                     </>
@@ -466,7 +491,62 @@ export function IncomingSwiftDelivery() {
                         )}
                         Execute &amp; credit to Master Account
                       </Button>
+                      <SwitchCustomerButton id={m.id} open={reassignOpen === m.id} onToggle={setReassignOpen} />
                       <RejectButton id={m.id} open={rejectOpen === m.id} onToggle={setRejectOpen} />
+                    </div>
+                  )}
+
+                  {reassignOpen === m.id && (
+                    <div className="mt-3 rounded-md border border-amber-500/30 bg-amber-500/5 p-3">
+                      <p className="text-xs font-medium text-foreground">Switch this payment to another customer</p>
+                      <p className="mt-0.5 text-xs text-muted-foreground">
+                        Reassign this inbound message to a different Master Account before crediting. The funds are then
+                        credited to the customer you select here — not the auto-matched one.
+                      </p>
+                      <div className="mt-2 flex flex-wrap items-center gap-2">
+                        <Select
+                          value={assignSel[m.id] ?? ""}
+                          onValueChange={(v) => setAssignSel((prev) => ({ ...prev, [m.id]: v }))}
+                        >
+                          <SelectTrigger className="h-9 w-full sm:w-[320px]">
+                            <SelectValue placeholder="Switch to customer…" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {clients.length === 0 ? (
+                              <div className="px-2 py-3 text-center text-sm text-muted-foreground">
+                                No active accounts
+                              </div>
+                            ) : (
+                              clients.map((c) => (
+                                <SelectItem key={c.id} value={c.id}>
+                                  {c.fullName} · {c.company} — {c.email}
+                                </SelectItem>
+                              ))
+                            )}
+                          </SelectContent>
+                        </Select>
+                        <Button
+                          size="sm"
+                          onClick={() => handleReassignCredit(m.id)}
+                          disabled={assigning === m.id || !assignSel[m.id]}
+                          className="gap-1.5"
+                        >
+                          {assigning === m.id ? (
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                          ) : (
+                            <UserPlus className="h-4 w-4" />
+                          )}
+                          Switch &amp; deliver
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={() => setReassignOpen(null)}
+                          disabled={assigning === m.id}
+                        >
+                          Cancel
+                        </Button>
+                      </div>
                     </div>
                   )}
 
@@ -621,6 +701,28 @@ function RejectButton({
     >
       <XCircle className="h-4 w-4" />
       Reject
+    </Button>
+  )
+}
+
+function SwitchCustomerButton({
+  id,
+  open,
+  onToggle,
+}: {
+  id: string
+  open: boolean
+  onToggle: (id: string | null) => void
+}) {
+  return (
+    <Button
+      size="sm"
+      variant="outline"
+      onClick={() => onToggle(open ? null : id)}
+      className="gap-1.5 bg-transparent"
+    >
+      <UserPlus className="h-4 w-4" />
+      Switch customer
     </Button>
   )
 }
