@@ -240,8 +240,12 @@ export default function InstrumentsPage() {
     }
     for (const req of monetizationRequests) {
       if (!req.instrumentId) continue
-      // A rejected OR reversed monetization no longer engages the instrument.
-      if (req.status !== "rejected" && req.status !== "reversed") ids.add(req.instrumentId)
+      // A monetization engages the instrument only while it is LIVE. A rejected/
+      // reversed one — OR a CLOSED/SETTLED credit line (advance repaid, so it
+      // carries closedAt/settledAt) — releases the instrument, exactly like a
+      // repaid loan or a closed leverage line. `isLiveRequest` covers both the
+      // terminal statuses and the closedAt/settledAt/reversedAt markers.
+      if (isLiveRequest(req)) ids.add(req.instrumentId)
     }
     for (const req of pppRequests) {
       if (!req.fundingInstrumentId) continue
@@ -265,7 +269,7 @@ export default function InstrumentsPage() {
     if (inst.blocked) {
       reasons.push("an Administrator transformation upgrade — respond to the offer first")
     }
-    if (monetizationRequests.some((r) => r.instrumentId === inst.id && r.status !== "rejected" && r.status !== "reversed")) {
+    if (monetizationRequests.some((r) => r.instrumentId === inst.id && isLiveRequest(r))) {
       reasons.push("a monetization — reverse it first")
     }
     if (leverageRequests.some((r) => r.pledgedInstrumentId === inst.id && r.status !== "rejected" && r.status !== "closed")) {
@@ -293,9 +297,11 @@ export default function InstrumentsPage() {
   const monetizedInstrumentIds = useMemo(() => {
     const ids = new Set<string>()
     for (const req of monetizationRequests) {
-      // A rejected OR reversed monetization releases the instrument — it is no
-      // longer pledged, so it may be transferred / re-monetized again.
-      if (req.instrumentId && req.status !== "rejected" && req.status !== "reversed") {
+      // A rejected/reversed monetization — OR a CLOSED/SETTLED credit line (the
+      // advance has been repaid) — releases the instrument, so it may be
+      // transferred / re-monetized again. Only a LIVE monetization keeps it
+      // pledged. `isLiveRequest` covers terminal statuses + closedAt/settledAt.
+      if (req.instrumentId && isLiveRequest(req)) {
         ids.add(req.instrumentId)
       }
     }
