@@ -813,6 +813,39 @@ async function readMasterBankingIbans(): Promise<MasterBankingIban[]> {
 }
 
 /**
+ * Resolve the RECEIVER of an outgoing payment: match its beneficiary IBAN to a
+ * platform customer's OWN master-account banking (primary or any per-currency
+ * IBAN). Returns the single unambiguous recipient customer, or null when the
+ * beneficiary is an external (non-platform) bank account. Read-only — moves no
+ * money. Used by the admin "View client & funds" so it shows the RECEIVER, not
+ * the sender.
+ */
+export async function resolvePaymentRecipientAdmin(
+  approvalId: string,
+): Promise<{ userId: string; label: string; iban: string; bankName: string | null } | null> {
+  try {
+    const approval = await getApprovalById(approvalId)
+    if (!approval || approval.kind !== "payment") return null
+    const payload = (approval.payload ?? {}) as { iban?: string; record?: { iban?: string } }
+    const beneficiaryIban = normalizeIban(payload.iban ?? payload.record?.iban)
+    if (!beneficiaryIban) return null
+
+    const ibans = await readMasterBankingIbans()
+    const matches = ibans.filter((a) => a.iban === beneficiaryIban)
+    const owners = Array.from(new Set(matches.map((m) => m.ownerUserId)))
+    if (owners.length !== 1) return null
+
+    const ownerUserId = owners[0]
+    const profile = await resolveAccountProfileById(ownerUserId)
+    const label = profile.company ? `${profile.fullName} · ${profile.company}` : profile.fullName
+    return { userId: ownerUserId, label, iban: beneficiaryIban, bankName: matches[0]?.bankName ?? null }
+  } catch (err) {
+    console.log("[v0] resolvePaymentRecipientAdmin failed:", (err as Error).message)
+    return null
+  }
+}
+
+/**
  * When an APPROVED outgoing payment's beneficiary IBAN matches a platform
  * customer's OWN master-account banking (primary or any per-currency IBAN),
  * credit that customer's Master Account and notify them. Mirrors

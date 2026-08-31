@@ -10,6 +10,7 @@ import { reconcileSubAccountFees } from "@/lib/sub-account-db"
 import { getFinancingRingfence } from "@/lib/guarantees-profile"
 import { convertCurrency } from "@/lib/fx"
 import { logActivity } from "@/app/actions/log-activity"
+import { resolvePaymentRecipientAdmin } from "@/app/actions/reconciliation"
 import { getMyMembership } from "@/app/actions/membership"
 import { capabilitiesForAccount, VISITOR_RESTRICTION_MESSAGE } from "@/lib/tier-capabilities"
 import type { LedgerEntry } from "@/lib/ledger-store"
@@ -705,6 +706,36 @@ export async function getClientFinancialSnapshotAdmin(
         lastActivity,
       },
     }
+  } catch (err) {
+    return { ok: false, error: (err as Error).message }
+  }
+}
+
+/**
+ * Admin: financial snapshot of the RECEIVER of an outgoing payment. Resolves the
+ * payment's beneficiary IBAN to the platform customer who owns that bank account
+ * (their master banking), then returns THAT customer's funds — so "View client &
+ * funds" on a payment shows the recipient, not the sender. Passcode-gated.
+ * Returns a clear message when the beneficiary is an external (non-platform)
+ * bank account.
+ */
+export async function getPaymentRecipientSnapshotAdmin(
+  passcode: string,
+  approvalId: string,
+): Promise<ClientSnapshotResult & { recipientLabel?: string }> {
+  try {
+    await requireAdmin(passcode)
+    const recipient = await resolvePaymentRecipientAdmin(approvalId)
+    if (!recipient) {
+      return {
+        ok: false,
+        error:
+          "The beneficiary is an external bank account, not a platform customer, so there is no platform balance to show for the receiver.",
+      }
+    }
+    const snap = await getClientFinancialSnapshotAdmin(passcode, recipient.userId)
+    if (snap.ok) return { ...snap, recipientLabel: recipient.label }
+    return snap
   } catch (err) {
     return { ok: false, error: (err as Error).message }
   }

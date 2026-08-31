@@ -86,6 +86,7 @@ import { readStampedTrustScore } from "@/lib/ppi-trust"
 import { yieldCancellationPenalty, YIELD_EARLY_CANCELLATION_PENALTY_RATE } from "@/lib/ppp-yield"
 import {
   getClientFinancialSnapshotAdmin,
+  getPaymentRecipientSnapshotAdmin,
   type ClientFinancialSnapshot,
 } from "@/app/actions/ledger"
 import { APPROVAL_KINDS, KIND_LABELS, type ApprovalKind } from "@/lib/approval-kinds"
@@ -530,15 +531,32 @@ export function PendingApprovals({ initialKind }: { initialKind?: ApprovalKind }
     label: string
     snapshot: ClientFinancialSnapshot | null
     error: string | null
-  }>({ open: false, loading: false, label: "", snapshot: null, error: null })
+    receiver: boolean
+  }>({ open: false, loading: false, label: "", snapshot: null, error: null, receiver: false })
 
   const openClientSnapshot = async (userId: string, label: string) => {
-    setClientView({ open: true, loading: true, label, snapshot: null, error: null })
+    setClientView({ open: true, loading: true, label, snapshot: null, error: null, receiver: false })
     const res = await getClientFinancialSnapshotAdmin(ADMIN_PASSCODE, userId)
     if (res.ok) {
-      setClientView({ open: true, loading: false, label, snapshot: res.snapshot, error: null })
+      setClientView({ open: true, loading: false, label, snapshot: res.snapshot, error: null, receiver: false })
     } else {
-      setClientView({ open: true, loading: false, label, snapshot: null, error: res.error })
+      setClientView({ open: true, loading: false, label, snapshot: null, error: res.error, receiver: false })
+    }
+  }
+
+  // For an OUTGOING PAYMENT, "View client & funds" must show the RECEIVER
+  // (beneficiary), not the sender. Resolve the beneficiary IBAN to the platform
+  // customer who owns that bank account and show THEIR funds.
+  const openPaymentRecipientSnapshot = async (req: ApprovalRequest) => {
+    const record = (req.payload?.record ?? {}) as { beneficiary?: string }
+    const beneficiary = record.beneficiary || req.title || "Receiver"
+    const label = `Receiver — ${beneficiary}`
+    setClientView({ open: true, loading: true, label, snapshot: null, error: null, receiver: true })
+    const res = await getPaymentRecipientSnapshotAdmin(ADMIN_PASSCODE, req.id)
+    if (res.ok) {
+      setClientView({ open: true, loading: false, label: res.recipientLabel ?? label, snapshot: res.snapshot, error: null, receiver: true })
+    } else {
+      setClientView({ open: true, loading: false, label, snapshot: null, error: res.error, receiver: true })
     }
   }
 
@@ -1404,10 +1422,14 @@ export function PendingApprovals({ initialKind }: { initialKind?: ApprovalKind }
                           variant="ghost"
                           size="sm"
                           className="h-6 gap-1 px-1.5 text-[11px] text-primary hover:text-primary"
-                          onClick={() => openClientSnapshot(req.userId, clientLabel(req.userId))}
+                          onClick={() =>
+                            req.kind === "payment"
+                              ? openPaymentRecipientSnapshot(req)
+                              : openClientSnapshot(req.userId, clientLabel(req.userId))
+                          }
                         >
                           <User className="h-3 w-3" />
-                          View client &amp; funds
+                          {req.kind === "payment" ? "View receiver & funds" : "View client & funds"}
                         </Button>
                       </div>
                       {req.decisionNote && (
@@ -2299,11 +2321,12 @@ export function PendingApprovals({ initialKind }: { initialKind?: ApprovalKind }
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <User className="h-4 w-4 text-primary" />
-              Client due diligence
+              {clientView.receiver ? "Receiver account & funds" : "Client due diligence"}
             </DialogTitle>
             <DialogDescription className="text-pretty">
-              Account holder and available funds, so you can confirm the client can fund this deal
-              before approving.
+              {clientView.receiver
+                ? "The beneficiary of this payment, matched by IBAN to their platform account, and the funds currently held in their account."
+                : "Account holder and available funds, so you can confirm the client can fund this deal before approving."}
             </DialogDescription>
           </DialogHeader>
 
