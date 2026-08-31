@@ -1562,12 +1562,11 @@ export default function CommodityTradingPage() {
 
                 <div className="space-y-2">
                   <Label htmlFor="value">Shipment amount (approx. value) *</Label>
-                  <Input
+                  <MoneyInput
                     id="value"
                     value={form.approxValue}
-                    onChange={(e) => set("approxValue", e.target.value)}
+                    onValueChange={(v) => set("approxValue", v)}
                     placeholder="e.g. 75,000,000"
-                    inputMode="decimal"
                   />
                   {computedShipmentAmount != null && (
                     <button
@@ -1959,15 +1958,15 @@ export default function CommodityTradingPage() {
                     </div>
                     <div className="space-y-1.5">
                       <Label htmlFor="fco-trialval">Trial cargo value ({fco.currency})</Label>
-                      <Input id="fco-trialval" inputMode="decimal" value={fco.trialCargoValue} onChange={(e) => setFcoField("trialCargoValue", e.target.value)} />
+                      <MoneyInput id="fco-trialval" value={fco.trialCargoValue} onValueChange={(v) => setFcoField("trialCargoValue", v)} />
                     </div>
                     <div className="space-y-1.5">
                       <Label htmlFor="fco-periodval">Contract period value ({fco.currency})</Label>
-                      <Input id="fco-periodval" inputMode="decimal" value={fco.contractPeriodValue} onChange={(e) => setFcoField("contractPeriodValue", e.target.value)} />
+                      <MoneyInput id="fco-periodval" value={fco.contractPeriodValue} onValueChange={(v) => setFcoField("contractPeriodValue", v)} />
                     </div>
                     <div className="space-y-1.5">
                       <Label htmlFor="fco-annualval">Annual contract value ({fco.currency})</Label>
-                      <Input id="fco-annualval" inputMode="decimal" value={fco.annualContractValue} onChange={(e) => setFcoField("annualContractValue", e.target.value)} />
+                      <MoneyInput id="fco-annualval" value={fco.annualContractValue} onValueChange={(v) => setFcoField("annualContractValue", v)} />
                     </div>
                     <div className="space-y-1.5 sm:col-span-2">
                       <Label htmlFor="fco-law">Governing law &amp; jurisdiction</Label>

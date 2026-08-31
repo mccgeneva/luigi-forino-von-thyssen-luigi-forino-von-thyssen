@@ -33,6 +33,7 @@ import { useRouter } from "next/navigation"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { MoneyInput } from "@/components/ui/money-input"
 import { Label } from "@/components/ui/label"
 import { Badge } from "@/components/ui/badge"
 import { Textarea } from "@/components/ui/textarea"
@@ -1486,12 +1487,11 @@ function CreateDeal({
                     ))}
                   </SelectContent>
                 </Select>
-                <Input
+                <MoneyInput
                   id="d-price"
                   value={form.spotPrice}
-                  onChange={(e) => setForm((p) => ({ ...p, spotPrice: e.target.value, priceTouched: true }))}
+                  onValueChange={(v) => setForm((p) => ({ ...p, spotPrice: v, priceTouched: true }))}
                   placeholder="Special spot price"
-                  inputMode="decimal"
                 />
               </div>
               {suggestionInUnit && (

@@ -17,6 +17,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Button } from "@/components/ui/button"
 import { Label } from "@/components/ui/label"
 import { Input } from "@/components/ui/input"
+import { MoneyInput } from "@/components/ui/money-input"
 import { Badge } from "@/components/ui/badge"
 import { Textarea } from "@/components/ui/textarea"
 import {
@@ -462,11 +463,10 @@ export function InternalLoanManager({ passcode }: { passcode: string }) {
                 <Label htmlFor="loan-fee" className="text-xs">
                   Arrangement fee ({approveTarget?.currency ?? "EUR"}, optional)
                 </Label>
-                <Input
+                <MoneyInput
                   id="loan-fee"
                   value={fee}
-                  onChange={(e) => setFee(e.target.value)}
-                  inputMode="decimal"
+                  onValueChange={setFee}
                   placeholder="0"
                   className="mt-1"
                 />

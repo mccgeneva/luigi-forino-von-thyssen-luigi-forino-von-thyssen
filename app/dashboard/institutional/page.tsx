@@ -20,6 +20,7 @@ import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Input } from "@/components/ui/input"
 import { CountryCombobox } from "@/components/country-combobox"
+import { MoneyInput } from "@/components/ui/money-input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
@@ -335,11 +336,10 @@ export default function InstitutionalPage() {
             <CardContent className="grid gap-4 sm:grid-cols-2">
               <div className="space-y-2">
                 <Label htmlFor="amount">Amount *</Label>
-                <Input
+                <MoneyInput
                   id="amount"
-                  inputMode="decimal"
                   value={form.amount}
-                  onChange={(e) => set("amount", e.target.value)}
+                  onValueChange={(v) => set("amount", v)}
                   placeholder="e.g. 50,000,000"
                 />
               </div>

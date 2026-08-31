@@ -6,6 +6,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { CountryCombobox } from "@/components/country-combobox"
+import { MoneyInput } from "@/components/ui/money-input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { Badge } from "@/components/ui/badge"
@@ -252,11 +253,10 @@ export function ProjectFinanceAdmin({ onDone }: { onDone?: () => void }) {
             </div>
             <div className="col-span-2 space-y-2">
               <Label htmlFor="pf-facility">Facility amount</Label>
-              <Input
+              <MoneyInput
                 id="pf-facility"
-                inputMode="numeric"
                 value={facility}
-                onChange={(e) => setFacility(e.target.value.replace(/[^0-9.]/g, ""))}
+                onValueChange={setFacility}
                 placeholder={`Min ${AES_MIN_FACILITY.toLocaleString("en-US")}`}
                 className="h-11"
               />

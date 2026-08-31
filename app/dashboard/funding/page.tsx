@@ -31,6 +31,7 @@ import { isLiveRequest } from "@/lib/live-request"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Label } from "@/components/ui/label"
 import { Input } from "@/components/ui/input"
+import { MoneyInput } from "@/components/ui/money-input"
 import { CountryCombobox } from "@/components/country-combobox"
 import { Textarea } from "@/components/ui/textarea"
 import {
@@ -926,12 +927,11 @@ export default function ProjectFundingPage() {
                 <div className="grid grid-cols-3 gap-3">
                   <div className="col-span-2 space-y-2">
                     <Label htmlFor="pf-facility">Financing Facility Requested</Label>
-                    <Input
+                    <MoneyInput
                       id="pf-facility"
-                      inputMode="decimal"
                       placeholder="e.g. 50,000,000"
                       value={facility}
-                      onChange={(e) => setFacility(e.target.value)}
+                      onValueChange={setFacility}
                     />
                   </div>
                   <div className="space-y-2">

@@ -7,6 +7,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Button } from "@/components/ui/button"
 import { Label } from "@/components/ui/label"
 import { Input } from "@/components/ui/input"
+import { MoneyInput } from "@/components/ui/money-input"
 import { Switch } from "@/components/ui/switch"
 import {
   Select,
@@ -255,12 +256,11 @@ export function AccountLimitsManager({ passcode }: { passcode: string }) {
                     <Switch checked={dailyUnlimited} onCheckedChange={setDailyUnlimited} />
                   </label>
                 </div>
-                <Input
+                <MoneyInput
                   id="daily-amount"
-                  inputMode="decimal"
                   placeholder="0.00"
                   value={dailyUnlimited ? "" : dailyAmount}
-                  onChange={(e) => setDailyAmount(e.target.value.replace(/[^\d.]/g, ""))}
+                  onValueChange={setDailyAmount}
                   disabled={dailyUnlimited}
                 />
                 <p className="text-[11px] text-muted-foreground">
@@ -280,12 +280,11 @@ export function AccountLimitsManager({ passcode }: { passcode: string }) {
                     <Switch checked={monthlyUnlimited} onCheckedChange={setMonthlyUnlimited} />
                   </label>
                 </div>
-                <Input
+                <MoneyInput
                   id="monthly-amount"
-                  inputMode="decimal"
                   placeholder="0.00"
                   value={monthlyUnlimited ? "" : monthlyAmount}
-                  onChange={(e) => setMonthlyAmount(e.target.value.replace(/[^\d.]/g, ""))}
+                  onValueChange={setMonthlyAmount}
                   disabled={monthlyUnlimited}
                 />
                 <p className="text-[11px] text-muted-foreground">

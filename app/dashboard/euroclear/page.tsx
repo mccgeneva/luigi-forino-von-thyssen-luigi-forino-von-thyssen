@@ -15,6 +15,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Input } from "@/components/ui/input"
+import { MoneyInput } from "@/components/ui/money-input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
@@ -537,12 +538,11 @@ export default function EuroclearSettlementPage() {
                   <div className="grid gap-4 sm:grid-cols-3">
                     <div className="space-y-2 sm:col-span-2">
                       <Label htmlFor="cashAmount">Cash amount (settlement)</Label>
-                      <Input
+                      <MoneyInput
                         id="cashAmount"
-                        inputMode="decimal"
                         placeholder="e.g. 4,962,500.00"
                         value={form.cashAmount}
-                        onChange={(e) => set("cashAmount", e.target.value)}
+                        onValueChange={(v) => set("cashAmount", v)}
                       />
                     </div>
                     <div className="space-y-2">

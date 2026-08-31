@@ -5,6 +5,7 @@ import { Loader2, Pencil, RotateCcw, Eye, EyeOff, SlidersHorizontal } from "luci
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { MoneyInput } from "@/components/ui/money-input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { Badge } from "@/components/ui/badge"
@@ -339,20 +340,18 @@ export function YieldProgramManager({ passcode }: { passcode: string }) {
               <div className="grid grid-cols-2 gap-3">
                 <div className="space-y-1.5">
                   <Label htmlFor="yp-min">Min investment</Label>
-                  <Input
+                  <MoneyInput
                     id="yp-min"
-                    inputMode="numeric"
                     value={draft.minInvestment}
-                    onChange={(e) => setDraft({ ...draft, minInvestment: e.target.value })}
+                    onValueChange={(v) => setDraft({ ...draft, minInvestment: v })}
                   />
                 </div>
                 <div className="space-y-1.5">
                   <Label htmlFor="yp-max">Max investment</Label>
-                  <Input
+                  <MoneyInput
                     id="yp-max"
-                    inputMode="numeric"
                     value={draft.maxInvestment}
-                    onChange={(e) => setDraft({ ...draft, maxInvestment: e.target.value })}
+                    onValueChange={(v) => setDraft({ ...draft, maxInvestment: v })}
                   />
                 </div>
               </div>

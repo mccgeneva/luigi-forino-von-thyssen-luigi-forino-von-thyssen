@@ -6,6 +6,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Input } from "@/components/ui/input"
+import { MoneyInput } from "@/components/ui/money-input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { ADMIN_PASSCODE } from "@/lib/admin-config"
@@ -170,11 +171,10 @@ export function EquityReleaseManager({ passcode = ADMIN_PASSCODE }: { passcode?:
                           <Label htmlFor={`amt-${r.id}`} className="text-xs">
                             Amount to release ({r.currency})
                           </Label>
-                          <Input
+                          <MoneyInput
                             id={`amt-${r.id}`}
-                            inputMode="decimal"
                             value={amount}
-                            onChange={(e) => setAmount(e.target.value)}
+                            onValueChange={setAmount}
                             className="mt-1"
                           />
                           <p className="mt-1 text-xs text-muted-foreground">

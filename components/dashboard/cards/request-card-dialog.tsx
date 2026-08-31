@@ -4,6 +4,7 @@ import { useState } from "react"
 import { CreditCard, Loader2, Sparkles } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { MoneyInput } from "@/components/ui/money-input"
 import { Label } from "@/components/ui/label"
 import {
   Dialog,
@@ -213,15 +214,11 @@ export function RequestCardDialog({
             {/* Requested limit */}
             <div className="space-y-2">
               <Label htmlFor="card-limit">Requested monthly limit</Label>
-              <Input
+              <MoneyInput
                 id="card-limit"
-                type="number"
-                min="0"
-                step="1000"
-                inputMode="numeric"
                 value={limit}
-                onChange={(e) => setLimit(e.target.value)}
-                placeholder="50000"
+                onValueChange={setLimit}
+                placeholder="50,000"
               />
             </div>
           </div>

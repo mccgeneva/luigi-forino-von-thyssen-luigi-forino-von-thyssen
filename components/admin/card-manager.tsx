@@ -777,12 +777,9 @@ export function CardManager() {
                 </div>
                 <div className="grid gap-2 sm:col-span-2">
                   <Label>Approved monthly limit</Label>
-                  <Input
-                    type="number"
-                    min="0"
-                    step="1000"
+                  <MoneyInput
                     value={customize.limit}
-                    onChange={(e) => setCustomize((p) => (p ? { ...p, limit: e.target.value } : p))}
+                    onValueChange={(v) => setCustomize((p) => (p ? { ...p, limit: v } : p))}
                   />
                 </div>
                 <div className="grid gap-2 sm:col-span-2">

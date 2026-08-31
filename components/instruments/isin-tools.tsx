@@ -17,6 +17,7 @@ import {
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { MoneyInput } from "@/components/ui/money-input"
 import { Badge } from "@/components/ui/badge"
 import { Label } from "@/components/ui/label"
 import {
@@ -454,10 +455,9 @@ export function IsinTools({
               {/* Face value */}
               <div className="space-y-1.5">
                 <Label className="text-[11px] uppercase tracking-wide text-muted-foreground">Face value</Label>
-                <Input
+                <MoneyInput
                   value={acqFace}
-                  onChange={(e) => setAcqFace(e.target.value.replace(/[^\d,.]/g, ""))}
-                  inputMode="decimal"
+                  onValueChange={setAcqFace}
                   placeholder="e.g. 50,000,000"
                   className="font-mono"
                   aria-label="Face value"

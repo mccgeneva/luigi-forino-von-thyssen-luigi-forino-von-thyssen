@@ -24,6 +24,7 @@ import {
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { MoneyInput } from "@/components/ui/money-input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { Badge } from "@/components/ui/badge"
@@ -1164,14 +1165,10 @@ export function SkrManager() {
             </div>
             <div className="space-y-2">
               <Label htmlFor="skr-face">Face value</Label>
-              <Input
+              <MoneyInput
                 id="skr-face"
-                type="number"
-                min="0"
-                step="0.01"
-                inputMode="decimal"
                 value={form.faceValue}
-                onChange={(e) => setForm((f) => ({ ...f, faceValue: e.target.value }))}
+                onValueChange={(v) => setForm((f) => ({ ...f, faceValue: v }))}
                 placeholder="0.00"
               />
             </div>
@@ -1443,14 +1440,10 @@ export function SkrManager() {
             </div>
             <div className="space-y-2">
               <Label htmlFor="skr-credit-amount">Amount to credit (EUR)</Label>
-              <Input
+              <MoneyInput
                 id="skr-credit-amount"
-                type="number"
-                min="0"
-                step="0.01"
-                inputMode="decimal"
                 value={creditAmount}
-                onChange={(e) => setCreditAmount(e.target.value)}
+                onValueChange={setCreditAmount}
                 placeholder="0.00"
               />
               {creditTarget && creditTarget.currency !== "EUR" && (

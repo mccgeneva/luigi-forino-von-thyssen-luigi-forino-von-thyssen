@@ -5,6 +5,7 @@ import { Landmark, Plus, Trash2, Save, Building2, Loader2, ShieldCheck, AlertTri
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { MoneyInput } from "@/components/ui/money-input"
 import { Label } from "@/components/ui/label"
 import { Badge } from "@/components/ui/badge"
 import { Switch } from "@/components/ui/switch"
@@ -657,15 +658,11 @@ export function TreasuryManager() {
             </div>
             <div className="space-y-2">
               <Label htmlFor="tm-txn-amount">Amount (EUR)</Label>
-              <Input
+              <MoneyInput
                 id="tm-txn-amount"
-                type="number"
-                min="0"
-                step="0.01"
-                inputMode="decimal"
                 placeholder="0.00"
                 value={txnAmount}
-                onChange={(e) => setTxnAmount(e.target.value)}
+                onValueChange={setTxnAmount}
               />
             </div>
           </div>
