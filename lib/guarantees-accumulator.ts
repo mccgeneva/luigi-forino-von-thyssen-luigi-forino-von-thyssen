@@ -376,6 +376,35 @@ export function riskBandLabel(band: RiskBand): string {
 }
 
 /**
+ * ADAPTIVE OVERDRAFT TRUST RATIO — a 0..1 measure of how trustworthy the account
+ * is FOR THE PURPOSE OF SIZING ITS AUTHORIZED OVERDRAFT.
+ *
+ *   1 = spotless → earns the full tier overdraft grant (max allowed).
+ *   0 = at/above the high-risk threshold → reverts to the deposit-based ceiling.
+ *   in between → the ceiling scales smoothly between those two.
+ *
+ * It is derived from the SAME risk math (weighted-sum → sqrt, minus the positive
+ * age/equity/inflow credits) but DELIBERATELY EXCLUDES the overdraft factor, so
+ * that merely USING the granted headroom (going negative within it) never shrinks
+ * the ceiling — only genuine risk (under-collateralisation, leverage, exposure,
+ * arrears, a thin track record) pulls the ratio down. Pure and client-safe.
+ */
+export function overdraftTrustRatio(score: GuaranteeScore, config: GuaranteeConfig): number {
+  const threshold = config.highRiskThreshold > 0 ? config.highRiskThreshold : 10
+  const f = score.factors
+  const weightedExOverdraft =
+    config.weightSecurityDeposit * f.securityDeposit +
+    config.weightLeverageLoad * f.leverageLoad +
+    config.weightExposure * f.exposure +
+    config.weightPaymentPenalty * f.paymentPenalty +
+    config.weightTrackRecord * f.trackRecord
+  const riskExOverdraft = Math.sqrt(Math.max(0, weightedExOverdraft))
+  // The credits that improve the headline score also lift the overdraft trust.
+  const netRisk = Math.max(0, riskExOverdraft - score.ageCredit - score.equityCredit - score.inflowCredit)
+  return clamp(1 - netRisk / threshold, 0, 1)
+}
+
+/**
  * Administrator manual override of a single account's trust score. The admin
  * drags a bar to force the displayed risk score to an EXACT number; this is
  * applied silently on top of the computed score — the customer only ever sees
