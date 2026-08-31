@@ -17,6 +17,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Input } from "@/components/ui/input"
+import { MoneyInput } from "@/components/ui/money-input"
 import { Label } from "@/components/ui/label"
 import { Switch } from "@/components/ui/switch"
 import { Textarea } from "@/components/ui/textarea"
@@ -363,11 +364,10 @@ export function InstrumentAuditManager() {
                 <div className="grid gap-3 sm:grid-cols-2">
                   <div className="space-y-1.5">
                     <Label htmlFor="audit-realistic">Realistic value ({target.instrument.currency})</Label>
-                    <Input
+                    <MoneyInput
                       id="audit-realistic"
-                      inputMode="decimal"
                       value={realisticValue}
-                      onChange={(e) => setRealisticValue(e.target.value)}
+                      onValueChange={setRealisticValue}
                     />
                   </div>
                   <div className="space-y-1.5">

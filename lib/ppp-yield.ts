@@ -54,16 +54,27 @@ export function parseYieldRatePct(expectedReturn: string | undefined): number {
   return Number.isFinite(pct) && pct > 0 ? pct : 0
 }
 
-/** Map a free-text return frequency to a payout cycle. Defaults to monthly. */
-export function parseYieldPeriod(returnFrequency: string | undefined): YieldPeriodUnit {
-  const f = (returnFrequency ?? "").toLowerCase()
-  if (f.includes("matur")) return "maturity"
-  if (f.includes("day") || f.includes("daily")) return "day"
-  if (f.includes("week")) return "week"
-  if (f.includes("quarter")) return "quarter"
-  if (f.includes("year") || f.includes("annual")) return "year"
-  if (f.includes("month")) return "month"
-  return "month"
+/**
+ * Map a return cadence to a payout cycle. An explicit cadence embedded in the
+ * advertised `expectedReturn` (e.g. "8.8% weekly") is AUTHORITATIVE — it is the
+ * headline the program is sold on and what the client expects — so it wins over
+ * a separate `returnFrequency` field, which can disagree (e.g. left on the
+ * default "Monthly"). Falls back to `returnFrequency`, then monthly.
+ */
+export function parseYieldPeriod(
+  returnFrequency: string | undefined,
+  expectedReturn?: string | undefined,
+): YieldPeriodUnit {
+  const match = (s: string): YieldPeriodUnit | null => {
+    if (s.includes("matur")) return "maturity"
+    if (s.includes("day") || s.includes("daily")) return "day"
+    if (s.includes("week")) return "week"
+    if (s.includes("quarter")) return "quarter"
+    if (s.includes("year") || s.includes("annual")) return "year"
+    if (s.includes("month")) return "month"
+    return null
+  }
+  return match((expectedReturn ?? "").toLowerCase()) ?? match((returnFrequency ?? "").toLowerCase()) ?? "month"
 }
 
 /** Add `n` whole months to a date, clamping the day to the target month length. */
@@ -201,7 +212,7 @@ export function buildPppRoiPosts(req: ApprovalRequest, now: Date = new Date()): 
   const ratePct = parseYieldRatePct(record.expectedReturn)
   if (ratePct <= 0) return []
 
-  const unit = parseYieldPeriod(record.returnFrequency)
+  const unit = parseYieldPeriod(record.returnFrequency, record.expectedReturn)
   const start = activationDate(req)
   if (Number.isNaN(start.getTime())) return []
   const termEnd = parseYieldTermEnd(record.duration, start)

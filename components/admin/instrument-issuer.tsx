@@ -5,6 +5,7 @@ import { Landmark, Loader2, ShieldCheck } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { MoneyInput } from "@/components/ui/money-input"
 import { Label } from "@/components/ui/label"
 import {
   Select,
@@ -214,14 +215,11 @@ export function InstrumentIssuer() {
           </div>
           <div className="grid gap-2">
             <Label htmlFor="issue-face">Face Value</Label>
-            <Input
+            <MoneyInput
               id="issue-face"
-              type="number"
-              min="0"
-              step="0.01"
               placeholder="0.00"
               value={faceValue}
-              onChange={(e) => setFaceValue(e.target.value)}
+              onValueChange={setFaceValue}
             />
           </div>
           <div className="grid gap-2">
