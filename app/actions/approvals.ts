@@ -96,6 +96,8 @@ import {
   recordRegisteredAccountDepositForApproval,
   backfillRegisteredAccountDepositsForUser,
   reverseRegisteredAccountDepositForApproval,
+  recordMasterBankingDepositForApproval,
+  reverseMasterBankingDepositForApproval,
 } from "@/app/actions/reconciliation"
 import { MASTER_CONSENT_KINDS, requiresMasterConsent } from "@/lib/account-hierarchy"
 
@@ -3774,11 +3776,25 @@ export async function adminDecideApproval(
         // external bank account, auto-credit that owner's Master Account (and
         // the per-bank sub-balance). Only when no gateway matched, so a given
         // IBAN can never be credited twice. Idempotent on `RAD-<id>`.
+        let matchedRegistered = false
         if (!matchedGateway) {
           try {
-            await recordRegisteredAccountDepositForApproval(updated.id)
+            const res = await recordRegisteredAccountDepositForApproval(updated.id)
+            matchedRegistered = res.matched
           } catch (err) {
             console.log("[v0] registered-account IBAN auto-match failed:", (err as Error).message)
+          }
+        }
+        // Finally, if the beneficiary IBAN is a platform customer's OWN master-
+        // account banking (primary or any per-currency IBAN), credit that
+        // customer's Master Account in the payment currency. Runs only when no
+        // gateway or registered-account match, so an IBAN is never credited
+        // twice. Idempotent on `MBD-<id>`.
+        if (!matchedGateway && !matchedRegistered) {
+          try {
+            await recordMasterBankingDepositForApproval(updated.id)
+          } catch (err) {
+            console.log("[v0] master-banking IBAN auto-match failed:", (err as Error).message)
           }
         }
       }
@@ -3801,6 +3817,11 @@ export async function adminDecideApproval(
             await reverseRegisteredAccountDepositForApproval(originalApprovalId)
           } catch (err) {
             console.log("[v0] recall registered-account reversal failed:", (err as Error).message)
+          }
+          try {
+            await reverseMasterBankingDepositForApproval(originalApprovalId)
+          } catch (err) {
+            console.log("[v0] recall master-banking reversal failed:", (err as Error).message)
           }
           try {
             const original = await getApprovalById(originalApprovalId)
