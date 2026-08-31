@@ -55,6 +55,15 @@ type Payload = {
   issuedByAdmin?: boolean
   upgrade?: InstrumentUpgrade
   transferredTo?: string
+  /**
+   * When set, an administrator has manually removed this instrument from the
+   * upgrade waiting list (e.g. the customer no longer effectively holds it, or
+   * it should not be offered for transformation). Hides it from the `list` op.
+   * Reversible via the `restore` op. This is a LIST-VISIBILITY flag only — it
+   * never touches the instrument, the ledger, or any facility.
+   */
+  upgradeListDismissedAt?: string
+  upgradeListDismissedBy?: string
 }
 
 function baseInstrument(p: Payload): InstrumentVM {
@@ -174,9 +183,12 @@ export async function POST(req: Request) {
             holderEmail: who?.email ?? "",
             instrument: inst,
             upgrade: payload.upgrade ?? null,
+            dismissed: Boolean(payload.upgradeListDismissedAt),
           }
         })
-        .filter((i) => !!i.instrument.id)
+        // Drop instruments an admin has manually removed from the list, and any
+        // with no resolvable id.
+        .filter((i) => !!i.instrument.id && !i.dismissed)
       // Annotate each with whether it is currently pledged/reserved to a live
       // facility, so the UI can disable "Propose upgrade" up-front. Also resolve
       // the holder's real name/email when they are NOT in the active
@@ -394,6 +406,55 @@ export async function POST(req: Request) {
       }
 
       return NextResponse.json({ ok: true, refunded, currency: current.feeCurrency }, { status: 200 })
+    }
+
+    // Manually remove an instrument from the upgrade waiting list (or put it
+    // back). List-visibility only — never touches the instrument, ledger, or any
+    // facility. Use this to clear a stale row the customer no longer effectively
+    // holds, without a risky auto-hide heuristic.
+    if (op === "dismiss" || op === "restore") {
+      const approvalId = String(body.approvalId ?? "")
+      const existing = await getApprovalById(approvalId)
+      if (!existing || existing.kind !== "instrument") {
+        return NextResponse.json({ ok: false, error: "Instrument not found." }, { status: 200 })
+      }
+      const payload = (existing.payload ?? {}) as Payload
+      const current = payload.upgrade
+      if (op === "dismiss" && current && (current.status === "negotiating" || current.status === "proposed")) {
+        return NextResponse.json(
+          { ok: false, error: "This instrument has an open upgrade offer. Withdraw it first, then remove it from the list." },
+          { status: 200 },
+        )
+      }
+      const inst = baseInstrument(payload)
+      const next: Payload = { ...payload }
+      if (op === "dismiss") {
+        next.upgradeListDismissedAt = new Date().toISOString()
+        next.upgradeListDismissedBy = "Administrator"
+      } else {
+        delete next.upgradeListDismissedAt
+        delete next.upgradeListDismissedBy
+      }
+      await updateApprovalPayload(approvalId, next)
+
+      try {
+        const target = await resolveAccountProfileById(existing.userId)
+        await logActivity({
+          action: `Administrator ${op === "dismiss" ? "removed" : "restored"} an instrument ${op === "dismiss" ? "from" : "to"} the upgrade list for ${target.fullName}`,
+          category: "Administration / Instruments",
+          user: "Administrator",
+          details: {
+            referenceId: String(inst.id ?? approvalId),
+            targetAccount: `${target.fullName} — ${target.email}`,
+            summary: `${op === "dismiss" ? "Removed" : "Restored"} ${inst.typeFull ?? "instrument"} (${String(inst.currency ?? existing.currency ?? "")} ${(Number(inst.faceValue ?? existing.amount) || 0).toLocaleString("en-US")}) ${op === "dismiss" ? "from" : "to"} the upgrade waiting list.`,
+            action: op === "dismiss" ? "Removed from upgrade list" : "Restored to upgrade list",
+          },
+        })
+      } catch {
+        /* best-effort */
+      }
+
+      return NextResponse.json({ ok: true }, { status: 200 })
     }
 
     return NextResponse.json({ ok: false, error: "Unknown operation." }, { status: 200 })
