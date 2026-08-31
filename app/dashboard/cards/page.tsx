@@ -30,6 +30,7 @@ import {
 import { cardFeeFor, formatCardFee } from "@/lib/card-fees"
 import { RequestCardDialog } from "@/components/dashboard/cards/request-card-dialog"
 import { CardDetailPanel } from "@/components/dashboard/cards/card-detail-panel"
+import { CardTransactions } from "@/components/dashboard/cards/card-transactions"
 
 const STATUS_BADGE: Record<ClientCard["status"], { label: string; variant: "default" | "secondary" | "destructive" | "outline" }> = {
   pending: { label: "Pending", variant: "default" },
@@ -225,6 +226,9 @@ export default function CardsPage() {
           {activeCard && <CardDetailPanel key={activeCard.id} card={activeCard} />}
         </>
       )}
+
+      {/* Live extract of every recorded card transaction + on-demand PDF export */}
+      <CardTransactions />
     </div>
   )
 }
