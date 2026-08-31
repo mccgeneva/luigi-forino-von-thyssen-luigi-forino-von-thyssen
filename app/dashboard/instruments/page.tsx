@@ -355,8 +355,8 @@ export default function InstrumentsPage() {
   // monetization reserve. Fetched when the monetize dialog opens; undefined until
   // then (falls back to the standard 1% premium in the preview).
   const [monetizeTrustScore, setMonetizeTrustScore] = useState<number | undefined>(undefined)
-  // Authorized overdraft headroom (EUR), so the upfront-reserve gate counts the
-  // client's overdraft facility on top of cash — not cash only.
+  // Authorized overdraft headroom (EUR) — so the upfront-cost gate counts the
+  // client's own cash PLUS their overdraft facility, not cash alone.
   const [monetizeOverdraftEur, setMonetizeOverdraftEur] = useState<number>(0)
   const [monetizeForm, setMonetizeForm] = useState({
     structure: "CreditLine" as MonetizationStructure,
@@ -811,9 +811,10 @@ export default function InstrumentsPage() {
   const monetizeEquityDeposit = monetizeEquityQuote.equityDeposit
   const monetizePpi = monetizeEquityQuote.ppi
   const monetizeReserve = monetizeEquityQuote.totalUpfront
-  // Spendable = same-currency cash PLUS the authorized overdraft headroom
-  // (converted EUR→reserve currency). A reserve within the overdraft facility
-  // must be allowed — e.g. €205,800 upfront on €3,681 cash + €250,000 overdraft.
+  // The upfront monetization cost (equity deposit + 1% PPI) must be paid upfront
+  // from the client's OWN funds — same-currency cash PLUS their authorized
+  // overdraft headroom (converted EUR→reserve currency). If real cash + overdraft
+  // cannot cover it, the operation is REJECTED and the client must top up first.
   const monetizeReserveCash = monetizeTarget ? balanceFor(monetizeReserveCurrency) : 0
   const monetizeReserveOverdraft =
     monetizeTarget && monetizeOverdraftEur > 0
@@ -837,6 +838,10 @@ export default function InstrumentsPage() {
   const transferFeeShortfall = Math.max(0, transferFee - transferFeeAvailable)
   const canCoverTransferFee = transferFee <= 0 || transferFeeAvailable + 0.01 >= transferFee
 
+  // The upfront cost (equity deposit + 1% PPI) is PAID upfront — a real charge,
+  // not a frozen block — and must be affordable from the client's own cash plus
+  // authorized overdraft. Submission requires a valid LTV AND enough to pay the
+  // cost; otherwise it is rejected and the client tops up first.
   const canSubmitMonetization = !!monetizeTarget && monetizeLtvValid && canCoverMonetizeReserve
   // Progressive (tiered) debit-interest pricing on the gross proceeds — the
   // outstanding debit the client will owe. Shown live so the client sees the
@@ -845,7 +850,7 @@ export default function InstrumentsPage() {
 
   const confirmMonetization = () => {
     if (!monetizeTarget) return
-    if (!canSubmitMonetization) {
+    if (!monetizeLtvValid) {
       toast.error("Check the advance rate", {
         description: "Enter a loan-to-value / advance rate between 1 and 100 percent.",
       })
@@ -861,11 +866,13 @@ export default function InstrumentsPage() {
       })
       return
     }
-    // Same-currency solvency gate: 0.75% of the advance must be reservable from
-    // the balance in the INSTRUMENT'S currency, or the operation is refused.
+    // Upfront-cost gate: the equity deposit + 1% PPI must be payable NOW from the
+    // client's own funds — same-currency cash PLUS their authorized overdraft. If
+    // that cannot cover it, the operation is REJECTED and the client must top up
+    // their account first, then monetize (costs are paid upfront).
     if (!canCoverMonetizeReserve) {
-      toast.error("Operation not possible — insufficient equity", {
-        description: `Monetizing ${instrument.id} at ${monetizeAdvanceRate}% LTV requires ${formatCurrency(monetizeReserve, monetizeReserveCurrency)} blocked in ${monetizeReserveCurrency} — a ${(monetizeEquityRate * 100).toFixed(2)}% equity deposit (${formatCurrency(monetizeEquityDeposit, monetizeReserveCurrency)}) plus 1% PPI (${formatCurrency(monetizePpi, monetizeReserveCurrency)}). You have ${formatCurrency(monetizeReserveAvailable, monetizeReserveCurrency)} available — short by ${formatCurrency(monetizeReserveShortfall, monetizeReserveCurrency)}. Fund your ${monetizeReserveCurrency} balance and try again.`,
+      toast.error("Operation not possible — top up first", {
+        description: `Monetizing ${instrument.id} at ${monetizeAdvanceRate}% LTV costs ${formatCurrency(monetizeReserve, monetizeReserveCurrency)} upfront in ${monetizeReserveCurrency} — a ${(monetizeEquityRate * 100).toFixed(2)}% equity deposit (${formatCurrency(monetizeEquityDeposit, monetizeReserveCurrency)}) plus 1% PPI (${formatCurrency(monetizePpi, monetizeReserveCurrency)}). Payable from your ${monetizeReserveCurrency} cash plus authorized overdraft, but only ${formatCurrency(monetizeReserveAvailable, monetizeReserveCurrency)} is available — short by ${formatCurrency(monetizeReserveShortfall, monetizeReserveCurrency)}. Top up your ${monetizeReserveCurrency} balance, then monetize.`,
       })
       return
     }
@@ -898,26 +905,27 @@ export default function InstrumentsPage() {
       notes: monetizeForm.notes.trim(),
     })
 
-    // Block the 0.75% reserve immediately as a server-persisted HOLD in the
-    // instrument's currency. It reduces the available balance now, stays blocked
-    // while the request is pending/approved (facility collateral), and is
-    // released automatically by the reconciler below if it is declined/reversed.
+    // Pay the upfront cost NOW — a real debit (not a frozen block). It draws on
+    // cash first, then the authorized overdraft; any overdraft used accrues the
+    // standard debit interest for as long as it stays used. The charge is
+    // refunded automatically if the request is rejected/reversed or the facility
+    // settles (see the reserve-release effect). Deterministic id = idempotent.
     if (monetizeReserve > 0) {
       addDebit({
         id: `MON-RSV-${created.id}`,
         amount: monetizeReserve,
         currency: monetizeReserveCurrency,
-        status: "hold",
+        status: "completed",
         date: new Date().toISOString(),
-        counterparty: `Monetization equity + PPI — ${instrument.type} ${instrument.id}`,
+        counterparty: `Monetization upfront cost — ${instrument.type} ${instrument.id}`,
         reference: created.id,
         category: "Monetization Reserve",
-        comment: `Equity deposit ${(monetizeEquityRate * 100).toFixed(2)}% (${formatCurrency(monetizeEquityDeposit, monetizeReserveCurrency)}) + 1% PPI (${formatCurrency(monetizePpi, monetizeReserveCurrency)}) blocked in ${monetizeReserveCurrency} against monetization of ${instrument.type} ${instrument.id} at ${monetizeAdvanceRate}% LTV. Released automatically if the request is declined or reversed.`,
+        comment: `Upfront monetization cost paid at submission: ${(monetizeEquityRate * 100).toFixed(2)}% equity deposit (${formatCurrency(monetizeEquityDeposit, monetizeReserveCurrency)}) + 1% PPI (${formatCurrency(monetizePpi, monetizeReserveCurrency)}) on the ${formatCurrency(monetizeProceeds, monetizeForm.proceedsCurrency)} advance. Paid from cash + authorized overdraft; refunded if the request is declined or the facility settles.`,
       })
     }
 
     toast.success("Monetization request submitted", {
-      description: `Request ${created.id} for ${instrument.id} is pending Administrator authorization. ${formatCurrency(monetizeReserve, monetizeReserveCurrency)} is now blocked from your ${monetizeReserveCurrency} balance (equity ${formatCurrency(monetizeEquityDeposit, monetizeReserveCurrency)} + PPI ${formatCurrency(monetizePpi, monetizeReserveCurrency)}). The ${formatCurrency(monetizeProceeds, monetizeForm.proceedsCurrency)} gross proceeds will be credited to your Master Account only once it is approved.`,
+      description: `Request ${created.id} for ${instrument.id} is pending Administrator authorization. The ${formatCurrency(monetizeReserve, monetizeReserveCurrency)} upfront cost was charged now (cash + overdraft); the ${formatCurrency(monetizeProceeds, monetizeForm.proceedsCurrency)} advance is credited on approval and carries monthly debit interest while outstanding.`,
     })
     logActivity({
       action: `Requested monetization of ${instrument.type} ${instrument.id} (${formatCurrency(instrument.faceValue, instrument.currency)})`,
@@ -958,18 +966,18 @@ export default function InstrumentsPage() {
       try {
         const res = await fetch("/api/guarantees", { credentials: "include", cache: "no-store" })
         const data = res.ok ? await res.json() : null
-        const score = data?.ok ? Number(data?.score?.finalScore) : NaN
-        const remaining = data?.ok ? Number(data?.overdraft?.remainingEur) : NaN
-        if (!cancelled) {
-          setMonetizeTrustScore(Number.isFinite(score) ? score : undefined)
-          setMonetizeOverdraftEur(Number.isFinite(remaining) && remaining > 0 ? remaining : 0)
+          const score = data?.ok ? Number(data?.score?.finalScore) : NaN
+          const remaining = data?.ok ? Number(data?.overdraft?.remainingEur) : NaN
+          if (!cancelled) {
+            setMonetizeTrustScore(Number.isFinite(score) ? score : undefined)
+            setMonetizeOverdraftEur(Number.isFinite(remaining) && remaining > 0 ? remaining : 0)
+          }
+        } catch {
+          if (!cancelled) {
+            setMonetizeTrustScore(undefined)
+            setMonetizeOverdraftEur(0)
+          }
         }
-      } catch {
-        if (!cancelled) {
-          setMonetizeTrustScore(undefined)
-          setMonetizeOverdraftEur(0)
-        }
-      }
     })()
     return () => {
       cancelled = true
@@ -979,14 +987,16 @@ export default function InstrumentsPage() {
   const releasedReservesRef = useRef<Set<string>>(new Set())
   useEffect(() => {
     if (!ledgerHydrated || !monetizationHydrated) return
-    const activeIds = new Set(
-      monetizationRequests
-        .filter((r) => r.status === "pending" || r.status === "approved")
-        .map((r) => r.id),
-    )
+    // The upfront cost stays charged while the monetization is LIVE (pending or
+    // an outstanding, not-yet-settled facility). Once it is declined, reversed
+    // or settled — i.e. no longer live — the matching `MON-RSV-<id>` charge is
+    // refunded. Covers both the new real `completed` charge and any legacy
+    // `hold` reserve. `isLiveRequest` treats closedAt/settledAt/reversedAt and
+    // terminal statuses as not-live.
+    const activeIds = new Set(monetizationRequests.filter((r) => isLiveRequest(r)).map((r) => r.id))
     const stale = ledgerEntries.filter(
       (e) =>
-        e.status === "hold" &&
+        (e.status === "hold" || e.status === "completed") &&
         e.direction === "debit" &&
         e.category === "Monetization Reserve" &&
         typeof e.id === "string" &&
@@ -2726,67 +2736,64 @@ export default function InstrumentsPage() {
                   </p>
                 </div>
 
-                {/* Upfront equity deposit (LTV-scaled) + PPI, blocked in the instrument's currency */}
-                <div
-                  className={cn(
-                    "rounded-lg border p-3 sm:col-span-2",
-                    canCoverMonetizeReserve ? "border-primary/20 bg-primary/5" : "border-destructive/40 bg-destructive/10",
-                  )}
-                >
-                  <p className="mb-2 text-sm font-medium text-foreground">
-                    Upfront equity deposit — blocked in {monetizeReserveCurrency}
-                  </p>
-                  <div className="space-y-1.5 text-xs">
-                    <div className="flex items-center justify-between gap-3">
-                      <span className="text-muted-foreground">
-                        Equity ({(monetizeEquityRate * 100).toFixed(2)}% at {monetizeAdvanceRate || 0}% LTV)
-                      </span>
+                {/* No funds are blocked — monetization is a credit facility that carries
+                    monthly debit interest for as long as it stays outstanding. */}
+                {monetizeReserve > 0 && (
+                  <div
+                    className={cn(
+                      "space-y-2 rounded-lg border p-3 sm:col-span-2",
+                      canCoverMonetizeReserve
+                        ? "border-primary/20 bg-primary/5"
+                        : "border-destructive/40 bg-destructive/10",
+                    )}
+                  >
+                    <p className="text-sm font-medium text-foreground">Upfront cost — paid now</p>
+                    <div className="flex items-center justify-between text-xs text-muted-foreground">
+                      <span>Equity deposit ({(monetizeEquityRate * 100).toFixed(2)}% @ {monetizeAdvanceRate}% LTV)</span>
                       <span className="font-medium text-foreground">
                         {formatCurrency(monetizeEquityDeposit, monetizeReserveCurrency)}
                       </span>
                     </div>
-                    <div className="flex items-center justify-between gap-3">
-                      <span className="text-muted-foreground">PPI — Payment Protection Insurance (1% of advance)</span>
+                    <div className="flex items-center justify-between text-xs text-muted-foreground">
+                      <span>Payment protection insurance (1%)</span>
                       <span className="font-medium text-foreground">
                         {formatCurrency(monetizePpi, monetizeReserveCurrency)}
                       </span>
                     </div>
-                    <div className="flex items-center justify-between gap-3 border-t border-border/60 pt-1.5">
-                      <span className="font-medium text-foreground">Total blocked upfront</span>
-                      <span className="text-base font-semibold text-foreground">
+                    <div className="flex items-center justify-between border-t border-border pt-2 text-sm">
+                      <span className="font-medium text-foreground">Total charged now</span>
+                      <span className="font-semibold text-primary">
                         {formatCurrency(monetizeReserve, monetizeReserveCurrency)}
                       </span>
                     </div>
-                    <div className="flex items-center justify-between gap-3">
-                      <span className="text-muted-foreground">Available {monetizeReserveCurrency} balance</span>
+                    <div className="flex items-center justify-between text-[11px] text-muted-foreground">
+                      <span>Available {monetizeReserveCurrency} (cash + overdraft)</span>
                       <span className={cn("font-medium", canCoverMonetizeReserve ? "text-foreground" : "text-destructive")}>
                         {formatCurrency(monetizeReserveAvailable, monetizeReserveCurrency)}
                       </span>
                     </div>
-                  </div>
-                  {canCoverMonetizeReserve ? (
-                    <p className="mt-2 flex items-start gap-1.5 text-[11px] leading-relaxed text-muted-foreground">
+                    <p className="flex items-start gap-1.5 text-[11px] leading-relaxed text-muted-foreground">
                       <Lock className="mt-px h-3 w-3 shrink-0" />
-                      <span>
-                        The equity scales from 0.0625% at 1% LTV to ~0.42% at 100% LTV; the PPI premium is funded from it. The
-                        full amount is blocked from your {monetizeReserveCurrency} Master Account on submission and
-                        released automatically if the request is declined or reversed.
-                      </span>
+                      {canCoverMonetizeReserve ? (
+                        <span>
+                          The upfront cost is paid now from your cash plus authorized overdraft — not frozen. Any
+                          overdraft used accrues debit interest for as long as it stays used. It is refunded if the
+                          request is declined or when the facility settles. The advance itself is credited on approval
+                          and carries monthly debit interest while outstanding (see below).
+                        </span>
+                      ) : (
+                        <span className="text-destructive">
+                          <strong>Operation not possible.</strong> The upfront cost of{" "}
+                          {formatCurrency(monetizeReserve, monetizeReserveCurrency)} must be paid now from your{" "}
+                          {monetizeReserveCurrency} cash plus authorized overdraft, but only{" "}
+                          {formatCurrency(monetizeReserveAvailable, monetizeReserveCurrency)} is available — short by{" "}
+                          {formatCurrency(monetizeReserveShortfall, monetizeReserveCurrency)}. Top up your{" "}
+                          {monetizeReserveCurrency} balance first, then monetize.
+                        </span>
+                      )}
                     </p>
-                  ) : (
-                    <div className="mt-2 flex items-start gap-1.5 rounded-md border border-destructive/40 bg-destructive/10 p-2 text-[11px] leading-relaxed text-destructive">
-                      <AlertCircle className="mt-px h-3.5 w-3.5 shrink-0" />
-                      <span>
-                        <strong>Operation not possible.</strong> You must reserve{" "}
-                        {formatCurrency(monetizeReserve, monetizeReserveCurrency)} upfront in {monetizeReserveCurrency} —
-                        a {(monetizeEquityRate * 100).toFixed(2)}% equity deposit plus 1% PPI — but only{" "}
-                        {formatCurrency(monetizeReserveAvailable, monetizeReserveCurrency)} is available, short by{" "}
-                        {formatCurrency(monetizeReserveShortfall, monetizeReserveCurrency)}. Fund your{" "}
-                        {monetizeReserveCurrency} balance before monetizing this instrument.
-                      </span>
-                    </div>
-                  )}
-                </div>
+                  </div>
+                )}
 
                 {/* Progressive (tiered) debit interest on the gross proceeds. */}
                 {monetizePricing.totalAnnualInterest > 0 && (
@@ -2974,7 +2981,7 @@ export default function InstrumentsPage() {
                 </Button>
                 <Button onClick={confirmMonetization} disabled={!canSubmitMonetization}>
                   <ShieldCheck className="mr-2 h-4 w-4" />
-                  {canCoverMonetizeReserve ? "Submit for Authorization" : "Insufficient reserve balance"}
+                  {canCoverMonetizeReserve ? "Submit for Authorization" : "Top up to cover upfront cost"}
                 </Button>
               </DialogFooter>
             </>
