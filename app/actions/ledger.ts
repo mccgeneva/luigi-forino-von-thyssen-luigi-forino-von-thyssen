@@ -279,19 +279,14 @@ export async function sendInstantTransfer(input: {
   }
 
   try {
-    // 2% platform fee, charged to the SENDER on top of the amount. The recipient
-    // still receives the full amount; the sender pays amount + fee.
-    const fee = internalTransferFee(amount)
-    const totalDebit = Math.round((amount + fee + Number.EPSILON) * 100) / 100
-
-    // Server-side balance enforcement: never allow an overdraft. Must cover the
-    // amount PLUS the fee.
+    // Server-side balance enforcement: never allow an overdraft. The 2% fee is
+    // deducted from the RECIPIENT (below), so the sender only needs the amount.
     const senderEntries = await readLedger(senderOwnerId)
     const available = availableBalanceFor(senderEntries, currency)
-    if (totalDebit > available) {
+    if (amount > available) {
       return {
         ok: false,
-        error: `Insufficient funds. This transfer needs ${currency} ${totalDebit.toLocaleString("en-US")} (incl. a ${INTERNAL_TRANSFER_FEE_LABEL} fee of ${currency} ${fee.toLocaleString("en-US")}) but only ${currency} ${available.toLocaleString("en-US")} is available.`,
+        error: `Insufficient funds. This transfer needs ${currency} ${amount.toLocaleString("en-US")} but only ${currency} ${available.toLocaleString("en-US")} is available.`,
       }
     }
 
