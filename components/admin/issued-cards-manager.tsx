@@ -19,6 +19,7 @@ import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Input } from "@/components/ui/input"
 import { MoneyInput } from "@/components/ui/money-input"
+import { Textarea } from "@/components/ui/textarea"
 import { Label } from "@/components/ui/label"
 import { Checkbox } from "@/components/ui/checkbox"
 import {
@@ -157,6 +158,7 @@ export function IssuedCardsManager() {
   const [txnCurrency, setTxnCurrency] = useState("EUR")
   const [txnDate, setTxnDate] = useState("")
   const [txnReference, setTxnReference] = useState("")
+  const [txnNotes, setTxnNotes] = useState("")
   const [analyzing, setAnalyzing] = useState(false)
   const [recording, setRecording] = useState(false)
   const [receiptName, setReceiptName] = useState("")
@@ -168,6 +170,7 @@ export function IssuedCardsManager() {
     setTxnCurrency(card.card.currency ?? "EUR")
     setTxnDate("")
     setTxnReference("")
+    setTxnNotes("")
     setReceiptName("")
     if (receiptRef.current) receiptRef.current.value = ""
     setTxnTarget(card)
@@ -192,6 +195,7 @@ export function IssuedCardsManager() {
       if (d.currency) setTxnCurrency(String(d.currency).toUpperCase().slice(0, 3))
       if (d.date) setTxnDate(String(d.date))
       if (d.reference) setTxnReference(String(d.reference))
+      if (d.summary) setTxnNotes(String(d.summary))
       toast.success("Receipt analyzed", { description: "Review the details, then record." })
     } catch {
       toast.error("Could not analyze the receipt", { description: "Enter the details manually." })
@@ -217,6 +221,7 @@ export function IssuedCardsManager() {
         last4: txnTarget.card.last4,
         reference: txnReference || undefined,
         network: txnTarget.card.network,
+        notes: txnNotes || undefined,
       })
       if (!res.ok) {
         toast.error("Could not record transaction", { description: res.error })
@@ -783,6 +788,16 @@ export function IssuedCardsManager() {
                 <Label htmlFor="txn-ref">Reference (optional)</Label>
                 <Input id="txn-ref" value={txnReference} onChange={(e) => setTxnReference(e.target.value)} placeholder="Receipt ref" />
               </div>
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="txn-notes">Receipt reading / notes</Label>
+              <Textarea
+                id="txn-notes"
+                value={txnNotes}
+                onChange={(e) => setTxnNotes(e.target.value)}
+                placeholder="What the receipt says — auto-filled from the upload; edit if needed. Stored with the transaction."
+                rows={2}
+              />
             </div>
             {txnValid && (
               <div className="space-y-1 rounded-lg border border-border bg-muted/30 p-3 text-sm">

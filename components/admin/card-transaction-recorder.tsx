@@ -7,6 +7,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { MoneyInput } from "@/components/ui/money-input"
+import { Textarea } from "@/components/ui/textarea"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { ADMIN_PASSCODE } from "@/lib/admin-config"
@@ -45,6 +46,7 @@ export function CardTransactionRecorder() {
   const [last4, setLast4] = useState("")
   const [network, setNetwork] = useState("")
   const [reference, setReference] = useState("")
+  const [notes, setNotes] = useState("")
 
   useEffect(() => {
     let cancelled = false
@@ -83,6 +85,7 @@ export function CardTransactionRecorder() {
     setLast4("")
     setNetwork("")
     setReference("")
+    setNotes("")
     setReceiptName("")
     setExtractError(null)
     if (fileRef.current) fileRef.current.value = ""
@@ -116,6 +119,7 @@ export function CardTransactionRecorder() {
         last4?: string
         cardNetwork?: string
         reference?: string
+        summary?: string
       }
       if (d.merchant) setMerchant(d.merchant)
       if (d.amount) setAmount(d.amount.replace(/[^0-9.]/g, ""))
@@ -124,6 +128,7 @@ export function CardTransactionRecorder() {
       if (d.last4) setLast4(d.last4.replace(/\D/g, "").slice(-4))
       if (d.cardNetwork) setNetwork(d.cardNetwork)
       if (d.reference) setReference(d.reference)
+      if (d.summary) setNotes(d.summary)
       toast.success("Receipt analyzed", { description: "Review the details below, then record the transaction." })
     } catch {
       setExtractError("Could not analyze the receipt. Enter the details manually.")
@@ -143,6 +148,7 @@ export function CardTransactionRecorder() {
       last4,
       reference,
       network,
+      notes,
     })
     setRecording(false)
     if (!res.ok) {
@@ -273,6 +279,16 @@ export function CardTransactionRecorder() {
           <div className="space-y-1.5 sm:col-span-2">
             <Label htmlFor="ctr-ref">Reference (optional)</Label>
             <Input id="ctr-ref" value={reference} onChange={(e) => setReference(e.target.value)} placeholder="Authorization / reference number" />
+          </div>
+          <div className="space-y-1.5 sm:col-span-2">
+            <Label htmlFor="ctr-notes">Receipt reading / notes</Label>
+            <Textarea
+              id="ctr-notes"
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
+              placeholder="What the receipt says — auto-filled from the uploaded document; edit if needed. Stored with the transaction and shown to the client."
+              rows={2}
+            />
           </div>
         </div>
 

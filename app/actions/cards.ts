@@ -161,6 +161,8 @@ export async function adminRecordCardTransaction(
     last4?: string
     reference?: string
     network?: string
+    /** The reading of the uploaded receipt (OCR summary) or an admin note. Stored on the transaction. */
+    notes?: string
   },
 ): Promise<RecordCardTransactionResult> {
   if (!(await adminOk(passcode))) return { ok: false, error: "Administrator authorization failed." }
@@ -197,6 +199,10 @@ export async function adminRecordCardTransaction(
   const cardTag = input.last4 ? ` ····${input.last4}` : ""
   const date = input.date && !Number.isNaN(Date.parse(input.date)) ? new Date(input.date).toISOString() : new Date().toISOString()
   const baseId = `CARDTXN-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`.toUpperCase()
+  const readingNote = (input.notes || "").trim()
+  const txnComment = readingNote
+    ? `${readingNote}${input.reference ? ` — ref ${input.reference}` : ""}`
+    : `Card transaction recorded by administrator${input.reference ? ` — ref ${input.reference}` : ""}.`
 
   try {
     // 1) The transaction amount.
@@ -210,7 +216,7 @@ export async function adminRecordCardTransaction(
       counterparty: `${merchant}${input.network ? ` (${input.network})` : ""}`,
       reference: input.reference || baseId,
       category: `Card Transaction${cardTag}`,
-      comment: `Card transaction recorded by administrator${input.reference ? ` — ref ${input.reference}` : ""}.`,
+      comment: txnComment,
     }
     const txnRes = await addLedgerEntryForUserAdmin(passcode, userId, txnEntry)
     if (!txnRes.ok) return { ok: false, error: txnRes.error }
