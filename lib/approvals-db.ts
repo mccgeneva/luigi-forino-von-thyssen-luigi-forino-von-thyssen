@@ -433,7 +433,8 @@ export async function countInstrumentUpgradeRequests(): Promise<number> {
   const { rows } = await query<{ n: string }>(
     `SELECT COUNT(*)::int AS n FROM approval_requests
       WHERE kind = 'instrument' AND status = 'approved'
-        AND payload->'upgrade'->>'status' = 'requested'`,
+        AND payload->'upgrade'->>'status' = 'requested'
+        AND payload->>'upgradeListDismissedAt' IS NULL`,
   )
   return Number(rows[0]?.n ?? 0)
 }
