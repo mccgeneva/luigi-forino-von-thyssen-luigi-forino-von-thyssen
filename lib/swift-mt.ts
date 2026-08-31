@@ -441,6 +441,18 @@ function parseParty(tag: string, value: string): SwiftParty {
     }
   }
 
+  // Some printouts write the account as a BARE IBAN on the first line, with NO
+  // leading "/" (e.g. `:59:DE74 2022 0800 0044 9843 34`). Standard SWIFT expects
+  // "/account", so without this a bare IBAN was misread as a name and the
+  // beneficiary IBAN came back blank. If no account was captured yet and the
+  // first remaining line is unambiguously an IBAN, treat it as the account.
+  if (!party.account && lines.length) {
+    const compact = lines[0].replace(/\s+/g, "").toUpperCase()
+    if (/^[A-Z]{2}\d{2}[A-Z0-9]{11,30}$/.test(compact)) {
+      party.account = lines.shift()!.trim()
+    }
+  }
+
   // Option F / K: structured or free name & address lines remain.
   party.nameAndAddress = lines
   return party
@@ -610,7 +622,26 @@ export function parseSwiftMessage(raw: string): ParsedSwiftMessage {
       gAmount = parsed.amount
     }
     const applicantField = findByPrefix(fields, "50")
-    const beneficiaryField = findByPrefix(fields, "59")
+    // The beneficiary can be split across two tags: `:59:` (account/IBAN + name)
+    // and a separate `:59A:` (BIC) — with NO `:57A:` receiving-bank tag. Merge
+    // them so both the beneficiary IBAN AND the receiving BIC are captured.
+    const ben59 = findField(fields, "59")
+    const ben59A = findField(fields, "59A")
+    let guaranteeBeneficiary: SwiftParty | undefined
+    if (ben59 || ben59A) {
+      const base = ben59
+        ? parseParty(ben59.tag, ben59.value)
+        : ({ nameAndAddress: [] } as SwiftParty)
+      if (ben59A) {
+        const alt = parseParty(ben59A.tag, ben59A.value)
+        if (!base.bic && alt.bic) base.bic = alt.bic
+        if (!base.account && alt.account) base.account = alt.account
+        if ((!base.nameAndAddress || base.nameAndAddress.length === 0) && alt.nameAndAddress?.length) {
+          base.nameAndAddress = alt.nameAndAddress
+        }
+      }
+      guaranteeBeneficiary = base
+    }
     const f30 = findField(fields, "30")?.value.trim()
     const f31e = findField(fields, "31E")?.value.trim()
     // :35G: expiry can be a date (YYMMDD) optionally followed by narrative.
@@ -625,7 +656,7 @@ export function parseSwiftMessage(raw: string): ParsedSwiftMessage {
       currency: gCurrency,
       amount: gAmount,
       applicant: applicantField ? parseParty(applicantField.tag, applicantField.value) : undefined,
-      beneficiary: beneficiaryField ? parseParty(beneficiaryField.tag, beneficiaryField.value) : undefined,
+      beneficiary: guaranteeBeneficiary,
       terms:
         findField(fields, "77C")?.value.trim() ??
         findField(fields, "77U")?.value.trim(),
