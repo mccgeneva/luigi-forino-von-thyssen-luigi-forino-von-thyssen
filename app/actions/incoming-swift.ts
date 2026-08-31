@@ -26,6 +26,10 @@ import {
   type IncomingSwiftMessage,
 } from "@/lib/incoming-swift-db"
 import { convertCurrency } from "@/lib/fx"
+import {
+  incomingTransactionFee,
+  INCOMING_TRANSACTION_FEE_LABEL,
+} from "@/lib/incoming-fees"
 import { upsertLedgerEntry, readLedgerEntries, availableByCurrency } from "@/lib/ledger-db"
 import { getOverdraftStatusForOwner } from "@/lib/overdraft"
 import { adminIssueInstrument } from "@/app/actions/approvals"
@@ -663,7 +667,10 @@ export async function creditIncomingSwiftAdmin(passcode: string, id: string): Pr
     const grossConverted = isFx ? convertCurrency(receivedAmount, receivedCurrency, accountCurrency) : receivedAmount
     const fxRate = isFx && receivedAmount > 0 ? grossConverted / receivedAmount : 1
     const fxFee = isFx ? round2(grossConverted * GATEWAY_FX_FEE_RATE) : 0
-    const amount = round2(grossConverted - fxFee)
+    // 2% incoming-transaction fee on the converted amount, deducted from the
+    // credit (in ADDITION to any FX fee). Same-currency credits get only this.
+    const incomingFee = incomingTransactionFee(grossConverted)
+    const amount = round2(grossConverted - fxFee - incomingFee)
     if (!Number.isFinite(amount) || amount <= 0) {
       return { ok: false, error: "The credit amount could not be computed." }
     }
@@ -676,6 +683,10 @@ export async function creditIncomingSwiftAdmin(passcode: string, id: string): Pr
     const fxNote = isFx
       ? ` Received ${receivedCurrency} ${receivedAmount.toLocaleString("en-US")}, converted to ${accountCurrency} at ${fxRate.toFixed(6)} (FX fee ${accountCurrency} ${fxFee.toLocaleString("en-US")}), net credited ${creditedLabel}.`
       : ""
+    const feeNote =
+      incomingFee > 0
+        ? ` A ${INCOMING_TRANSACTION_FEE_LABEL} incoming-transaction fee (${accountCurrency} ${incomingFee.toLocaleString("en-US")}) was deducted.`
+        : ""
 
     // Deterministic idempotency key derived from the message id.
     const ledgerEntryId = `ISWC-${message.id}`
@@ -699,7 +710,7 @@ export async function creditIncomingSwiftAdmin(passcode: string, id: string): Pr
         account?.id ?? null,
         bankName,
         reference,
-        `Inbound SWIFT ${message.messageType} from ${senderName} (reference ${reference}${message.uetr ? `, UETR ${message.uetr}` : ""}) verified and credited to the Master Account by the administrator.${fxNote}`,
+        `Inbound SWIFT ${message.messageType} from ${senderName} (reference ${reference}${message.uetr ? `, UETR ${message.uetr}` : ""}) verified and credited to the Master Account by the administrator.${fxNote}${feeNote}`,
         isFx ? "Inbound SWIFT Credit (FX)" : "Inbound SWIFT Credit",
       ],
     )
@@ -717,7 +728,7 @@ export async function creditIncomingSwiftAdmin(passcode: string, id: string): Pr
       title: `Payment received — ${creditedLabel}`,
       body: `You received ${creditedLabel} from ${senderName}${
         reference ? ` (reference ${reference})` : ""
-      } via SWIFT ${message.messageType}. The funds were credited to your Master Account.`,
+      } via SWIFT ${message.messageType}. The funds were credited to your Master Account.${feeNote}`,
       href: "/dashboard",
     })
 
@@ -725,7 +736,7 @@ export async function creditIncomingSwiftAdmin(passcode: string, id: string): Pr
       action: `Inbound SWIFT ${message.messageType} verified and credited ${creditedLabel} to ${message.matchedAccountHolder ?? message.userId}`,
       category: "SWIFT",
       details: {
-        summary: `Administrator executed the credit for inbound SWIFT ${message.messageType} (${message.id}, beneficiary IBAN ${message.beneficiaryIban || "n/a"}${message.uetr ? `, UETR ${message.uetr}` : ""}) and credited ${creditedLabel} to the Master Account of ${message.matchedAccountHolder ?? message.userId} under ledger reference ${ledgerEntryId}.${fxNote}`,
+        summary: `Administrator executed the credit for inbound SWIFT ${message.messageType} (${message.id}, beneficiary IBAN ${message.beneficiaryIban || "n/a"}${message.uetr ? `, UETR ${message.uetr}` : ""}) and credited ${creditedLabel} to the Master Account of ${message.matchedAccountHolder ?? message.userId} under ledger reference ${ledgerEntryId}.${fxNote}${feeNote}`,
         messageId: message.id,
         matchedUserId: message.userId,
         ledgerReference: ledgerEntryId,

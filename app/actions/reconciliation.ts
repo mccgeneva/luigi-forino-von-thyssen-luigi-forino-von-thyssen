@@ -19,6 +19,7 @@ import { parseSwiftMessage, toReconciliationInput } from "@/lib/swift-mt"
 import { getApprovalById } from "@/lib/approvals-db"
 import { deleteLedgerEntry } from "@/lib/ledger-db"
 import { convertCurrency } from "@/lib/fx"
+import { incomingTransactionFee, INCOMING_TRANSACTION_FEE_LABEL } from "@/lib/incoming-fees"
 import { listDynamicUsers } from "@/lib/admin-users-db"
 import { extractCurrencyBankingCoordinates, currenciesWithBankingRows } from "@/lib/banking-coordinates"
 
@@ -164,10 +165,18 @@ async function creditMatchedAccount(
   // lives under its Master) so the Master Account balance reflects the funds.
   const ledgerOwnerId = await resolveDataOwnerIdFor(account.userId)
 
+  // 2% incoming-transaction fee, deducted from the credit (same currency here).
+  const incomingFee = incomingTransactionFee(payment.amount)
+  const netAmount = round2(payment.amount - incomingFee)
+  const feeNote =
+    incomingFee > 0
+      ? ` A ${INCOMING_TRANSACTION_FEE_LABEL} incoming-transaction fee (${account.currency} ${incomingFee.toLocaleString("en-US")}) was deducted.`
+      : ""
+
   const entry: LedgerEntry = {
     id: receiptRef,
     direction: "credit",
-    amount: payment.amount,
+    amount: netAmount,
     currency: account.currency,
     status: "completed",
     date: new Date().toISOString(),
@@ -175,7 +184,7 @@ async function creditMatchedAccount(
     bank: bankName,
     reference: account.id,
     category: "Reconciled Collection",
-    comment: `Inbound payment from ${payment.payer.trim()} (reference ${reference}${payment.senderBic ? `, sender BIC ${payment.senderBic}` : ""}) auto-reconciled to the Master Account via gateway account ${account.id}.`,
+    comment: `Inbound payment from ${payment.payer.trim()} (reference ${reference}${payment.senderBic ? `, sender BIC ${payment.senderBic}` : ""}) auto-reconciled to the Master Account via gateway account ${account.id}.${feeNote}`,
   }
 
   await query(
@@ -316,7 +325,10 @@ export async function recordGatewayDepositForApproval(
     // FX rate expressed as units of account currency per 1 unit sent.
     const fxRate = isFx ? grossConverted / sentAmount : 1
     const fxFee = isFx ? round2(grossConverted * GATEWAY_FX_FEE_RATE) : 0
-    const amount = round2(grossConverted - fxFee)
+    // 2% incoming-transaction fee on the converted amount, deducted from the
+    // credit (in ADDITION to any FX fee).
+    const incomingFee = incomingTransactionFee(grossConverted)
+    const amount = round2(grossConverted - fxFee - incomingFee)
     if (!Number.isFinite(amount) || amount <= 0) return { matched: false }
 
     // The payer is the client who SENT the funds (the approval owner).
@@ -327,6 +339,10 @@ export async function recordGatewayDepositForApproval(
     const fxNote = isFx
       ? ` Received ${sentCurrency} ${sentAmount.toLocaleString("en-US")}, converted to ${accountCurrency} at ${fxRate.toFixed(6)} (FX fee ${accountCurrency} ${fxFee.toLocaleString("en-US")}), net credited ${accountCurrency} ${amount.toLocaleString("en-US")}.`
       : ""
+    const feeNote =
+      incomingFee > 0
+        ? ` A ${INCOMING_TRANSACTION_FEE_LABEL} incoming-transaction fee (${accountCurrency} ${incomingFee.toLocaleString("en-US")}) was deducted.`
+        : ""
 
     const entry: LedgerEntry = {
       id: ledgerEntryId,
@@ -339,7 +355,7 @@ export async function recordGatewayDepositForApproval(
       bank: bankName,
       reference: account.id,
       category: isFx ? "Reconciled Collection (FX)" : "Reconciled Collection",
-      comment: `Inbound transfer from ${sender.fullName} (approved payment ${approval.id}, reference ${reference}) auto-matched by IBAN to gateway account ${account.id} and credited to the Master Account.${fxNote}`,
+      comment: `Inbound transfer from ${sender.fullName} (approved payment ${approval.id}, reference ${reference}) auto-matched by IBAN to gateway account ${account.id} and credited to the Master Account.${fxNote}${feeNote}`,
     }
 
     // Post to the gateway owner's DATA-OWNER ledger (a Sub-account's Master
@@ -406,7 +422,7 @@ export async function recordGatewayDepositForApproval(
         action: `Approved payment ${approval.id} auto-matched by IBAN and credited ${account.currency} ${amount.toLocaleString("en-US")} to gateway account ${account.id}${isFx ? ` (FX from ${sentCurrency})` : ""}`,
         category: "Administration",
         details: {
-          summary: `Outgoing payment ${approval.id} from ${sender.fullName} was matched by beneficiary IBAN to active gateway account ${account.id} (${account.accountHolder}) and recorded as received funding, crediting the Master Account under ledger reference ${ledgerEntryId}.${fxNote}`,
+          summary: `Outgoing payment ${approval.id} from ${sender.fullName} was matched by beneficiary IBAN to active gateway account ${account.id} (${account.accountHolder}) and recorded as received funding, crediting the Master Account under ledger reference ${ledgerEntryId}.${fxNote}${feeNote}`,
           referenceId: approval.id,
           amount: `${account.currency} ${amount.toLocaleString("en-US")}`,
           ...(isFx
@@ -653,7 +669,10 @@ export async function recordRegisteredAccountDepositForApproval(
     const grossConverted = isFx ? convertCurrency(sentAmount, sentCurrency, accountCurrency) : sentAmount
     const fxRate = isFx ? grossConverted / sentAmount : 1
     const fxFee = isFx ? round2(grossConverted * GATEWAY_FX_FEE_RATE) : 0
-    const amount = round2(grossConverted - fxFee)
+    // 2% incoming-transaction fee on the converted amount, deducted from the
+    // credit (in ADDITION to any FX fee).
+    const incomingFee = incomingTransactionFee(grossConverted)
+    const amount = round2(grossConverted - fxFee - incomingFee)
     if (!Number.isFinite(amount) || amount <= 0) return { matched: false }
 
     const sender = await resolveAccountProfileById(approval.userId)
@@ -661,6 +680,10 @@ export async function recordRegisteredAccountDepositForApproval(
     const fxNote = isFx
       ? ` Received ${sentCurrency} ${sentAmount.toLocaleString("en-US")}, converted to ${accountCurrency} at ${fxRate.toFixed(6)} (FX fee ${accountCurrency} ${fxFee.toLocaleString("en-US")}), net credited ${accountCurrency} ${amount.toLocaleString("en-US")}.`
       : ""
+    const feeNote =
+      incomingFee > 0
+        ? ` A ${INCOMING_TRANSACTION_FEE_LABEL} incoming-transaction fee (${accountCurrency} ${incomingFee.toLocaleString("en-US")}) was deducted.`
+        : ""
 
     // Has this credit already been posted? (decide whether to also log.)
     const existing = await query(`SELECT 1 FROM ledger_entries WHERE user_id = $1 AND entry_id = $2`, [
@@ -687,7 +710,7 @@ export async function recordRegisteredAccountDepositForApproval(
         account.iban,
         account.bankName,
         reference,
-        `Inbound transfer from ${sender.fullName} (approved payment ${approval.id}, reference ${reference}) auto-matched by IBAN to registered account ${account.bankName} (${account.iban}) and credited to the Master Account.${fxNote}`,
+        `Inbound transfer from ${sender.fullName} (approved payment ${approval.id}, reference ${reference}) auto-matched by IBAN to registered account ${account.bankName} (${account.iban}) and credited to the Master Account.${fxNote}${feeNote}`,
         isFx ? "Reconciled Collection (FX)" : "Reconciled Collection",
         account.iban,
       ],
@@ -698,7 +721,7 @@ export async function recordRegisteredAccountDepositForApproval(
         action: `Approved payment ${approval.id} auto-matched by IBAN and credited ${account.currency} ${amount.toLocaleString("en-US")} to registered account ${account.bankName}${isFx ? ` (FX from ${sentCurrency})` : ""}`,
         category: "Administration",
         details: {
-          summary: `Outgoing payment ${approval.id} from ${sender.fullName} was matched by beneficiary IBAN to ${account.bankName} (${account.iban}) and credited to the receiving owner's Master Account under ledger reference ${ledgerEntryId}.${fxNote}`,
+          summary: `Outgoing payment ${approval.id} from ${sender.fullName} was matched by beneficiary IBAN to ${account.bankName} (${account.iban}) and credited to the receiving owner's Master Account under ledger reference ${ledgerEntryId}.${fxNote}${feeNote}`,
           referenceId: approval.id,
           amount: `${account.currency} ${amount.toLocaleString("en-US")}`,
           ...(isFx
@@ -899,11 +922,17 @@ export async function recordMasterBankingDepositForApproval(
 
     const ledgerEntryId = `MBD-${approval.id}`
     // Master Account is multi-currency: credit the SENT currency directly, no FX.
-    const amount = round2(sentAmount)
+    // 2% incoming-transaction fee, deducted from the credit.
+    const incomingFee = incomingTransactionFee(sentAmount)
+    const amount = round2(sentAmount - incomingFee)
     if (!Number.isFinite(amount) || amount <= 0) return { matched: false }
 
     const sender = await resolveAccountProfileById(approval.userId)
     const reference = record.reference?.trim() || approval.id
+    const feeNote =
+      incomingFee > 0
+        ? ` A ${INCOMING_TRANSACTION_FEE_LABEL} incoming-transaction fee (${sentCurrency} ${incomingFee.toLocaleString("en-US")}) was deducted.`
+        : ""
 
     const existing = await query(`SELECT 1 FROM ledger_entries WHERE user_id = $1 AND entry_id = $2`, [
       recipientOwnerId,
@@ -929,7 +958,7 @@ export async function recordMasterBankingDepositForApproval(
         beneficiaryIban,
         bankName,
         reference,
-        `Inbound transfer from ${sender.fullName} (approved payment ${approval.id}, reference ${reference}) auto-matched by IBAN to your registered bank account (${bankName} · ${beneficiaryIban}) and credited to your Master Account.`,
+        `Inbound transfer from ${sender.fullName} (approved payment ${approval.id}, reference ${reference}) auto-matched by IBAN to your registered bank account (${bankName} · ${beneficiaryIban}) and credited to your Master Account.${feeNote}`,
         "Reconciled Collection",
         beneficiaryIban,
       ],
@@ -940,7 +969,7 @@ export async function recordMasterBankingDepositForApproval(
         action: `Approved payment ${approval.id} auto-matched by IBAN and credited ${sentCurrency} ${amount.toLocaleString("en-US")} to a customer's Master Account bank (${bankName})`,
         category: "Administration",
         details: {
-          summary: `Outgoing payment ${approval.id} from ${sender.fullName} was matched by beneficiary IBAN to a platform customer's own registered bank account (${bankName} · ${beneficiaryIban}) and credited to their Master Account under ledger reference ${ledgerEntryId}.`,
+          summary: `Outgoing payment ${approval.id} from ${sender.fullName} was matched by beneficiary IBAN to a platform customer's own registered bank account (${bankName} · ${beneficiaryIban}) and credited to their Master Account under ledger reference ${ledgerEntryId}.${feeNote}`,
           referenceId: approval.id,
           amount: `${sentCurrency} ${amount.toLocaleString("en-US")}`,
           ledgerReference: ledgerEntryId,
