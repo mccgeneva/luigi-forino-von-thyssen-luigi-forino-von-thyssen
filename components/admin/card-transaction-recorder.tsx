@@ -10,11 +10,8 @@ import { MoneyInput } from "@/components/ui/money-input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { ADMIN_PASSCODE } from "@/lib/admin-config"
-import {
-  adminRecordCardTransaction,
-  CARD_TRANSACTION_FEE_LABEL,
-  CARD_TRANSACTION_FEE_RATE,
-} from "@/app/actions/cards"
+import { adminRecordCardTransaction } from "@/app/actions/cards"
+import { CARD_TRANSACTION_FEE_LABEL, CARD_TRANSACTION_FEE_RATE } from "@/lib/card-transaction-fees"
 import { useActivityLog } from "@/components/activity-tracker"
 
 const CURRENCIES = ["EUR", "USD", "GBP", "CHF"]
