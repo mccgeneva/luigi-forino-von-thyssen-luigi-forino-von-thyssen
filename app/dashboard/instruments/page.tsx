@@ -2095,7 +2095,11 @@ export default function InstrumentsPage() {
         </CardContent>
       </Card>
 
-      {monetizationRequests.length > 0 && (
+      {/* A CLOSED/SETTLED credit line (advance repaid → `closedAt` set) is
+          finished — it no longer belongs in the active requests queue. Keep
+          pending, live-approved (outstanding credit lines + permanent sales),
+          rejected (shows the reason) and reversed. */}
+      {monetizationRequests.some((r) => !r.closedAt) && (
         <Card>
           <CardHeader>
             <CardTitle>Monetization Requests</CardTitle>
@@ -2107,6 +2111,7 @@ export default function InstrumentsPage() {
           <CardContent>
             <div className="space-y-3">
               {[...monetizationRequests]
+                .filter((r) => !r.closedAt)
                 .sort((a, b) => new Date(b.submittedAt).getTime() - new Date(a.submittedAt).getTime())
                 .map((req) => {
                   const tone =
