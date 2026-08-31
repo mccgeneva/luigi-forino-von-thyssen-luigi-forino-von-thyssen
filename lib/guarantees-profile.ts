@@ -11,6 +11,7 @@ import type { ApprovalRequest } from "@/lib/approvals-db"
 import {
   computeGuaranteeScore,
   applyGuaranteeOverride,
+  overdraftTrustRatio,
   type GuaranteeConfig,
   type GuaranteeInputs,
   type GuaranteeScore,
@@ -383,18 +384,17 @@ export async function gatherGuaranteeProfile(
 
   let score = computeGuaranteeScore(inputs, config)
 
-  // --- Clean-profile overdraft grant ------------------------------------
-  // A spotless risk profile — zero on every factor EXCEPT the overdraft itself
-  // (no under-collateralisation, no leverage load, no exposure, no payment
-  // penalty, a seasoned track record) — earns a FLAT tier-based authorized
-  // overdraft (PRO 250k / Avant-Garde 500k) instead of the deposit-based 8%
-  // ceiling. Excluding the overdraft factor from the clean test keeps the grant
-  // STABLE: merely USING the granted headroom (going negative within it) does
-  // not revoke it — only real risk (exposure / arrears / penalties) does, which
-  // is exactly "back to normal overdraft as this risk-score condition is lost".
-  const f = score.factors
-  const cleanExcludingOverdraft =
-    f.securityDeposit + f.leverageLoad + f.exposure + f.paymentPenalty + f.trackRecord <= 0.01
+  // --- Adaptive tier overdraft grant ------------------------------------
+  // The authorized overdraft scales ADAPTIVELY with the account's trust:
+  //   • best trust (spotless)  → the FULL tier grant (PRO 250k / Avant-Garde 500k)
+  //   • worst trust (high risk)→ the deposit-based 8% ceiling
+  //   • in between             → a smooth interpolation between the two
+  // The trust ratio EXCLUDES the overdraft factor (see overdraftTrustRatio), so
+  // merely USING the granted headroom never shrinks the ceiling — only genuine
+  // risk (exposure / leverage / arrears / thin track record / under-collateral)
+  // pulls it back down toward the deposit ceiling, which is exactly "as trust
+  // worsens we do the opposite". A large-deposit account whose 8% ceiling already
+  // exceeds the tier grant keeps its higher deposit-based ceiling (floor is a max).
   const badge = accountBadge.toLowerCase()
   const tierId =
     badge.includes("avant") || badge.includes("institutional")
@@ -402,9 +402,11 @@ export async function gatherGuaranteeProfile(
       : badge.includes("pro")
         ? "pro"
         : "other"
-  const cleanGrant = cleanExcludingOverdraft ? cleanOverdraftGrantForTier(tierId) : 0
-  if (cleanGrant > 0) {
-    overdraft = applyOverdraftFloor(overdraft, cleanGrant)
+  const tierMax = cleanOverdraftGrantForTier(tierId)
+  if (tierMax > overdraft.limitEur) {
+    const trust = overdraftTrustRatio(score, config)
+    const adaptiveCeiling = overdraft.limitEur + trust * (tierMax - overdraft.limitEur)
+    overdraft = applyOverdraftFloor(overdraft, adaptiveCeiling)
     // Re-measure the overdraft risk factor against the GRANTED ceiling so the
     // displayed score stays consistent (and low) when the granted headroom is used.
     score = computeGuaranteeScore({ ...inputs, overdraftUsageRatio: overdraft.breachRatio }, config)
