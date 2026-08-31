@@ -31,6 +31,7 @@ import { isLiveRequest } from "@/lib/live-request"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Label } from "@/components/ui/label"
 import { Input } from "@/components/ui/input"
+import { CountryCombobox } from "@/components/country-combobox"
 import { Textarea } from "@/components/ui/textarea"
 import {
   Dialog,
@@ -912,11 +913,12 @@ export default function ProjectFundingPage() {
                   </div>
                   <div className="space-y-2">
                     <Label htmlFor="pf-jurisdiction">Jurisdiction (Country)</Label>
-                    <Input
+                    <CountryCombobox
                       id="pf-jurisdiction"
-                      placeholder="e.g. Germany"
+                      valueMode="name"
                       value={jurisdiction}
-                      onChange={(e) => setJurisdiction(e.target.value)}
+                      onChange={setJurisdiction}
+                      placeholder="Search and select country"
                     />
                   </div>
                 </div>
