@@ -376,6 +376,22 @@ export async function sendMessage(
       messageId: row.id,
       charCount: trimmed.length,
     })
+    // When a client contacts the administration, fire a bell notification so the
+    // operator gets a persistent, actionable signal even without Bankeka open
+    // (otherwise a client enquiry only surfaces as an unread Messages badge).
+    if (isAdminEmail(rec.email)) {
+      try {
+        await insertNotification({
+          userId: resolvedOther,
+          tone: "info",
+          title: `New client enquiry from ${sender.name}${sender.company ? ` (${sender.company})` : ""}`,
+          body: notifyPreview(trimmed, files.length > 0),
+          href: "/dashboard/bankeka",
+        })
+      } catch (err) {
+        console.log("[v0] bankeka client-enquiry notification failed:", (err as Error).message)
+      }
+    }
     return { ok: true, message: toMessage(row, me) }
   } catch {
     return { ok: false, error: "Could not send the message. Please try again." }
