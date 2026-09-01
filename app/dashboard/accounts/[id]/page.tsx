@@ -16,18 +16,23 @@ import {
   FileText,
   Lock,
   ChevronRight,
+  Loader2,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
+import { Textarea } from "@/components/ui/textarea"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import {
   Dialog,
   DialogContent,
   DialogDescription,
+  DialogFooter,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
+import { sendMessage } from "@/app/actions/bankeka"
+import { BANKEKA_ADMIN_ID } from "@/lib/bankeka-shared"
 import { useActivityLog } from "@/components/activity-tracker"
 import { useCurrentUser } from "@/lib/use-current-user"
 import { usePdfViewer } from "@/lib/pdf-viewer"
@@ -54,6 +59,10 @@ export default function AccountDetailPage() {
   const [copiedField, setCopiedField] = useState<string | null>(null)
   // Whether the reserved-funds breakdown dialog is open.
   const [reservedOpen, setReservedOpen] = useState(false)
+  // MCC enquiry dialog (routes a real in-app message to the administration).
+  const [contactOpen, setContactOpen] = useState(false)
+  const [contactMsg, setContactMsg] = useState("")
+  const [contactSending, setContactSending] = useState(false)
 
   const id = decodeURIComponent(params.id)
   const account = useMemo(() => bankAccounts.find((a) => a.id === id), [bankAccounts, id])
@@ -123,25 +132,45 @@ export default function AccountDetailPage() {
     router.push("/dashboard/payments")
   }
 
-  const handleContactViaMcc = () => {
-    const accountLabel = account.accountName ?? account.bankName ?? "my account"
-    const subject = encodeURIComponent(`Account enquiry: ${accountLabel}`)
-    const body = encodeURIComponent(
-      `Hello MCC Client Services,\n\nI would like to make an enquiry regarding my account "${accountLabel}".\n\n[Please describe your request here]\n\nKind regards,`,
-    )
+  const accountLabel = account.accountName ?? account.bankName ?? "my account"
+
+  const openContactDialog = () => {
+    setContactMsg(`Hello MCC Client Services,\n\nI have an enquiry regarding my account "${accountLabel}":\n\n`)
+    setContactOpen(true)
+  }
+
+  // Route the enquiry as a REAL in-app message to the administration. This lands
+  // in the admin's Messages console as an answerable two-way thread (via the
+  // operator of record) — unlike the old mailto, which left nothing actionable
+  // in the admin panel.
+  const submitContactViaMcc = async () => {
+    const trimmed = contactMsg.trim()
+    if (!trimmed) {
+      toast.error("Write your enquiry before sending.")
+      return
+    }
+    setContactSending(true)
+    const res = await sendMessage(BANKEKA_ADMIN_ID, `Account enquiry — ${accountLabel}\n\n${trimmed}`)
+    setContactSending(false)
+    if (!res.ok) {
+      toast.error(res.error ?? "Could not send your enquiry. Please try again.")
+      return
+    }
     logActivity({
       action: `Contacted MCC about ${accountLabel}`,
       category: "Bank Accounts",
       details: {
-        summary: `Client request routed to MCC admin (admin@mccgva.ch) regarding "${accountLabel}". Direct partner-bank contact is disabled.`,
-        routedTo: "admin@mccgva.ch",
+        summary: `Client sent an in-app enquiry to MCC Client Services regarding "${accountLabel}". The administration can reply from the Messages console.`,
+        routedTo: "MCC Client Services",
         account: accountLabel,
       },
     })
-    window.location.href = `mailto:admin@mccgva.ch?subject=${subject}&body=${body}`
-    toast.success("Request routed to MCC", {
-      description: "Your enquiry is handled by MCC and sent to admin@mccgva.ch.",
+    setContactOpen(false)
+    setContactMsg("")
+    toast.success("Enquiry sent to MCC", {
+      description: "Your relationship team will reply in Messages.",
     })
+    router.push("/dashboard/bankeka")
   }
 
   const handleExportAccount = () => {
@@ -509,7 +538,7 @@ export default function AccountDetailPage() {
                   </div>
                   <Button
                     className="w-full bg-amber-500 hover:bg-amber-600 text-zinc-900 gap-2"
-                    onClick={handleContactViaMcc}
+                    onClick={openContactDialog}
                   >
                     <Mail className="h-4 w-4" />
                     Contact MCC about this account
@@ -605,6 +634,45 @@ export default function AccountDetailPage() {
               completes. Once settled or cancelled, the hold is released back to your available balance.
             </p>
           </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Contact MCC — sends a real in-app message to the administration so it
+          appears as an answerable thread in the admin Messages console. */}
+      <Dialog open={contactOpen} onOpenChange={(o) => (o ? setContactOpen(true) : setContactOpen(false))}>
+        <DialogContent className="w-[calc(100vw-2rem)] max-w-lg overflow-hidden">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Mail className="h-4 w-4 text-amber-400" />
+              Contact MCC — {accountLabel}
+            </DialogTitle>
+            <DialogDescription>
+              Your enquiry goes to your MCC relationship team. They reply in Messages — nothing is sent to
+              the partner bank directly.
+            </DialogDescription>
+          </DialogHeader>
+
+          <Textarea
+            value={contactMsg}
+            onChange={(e) => setContactMsg(e.target.value)}
+            rows={7}
+            placeholder="Describe your request…"
+            className="resize-none"
+          />
+
+          <DialogFooter className="gap-2 sm:gap-2">
+            <Button variant="outline" onClick={() => setContactOpen(false)} disabled={contactSending}>
+              Cancel
+            </Button>
+            <Button
+              className="bg-amber-500 hover:bg-amber-600 text-zinc-900 gap-2"
+              onClick={submitContactViaMcc}
+              disabled={contactSending || !contactMsg.trim()}
+            >
+              {contactSending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Mail className="h-4 w-4" />}
+              Send enquiry
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
     </div>
