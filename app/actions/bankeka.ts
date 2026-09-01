@@ -126,16 +126,18 @@ async function getOperatorOfRecord(): Promise<OperatorRec | null> {
 }
 
 /**
- * The REAL account that acts as administration for a given request:
- *   - the signed-in user who unlocked the console (they message AS themselves),
- *   - falling back to the operator of record when the session can't be resolved.
+ * The REAL account the administration console operates as. This is a SHARED
+ * support inbox: EVERY admin (president, admin@mccgva.ch, a.koller, …) anchors
+ * on the single OPERATOR OF RECORD, so a client enquiry — which always routes to
+ * that operator — is visible to, and answerable by, whichever admin is on duty
+ * (one unified thread per client, regardless of who replies). Only if the
+ * operator of record can't be resolved do we fall back to the signed-in admin.
  * Callers are already PIN + admin gated, so the acting user is always an admin.
  */
 async function resolveAdminAnchorId(): Promise<string | null> {
-  const acting = await resolveActingUserId()
-  if (acting) return acting
   const rec = await getOperatorOfRecord()
-  return rec?.id ?? null
+  if (rec?.id) return rec.id
+  return await resolveActingUserId()
 }
 
 /** Build a client-facing participant for a real administration operator. The
@@ -618,9 +620,9 @@ export async function adminReply(
   if (trimmed.length > MAX_BODY) return { ok: false, error: "Message is too long." }
   if (!otherId) return { ok: false, error: "Invalid recipient." }
 
-  // The operator replies AS THEMSELVES (the real signed-in user who unlocked the
-  // console), not as a synthetic "Administrator" account — so the client and the
-  // operator hold one genuine two-way thread.
+  // Replies are sent AS THE OPERATOR OF RECORD (shared support inbox), so every
+  // admin answers into one unified thread per client and the client sees a
+  // single consistent operator identity — not a synthetic "Administrator".
   const anchor = await resolveAdminAnchorId()
   if (!anchor) return { ok: false, error: "Could not resolve the administrator account." }
   if (anchor === otherId) {
