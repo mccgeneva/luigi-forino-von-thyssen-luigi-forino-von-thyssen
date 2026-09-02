@@ -171,6 +171,213 @@ export const PARTNER_BANKS: PartnerBank[] = [
   { key: "standardbank", name: "Standard Bank", country: "South Africa", countryCode: "ZA", bic: "SBZAZAJJ", currencies: ["ZAR", "USD", "EUR", "GBP"], region: "Middle East & Africa" },
   { key: "fnb", name: "First National Bank", country: "South Africa", countryCode: "ZA", bic: "FIRNZAJJ", currencies: ["ZAR", "USD"], region: "Middle East & Africa" },
   { key: "absa", name: "Absa Group", country: "South Africa", countryCode: "ZA", bic: "ABSAZAJJ", currencies: ["ZAR", "USD"], region: "Middle East & Africa" },
+
+  // ===========================================================================
+  // Extended global directory — real, published BIC/SWIFT codes. Institution
+  // level (a bank's branches share its BIC; the branch is encoded in the
+  // account/IBAN portion, not as a separate entry). Countries added here that
+  // have an IBAN structure (see lib/iban.ts IBAN_SPECS) issue a generated IBAN;
+  // the rest settle on domestic coordinates + the real BIC.
+  // ===========================================================================
+
+  // --- United States (additional) ---
+  { key: "amex", name: "American Express Bank", country: "United States", countryCode: "US", bic: "AEIBUS33", currencies: ["USD", "EUR"], region: "Americas" },
+  { key: "fifththird", name: "Fifth Third Bank", country: "United States", countryCode: "US", bic: "FTBCUS3C", currencies: ["USD"], region: "Americas" },
+  { key: "citizens", name: "Citizens Bank", country: "United States", countryCode: "US", bic: "CTZIUS33", currencies: ["USD"], region: "Americas" },
+  { key: "keybank", name: "KeyBank", country: "United States", countryCode: "US", bic: "KEYBUS33", currencies: ["USD"], region: "Americas" },
+  { key: "regions", name: "Regions Bank", country: "United States", countryCode: "US", bic: "UPNBUS44", currencies: ["USD"], region: "Americas" },
+  { key: "mtbank", name: "M&T Bank", country: "United States", countryCode: "US", bic: "MANTUS33", currencies: ["USD"], region: "Americas" },
+  { key: "huntington", name: "Huntington National Bank", country: "United States", countryCode: "US", bic: "HUNTUS33", currencies: ["USD"], region: "Americas" },
+  { key: "ally", name: "Ally Bank", country: "United States", countryCode: "US", bic: "ALLYUS3M", currencies: ["USD"], region: "Americas" },
+  { key: "northerntrust", name: "Northern Trust", country: "United States", countryCode: "US", bic: "CNORUS44", currencies: ["USD", "EUR", "GBP"], region: "Americas" },
+
+  // --- Canada (additional) ---
+  { key: "nbc", name: "National Bank of Canada", country: "Canada", countryCode: "CA", bic: "BNDCCAMM", currencies: ["CAD", "USD"], region: "Americas" },
+  { key: "desjardins", name: "Desjardins Group", country: "Canada", countryCode: "CA", bic: "CCDQCAMM", currencies: ["CAD", "USD"], region: "Americas" },
+  { key: "laurentian", name: "Laurentian Bank of Canada", country: "Canada", countryCode: "CA", bic: "BLCMCAMM", currencies: ["CAD", "USD"], region: "Americas" },
+
+  // --- Brazil / Mexico (additional) ---
+  { key: "caixaef", name: "Caixa Econômica Federal", country: "Brazil", countryCode: "BR", bic: "CEFXBRSP", currencies: ["BRL", "USD"], region: "Americas" },
+  { key: "santanderbr", name: "Santander Brasil", country: "Brazil", countryCode: "BR", bic: "BSCHBRSP", currencies: ["BRL", "USD", "EUR"], region: "Americas" },
+  { key: "btgpactual", name: "BTG Pactual", country: "Brazil", countryCode: "BR", bic: "BPABBRSP", currencies: ["BRL", "USD"], region: "Americas" },
+  { key: "santandermx", name: "Santander México", country: "Mexico", countryCode: "MX", bic: "BMSXMXMM", currencies: ["MXN", "USD"], region: "Americas" },
+  { key: "hsbcmx", name: "HSBC México", country: "Mexico", countryCode: "MX", bic: "BIMEMXMM", currencies: ["MXN", "USD"], region: "Americas" },
+
+  // --- New Zealand ---
+  { key: "anznz", name: "ANZ New Zealand", country: "New Zealand", countryCode: "NZ", bic: "ANZBNZ22", currencies: ["NZD", "AUD", "USD"], region: "Asia-Pacific" },
+  { key: "asb", name: "ASB Bank", country: "New Zealand", countryCode: "NZ", bic: "ASBBNZ2A", currencies: ["NZD", "USD"], region: "Asia-Pacific" },
+  { key: "bnz", name: "Bank of New Zealand", country: "New Zealand", countryCode: "NZ", bic: "BKNZNZ22", currencies: ["NZD", "USD"], region: "Asia-Pacific" },
+  { key: "kiwibank", name: "Kiwibank", country: "New Zealand", countryCode: "NZ", bic: "KIWINZ22", currencies: ["NZD"], region: "Asia-Pacific" },
+
+  // --- Australia (additional) ---
+  { key: "macquarie", name: "Macquarie Bank", country: "Australia", countryCode: "AU", bic: "MACQAU2S", currencies: ["AUD", "USD"], region: "Asia-Pacific" },
+  { key: "boq", name: "Bank of Queensland", country: "Australia", countryCode: "AU", bic: "QBANAU4B", currencies: ["AUD"], region: "Asia-Pacific" },
+  { key: "bendigo", name: "Bendigo and Adelaide Bank", country: "Australia", countryCode: "AU", bic: "BENDAU3B", currencies: ["AUD"], region: "Asia-Pacific" },
+
+  // --- China (additional) ---
+  { key: "psbc", name: "Postal Savings Bank of China", country: "China", countryCode: "CN", bic: "PSBCCNBJ", currencies: ["CNY", "USD"], region: "Asia-Pacific" },
+  { key: "citic", name: "China CITIC Bank", country: "China", countryCode: "CN", bic: "CIBKCNBJ", currencies: ["CNY", "USD", "HKD"], region: "Asia-Pacific" },
+  { key: "cebbank", name: "China Everbright Bank", country: "China", countryCode: "CN", bic: "EVERCNBJ", currencies: ["CNY", "USD"], region: "Asia-Pacific" },
+  { key: "spdb", name: "Shanghai Pudong Development Bank", country: "China", countryCode: "CN", bic: "SPDBCNSH", currencies: ["CNY", "USD"], region: "Asia-Pacific" },
+  { key: "minsheng", name: "China Minsheng Bank", country: "China", countryCode: "CN", bic: "MSBCCNBJ", currencies: ["CNY", "USD"], region: "Asia-Pacific" },
+
+  // --- India (additional) ---
+  { key: "bob", name: "Bank of Baroda", country: "India", countryCode: "IN", bic: "BARBINBB", currencies: ["INR", "USD", "GBP", "AED"], region: "Asia-Pacific" },
+  { key: "pnb", name: "Punjab National Bank", country: "India", countryCode: "IN", bic: "PUNBINBB", currencies: ["INR", "USD"], region: "Asia-Pacific" },
+  { key: "canara", name: "Canara Bank", country: "India", countryCode: "IN", bic: "CNRBINBB", currencies: ["INR", "USD"], region: "Asia-Pacific" },
+  { key: "kotak", name: "Kotak Mahindra Bank", country: "India", countryCode: "IN", bic: "KKBKINBB", currencies: ["INR", "USD"], region: "Asia-Pacific" },
+  { key: "unionbankin", name: "Union Bank of India", country: "India", countryCode: "IN", bic: "UBININBB", currencies: ["INR", "USD"], region: "Asia-Pacific" },
+
+  // --- Singapore / Hong Kong (additional) ---
+  { key: "maybanksg", name: "Maybank Singapore", country: "Singapore", countryCode: "SG", bic: "MBBESGS2", currencies: ["SGD", "USD"], region: "Asia-Pacific" },
+  { key: "scbhk", name: "Standard Chartered (Hong Kong)", country: "Hong Kong", countryCode: "HK", bic: "SCBLHKHH", currencies: ["HKD", "USD", "CNY", "GBP"], region: "Asia-Pacific" },
+  { key: "hsbchk", name: "HSBC (Hong Kong)", country: "Hong Kong", countryCode: "HK", bic: "HSBCHKHH", currencies: ["HKD", "USD", "CNY", "EUR"], region: "Asia-Pacific" },
+  { key: "bea", name: "Bank of East Asia", country: "Hong Kong", countryCode: "HK", bic: "BEASHKHH", currencies: ["HKD", "USD", "CNY"], region: "Asia-Pacific" },
+
+  // --- South Korea (additional) ---
+  { key: "woori", name: "Woori Bank", country: "South Korea", countryCode: "KR", bic: "HVBKKRSE", currencies: ["KRW", "USD"], region: "Asia-Pacific" },
+  { key: "hana", name: "Hana Bank", country: "South Korea", countryCode: "KR", bic: "KOEXKRSE", currencies: ["KRW", "USD", "EUR"], region: "Asia-Pacific" },
+  { key: "ibk", name: "Industrial Bank of Korea", country: "South Korea", countryCode: "KR", bic: "IBKOKRSE", currencies: ["KRW", "USD"], region: "Asia-Pacific" },
+
+  // --- Malaysia (additional) ---
+  { key: "cimb", name: "CIMB Bank", country: "Malaysia", countryCode: "MY", bic: "CIBBMYKL", currencies: ["MYR", "USD", "SGD"], region: "Asia-Pacific" },
+  { key: "publicbank", name: "Public Bank Berhad", country: "Malaysia", countryCode: "MY", bic: "PBBEMYKL", currencies: ["MYR", "USD"], region: "Asia-Pacific" },
+  { key: "rhb", name: "RHB Bank", country: "Malaysia", countryCode: "MY", bic: "RHBBMYKL", currencies: ["MYR", "USD"], region: "Asia-Pacific" },
+
+  // --- Thailand ---
+  { key: "bangkokbank", name: "Bangkok Bank", country: "Thailand", countryCode: "TH", bic: "BKKBTHBK", currencies: ["THB", "USD"], region: "Asia-Pacific" },
+  { key: "kasikorn", name: "Kasikornbank", country: "Thailand", countryCode: "TH", bic: "KASITHBK", currencies: ["THB", "USD"], region: "Asia-Pacific" },
+  { key: "scbthai", name: "Siam Commercial Bank", country: "Thailand", countryCode: "TH", bic: "SICOTHBK", currencies: ["THB", "USD"], region: "Asia-Pacific" },
+  { key: "krungthai", name: "Krung Thai Bank", country: "Thailand", countryCode: "TH", bic: "KRTHTHBK", currencies: ["THB", "USD"], region: "Asia-Pacific" },
+
+  // --- Indonesia ---
+  { key: "mandiri", name: "Bank Mandiri", country: "Indonesia", countryCode: "ID", bic: "BMRIIDJA", currencies: ["IDR", "USD"], region: "Asia-Pacific" },
+  { key: "bri", name: "Bank Rakyat Indonesia", country: "Indonesia", countryCode: "ID", bic: "BRINIDJA", currencies: ["IDR", "USD"], region: "Asia-Pacific" },
+  { key: "bca", name: "Bank Central Asia", country: "Indonesia", countryCode: "ID", bic: "CENAIDJA", currencies: ["IDR", "USD"], region: "Asia-Pacific" },
+  { key: "bni", name: "Bank Negara Indonesia", country: "Indonesia", countryCode: "ID", bic: "BNINIDJA", currencies: ["IDR", "USD"], region: "Asia-Pacific" },
+
+  // --- Philippines ---
+  { key: "bdo", name: "BDO Unibank", country: "Philippines", countryCode: "PH", bic: "BNORPHMM", currencies: ["PHP", "USD"], region: "Asia-Pacific" },
+  { key: "metrobank", name: "Metrobank", country: "Philippines", countryCode: "PH", bic: "MBTCPHMM", currencies: ["PHP", "USD"], region: "Asia-Pacific" },
+  { key: "bpi", name: "Bank of the Philippine Islands", country: "Philippines", countryCode: "PH", bic: "BOPIPHMM", currencies: ["PHP", "USD"], region: "Asia-Pacific" },
+
+  // --- Vietnam ---
+  { key: "vietcombank", name: "Vietcombank", country: "Vietnam", countryCode: "VN", bic: "BFTVVNVX", currencies: ["VND", "USD"], region: "Asia-Pacific" },
+  { key: "bidv", name: "BIDV", country: "Vietnam", countryCode: "VN", bic: "BIDVVNVX", currencies: ["VND", "USD"], region: "Asia-Pacific" },
+  { key: "vietinbank", name: "VietinBank", country: "Vietnam", countryCode: "VN", bic: "ICBVVNVX", currencies: ["VND", "USD"], region: "Asia-Pacific" },
+
+  // --- Taiwan ---
+  { key: "bankoftaiwan", name: "Bank of Taiwan", country: "Taiwan", countryCode: "TW", bic: "BKTWTWTP", currencies: ["TWD", "USD"], region: "Asia-Pacific" },
+  { key: "ctbc", name: "CTBC Bank", country: "Taiwan", countryCode: "TW", bic: "CTCBTWTP", currencies: ["TWD", "USD"], region: "Asia-Pacific" },
+  { key: "cathayunited", name: "Cathay United Bank", country: "Taiwan", countryCode: "TW", bic: "UWCBTWTP", currencies: ["TWD", "USD"], region: "Asia-Pacific" },
+
+  // --- Poland ---
+  { key: "pkobp", name: "PKO Bank Polski", country: "Poland", countryCode: "PL", bic: "BPKOPLPW", currencies: ["PLN", "EUR", "USD"], region: "Europe" },
+  { key: "pekao", name: "Bank Pekao", country: "Poland", countryCode: "PL", bic: "PKOPPLPW", currencies: ["PLN", "EUR", "USD"], region: "Europe" },
+  { key: "santanderpl", name: "Santander Bank Polska", country: "Poland", countryCode: "PL", bic: "WBKPPLPP", currencies: ["PLN", "EUR"], region: "Europe" },
+  { key: "mbank", name: "mBank", country: "Poland", countryCode: "PL", bic: "BREXPLPW", currencies: ["PLN", "EUR"], region: "Europe" },
+  { key: "ingpl", name: "ING Bank Śląski", country: "Poland", countryCode: "PL", bic: "INGBPLPW", currencies: ["PLN", "EUR"], region: "Europe" },
+
+  // --- Czechia & Slovakia ---
+  { key: "csas", name: "Česká spořitelna", country: "Czechia", countryCode: "CZ", bic: "GIBACZPX", currencies: ["CZK", "EUR"], region: "Europe" },
+  { key: "csob", name: "ČSOB", country: "Czechia", countryCode: "CZ", bic: "CEKOCZPP", currencies: ["CZK", "EUR"], region: "Europe" },
+  { key: "kbcz", name: "Komerční banka", country: "Czechia", countryCode: "CZ", bic: "KOMBCZPP", currencies: ["CZK", "EUR"], region: "Europe" },
+  { key: "slsp", name: "Slovenská sporiteľňa", country: "Slovakia", countryCode: "SK", bic: "GIBASKBX", currencies: ["EUR"], region: "Europe" },
+  { key: "vub", name: "VÚB banka", country: "Slovakia", countryCode: "SK", bic: "SUBASKBX", currencies: ["EUR"], region: "Europe" },
+  { key: "tatrabanka", name: "Tatra banka", country: "Slovakia", countryCode: "SK", bic: "TATRSKBX", currencies: ["EUR", "USD"], region: "Europe" },
+
+  // --- Hungary ---
+  { key: "otp", name: "OTP Bank", country: "Hungary", countryCode: "HU", bic: "OTPVHUHB", currencies: ["HUF", "EUR", "USD"], region: "Europe" },
+  { key: "khhu", name: "K&H Bank", country: "Hungary", countryCode: "HU", bic: "OKHBHUHB", currencies: ["HUF", "EUR"], region: "Europe" },
+  { key: "erstehu", name: "Erste Bank Hungary", country: "Hungary", countryCode: "HU", bic: "GIBAHUHB", currencies: ["HUF", "EUR"], region: "Europe" },
+
+  // --- Romania ---
+  { key: "bancatransilvania", name: "Banca Transilvania", country: "Romania", countryCode: "RO", bic: "BTRLRO22", currencies: ["RON", "EUR", "USD"], region: "Europe" },
+  { key: "bcr", name: "Banca Comercială Română", country: "Romania", countryCode: "RO", bic: "RNCBROBU", currencies: ["RON", "EUR"], region: "Europe" },
+  { key: "brd", name: "BRD - Groupe Société Générale", country: "Romania", countryCode: "RO", bic: "BRDEROBU", currencies: ["RON", "EUR"], region: "Europe" },
+
+  // --- Croatia & Slovenia ---
+  { key: "zaba", name: "Zagrebačka banka", country: "Croatia", countryCode: "HR", bic: "ZABAHR2X", currencies: ["EUR", "USD"], region: "Europe" },
+  { key: "pbz", name: "Privredna banka Zagreb", country: "Croatia", countryCode: "HR", bic: "PBZGHR2X", currencies: ["EUR"], region: "Europe" },
+  { key: "nlb", name: "Nova Ljubljanska banka", country: "Slovenia", countryCode: "SI", bic: "LJBASI2X", currencies: ["EUR", "USD"], region: "Europe" },
+  { key: "nkbm", name: "Nova KBM", country: "Slovenia", countryCode: "SI", bic: "KBMASI2X", currencies: ["EUR"], region: "Europe" },
+
+  // --- Bulgaria ---
+  { key: "unicreditbg", name: "UniCredit Bulbank", country: "Bulgaria", countryCode: "BG", bic: "UNCRBGSF", currencies: ["BGN", "EUR", "USD"], region: "Europe" },
+  { key: "dskbank", name: "DSK Bank", country: "Bulgaria", countryCode: "BG", bic: "STSABGSF", currencies: ["BGN", "EUR"], region: "Europe" },
+  { key: "ubbbg", name: "United Bulgarian Bank", country: "Bulgaria", countryCode: "BG", bic: "UBBSBGSF", currencies: ["BGN", "EUR"], region: "Europe" },
+
+  // --- Baltics ---
+  { key: "swedbanklt", name: "Swedbank Lietuva", country: "Lithuania", countryCode: "LT", bic: "HABALT22", currencies: ["EUR", "USD"], region: "Europe" },
+  { key: "sebalt", name: "SEB Lithuania", country: "Lithuania", countryCode: "LT", bic: "CBVILT2X", currencies: ["EUR"], region: "Europe" },
+  { key: "swedbanklv", name: "Swedbank Latvija", country: "Latvia", countryCode: "LV", bic: "HABALV22", currencies: ["EUR", "USD"], region: "Europe" },
+  { key: "citadele", name: "Citadele banka", country: "Latvia", countryCode: "LV", bic: "PARXLV22", currencies: ["EUR"], region: "Europe" },
+  { key: "swedbankee", name: "Swedbank Eesti", country: "Estonia", countryCode: "EE", bic: "HABAEE2X", currencies: ["EUR", "USD"], region: "Europe" },
+  { key: "lhv", name: "LHV Pank", country: "Estonia", countryCode: "EE", bic: "LHVBEE22", currencies: ["EUR"], region: "Europe" },
+
+  // --- Greece & Cyprus ---
+  { key: "nbg", name: "National Bank of Greece", country: "Greece", countryCode: "GR", bic: "ETHNGRAA", currencies: ["EUR", "USD"], region: "Europe" },
+  { key: "alphabank", name: "Alpha Bank", country: "Greece", countryCode: "GR", bic: "CRBAGRAA", currencies: ["EUR", "USD"], region: "Europe" },
+  { key: "eurobank", name: "Eurobank", country: "Greece", countryCode: "GR", bic: "ERBKGRAA", currencies: ["EUR"], region: "Europe" },
+  { key: "piraeus", name: "Piraeus Bank", country: "Greece", countryCode: "GR", bic: "PIRBGRAA", currencies: ["EUR"], region: "Europe" },
+  { key: "bankofcyprus", name: "Bank of Cyprus", country: "Cyprus", countryCode: "CY", bic: "BCYPCY2N", currencies: ["EUR", "USD", "GBP"], region: "Europe" },
+  { key: "hellenicbank", name: "Hellenic Bank", country: "Cyprus", countryCode: "CY", bic: "HEBACY2N", currencies: ["EUR", "USD"], region: "Europe" },
+
+  // --- Malta, Iceland, Liechtenstein ---
+  { key: "bov", name: "Bank of Valletta", country: "Malta", countryCode: "MT", bic: "VALLMTMT", currencies: ["EUR", "USD", "GBP"], region: "Europe" },
+  { key: "landsbankinn", name: "Landsbankinn", country: "Iceland", countryCode: "IS", bic: "NBIIISRE", currencies: ["ISK", "EUR", "USD"], region: "Europe" },
+  { key: "islandsbanki", name: "Íslandsbanki", country: "Iceland", countryCode: "IS", bic: "GLITISRE", currencies: ["ISK", "EUR"], region: "Europe" },
+  { key: "lgt", name: "LGT Bank", country: "Liechtenstein", countryCode: "LI", bic: "BLFLLI2X", currencies: ["CHF", "EUR", "USD"], region: "Europe" },
+  { key: "llb", name: "Liechtensteinische Landesbank", country: "Liechtenstein", countryCode: "LI", bic: "LILALI2X", currencies: ["CHF", "EUR", "USD"], region: "Europe" },
+  { key: "vpbank", name: "VP Bank", country: "Liechtenstein", countryCode: "LI", bic: "VPBVLI2X", currencies: ["CHF", "EUR", "USD"], region: "Europe" },
+
+  // --- Turkey & Ukraine ---
+  { key: "isbank", name: "İşbank", country: "Turkey", countryCode: "TR", bic: "ISBKTRIS", currencies: ["TRY", "USD", "EUR"], region: "Europe" },
+  { key: "garanti", name: "Garanti BBVA", country: "Turkey", countryCode: "TR", bic: "TGBATRIS", currencies: ["TRY", "USD", "EUR"], region: "Europe" },
+  { key: "akbank", name: "Akbank", country: "Turkey", countryCode: "TR", bic: "AKBKTRIS", currencies: ["TRY", "USD", "EUR"], region: "Europe" },
+  { key: "ziraat", name: "Ziraat Bankası", country: "Turkey", countryCode: "TR", bic: "TCZBTR2A", currencies: ["TRY", "USD", "EUR"], region: "Europe" },
+  { key: "privatbank", name: "PrivatBank", country: "Ukraine", countryCode: "UA", bic: "PBANUA2X", currencies: ["UAH", "USD", "EUR"], region: "Europe" },
+  { key: "oschadbank", name: "Oschadbank", country: "Ukraine", countryCode: "UA", bic: "COSBUAUK", currencies: ["UAH", "USD"], region: "Europe" },
+
+  // --- Israel ---
+  { key: "hapoalim", name: "Bank Hapoalim", country: "Israel", countryCode: "IL", bic: "POALILIT", currencies: ["ILS", "USD", "EUR"], region: "Middle East & Africa" },
+  { key: "leumi", name: "Bank Leumi", country: "Israel", countryCode: "IL", bic: "LUMIILIT", currencies: ["ILS", "USD", "EUR"], region: "Middle East & Africa" },
+  { key: "discountil", name: "Israel Discount Bank", country: "Israel", countryCode: "IL", bic: "IDBLILIT", currencies: ["ILS", "USD"], region: "Middle East & Africa" },
+  { key: "mizrahi", name: "Mizrahi Tefahot Bank", country: "Israel", countryCode: "IL", bic: "MIZBILIT", currencies: ["ILS", "USD"], region: "Middle East & Africa" },
+
+  // --- Gulf & Levant (additional IBAN jurisdictions) ---
+  { key: "ahliunited", name: "Ahli United Bank", country: "Bahrain", countryCode: "BH", bic: "AUBBBHBM", currencies: ["BHD", "USD", "EUR"], region: "Middle East & Africa" },
+  { key: "nbbahrain", name: "National Bank of Bahrain", country: "Bahrain", countryCode: "BH", bic: "NBOBBHBM", currencies: ["BHD", "USD"], region: "Middle East & Africa" },
+  { key: "gib", name: "Gulf International Bank", country: "Bahrain", countryCode: "BH", bic: "GULFBHBM", currencies: ["BHD", "USD", "SAR"], region: "Middle East & Africa" },
+  { key: "nbk", name: "National Bank of Kuwait", country: "Kuwait", countryCode: "KW", bic: "NBOKKWKW", currencies: ["KWD", "USD", "EUR"], region: "Middle East & Africa" },
+  { key: "kfh", name: "Kuwait Finance House", country: "Kuwait", countryCode: "KW", bic: "KFHOKWKW", currencies: ["KWD", "USD"], region: "Middle East & Africa" },
+  { key: "gulfbank", name: "Gulf Bank", country: "Kuwait", countryCode: "KW", bic: "GULBKWKW", currencies: ["KWD", "USD"], region: "Middle East & Africa" },
+  { key: "arabbank", name: "Arab Bank", country: "Jordan", countryCode: "JO", bic: "ARABJOAX", currencies: ["JOD", "USD", "EUR"], region: "Middle East & Africa" },
+  { key: "housingbank", name: "Housing Bank for Trade and Finance", country: "Jordan", countryCode: "JO", bic: "HBHOJOAX", currencies: ["JOD", "USD"], region: "Middle East & Africa" },
+  { key: "bankaudi", name: "Bank Audi", country: "Lebanon", countryCode: "LB", bic: "AUDBLBBX", currencies: ["LBP", "USD", "EUR"], region: "Middle East & Africa" },
+  { key: "blom", name: "BLOM Bank", country: "Lebanon", countryCode: "LB", bic: "BLOMLBBX", currencies: ["LBP", "USD"], region: "Middle East & Africa" },
+  { key: "nbe", name: "National Bank of Egypt", country: "Egypt", countryCode: "EG", bic: "NBEGEGCX", currencies: ["EGP", "USD", "EUR"], region: "Middle East & Africa" },
+  { key: "banquemisr", name: "Banque Misr", country: "Egypt", countryCode: "EG", bic: "BMISEGCX", currencies: ["EGP", "USD"], region: "Middle East & Africa" },
+  { key: "cib", name: "Commercial International Bank", country: "Egypt", countryCode: "EG", bic: "CIBEEGCX", currencies: ["EGP", "USD", "EUR"], region: "Middle East & Africa" },
+
+  // --- Gulf (additional, existing IBAN jurisdictions) ---
+  { key: "qib", name: "Qatar Islamic Bank", country: "Qatar", countryCode: "QA", bic: "QISBQAQA", currencies: ["QAR", "USD"], region: "Middle East & Africa" },
+  { key: "cbq", name: "Commercial Bank of Qatar", country: "Qatar", countryCode: "QA", bic: "CBQAQAQA", currencies: ["QAR", "USD", "EUR"], region: "Middle East & Africa" },
+  { key: "dib", name: "Dubai Islamic Bank", country: "United Arab Emirates", countryCode: "AE", bic: "DUIBAEAD", currencies: ["AED", "USD"], region: "Middle East & Africa", nationalBankCode: "042" },
+  { key: "mashreq", name: "Mashreq Bank", country: "United Arab Emirates", countryCode: "AE", bic: "BOMLAEAD", currencies: ["AED", "USD", "EUR"], region: "Middle East & Africa", nationalBankCode: "033" },
+  { key: "rakbank", name: "RAKBANK", country: "United Arab Emirates", countryCode: "AE", bic: "NRAKAEAK", currencies: ["AED", "USD"], region: "Middle East & Africa", nationalBankCode: "052" },
+  { key: "riyadbank", name: "Riyad Bank", country: "Saudi Arabia", countryCode: "SA", bic: "RIBLSARI", currencies: ["SAR", "USD"], region: "Middle East & Africa", nationalBankCode: "20" },
+  { key: "bsf", name: "Banque Saudi Fransi", country: "Saudi Arabia", countryCode: "SA", bic: "BSFRSARI", currencies: ["SAR", "USD", "EUR"], region: "Middle East & Africa", nationalBankCode: "55" },
+  { key: "alinma", name: "Alinma Bank", country: "Saudi Arabia", countryCode: "SA", bic: "INMASARI", currencies: ["SAR", "USD"], region: "Middle East & Africa", nationalBankCode: "05" },
+
+  // --- Africa (additional) ---
+  { key: "nedbank", name: "Nedbank", country: "South Africa", countryCode: "ZA", bic: "NEDSZAJJ", currencies: ["ZAR", "USD"], region: "Middle East & Africa" },
+  { key: "investec", name: "Investec Bank", country: "South Africa", countryCode: "ZA", bic: "IVESZAJJ", currencies: ["ZAR", "USD", "GBP"], region: "Middle East & Africa" },
+  { key: "zenith", name: "Zenith Bank", country: "Nigeria", countryCode: "NG", bic: "ZEIBNGLA", currencies: ["NGN", "USD"], region: "Middle East & Africa" },
+  { key: "gtbank", name: "Guaranty Trust Bank", country: "Nigeria", countryCode: "NG", bic: "GTBINGLA", currencies: ["NGN", "USD", "GBP"], region: "Middle East & Africa" },
+  { key: "accessbank", name: "Access Bank", country: "Nigeria", countryCode: "NG", bic: "ABNGNGLA", currencies: ["NGN", "USD"], region: "Middle East & Africa" },
+  { key: "equitybank", name: "Equity Bank", country: "Kenya", countryCode: "KE", bic: "EQBLKENA", currencies: ["KES", "USD"], region: "Middle East & Africa" },
+  { key: "kcb", name: "KCB Bank", country: "Kenya", countryCode: "KE", bic: "KCBLKENX", currencies: ["KES", "USD"], region: "Middle East & Africa" },
 ]
 
 export function partnerBankByKey(key?: string): PartnerBank | undefined {

@@ -58,6 +58,33 @@ export const IBAN_SPECS: Record<string, IbanSpec> = {
   AE: { length: 23, bban: [{ kind: "n", length: 3 }, { kind: "n", length: 16 }] },
   SA: { length: 24, bban: [{ kind: "n", length: 2 }, { kind: "c", length: 18 }] },
   QA: { length: 29, bban: [{ kind: "a", length: 4, fromBankStem: true }, { kind: "c", length: 21 }] },
+  // --- Additional IBAN jurisdictions (official ISO 13616 lengths) ---
+  // Central & Eastern Europe
+  PL: { length: 28, bban: [{ kind: "n", length: 24 }] },
+  CZ: { length: 24, bban: [{ kind: "n", length: 20 }] },
+  SK: { length: 24, bban: [{ kind: "n", length: 20 }] },
+  HU: { length: 28, bban: [{ kind: "n", length: 24 }] },
+  RO: { length: 24, bban: [{ kind: "a", length: 4, fromBankStem: true }, { kind: "c", length: 16 }] },
+  HR: { length: 21, bban: [{ kind: "n", length: 17 }] },
+  SI: { length: 19, bban: [{ kind: "n", length: 15 }] },
+  BG: { length: 22, bban: [{ kind: "a", length: 4, fromBankStem: true }, { kind: "n", length: 6 }, { kind: "c", length: 8 }] },
+  LT: { length: 20, bban: [{ kind: "n", length: 16 }] },
+  LV: { length: 21, bban: [{ kind: "a", length: 4, fromBankStem: true }, { kind: "c", length: 13 }] },
+  EE: { length: 20, bban: [{ kind: "n", length: 16 }] },
+  GR: { length: 27, bban: [{ kind: "n", length: 7 }, { kind: "c", length: 16 }] },
+  CY: { length: 28, bban: [{ kind: "n", length: 8 }, { kind: "c", length: 16 }] },
+  MT: { length: 31, bban: [{ kind: "a", length: 4, fromBankStem: true }, { kind: "n", length: 5 }, { kind: "c", length: 18 }] },
+  IS: { length: 26, bban: [{ kind: "n", length: 22 }] },
+  LI: { length: 21, bban: [{ kind: "n", length: 5 }, { kind: "c", length: 12 }] },
+  TR: { length: 26, bban: [{ kind: "n", length: 6 }, { kind: "c", length: 16 }] },
+  UA: { length: 29, bban: [{ kind: "n", length: 6 }, { kind: "c", length: 19 }] },
+  // Middle East & North Africa
+  IL: { length: 23, bban: [{ kind: "n", length: 19 }] },
+  BH: { length: 22, bban: [{ kind: "a", length: 4, fromBankStem: true }, { kind: "c", length: 14 }] },
+  KW: { length: 30, bban: [{ kind: "a", length: 4, fromBankStem: true }, { kind: "c", length: 22 }] },
+  JO: { length: 30, bban: [{ kind: "a", length: 4, fromBankStem: true }, { kind: "n", length: 4 }, { kind: "c", length: 18 }] },
+  LB: { length: 28, bban: [{ kind: "n", length: 4 }, { kind: "c", length: 20 }] },
+  EG: { length: 29, bban: [{ kind: "n", length: 25 }] },
 }
 
 const DIGITS = "0123456789"
