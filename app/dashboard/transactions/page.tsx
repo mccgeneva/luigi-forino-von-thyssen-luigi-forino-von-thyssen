@@ -142,9 +142,14 @@ export default function TransactionsPage() {
     const d = new Date(e.date)
     const isFeeRow = e.id.endsWith("-FEE")
     const linkedFee = feeByPrincipal.get(e.id)
+    // Automatic FX cover rows rebalance one currency pocket from another to
+    // clear an overdraft (e.g. EUR converted to GBP). They are internal
+    // conversions, NOT real incoming/outgoing payments, so surface them as an
+    // "exchange" type — distinct icon, colour and filter — instead of a payment.
+    const isFxCover = e.id.startsWith("FX-COVER-") || e.category === "FX Auto-Cover"
     return {
       id: e.id,
-      type: "payment",
+      type: isFxCover ? "exchange" : "payment",
       direction: e.direction === "credit" ? "incoming" : "outgoing",
       amount: formatAmount(e.amount, e.currency),
       amountValue: e.amount,
@@ -210,6 +215,17 @@ export default function TransactionsPage() {
   }).length
   const hasDateFilter = Boolean(dateRange?.from)
 
+  // FX conversions = exchange rows (currently the automatic FX-cover legs). Count
+  // and total only the incoming (target) leg of each pair so a single EUR→GBP
+  // conversion is counted once, and sum the converted volume in the active
+  // currency for the headline figure.
+  const fxLegs = filteredTransactions.filter((t) => t.type === "exchange" && t.direction === "incoming")
+  const fxConversionCount = fxLegs.length
+  const fxConversionVolume = fxLegs.reduce(
+    (sum, t) => sum + convertCurrency(Math.abs(t.amountValue), t.currency, volumeCurrency),
+    0,
+  )
+
   const stats = [
     {
       title: "Total Volume",
@@ -241,8 +257,8 @@ export default function TransactionsPage() {
     },
     {
       title: "FX Conversions",
-      value: formatAmount(0, "EUR"),
-      subtext: "0 exchanges",
+      value: formatAmount(fxConversionVolume, volumeCurrency),
+      subtext: `${fxConversionCount} auto-cover${fxConversionCount === 1 ? "" : "s"}`,
       icon: ArrowLeftRight,
       color: "text-purple-400",
     },
