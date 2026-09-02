@@ -148,16 +148,32 @@ export async function getMyGatewayAccounts(): Promise<GatewayAccount[]> {
   // person whose account is on screen. All reads/writes key strictly on this id.
   const user = await getSessionUser()
   if (!user?.id) return []
+
+  // Read the accounts FIRST and independently of the deposit back-fill. The
+  // back-fill scans this user's approved payments + ledger, which for a very
+  // large ledger can be slow or fail — and it must NEVER blank the account list
+  // (that made an approved account vanish from the Bank Accounts page). The
+  // back-fill only affects the per-account "received" figure, not whether the
+  // account exists, so run it in its own isolated try/catch and re-read only if
+  // it succeeds.
+  let accounts: GatewayAccount[] = []
   try {
-    // Back-fill any approved outgoing payment addressed to one of this user's
-    // gateway IBANs into a received deposit before reading, so funds auto-matched
-    // by IBAN always surface here (idempotent — never double-credits).
-    await backfillGatewayDepositsForUser(user.id)
-    return await readAccounts(user.id)
+    accounts = await readAccounts(user.id)
   } catch (err) {
-    console.log("[v0] getMyGatewayAccounts query failed:", (err as Error).message)
+    console.log("[v0] getMyGatewayAccounts read failed:", (err as Error).message)
     return []
   }
+
+  // Fire-and-forget: kick off the deposit back-fill WITHOUT awaiting it, so a
+  // slow scan (this user may have a very large ledger) can never delay or blank
+  // this response. It is idempotent (never double-credits) and the per-account
+  // "received" figures refresh on the next poll; the ledger reconcile path also
+  // matches these deposits, so nothing is lost by not awaiting here.
+  void backfillGatewayDepositsForUser(user.id).catch((err) => {
+    console.log("[v0] gateway deposit back-fill skipped:", (err as Error).message)
+  })
+
+  return accounts
 }
 
 /** Insert or update a single gateway account request for the signed-in user. */
