@@ -6,7 +6,7 @@ import { type UserProfile } from "@/lib/users"
 import { resolveCurrentSession } from "@/lib/session-user"
 import { logActivity } from "@/app/actions/log-activity"
 import { type PartnerBank } from "@/lib/partner-banks"
-import { mergedPartnerBanks, mergedBanksForCurrency, resolvePartnerBank } from "@/lib/gateway-banks-db"
+import { mergedPartnerBanks, resolvePartnerBank } from "@/lib/gateway-banks-db"
 
 // ---------------------------------------------------------------------------
 // Partner-bank account inventory.
@@ -135,21 +135,21 @@ function resolveAvailability(
 // ---------------------------------------------------------------------------
 
 /**
- * Availability of every partner bank that supports the currency. Used by the
- * client request form so customers only ever see banks they can actually be
- * issued an account at right now.
+ * Availability of EVERY partner bank for the given currency. Any bank can issue
+ * in any currency, so this returns the whole directory (each row resolved for
+ * this currency); the admin approve dialog uses it to show slot availability.
  */
 export async function getBankAvailabilityForCurrency(
   currency: string,
 ): Promise<BankAvailability[]> {
   try {
-    const [explicit, banks] = await Promise.all([readInventory(), mergedBanksForCurrency(currency)])
+    const [explicit, banks] = await Promise.all([readInventory(), mergedPartnerBanks()])
     return banks.map((b) => resolveAvailability(b, currency, explicit))
   } catch (err) {
     console.log("[v0] getBankAvailabilityForCurrency failed:", (err as Error).message)
     // Fail open to directory-level support so the form still works if the
     // inventory table is briefly unavailable; allocation remains the gate.
-    const banks = await mergedBanksForCurrency(currency).catch(() => [])
+    const banks = await mergedPartnerBanks().catch(() => [])
     return banks.map((b) => ({
       bankKey: b.key,
       currency,
@@ -211,9 +211,8 @@ export async function setBankAvailabilityAdmin(
 
   const bank = await resolvePartnerBank(bankKey)
   if (!bank) return { ok: false, error: "Unknown partner bank." }
-  if (!bank.currencies.includes(currency)) {
-    return { ok: false, error: `${bank.name} does not support ${currency}.` }
-  }
+  // A bank can issue in any platform currency, so capacity may be configured for
+  // any currency (not only the ones in the bank's suggested `currencies` list).
   if (patch.capacity !== undefined && (!Number.isFinite(patch.capacity) || patch.capacity < 0)) {
     return { ok: false, error: "Capacity must be zero or a positive whole number." }
   }
@@ -293,9 +292,8 @@ export async function allocateBankSlotAdmin(
 
   const bank = await resolvePartnerBank(bankKey)
   if (!bank) return { ok: false, error: "Unknown partner bank." }
-  if (!bank.currencies.includes(currency)) {
-    return { ok: false, error: `${bank.name} cannot issue a ${currency} account.` }
-  }
+  // Any bank can issue any platform currency; the currency pool defaults lazily
+  // to an enabled slot with the standard capacity, so no per-bank currency gate.
 
   try {
     await ensureTable()

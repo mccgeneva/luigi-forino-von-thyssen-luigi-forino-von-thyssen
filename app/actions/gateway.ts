@@ -17,7 +17,7 @@ import {
   GATEWAY_ACCOUNT_FEE,
   GATEWAY_FEE_CURRENCY,
 } from "@/lib/gateway-catalog"
-import { partnerBankByKey, bankSupportsCurrency } from "@/lib/partner-banks"
+import { resolvePartnerBank } from "@/lib/gateway-banks-db"
 import type {
   GatewayAccount,
   AccountCoordinates,
@@ -232,11 +232,11 @@ export async function requestGatewayAccountWithFee(input: {
   if (!isAccountTypeKey(type)) return { ok: false, error: "Choose a valid account type." }
   const currency = input.currency
   if (!isGatewayCurrency(currency)) return { ok: false, error: "Choose a valid currency." }
-  const bank = partnerBankByKey(input.preferredBankKey)
+  // Any partner bank can open an account in any platform currency — the
+  // currency is the customer's choice, not a per-bank restriction. We only
+  // verify the bank exists in the (database-backed) directory.
+  const bank = await resolvePartnerBank(input.preferredBankKey)
   if (!bank) return { ok: false, error: "Select your preferred banking partner." }
-  if (!bankSupportsCurrency(input.preferredBankKey, currency)) {
-    return { ok: false, error: `${bank.name} cannot issue a ${currency} account.` }
-  }
   const purpose = input.purpose.trim()
   if (!purpose) return { ok: false, error: "Describe the purpose of the account." }
 
