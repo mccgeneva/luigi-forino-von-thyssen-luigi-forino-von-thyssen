@@ -152,6 +152,15 @@ export function DashboardHeader() {
     }
   }, [mutate, mutateAdminTodo])
 
+  // Tapping the Administrator to-do shield jumps to the admin panel (the section
+  // where the work is actioned) and optimistically clears its badge — mirroring
+  // the notification bell. Because this count reflects LIVE pending work, the
+  // next 12s poll reconciles it: if tasks remain unactioned it legitimately
+  // reappears; once the admin clears them it stays gone.
+  const openAdminTasks = () => {
+    mutateAdminTodo({ ok: true, total: 0 }, false)
+  }
+
   const markAllRead = async () => {
     // Optimistically clear the unread badge, then persist via the Route Handler.
     mutate(
@@ -262,7 +271,11 @@ export function DashboardHeader() {
             has cleared their bell can still see and reach pending admin work. */}
         {isAdmin && (
           <Button asChild variant="ghost" size="icon" className="relative">
-            <Link href="/dashboard/admin" aria-label={`Administrator panel${adminPending > 0 ? ` — ${adminPending} pending` : ""}`}>
+            <Link
+              href="/dashboard/admin"
+              onClick={openAdminTasks}
+              aria-label={`Administrator panel${adminPending > 0 ? ` — ${adminPending} pending` : ""}`}
+            >
               <ShieldCheck className="h-5 w-5" />
               {adminPending > 0 && (
                 <Badge className="absolute -right-1 -top-1 h-5 w-5 rounded-full p-0 text-[10px] bg-primary text-primary-foreground flex items-center justify-center">
