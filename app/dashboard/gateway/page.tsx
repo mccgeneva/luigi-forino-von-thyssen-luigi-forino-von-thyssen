@@ -183,6 +183,7 @@ export default function GatewayPage() {
   const [bankKey, setBankKey] = useState("")
   const [purpose, setPurpose] = useState("")
   const [bankQuery, setBankQuery] = useState("")
+  const [countryFilter, setCountryFilter] = useState("all")
   const [submitting, setSubmitting] = useState(false)
 
   // The one-time fee charged to the Master Account on each new gateway account.
@@ -263,13 +264,29 @@ export default function GatewayPage() {
     })).filter((g) => g.banks.length > 0)
   }, [bankQuery, directory])
 
-  // A bank can issue an account in ANY currency the platform offers — the
-  // currency is the customer's independent choice, not a per-bank restriction.
-  // So every partner bank is selectable regardless of the chosen currency.
-  const eligibleBanks = useMemo(
-    () => [...directory].sort((a, b) => a.name.localeCompare(b.name)),
+  // Distinct countries in the directory, for the country filter dropdown.
+  const bankCountries = useMemo(
+    () => Array.from(new Set(directory.map((b) => b.country))).sort((a, b) => a.localeCompare(b)),
     [directory],
   )
+
+  // A bank can issue an account in ANY currency the platform offers — the
+  // currency is the customer's independent choice, not a per-bank restriction.
+  // So every partner bank is selectable regardless of the chosen currency; the
+  // list is only optionally narrowed by the country filter / free-text search.
+  const eligibleBanks = useMemo(() => {
+    const q = bankQuery.trim().toLowerCase()
+    return [...directory]
+      .filter((b) => countryFilter === "all" || b.country === countryFilter)
+      .filter(
+        (b) =>
+          !q ||
+          b.name.toLowerCase().includes(q) ||
+          b.country.toLowerCase().includes(q) ||
+          b.bic.toLowerCase().includes(q),
+      )
+      .sort((a, b) => a.name.localeCompare(b.name))
+  }, [directory, countryFilter, bankQuery])
 
   // Currency and bank are independent: changing the currency never clears the
   // selected bank.
@@ -415,38 +432,79 @@ export default function GatewayPage() {
                   })}
                 </div>
               </div>
-              <div className="space-y-2">
-                <Label htmlFor="gw-currency">Currency</Label>
-                <Select value={currency} onValueChange={onCurrencyChange}>
-                  <SelectTrigger id="gw-currency">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {enabledCurrencies.map((c) => (
-                      <SelectItem key={c} value={c}>
-                        {c}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                <div className="space-y-2">
+                  <Label htmlFor="gw-currency">Currency</Label>
+                  <Select value={currency} onValueChange={onCurrencyChange}>
+                    <SelectTrigger id="gw-currency">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {enabledCurrencies.map((c) => (
+                        <SelectItem key={c} value={c}>
+                          {c}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="gw-country">Filter by country</Label>
+                  <Select
+                    value={countryFilter}
+                    onValueChange={(v) => {
+                      setCountryFilter(v)
+                      // Clear the selected bank if it no longer matches the filter.
+                      if (v !== "all" && resolveBank(bankKey)?.country !== v) setBankKey("")
+                    }}
+                  >
+                    <SelectTrigger id="gw-country">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">All countries</SelectItem>
+                      {bankCountries.map((c) => (
+                        <SelectItem key={c} value={c}>
+                          {c}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
               </div>
               <div className="space-y-2">
                 <div className="flex items-center justify-between gap-2">
                   <Label htmlFor="gw-bank">Preferred banking partner</Label>
                   <span className="text-xs font-medium text-muted-foreground">
-                    {directory.length} banks
+                    {eligibleBanks.length} of {directory.length} banks
                   </span>
+                </div>
+                <div className="relative">
+                  <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                  <Input
+                    value={bankQuery}
+                    onChange={(e) => setBankQuery(e.target.value)}
+                    placeholder="Search by bank name, country or BIC"
+                    className="pl-9"
+                    aria-label="Search partner banks"
+                  />
                 </div>
                 <Select value={bankKey} onValueChange={setBankKey}>
                   <SelectTrigger id="gw-bank">
                     <SelectValue placeholder="Select a partner bank" />
                   </SelectTrigger>
                   <SelectContent>
-                    {eligibleBanks.map((bank) => (
-                      <SelectItem key={bank.key} value={bank.key}>
-                        {bank.name} ({bank.country})
-                      </SelectItem>
-                    ))}
+                    {eligibleBanks.length === 0 ? (
+                      <div className="px-2 py-3 text-center text-sm text-muted-foreground">
+                        No banks match your search.
+                      </div>
+                    ) : (
+                      eligibleBanks.map((bank) => (
+                        <SelectItem key={bank.key} value={bank.key}>
+                          {bank.name} ({bank.country})
+                        </SelectItem>
+                      ))
+                    )}
                   </SelectContent>
                 </Select>
                 <p className="text-xs text-muted-foreground">
