@@ -148,16 +148,33 @@ export async function getMyGatewayAccounts(): Promise<GatewayAccount[]> {
   // person whose account is on screen. All reads/writes key strictly on this id.
   const user = await getSessionUser()
   if (!user?.id) return []
+
+  // Read the accounts FIRST and independently of the deposit back-fill. The
+  // back-fill scans this user's approved payments + ledger, which for a very
+  // large ledger can be slow or fail — and it must NEVER blank the account list
+  // (that made an approved account vanish from the Bank Accounts page). The
+  // back-fill only affects the per-account "received" figure, not whether the
+  // account exists, so run it in its own isolated try/catch and re-read only if
+  // it succeeds.
+  let accounts: GatewayAccount[] = []
   try {
-    // Back-fill any approved outgoing payment addressed to one of this user's
-    // gateway IBANs into a received deposit before reading, so funds auto-matched
-    // by IBAN always surface here (idempotent — never double-credits).
-    await backfillGatewayDepositsForUser(user.id)
-    return await readAccounts(user.id)
+    accounts = await readAccounts(user.id)
   } catch (err) {
-    console.log("[v0] getMyGatewayAccounts query failed:", (err as Error).message)
+    console.log("[v0] getMyGatewayAccounts read failed:", (err as Error).message)
     return []
   }
+
+  try {
+    // Idempotent — never double-credits. Isolated so a slow/failed back-fill
+    // cannot drop the accounts we already read. Re-read afterwards so the
+    // per-account "received" figures reflect any newly matched deposits.
+    await backfillGatewayDepositsForUser(user.id)
+    accounts = await readAccounts(user.id)
+  } catch (err) {
+    console.log("[v0] getMyGatewayAccounts backfill skipped:", (err as Error).message)
+  }
+
+  return accounts
 }
 
 /** Insert or update a single gateway account request for the signed-in user. */
