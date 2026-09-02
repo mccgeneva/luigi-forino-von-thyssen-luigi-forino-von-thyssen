@@ -104,7 +104,7 @@ export function BankInventoryManager() {
         b.currencies.some((c) => c.toLowerCase().includes(q))
       )
     })
-  }, [search, region])
+  }, [search, region, allBanks])
 
   // The bank whose settings panel is open. Cleared automatically when it falls
   // outside the current search/region filters so the panel never shows a bank
@@ -145,10 +145,24 @@ export function BankInventoryManager() {
       delete next[k]
       return next
     })
-    const bankName = partnerBankByKey(bankKey)?.name ?? bankKey
+    const bankName = allBanks.find((b) => b.key === bankKey)?.name ?? bankKey
     toast.success("Account pool updated", {
       description: `${bankName} · ${currency}`,
     })
+  }
+
+  const removeBank = async (bankKey: string, bankName: string) => {
+    if (!confirm(`Remove ${bankName} from the partner-bank directory? Clients will no longer be able to request an account there.`)) {
+      return
+    }
+    const res = await removePartnerBankAdmin(ADMIN_PASSCODE, bankKey)
+    if (!res.ok) {
+      toast.error(res.error)
+      return
+    }
+    setSelectedKey("")
+    loadDirectory()
+    toast.success("Bank removed", { description: bankName })
   }
 
   const totals = useMemo(() => {
@@ -211,6 +225,9 @@ export function BankInventoryManager() {
               ))}
             </SelectContent>
           </Select>
+          <Button onClick={() => setAddOpen(true)} className="sm:w-auto">
+            <Plus className="mr-1.5 h-4 w-4" /> Add bank
+          </Button>
         </div>
 
         {/* Bank picker — settings only open for the chosen bank */}
@@ -260,9 +277,33 @@ export function BankInventoryManager() {
                       {bank.country} · {bank.bic}
                     </p>
                   </div>
-                  <Badge variant="secondary" className="bg-secondary text-muted-foreground">
-                    {bank.region}
-                  </Badge>
+                  <div className="flex items-center gap-2">
+                    <Badge variant="secondary" className="bg-secondary text-muted-foreground">
+                      {bank.region}
+                    </Badge>
+                    {bank.source === "custom" ? (
+                      <>
+                        <Badge
+                          variant="secondary"
+                          className="bg-primary/15 text-primary"
+                        >
+                          Added by you
+                        </Badge>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-7 px-2 text-destructive hover:text-destructive"
+                          onClick={() => void removeBank(bank.key, bank.name)}
+                        >
+                          <Trash2 className="mr-1 h-3.5 w-3.5" /> Remove
+                        </Button>
+                      </>
+                    ) : (
+                      <Badge variant="outline" className="text-muted-foreground">
+                        Built-in
+                      </Badge>
+                    )}
+                  </div>
                 </div>
 
                 <div className="mt-3 grid gap-2">
@@ -377,6 +418,145 @@ export function BankInventoryManager() {
           </div>
         )}
       </CardContent>
+
+      <AddBankDialog
+        open={addOpen}
+        onOpenChange={setAddOpen}
+        onAdded={(key) => {
+          loadDirectory()
+          setSelectedKey(key)
+        }}
+      />
     </Card>
+  )
+}
+
+function AddBankDialog({
+  open,
+  onOpenChange,
+  onAdded,
+}: {
+  open: boolean
+  onOpenChange: (v: boolean) => void
+  onAdded: (key: string) => void
+}) {
+  const [name, setName] = useState("")
+  const [country, setCountry] = useState("")
+  const [countryCode, setCountryCode] = useState("")
+  const [bic, setBic] = useState("")
+  const [region, setRegion] = useState<BankRegion>("Europe")
+  const [currencies, setCurrencies] = useState("EUR, USD")
+  const [saving, setSaving] = useState(false)
+
+  const reset = () => {
+    setName("")
+    setCountry("")
+    setCountryCode("")
+    setBic("")
+    setRegion("Europe")
+    setCurrencies("EUR, USD")
+  }
+
+  const submit = async () => {
+    setSaving(true)
+    const res = await addPartnerBankAdmin(ADMIN_PASSCODE, {
+      name,
+      country,
+      countryCode,
+      bic,
+      region,
+      currencies: currencies
+        .split(/[,\s]+/)
+        .map((c) => c.trim().toUpperCase())
+        .filter(Boolean),
+    })
+    setSaving(false)
+    if (!res.ok) {
+      toast.error(res.error)
+      return
+    }
+    toast.success("Bank added", { description: `${name} · ${country}` })
+    reset()
+    onOpenChange(false)
+    onAdded(res.bank.key)
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-md">
+        <DialogHeader>
+          <DialogTitle>Add a partner bank</DialogTitle>
+          <DialogDescription>
+            Stored in the database and available immediately — no redeploy needed. The BIC country
+            (characters 5–6) must match the country code so generated IBANs stay routable.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-3">
+          <div className="space-y-1.5">
+            <Label htmlFor="ab-name">Bank name</Label>
+            <Input id="ab-name" value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Banco Example" />
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1.5">
+              <Label htmlFor="ab-country">Country</Label>
+              <Input id="ab-country" value={country} onChange={(e) => setCountry(e.target.value)} placeholder="Spain" />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="ab-cc">Country code</Label>
+              <Input
+                id="ab-cc"
+                value={countryCode}
+                onChange={(e) => setCountryCode(e.target.value.toUpperCase().slice(0, 2))}
+                placeholder="ES"
+                maxLength={2}
+              />
+            </div>
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="ab-bic">BIC / SWIFT</Label>
+            <Input
+              id="ab-bic"
+              value={bic}
+              onChange={(e) => setBic(e.target.value.toUpperCase())}
+              placeholder="EXAMESMMXXX"
+            />
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="ab-region">Region</Label>
+            <Select value={region} onValueChange={(v) => setRegion(v as BankRegion)}>
+              <SelectTrigger id="ab-region">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {BANK_REGIONS.map((r) => (
+                  <SelectItem key={r} value={r}>
+                    {r}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="ab-ccy">Currencies</Label>
+            <Input
+              id="ab-ccy"
+              value={currencies}
+              onChange={(e) => setCurrencies(e.target.value)}
+              placeholder="EUR, USD, GBP"
+            />
+            <p className="text-xs text-muted-foreground">Comma- or space-separated ISO codes.</p>
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={saving}>
+            Cancel
+          </Button>
+          <Button onClick={() => void submit()} disabled={saving}>
+            {saving ? <Loader2 className="mr-1.5 h-4 w-4 animate-spin" /> : <Plus className="mr-1.5 h-4 w-4" />}
+            Add bank
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   )
 }

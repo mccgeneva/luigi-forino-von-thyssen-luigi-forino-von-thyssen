@@ -26,7 +26,8 @@ import {
 // ---------------------------------------------------------------------------
 
 export type CustomBankInput = {
-  key: string
+  // Optional: derived from `name` when omitted (see upsertCustomBank).
+  key?: string
   name: string
   country: string
   countryCode: string
