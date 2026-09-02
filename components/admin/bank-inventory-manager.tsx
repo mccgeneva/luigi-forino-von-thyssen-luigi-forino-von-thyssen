@@ -1,12 +1,21 @@
 "use client"
 
 import { useEffect, useMemo, useState } from "react"
-import { Layers, Search, Loader2, Check } from "lucide-react"
+import { Layers, Search, Loader2, Check, Plus, Trash2 } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
 import { Badge } from "@/components/ui/badge"
 import { Switch } from "@/components/ui/switch"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
 import {
   Select,
   SelectContent,
@@ -15,12 +24,18 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { ADMIN_PASSCODE } from "@/lib/admin-config"
-import { PARTNER_BANKS, partnerBankByKey, type BankRegion, BANK_REGIONS } from "@/lib/partner-banks"
+import { PARTNER_BANKS, type BankRegion, BANK_REGIONS } from "@/lib/partner-banks"
 import {
   getBankInventoryAdmin,
   setBankAvailabilityAdmin,
   type BankAvailability,
 } from "@/app/actions/bank-inventory"
+import {
+  listPartnerBanksAdmin,
+  addPartnerBankAdmin,
+  removePartnerBankAdmin,
+  type AdminBankRow,
+} from "@/app/actions/gateway-banks"
 import { toast } from "sonner"
 import { cn } from "@/lib/utils"
 
@@ -37,6 +52,13 @@ export function BankInventoryManager() {
   const [selectedKey, setSelectedKey] = useState<string>("")
   // Draft capacity inputs keyed by bank::currency so typing doesn't fight state.
   const [drafts, setDrafts] = useState<Record<string, string>>({})
+  // Live directory (built-in baseline + database-added banks). Seeded with the
+  // compiled baseline so the picker is populated instantly, then replaced with
+  // the merged directory so admin-added banks are configurable here too.
+  const [allBanks, setAllBanks] = useState<AdminBankRow[]>(
+    PARTNER_BANKS.map((b) => ({ ...b, source: "built-in" as const })),
+  )
+  const [addOpen, setAddOpen] = useState(false)
 
   const applyInventory = (rows: BankAvailability[]) => {
     const map: InventoryMap = new Map()
@@ -44,19 +66,28 @@ export function BankInventoryManager() {
     setInventory(map)
   }
 
+  const loadDirectory = () => {
+    listPartnerBanksAdmin(ADMIN_PASSCODE).then((res) => {
+      if (res.ok) setAllBanks(res.banks)
+    })
+  }
+
   useEffect(() => {
     let active = true
     setLoading(true)
-    getBankInventoryAdmin(ADMIN_PASSCODE)
-      .then((res) => {
+    Promise.all([
+      getBankInventoryAdmin(ADMIN_PASSCODE).then((res) => {
         if (!active) return
         if (!res.ok) {
           toast.error(res.error)
           return
         }
         applyInventory(res.inventory)
-      })
-      .finally(() => active && setLoading(false))
+      }),
+      listPartnerBanksAdmin(ADMIN_PASSCODE).then((res) => {
+        if (active && res.ok) setAllBanks(res.banks)
+      }),
+    ]).finally(() => active && setLoading(false))
     return () => {
       active = false
     }
@@ -64,7 +95,7 @@ export function BankInventoryManager() {
 
   const banks = useMemo(() => {
     const q = search.trim().toLowerCase()
-    return PARTNER_BANKS.filter((b) => {
+    return allBanks.filter((b) => {
       if (region !== "all" && b.region !== region) return false
       if (!q) return true
       return (
