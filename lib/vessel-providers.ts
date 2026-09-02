@@ -375,7 +375,19 @@ const vesselFinder: Adapter = async (imo, token) => {
 // the admin to complete on import.
 const DATADOCKED_BASE = "https://datadocked.com/api/vessels_operations/get-vessel-location"
 
-async function datadockedFetch(imo: string, token: string): Promise<Record<string, unknown> | { error: string }> {
+// A successful Datadocked row is a plain data object; failures return
+// `{ error }`. `Record<string, unknown>`'s index signature means a `"error" in
+// row` guard does NOT narrow the union, so the adapters below use an explicit
+// `isFetchError()` helper and annotate their success return as Vessel /
+// VesselLivePosition to keep the Adapter / PositionAdapter contract.
+type DatadockedRow = Record<string, unknown>
+type DatadockedResult = DatadockedRow | { error: string }
+
+function isFetchError(r: DatadockedResult): r is { error: string } {
+  return typeof (r as { error?: unknown }).error === "string"
+}
+
+async function datadockedFetch(imo: string, token: string): Promise<DatadockedResult> {
   const res = await fetch(`${DATADOCKED_BASE}?imo_or_mmsi=${encodeURIComponent(imo)}`, {
     headers: { accept: "application/json", "x-api-key": token },
     cache: "no-store",
@@ -389,7 +401,7 @@ async function datadockedFetch(imo: string, token: string): Promise<Record<strin
   if (!json || (!json.latitude && !json.name)) {
     return { error: "No live data reported for that IMO/MMSI at Datadocked." }
   }
-  return json
+  return json as DatadockedRow
 }
 
 /**
@@ -408,11 +420,11 @@ function parseDatadockedTime(v: unknown): string {
 
 const datadocked: Adapter = async (imo, token) => {
   const row = await datadockedFetch(imo, token)
-  if ("error" in row) return row
+  if (isFetchError(row)) return row
   const typeRaw = String(row.typeSpecific ?? "")
   const type = classifyType(typeRaw)
   const { lat, lng } = extractLatLng(row)
-  return {
+  const vessel: Vessel = {
     imo,
     name: String(row.name ?? `IMO ${imo}`),
     type,
@@ -429,6 +441,7 @@ const datadocked: Adapter = async (imo, token) => {
     source: "datadocked",
     updatedAt: new Date().toISOString(),
   }
+  return vessel
 }
 
 const PROVIDER_ADAPTERS: Record<VesselProviderId, Adapter> = {
@@ -613,11 +626,11 @@ const vesselFinderPosition: PositionAdapter = async (imo, token) => {
 // knots (e.g. "0.1"), so no tenths-of-a-knot conversion is applied here.
 const datadockedPosition: PositionAdapter = async (imo, token) => {
   const row = await datadockedFetch(imo, token)
-  if ("error" in row) return row
+  if (isFetchError(row)) return row
   const { lat, lng } = extractLatLng(row)
   if (lat == null || lng == null) return { error: "Datadocked returned no coordinates for that vessel." }
   const rawSpeed = num(row.speed)
-  return {
+  const position: VesselLivePosition = {
     imo,
     lat,
     lng,
@@ -630,6 +643,7 @@ const datadockedPosition: PositionAdapter = async (imo, token) => {
     destination: row.destination ? String(row.destination) : undefined,
     timestamp: parseDatadockedTime(row.positionReceived ?? row.updateTime),
   }
+  return position
 }
 
 const POSITION_ADAPTERS: Record<VesselProviderId, PositionAdapter> = {

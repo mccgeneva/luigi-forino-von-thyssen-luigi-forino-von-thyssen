@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react"
 import { CountryCombobox } from "@/components/country-combobox"
+import { MoneyInput } from "@/components/ui/money-input"
 import useSWR from "swr"
 import {
   AlertCircle,
