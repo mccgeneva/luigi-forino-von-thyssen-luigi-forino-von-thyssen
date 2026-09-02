@@ -436,7 +436,12 @@ export default function GatewayPage() {
                 </Select>
               </div>
               <div className="space-y-2">
-                <Label htmlFor="gw-bank">Preferred banking partner</Label>
+                <div className="flex items-center justify-between gap-2">
+                  <Label htmlFor="gw-bank">Preferred banking partner</Label>
+                  <span className="text-xs font-medium text-muted-foreground">
+                    {eligibleBanks.length} of {directory.length} issue {currency}
+                  </span>
+                </div>
                 <Select value={bankKey} onValueChange={setBankKey}>
                   <SelectTrigger id="gw-bank">
                     <SelectValue placeholder="Select a partner bank" />
@@ -454,7 +459,7 @@ export default function GatewayPage() {
                     ? countrySupportsIban(resolveBank(bankKey)?.countryCode)
                       ? `${resolveBank(bankKey)?.name} will issue a dedicated IBAN in ${currency}, subject to Administrator approval.`
                       : `${resolveBank(bankKey)?.name} settles ${currency} domestically; you'll receive local account coordinates (no IBAN).`
-                    : `${eligibleBanks.length} partner bank${eligibleBanks.length === 1 ? "" : "s"} can issue in ${currency}.`}
+                    : `Showing the ${eligibleBanks.length} of ${directory.length} partner banks that can issue in ${currency}. Choose a different currency to see the others.`}
                 </p>
               </div>
               <div className="space-y-2">
