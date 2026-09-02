@@ -180,14 +180,28 @@ export async function getMyGatewayAccounts(): Promise<GatewayAccount[]> {
 /** Insert or update a single gateway account request for the signed-in user. */
 export async function saveGatewayAccount(account: GatewayAccount): Promise<{ ok: boolean }> {
   const user = await getSessionUser()
-  if (!user) return { ok: false }
+  if (!user?.id) return []
+  // Read the accounts FIRST and return them immediately. The deposit back-fill
+  // below is only a best-effort reconciliation (it surfaces inbound funds matched
+  // by IBAN) and it scans every approved payment + writes matches sequentially,
+  // which is expensive for very large ledgers. It must NEVER block or blank the
+  // account list — otherwise an approved account (e.g. a newly added bank) fails
+  // to appear under Bank Accounts just because the scan was slow.
+  let accounts: GatewayAccount[] = []
   try {
-    await writeAccount(user.id, account)
-    return { ok: true }
+    accounts = await readAccounts(user.id)
   } catch (err) {
-    console.log("[v0] saveGatewayAccount failed:", (err as Error).message)
-    return { ok: false }
+    console.log("[v0] getMyGatewayAccounts query failed:", (err as Error).message)
+    return []
   }
+  // Fire-and-forget: kick off the deposit back-fill without awaiting it, so a
+  // slow scan can't delay this response. It is idempotent (never double-credits)
+  // and the tracked deposit figures refresh on the next poll; the ledger reconcile
+  // path also matches these deposits, so nothing is lost by not awaiting here.
+  void backfillGatewayDepositsForUser(user.id).catch((err) => {
+    console.log("[v0] gateway deposit back-fill skipped:", (err as Error).message)
+  })
+  return accounts
 }
 
 /** Remove a single gateway account request for the signed-in user. */
