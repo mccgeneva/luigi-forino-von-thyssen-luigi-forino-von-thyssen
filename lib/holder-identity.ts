@@ -21,7 +21,12 @@ export interface HolderIdentity {
   holderRepresentative?: string
 }
 
-function findValue(items: ProfileItem[] | undefined, label: string): string | undefined {
+// The address/value helpers only read `label` + `value`, so accept any
+// label/value row — a full ProfileItem (with `icon`) OR the plain
+// `{ label, value }[]` the statements/exports pass in.
+type LabelValueItem = Pick<ProfileItem, "label" | "value">
+
+function findValue(items: LabelValueItem[] | undefined, label: string): string | undefined {
   return items?.find((it) => it.label.toLowerCase() === label.toLowerCase())?.value?.trim() || undefined
 }
 
@@ -30,7 +35,7 @@ function findValue(items: ProfileItem[] | undefined, label: string): string | un
 // the profile arrays: prefer an explicit registered / beneficiary / company
 // address, then fall back to any label that mentions "address" — while never
 // mistaking an "email address" row for a postal address.
-export function findAddress(...groups: (ProfileItem[] | undefined)[]): string | undefined {
+export function findAddress(...groups: (LabelValueItem[] | undefined)[]): string | undefined {
   const all = groups.flatMap((g) => g ?? [])
   const isAddress = (label: string) => {
     const l = label.toLowerCase()

@@ -134,7 +134,9 @@ async function instrumentMonetizedAway(instrumentId: string, userId: string): Pr
     return true
   }
   for (const row of rows) {
-    if (row.status === "rejected" || row.status === "reversed") continue
+    // Approval-level status has no "reversed" state; a reversed monetization is
+    // recorded on payload.record.status, which is checked just below.
+    if (row.status === "rejected") continue
     const rec = ((row.payload ?? {}) as { record?: Record<string, unknown> }).record ?? {}
     const recStatus = String(rec.status ?? "")
     if (recStatus === "rejected" || recStatus === "reversed") continue
