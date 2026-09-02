@@ -446,6 +446,7 @@ function AddBankDialog({
   const [bic, setBic] = useState("")
   const [region, setRegion] = useState<BankRegion>("Europe")
   const [currencies, setCurrencies] = useState("EUR, USD")
+  const [nationalBankCode, setNationalBankCode] = useState("")
   const [saving, setSaving] = useState(false)
 
   const reset = () => {
@@ -455,6 +456,7 @@ function AddBankDialog({
     setBic("")
     setRegion("Europe")
     setCurrencies("EUR, USD")
+    setNationalBankCode("")
   }
 
   const submit = async () => {
@@ -469,6 +471,7 @@ function AddBankDialog({
         .split(/[,\s]+/)
         .map((c) => c.trim().toUpperCase())
         .filter(Boolean),
+      nationalBankCode: nationalBankCode.replace(/[^0-9A-Za-z]/g, "").trim() || undefined,
     })
     setSaving(false)
     if (!res.ok) {
@@ -545,6 +548,20 @@ function AddBankDialog({
               placeholder="EUR, USD, GBP"
             />
             <p className="text-xs text-muted-foreground">Comma- or space-separated ISO codes.</p>
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="ab-nbc">National bank code (optional)</Label>
+            <Input
+              id="ab-nbc"
+              value={nationalBankCode}
+              onChange={(e) => setNationalBankCode(e.target.value)}
+              placeholder="e.g. UK sort code 040004"
+            />
+            <p className="text-xs text-muted-foreground">
+              The bank&apos;s real domestic clearing code (UK sort code, DE Bankleitzahl, etc.). It is
+              embedded into generated IBANs so the bank code is a real, existing one. Leave blank to
+              use a random code (the IBAN stays checksum-valid but its bank code may not exist).
+            </p>
           </div>
         </div>
         <DialogFooter>
