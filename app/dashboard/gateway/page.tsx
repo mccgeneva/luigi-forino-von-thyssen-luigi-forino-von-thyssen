@@ -219,11 +219,9 @@ export default function GatewayPage() {
     }
   }, [])
 
-  // Directory-local resolvers (replace the compiled-constant helpers so custom
+  // Directory-local resolver (replaces the compiled-constant helper so custom
   // banks resolve too).
   const resolveBank = (key: string | undefined) => directory.find((b) => b.key === key)
-  const bankIssuesCurrency = (key: string, ccy: string) =>
-    directory.find((b) => b.key === key)?.currencies.includes(ccy) ?? false
 
   // Only offer account types and currencies the administrator has enabled.
   const enabledTypes = useMemo(
@@ -265,17 +263,18 @@ export default function GatewayPage() {
     })).filter((g) => g.banks.length > 0)
   }, [bankQuery, directory])
 
-  // Banks able to issue in the chosen currency (jurisdiction-aware).
+  // A bank can issue an account in ANY currency the platform offers — the
+  // currency is the customer's independent choice, not a per-bank restriction.
+  // So every partner bank is selectable regardless of the chosen currency.
   const eligibleBanks = useMemo(
-    () => directory.filter((b) => b.currencies.includes(currency)),
-    [currency, directory],
+    () => [...directory].sort((a, b) => a.name.localeCompare(b.name)),
+    [directory],
   )
 
-  // Keep the selected bank valid whenever the currency changes: clear it if the
-  // current pick can't issue in the new currency.
+  // Currency and bank are independent: changing the currency never clears the
+  // selected bank.
   const onCurrencyChange = (next: string) => {
     setCurrency(next)
-    if (bankKey && !bankIssuesCurrency(bankKey, next)) setBankKey("")
   }
 
   const myAccounts = accounts
@@ -297,10 +296,6 @@ export default function GatewayPage() {
     if (submitting) return
     if (!bankKey) {
       toast.error("Please select your preferred banking partner.")
-      return
-    }
-    if (!bankIssuesCurrency(bankKey, currency)) {
-      toast.error(`${resolveBank(bankKey)?.name} cannot issue a ${currency} account.`)
       return
     }
     if (!purpose.trim()) {
@@ -439,7 +434,7 @@ export default function GatewayPage() {
                 <div className="flex items-center justify-between gap-2">
                   <Label htmlFor="gw-bank">Preferred banking partner</Label>
                   <span className="text-xs font-medium text-muted-foreground">
-                    {eligibleBanks.length} of {directory.length} issue {currency}
+                    {directory.length} banks
                   </span>
                 </div>
                 <Select value={bankKey} onValueChange={setBankKey}>
@@ -457,9 +452,9 @@ export default function GatewayPage() {
                 <p className="text-xs text-muted-foreground">
                   {bankKey
                     ? countrySupportsIban(resolveBank(bankKey)?.countryCode)
-                      ? `${resolveBank(bankKey)?.name} will issue a dedicated IBAN in ${currency}, subject to Administrator approval.`
-                      : `${resolveBank(bankKey)?.name} settles ${currency} domestically; you'll receive local account coordinates (no IBAN).`
-                    : `Showing the ${eligibleBanks.length} of ${directory.length} partner banks that can issue in ${currency}. Choose a different currency to see the others.`}
+                      ? `${resolveBank(bankKey)?.name} will issue your account in ${currency} with a dedicated IBAN, subject to Administrator approval.`
+                      : `${resolveBank(bankKey)?.name} will issue your account in ${currency}; you'll receive local account coordinates (no IBAN).`
+                    : `Pick any of our ${directory.length} partner banks — your account is opened in ${currency}, the currency you selected above.`}
                 </p>
               </div>
               <div className="space-y-2">

@@ -42,20 +42,19 @@ import { countrySupportsIban, generateIban, isValidIban, formatIban } from "@/li
 import {
   ACCOUNT_TYPES,
   PARTNER_BANKS,
-  partnerBankByKey,
-  suggestedBankFor,
-  bankSupportsCurrency,
   reconciledTotal,
   type GatewayAccount,
   type GatewayAccountType,
   type AccountCoordinates,
 } from "@/lib/gateway-store"
+import type { PartnerBank } from "@/lib/partner-banks"
 import {
   getAllGatewayAccountsAdmin,
   approveGatewayAccountAdmin,
   rejectGatewayAccountAdmin,
   recordGatewayFundingAdmin,
 } from "@/app/actions/gateway"
+import { getPartnerBankDirectory } from "@/app/actions/gateway-banks"
 import {
   allocateBankSlotAdmin,
   getBankAvailabilityForCurrency,
@@ -77,8 +76,7 @@ function rand(len: number, alphabet = "0123456789") {
 // Generate bank coordinates for an approved account. IBAN jurisdictions get a
 // structurally valid, MOD-97-checksummed IBAN seeded from the bank's BIC stem;
 // non-IBAN jurisdictions (US ABA, SG local clearing) get domestic coordinates.
-function generateCoordinates(bankKey: string, holder: string): AccountCoordinates {
-  const bank = partnerBankByKey(bankKey)!
+function generateCoordinates(bank: PartnerBank, holder: string): AccountCoordinates {
   const initials = holder
     .split(/\s+/)
     .map((w) => w[0])
@@ -133,6 +131,20 @@ export function GatewayManager() {
   const [accounts, setAccounts] = useState<GatewayAccount[]>([])
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
+
+  // Live partner-bank directory (baseline + database-added banks) so the admin
+  // can resolve and approve ANY bank a client picked, including DB-added ones.
+  const [directory, setDirectory] = useState<PartnerBank[]>(PARTNER_BANKS)
+  useEffect(() => {
+    let active = true
+    getPartnerBankDirectory().then((banks) => {
+      if (active && banks.length) setDirectory(banks)
+    })
+    return () => {
+      active = false
+    }
+  }, [])
+  const resolveBank = (key: string | undefined) => directory.find((b) => b.key === key)
 
   useEffect(() => {
     let active = true
@@ -197,13 +209,10 @@ export function GatewayManager() {
   const [amount, setAmount] = useState("")
 
   const openApprove = (account: GatewayAccount) => {
-    // Default to the client's preferred bank when it can issue in the currency;
-    // otherwise fall back to a bank that supports the requested currency.
+    // Any bank can issue in any currency, so default to the client's preferred
+    // bank as-is; only fall back if it is somehow missing from the directory.
     const preferred = account.preferredBankKey
-    const usable =
-      preferred && bankSupportsCurrency(preferred, account.currency)
-        ? preferred
-        : suggestedBankFor(account.currency).key
+    const usable = resolveBank(preferred) ? preferred : (directory[0]?.key ?? "")
     setBankKey(usable)
     setApproveTarget(account)
     void refreshAvailability(account.currency)
@@ -211,11 +220,9 @@ export function GatewayManager() {
 
   const confirmApprove = async () => {
     if (!approveTarget || !bankKey) return
-    // Jurisdiction check: the selected bank must support the requested currency.
-    if (!bankSupportsCurrency(bankKey, approveTarget.currency)) {
-      toast.error(
-        `${partnerBankByKey(bankKey)?.name} cannot issue a ${approveTarget.currency} account. Choose a bank that supports ${approveTarget.currency}.`,
-      )
+    const selectedBank = resolveBank(bankKey)
+    if (!selectedBank) {
+      toast.error("Select a valid partner bank.")
       return
     }
     setBusy(true)
@@ -229,7 +236,7 @@ export function GatewayManager() {
       void refreshAvailability(approveTarget.currency)
       return
     }
-    const coordinates = generateCoordinates(bankKey, approveTarget.accountHolder)
+    const coordinates = generateCoordinates(selectedBank, approveTarget.accountHolder)
     // Final safety net: never persist an account with an invalid IBAN.
     if (coordinates.scheme === "iban" && !isValidIban(coordinates.iban ?? "")) {
       setBusy(false)
@@ -363,15 +370,8 @@ export function GatewayManager() {
                       <p className="mt-1 text-xs text-muted-foreground">
                         Preferred bank:{" "}
                         <span className="font-medium text-foreground">
-                          {partnerBankByKey(account.preferredBankKey)?.name ?? "No preference"}
+                          {resolveBank(account.preferredBankKey)?.name ?? "No preference"}
                         </span>
-                        {account.preferredBankKey &&
-                          !bankSupportsCurrency(account.preferredBankKey, account.currency) && (
-                            <span className="text-orange-400">
-                              {" "}
-                              · cannot issue {account.currency}
-                            </span>
-                          )}
                       </p>
                       <p className="mt-1 max-w-xl text-xs text-muted-foreground text-pretty">
                         {account.purpose}
@@ -421,7 +421,7 @@ export function GatewayManager() {
             </div>
           ) : (
             active.map((account) => {
-              const bank = partnerBankByKey(account.coordinates?.partnerBankKey)
+              const bank = resolveBank(account.coordinates?.partnerBankKey)
               return (
                 <div key={account.id} className="rounded-lg border border-border bg-secondary/30 p-4">
                   <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -479,7 +479,7 @@ export function GatewayManager() {
                 </div>
                 {account.status === "active" ? (
                   <Badge variant="outline" className="border-green-500/20 bg-green-500/10 text-green-500">
-                    Approved · {partnerBankByKey(account.coordinates?.partnerBankKey)?.name}
+                    Approved · {resolveBank(account.coordinates?.partnerBankKey)?.name}
                   </Badge>
                 ) : account.status === "rejected" ? (
                   <Badge variant="outline" className="border-red-500/20 bg-red-500/10 text-red-400">
@@ -514,39 +514,38 @@ export function GatewayManager() {
                 <SelectValue placeholder="Select a partner bank" />
               </SelectTrigger>
               <SelectContent>
-                {PARTNER_BANKS.map((bank) => {
-                  const supports = approveTarget ? bank.currencies.includes(approveTarget.currency) : true
-                  const preferred = approveTarget?.preferredBankKey === bank.key
-                  const avail = availability.get(bank.key)
-                  const exhausted = !!avail && (!avail.enabled || avail.remaining <= 0)
-                  return (
-                    <SelectItem key={bank.key} value={bank.key} disabled={!supports || exhausted}>
-                      {bank.name} ({bank.country})
-                      {preferred ? " · client preference" : ""}
-                      {!supports
-                        ? ` — cannot issue ${approveTarget?.currency}`
-                        : avail
+                {[...directory]
+                  .sort((a, b) => a.name.localeCompare(b.name))
+                  .map((bank) => {
+                    const preferred = approveTarget?.preferredBankKey === bank.key
+                    const avail = availability.get(bank.key)
+                    const exhausted = !!avail && (!avail.enabled || avail.remaining <= 0)
+                    return (
+                      <SelectItem key={bank.key} value={bank.key} disabled={exhausted}>
+                        {bank.name} ({bank.country})
+                        {preferred ? " · client preference" : ""}
+                        {avail
                           ? !avail.enabled
                             ? " · pool disabled"
                             : ` · ${avail.remaining} slot${avail.remaining === 1 ? "" : "s"} left`
                           : ""}
-                    </SelectItem>
-                  )
-                })}
+                      </SelectItem>
+                    )
+                  })}
               </SelectContent>
             </Select>
             {approveTarget && (
               <p className="text-xs text-muted-foreground">
-                {partnerBankByKey(approveTarget.preferredBankKey) ? (
+                {resolveBank(approveTarget.preferredBankKey) ? (
                   <>
                     Client requested{" "}
                     <span className="font-medium text-foreground">
-                      {partnerBankByKey(approveTarget.preferredBankKey)?.name}
+                      {resolveBank(approveTarget.preferredBankKey)?.name}
                     </span>
                     .{" "}
                   </>
                 ) : null}
-                {countrySupportsIban(partnerBankByKey(bankKey)?.countryCode)
+                {countrySupportsIban(resolveBank(bankKey)?.countryCode)
                   ? "A valid IBAN will be generated for this jurisdiction."
                   : "Domestic coordinates (no IBAN) will be issued for this jurisdiction."}
               </p>
@@ -610,7 +609,7 @@ export function GatewayManager() {
             <DialogTitle>Record Inbound Funding</DialogTitle>
             <DialogDescription>
               {fundingTarget
-                ? `Record funds received at ${partnerBankByKey(fundingTarget.coordinates?.partnerBankKey)?.name} against ${fundingTarget.id}. The amount is reconciled into ${fundingTarget.accountHolder}'s Master Account.`
+                ? `Record funds received at ${resolveBank(fundingTarget.coordinates?.partnerBankKey)?.name} against ${fundingTarget.id}. The amount is reconciled into ${fundingTarget.accountHolder}'s Master Account.`
                 : ""}
             </DialogDescription>
           </DialogHeader>
