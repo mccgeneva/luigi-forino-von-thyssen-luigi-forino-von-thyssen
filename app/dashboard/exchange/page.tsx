@@ -203,6 +203,18 @@ export default function ExchangePage() {
   const toIsOverdrawn = toNaturalBalance < -0.01
   const toSymbol = currencies.find((c) => c.code === toCurrency)?.symbol ?? ""
 
+  // Any currency pocket that is genuinely (naturally) overdrawn. While ANY
+  // pocket is negative, the server's auto-cover reconciler immediately sweeps
+  // freshly-converted funds to plug that shortfall — so a conversion "appears
+  // for a few seconds then disappears" and each attempt bleeds the 0.4% fee,
+  // pushing the deficit deeper. We block conversions until the overdraft is
+  // settled so money can never churn away like this.
+  const overdrawnPockets = currencies
+    .map((c) => ({ code: c.code, symbol: c.symbol, natural: naturalBalanceFor(c.code) }))
+    .filter((p) => p.natural < -0.01)
+  const worstOverdrawn = overdrawnPockets.slice().sort((a, b) => a.natural - b.natural)[0]
+  const accountHasOverdraft = overdrawnPockets.length > 0
+
   const handleExecuteExchange = () => {
     if (numericFrom <= 0) {
       toast.error("Enter an amount to convert")
@@ -210,6 +222,26 @@ export default function ExchangePage() {
     }
     if (fromCurrency === toCurrency) {
       toast.error("Choose two different currencies")
+      return
+    }
+    // Block while any pocket is overdrawn — otherwise auto-cover instantly sweeps
+    // the proceeds to fill the shortfall (funds "vanish") and the fee is lost.
+    if (worstOverdrawn) {
+      const owed = Math.abs(worstOverdrawn.natural).toLocaleString("en-US", {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+      })
+      toast.error("Settle your overdraft first", {
+        description: `Your ${worstOverdrawn.code} balance is overdrawn by ${worstOverdrawn.symbol}${owed}. Converting now would be applied to that shortfall, so the funds wouldn't remain in ${toCurrency}. Please clear the overdraft before exchanging.`,
+      })
+      logActivity({
+        action: `FX conversion ${fromCurrency} → ${toCurrency} DECLINED — account overdrawn (${worstOverdrawn.code})`,
+        category: "Currency Exchange",
+        details: {
+          summary: `Conversion blocked because the ${worstOverdrawn.code} pocket is overdrawn by ${worstOverdrawn.symbol}${owed}; converting would only be swept into that shortfall.`,
+          outcome: "DECLINED — Overdrawn balance",
+        },
+      })
       return
     }
     // The source amount plus the 0.4% fee must be covered by the balance.
@@ -572,13 +604,31 @@ export default function ExchangePage() {
                 </div>
               </div>
 
+              {accountHasOverdraft && worstOverdrawn && (
+                <div className="rounded-lg border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-500">
+                  Your {worstOverdrawn.code} balance is overdrawn by {worstOverdrawn.symbol}
+                  {Math.abs(worstOverdrawn.natural).toLocaleString("en-US", {
+                    minimumFractionDigits: 2,
+                    maximumFractionDigits: 2,
+                  })}
+                  . Currency exchange is paused until the overdraft is settled — converting now
+                  would be swept into the shortfall instead of staying in your target currency.
+                </div>
+              )}
+
               <Button
                 className="w-full"
                 size="lg"
                 onClick={handleExecuteExchange}
-                disabled={isExecuting || numericFrom <= 0 || totalDebit > availableBalance}
+                disabled={
+                  isExecuting || numericFrom <= 0 || totalDebit > availableBalance || accountHasOverdraft
+                }
               >
-                {totalDebit > availableBalance ? "Insufficient Funds" : "Execute Exchange"}
+                {accountHasOverdraft
+                  ? "Settle Overdraft First"
+                  : totalDebit > availableBalance
+                    ? "Insufficient Funds"
+                    : "Execute Exchange"}
               </Button>
 
               <p className="text-xs text-center text-muted-foreground">
