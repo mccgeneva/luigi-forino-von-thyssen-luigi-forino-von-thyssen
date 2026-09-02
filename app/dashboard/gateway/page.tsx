@@ -18,6 +18,9 @@ import {
   Banknote,
   Plus,
   Search,
+  Trash2,
+  Loader2,
+  AlertTriangle,
 } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -62,9 +65,9 @@ import {
 import { formatIban, countrySupportsIban } from "@/lib/iban"
 import type { PartnerBank } from "@/lib/partner-banks"
 import { getGatewayConfig, type GatewayConfig } from "@/app/actions/gateway-config"
-import { requestGatewayAccountWithFee } from "@/app/actions/gateway"
+import { requestGatewayAccountWithFee, closeGatewayAccountWithFee } from "@/app/actions/gateway"
 import { getPartnerBankDirectory } from "@/app/actions/gateway-banks"
-import { GATEWAY_ACCOUNT_FEE } from "@/lib/gateway-catalog"
+import { GATEWAY_ACCOUNT_FEE, GATEWAY_TERMINATION_FEE } from "@/lib/gateway-catalog"
 
 const typeIcons: Record<GatewayAccountType, typeof Building2> = {
   virtual_iban: Landmark,
@@ -632,7 +635,24 @@ export default function GatewayPage() {
             </Card>
           ) : (
             myAccounts.map((account) => (
-              <AccountCard key={account.id} account={account} directory={directory} />
+              <AccountCard
+                key={account.id}
+                account={account}
+                directory={directory}
+                onClosed={async (fee) => {
+                  await refresh()
+                  log({
+                    action: `Closed ${ACCOUNT_TYPES[account.type].label} (${account.currency}) via Payment Gateway — €${fee.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} termination cost charged`,
+                    category: "Payment Gateway",
+                    details: {
+                      summary: `Gateway account ${account.id} (${ACCOUNT_TYPES[account.type].label}, ${account.currency}) was permanently closed. A €${fee.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} termination cost was debited from the Master Account.`,
+                      referenceId: account.id,
+                      currency: account.currency,
+                      terminationFee: fee,
+                    },
+                  })
+                }}
+              />
             ))
           )}
         </TabsContent>
@@ -764,13 +784,46 @@ export default function GatewayPage() {
 
 // A single gateway account: shows status, assigned coordinates (when active),
 // and the funding/reconciliation history feeding the Master Account.
-function AccountCard({ account, directory }: { account: GatewayAccount; directory: PartnerBank[] }) {
+function AccountCard({
+  account,
+  directory,
+  onClosed,
+}: {
+  account: GatewayAccount
+  directory: PartnerBank[]
+  onClosed: (fee: number) => void | Promise<void>
+}) {
   const Icon = typeIcons[account.type]
   const status = statusConfig[account.status]
   const StatusIcon = status.icon
   const bank = directory.find((b) => b.key === account.coordinates?.partnerBankKey)
   const reconciled = reconciledTotal(account)
   const pending = pendingFundingTotal(account)
+
+  const [closeOpen, setCloseOpen] = useState(false)
+  const [closing, setClosing] = useState(false)
+  const feeLabel = `€${GATEWAY_TERMINATION_FEE.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+  // Closable while it exists and isn't already closed. Received funds were swept
+  // to the Master Account, so a reconciled balance never blocks closing.
+  const canClose = account.status !== "closed"
+
+  const handleClose = async () => {
+    setClosing(true)
+    try {
+      const res = await closeGatewayAccountWithFee(account.id)
+      if (!res.ok) {
+        toast.error("Could not close account", { description: res.error })
+        return
+      }
+      toast.success("Account closed", {
+        description: `A ${feeLabel} termination cost was charged to your Master Account.`,
+      })
+      setCloseOpen(false)
+      await onClosed(res.fee)
+    } finally {
+      setClosing(false)
+    }
+  }
 
   return (
     <Card className="border-border bg-card">
@@ -902,7 +955,69 @@ function AccountCard({ account, directory }: { account: GatewayAccount; director
             </div>
           </>
         )}
+
+        {canClose && (
+          <div className="flex justify-end border-t border-border pt-3">
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="text-red-400 hover:bg-red-500/10 hover:text-red-400"
+              onClick={() => setCloseOpen(true)}
+            >
+              <Trash2 className="mr-1.5 h-4 w-4" />
+              Close account
+            </Button>
+          </div>
+        )}
       </CardContent>
+
+      <Dialog open={closeOpen} onOpenChange={(o) => !closing && setCloseOpen(o)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Close this bank account?</DialogTitle>
+            <DialogDescription>
+              {ACCOUNT_TYPES[account.type].label} · {account.currency} · Ref {account.id}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3 text-sm">
+            <div className="flex items-start gap-2 rounded-lg border border-orange-500/20 bg-orange-500/5 p-3 text-orange-400">
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+              <p>
+                This permanently removes the account and books a{" "}
+                <span className="font-semibold">{feeLabel}</span> termination cost to your Master
+                Account. This cannot be undone.
+              </p>
+            </div>
+            {reconciled > 0 && (
+              <p className="text-muted-foreground text-pretty">
+                Any funds received into this account ({formatMoney(reconciled, account.currency)})
+                were already swept to your Master Account, so closing does not lose them.
+              </p>
+            )}
+          </div>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => setCloseOpen(false)} disabled={closing}>
+              Keep account
+            </Button>
+            <Button
+              type="button"
+              className="bg-red-500 text-white hover:bg-red-600"
+              onClick={handleClose}
+              disabled={closing}
+            >
+              {closing ? (
+                <>
+                  <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
+                  Closing…
+                </>
+              ) : (
+                `Close & pay ${feeLabel}`
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </Card>
   )
 }

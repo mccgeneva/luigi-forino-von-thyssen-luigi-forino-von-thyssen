@@ -15,6 +15,7 @@ import {
   isAccountTypeKey,
   isGatewayCurrency,
   GATEWAY_ACCOUNT_FEE,
+  GATEWAY_TERMINATION_FEE,
   GATEWAY_FEE_CURRENCY,
 } from "@/lib/gateway-catalog"
 import { resolvePartnerBank } from "@/lib/gateway-banks-db"
@@ -372,6 +373,117 @@ export async function requestGatewayAccountWithFee(input: {
   } catch (err) {
     console.log("[v0] requestGatewayAccountWithFee failed:", (err as Error).message)
     return { ok: false, error: "Your available balance could not be verified. Please try again." }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Client: close / delete a gateway bank account (charges the termination cost)
+// ---------------------------------------------------------------------------
+
+export type CloseGatewayResult =
+  | { ok: true; feeReference: string; fee: number }
+  | { ok: false; error: string }
+
+/**
+ * Close (permanently delete) one of the client's own gateway accounts. A flat
+ * EUR termination cost is booked to the client's Master (data-owner) ledger and
+ * the account row is removed. Charged on ANY close, including a still-pending
+ * request. Any funds received into the account were already swept to the Master
+ * Account, so closing never loses money — it only removes the account.
+ *
+ *   1. Resolve + own the account (never trust the caller's identity).
+ *   2. Real-time solvency check — the fee is EUR, so the whole spendable balance
+ *      is converted to EUR (mirroring the setup-fee / approvals gate).
+ *   3. Post a completed EUR debit with a DETERMINISTIC id (`GW-TERM-<id>`) so a
+ *      retry can never double-charge.
+ *   4. Remove the account row. If the delete fails AFTER the debit, the debit is
+ *      rolled back so the client is never charged for an account still present.
+ */
+export async function closeGatewayAccountWithFee(requestId: string): Promise<CloseGatewayResult> {
+  const user = await getSessionUser()
+  if (!user?.id) return { ok: false, error: "Your session has expired. Please sign in again." }
+
+  try {
+    await ensureTable()
+
+    // 1) Confirm the account exists and belongs to this user.
+    const accounts = await readAccounts(user.id)
+    const account = accounts.find((a) => a.id === requestId)
+    if (!account) return { ok: false, error: "That account could not be found." }
+
+    const ownerId = await resolveDataOwnerIdFor(user.id)
+
+    // 2) Real-time affordability check (fee in EUR, whole balance converted).
+    const available = availableByCurrency(await readLedgerEntries(ownerId))
+    const availableEur = Object.entries(available).reduce(
+      (sum, [cur, amt]) => sum + convertCurrency(amt, cur, GATEWAY_FEE_CURRENCY),
+      0,
+    )
+    if (GATEWAY_TERMINATION_FEE > availableEur + 0.01) {
+      return {
+        ok: false,
+        error: `Closing a bank account carries a ${fmtEur(GATEWAY_TERMINATION_FEE)} termination cost, but your Master Account has only ${fmtEur(
+          Math.max(0, availableEur),
+        )} available. Please fund your account and try again.`,
+      }
+    }
+
+    // 3) Book the termination cost (idempotent id).
+    const feeReference = `GW-TERM-${account.id}`
+    const bankName = account.coordinates?.partnerBankName ?? "MCC Capital — Payment Gateway"
+    await query(
+      `INSERT INTO ledger_entries
+         (user_id, entry_id, direction, amount, currency, status, entry_date,
+          counterparty, account, bank, reference, comment, category)
+       VALUES ($1,$2,'debit',$3,$4,'completed',$5,$6,$7,$8,$9,$10,$11)
+       ON CONFLICT (user_id, entry_id) DO NOTHING`,
+      [
+        ownerId,
+        feeReference,
+        GATEWAY_TERMINATION_FEE,
+        GATEWAY_FEE_CURRENCY,
+        new Date().toISOString(),
+        "MCC Capital — Payment Gateway",
+        null,
+        bankName,
+        account.id,
+        `Termination cost for closing Payment Gateway account ${account.id} (${account.currency}).`,
+        "Payment Gateway Termination Fee",
+      ],
+    )
+
+    // 4) Remove the account. If this fails after the debit, roll the debit back.
+    try {
+      await query(`DELETE FROM gateway_accounts WHERE user_id = $1 AND request_id = $2`, [
+        user.id,
+        account.id,
+      ])
+    } catch (delErr) {
+      await query(`DELETE FROM ledger_entries WHERE user_id = $1 AND entry_id = $2`, [
+        ownerId,
+        feeReference,
+      ]).catch(() => {})
+      console.log("[v0] closeGatewayAccountWithFee delete failed:", (delErr as Error).message)
+      return { ok: false, error: "The account could not be closed. Please try again." }
+    }
+
+    // Best-effort bell notification so the charge is visible immediately.
+    try {
+      await insertNotification({
+        userId: ownerId,
+        tone: "info",
+        title: "Gateway account closed",
+        body: `Your Payment Gateway account ${account.id} (${account.currency}) was closed and a ${fmtEur(GATEWAY_TERMINATION_FEE)} termination cost was charged to your Master Account.`,
+        href: "/dashboard/gateway",
+      })
+    } catch {
+      // notification is non-critical
+    }
+
+    return { ok: true, feeReference, fee: GATEWAY_TERMINATION_FEE }
+  } catch (err) {
+    console.log("[v0] closeGatewayAccountWithFee failed:", (err as Error).message)
+    return { ok: false, error: "The account could not be closed. Please try again." }
   }
 }
 
