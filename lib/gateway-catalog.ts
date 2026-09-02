@@ -54,3 +54,12 @@ export function isGatewayCurrency(code: string): boolean {
  */
 export const GATEWAY_ACCOUNT_FEE = 500
 export const GATEWAY_FEE_CURRENCY = "EUR"
+
+/**
+ * One-time termination cost charged to the client's Master Account when they
+ * close / delete a gateway bank account. Denominated in EUR. Charged on ANY
+ * close (including a still-pending request). Any funds already received into
+ * the account were swept to the Master Account, so closing never loses money —
+ * it only removes the account and books this administrative closing fee.
+ */
+export const GATEWAY_TERMINATION_FEE = 100
