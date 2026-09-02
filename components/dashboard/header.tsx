@@ -172,6 +172,32 @@ export function DashboardHeader() {
     }
     mutate()
   }
+
+  // Mark a SINGLE notification read — fired when the user taps a notification to
+  // jump to its related section/action. Clears that notification's unread badge
+  // (and decrements the bell count) immediately, then persists via the Route
+  // Handler with an `ids` subset. The Link's own navigation is unaffected.
+  const markOneRead = (id: string) => {
+    setNotifOpen(false)
+    mutate(
+      (prev) => {
+        if (!prev) return prev
+        const target = prev.items.find((n) => n.id === id)
+        if (!target || target.read) return prev
+        return {
+          items: prev.items.map((n) => (n.id === id ? { ...n, read: true } : n)),
+          unread: Math.max(0, prev.unread - 1),
+        }
+      },
+      false,
+    )
+    // Fire-and-forget so navigation is instant; the next poll reconciles anyway.
+    void fetch("/api/notifications", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ids: [id] }),
+    }).catch(() => {})
+  }
   return (
     <header className="sticky top-0 z-50 flex h-16 items-center justify-between border-b border-border bg-card px-4 md:px-6">
       {/* Dimming backdrop shown while a header dropdown is open, so the menu is
@@ -307,9 +333,12 @@ export function DashboardHeader() {
                       notification.read ? "" : "bg-secondary/40"
                     }`}
                     asChild={!!notification.href}
+                    onSelect={notification.href ? undefined : () => markOneRead(notification.id)}
                   >
                     {notification.href ? (
-                      <Link href={notification.href}>{content}</Link>
+                      <Link href={notification.href} onClick={() => markOneRead(notification.id)}>
+                        {content}
+                      </Link>
                     ) : (
                       content
                     )}
