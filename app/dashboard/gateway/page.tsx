@@ -53,9 +53,6 @@ import {
   GATEWAY_CURRENCIES,
   PARTNER_BANKS,
   BANK_REGIONS,
-  partnerBankByKey,
-  banksForCurrency,
-  bankSupportsCurrency,
   reconciledTotal,
   pendingFundingTotal,
   type GatewayAccount,
@@ -63,8 +60,10 @@ import {
   type GatewayStatus,
 } from "@/lib/gateway-store"
 import { formatIban, countrySupportsIban } from "@/lib/iban"
+import type { PartnerBank } from "@/lib/partner-banks"
 import { getGatewayConfig, type GatewayConfig } from "@/app/actions/gateway-config"
 import { requestGatewayAccountWithFee } from "@/app/actions/gateway"
+import { getPartnerBankDirectory } from "@/app/actions/gateway-banks"
 import { GATEWAY_ACCOUNT_FEE } from "@/lib/gateway-catalog"
 
 const typeIcons: Record<GatewayAccountType, typeof Building2> = {
@@ -205,6 +204,27 @@ export default function GatewayPage() {
     }
   }, [])
 
+  // Live partner-bank directory, read from the database at runtime. Seeded with
+  // the compiled baseline so the picker is populated instantly and never empty,
+  // then replaced with the merged directory (baseline + admin-added banks) so
+  // banks an administrator adds appear WITHOUT a redeploy.
+  const [directory, setDirectory] = useState<PartnerBank[]>(PARTNER_BANKS)
+  useEffect(() => {
+    let active = true
+    getPartnerBankDirectory().then((banks) => {
+      if (active && banks.length) setDirectory(banks)
+    })
+    return () => {
+      active = false
+    }
+  }, [])
+
+  // Directory-local resolvers (replace the compiled-constant helpers so custom
+  // banks resolve too).
+  const resolveBank = (key: string | undefined) => directory.find((b) => b.key === key)
+  const bankIssuesCurrency = (key: string, ccy: string) =>
+    directory.find((b) => b.key === key)?.currencies.includes(ccy) ?? false
+
   // Only offer account types and currencies the administrator has enabled.
   const enabledTypes = useMemo(
     () => ACCOUNT_TYPE_KEYS.filter((k) => !config.disabledAccountTypes.includes(k)),
@@ -230,7 +250,7 @@ export default function GatewayPage() {
   // Partner-bank directory: filter by name/country/BIC/currency, then group by region.
   const banksByRegion = useMemo(() => {
     const q = bankQuery.trim().toLowerCase()
-    const matches = PARTNER_BANKS.filter((b) => {
+    const matches = directory.filter((b) => {
       if (!q) return true
       return (
         b.name.toLowerCase().includes(q) ||
@@ -243,16 +263,19 @@ export default function GatewayPage() {
       region,
       banks: matches.filter((b) => b.region === region),
     })).filter((g) => g.banks.length > 0)
-  }, [bankQuery])
+  }, [bankQuery, directory])
 
   // Banks able to issue in the chosen currency (jurisdiction-aware).
-  const eligibleBanks = useMemo(() => banksForCurrency(currency), [currency])
+  const eligibleBanks = useMemo(
+    () => directory.filter((b) => b.currencies.includes(currency)),
+    [currency, directory],
+  )
 
   // Keep the selected bank valid whenever the currency changes: clear it if the
   // current pick can't issue in the new currency.
   const onCurrencyChange = (next: string) => {
     setCurrency(next)
-    if (bankKey && !bankSupportsCurrency(bankKey, next)) setBankKey("")
+    if (bankKey && !bankIssuesCurrency(bankKey, next)) setBankKey("")
   }
 
   const myAccounts = accounts
@@ -276,8 +299,8 @@ export default function GatewayPage() {
       toast.error("Please select your preferred banking partner.")
       return
     }
-    if (!bankSupportsCurrency(bankKey, currency)) {
-      toast.error(`${partnerBankByKey(bankKey)?.name} cannot issue a ${currency} account.`)
+    if (!bankIssuesCurrency(bankKey, currency)) {
+      toast.error(`${resolveBank(bankKey)?.name} cannot issue a ${currency} account.`)
       return
     }
     if (!purpose.trim()) {
@@ -308,11 +331,11 @@ export default function GatewayPage() {
       action: `Requested ${ACCOUNT_TYPES[type].label} (${currency}) via Payment Gateway — ${feeLabel} fee charged`,
       category: "Payment Gateway",
       details: {
-        summary: `${user.fullName} (${user.company}) submitted a request for a new ${ACCOUNT_TYPES[type].label} denominated in ${currency} with preferred partner bank ${partnerBankByKey(bankKey)?.name}. Purpose: ${purpose.trim()}. A one-time ${feeLabel} setup fee was debited from the Master Account (ref ${result.feeReference}). The request ${created.id} is pending Administrator approval and partner-bank assignment.`,
+        summary: `${user.fullName} (${user.company}) submitted a request for a new ${ACCOUNT_TYPES[type].label} denominated in ${currency} with preferred partner bank ${resolveBank(bankKey)?.name}. Purpose: ${purpose.trim()}. A one-time ${feeLabel} setup fee was debited from the Master Account (ref ${result.feeReference}). The request ${created.id} is pending Administrator approval and partner-bank assignment.`,
         referenceId: created.id,
         accountType: ACCOUNT_TYPES[type].label,
         currency,
-        preferredBank: partnerBankByKey(bankKey)?.name,
+        preferredBank: resolveBank(bankKey)?.name,
         fee: feeLabel,
         ledgerReference: result.feeReference,
         status: "Pending Approval",
@@ -428,9 +451,9 @@ export default function GatewayPage() {
                 </Select>
                 <p className="text-xs text-muted-foreground">
                   {bankKey
-                    ? countrySupportsIban(partnerBankByKey(bankKey)?.countryCode)
-                      ? `${partnerBankByKey(bankKey)?.name} will issue a dedicated IBAN in ${currency}, subject to Administrator approval.`
-                      : `${partnerBankByKey(bankKey)?.name} settles ${currency} domestically; you'll receive local account coordinates (no IBAN).`
+                    ? countrySupportsIban(resolveBank(bankKey)?.countryCode)
+                      ? `${resolveBank(bankKey)?.name} will issue a dedicated IBAN in ${currency}, subject to Administrator approval.`
+                      : `${resolveBank(bankKey)?.name} settles ${currency} domestically; you'll receive local account coordinates (no IBAN).`
                     : `${eligibleBanks.length} partner bank${eligibleBanks.length === 1 ? "" : "s"} can issue in ${currency}.`}
                 </p>
               </div>
@@ -550,7 +573,9 @@ export default function GatewayPage() {
               </CardContent>
             </Card>
           ) : (
-            myAccounts.map((account) => <AccountCard key={account.id} account={account} />)
+            myAccounts.map((account) => (
+              <AccountCard key={account.id} account={account} directory={directory} />
+            ))
           )}
         </TabsContent>
 
@@ -576,7 +601,7 @@ export default function GatewayPage() {
                 />
               </div>
               <p className="text-xs text-muted-foreground">
-                {`${PARTNER_BANKS.length} correspondent banks across ${BANK_REGIONS.length} regions`}
+                {`${directory.length} correspondent banks across ${BANK_REGIONS.length} regions`}
               </p>
               {banksByRegion.length === 0 ? (
                 <p className="rounded-lg border border-border bg-secondary/30 p-6 text-center text-sm text-muted-foreground">
@@ -681,11 +706,11 @@ export default function GatewayPage() {
 
 // A single gateway account: shows status, assigned coordinates (when active),
 // and the funding/reconciliation history feeding the Master Account.
-function AccountCard({ account }: { account: GatewayAccount }) {
+function AccountCard({ account, directory }: { account: GatewayAccount; directory: PartnerBank[] }) {
   const Icon = typeIcons[account.type]
   const status = statusConfig[account.status]
   const StatusIcon = status.icon
-  const bank = partnerBankByKey(account.coordinates?.partnerBankKey)
+  const bank = directory.find((b) => b.key === account.coordinates?.partnerBankKey)
   const reconciled = reconciledTotal(account)
   const pending = pendingFundingTotal(account)
 

@@ -5,7 +5,8 @@ import { adminActionAuthorized } from "@/lib/admin-auth"
 import { type UserProfile } from "@/lib/users"
 import { resolveCurrentSession } from "@/lib/session-user"
 import { logActivity } from "@/app/actions/log-activity"
-import { PARTNER_BANKS, partnerBankByKey, banksForCurrency } from "@/lib/partner-banks"
+import { type PartnerBank } from "@/lib/partner-banks"
+import { mergedPartnerBanks, mergedBanksForCurrency, resolvePartnerBank } from "@/lib/gateway-banks-db"
 
 // ---------------------------------------------------------------------------
 // Partner-bank account inventory.
@@ -42,6 +43,13 @@ export interface BankAvailability {
   allocated: number
   remaining: number
   available: boolean // enabled AND remaining > 0
+  // Bank identity is carried alongside availability so the client can render
+  // database-added banks without importing the compiled directory.
+  bankName?: string
+  country?: string
+  countryCode?: string
+  bic?: string
+  region?: string
 }
 
 async function getSessionUser(): Promise<UserProfile | undefined> {
@@ -97,23 +105,28 @@ async function readInventory(): Promise<Map<string, BankInventoryRow>> {
 
 /** Resolve a bank+currency to availability, applying lazy defaults. */
 function resolveAvailability(
-  bankKey: string,
+  bank: PartnerBank,
   currency: string,
   explicit: Map<string, BankInventoryRow>,
 ): BankAvailability {
-  const row = explicit.get(`${bankKey}::${currency}`)
+  const row = explicit.get(`${bank.key}::${currency}`)
   const enabled = row ? row.enabled : true
   const capacity = row ? row.capacity : DEFAULT_BANK_CAPACITY
   const allocated = row ? row.allocated : 0
   const remaining = Math.max(0, capacity - allocated)
   return {
-    bankKey,
+    bankKey: bank.key,
     currency,
     enabled,
     capacity,
     allocated,
     remaining,
     available: enabled && remaining > 0,
+    bankName: bank.name,
+    country: bank.country,
+    countryCode: bank.countryCode,
+    bic: bank.bic,
+    region: bank.region,
   }
 }
 
@@ -130,13 +143,14 @@ export async function getBankAvailabilityForCurrency(
   currency: string,
 ): Promise<BankAvailability[]> {
   try {
-    const explicit = await readInventory()
-    return banksForCurrency(currency).map((b) => resolveAvailability(b.key, currency, explicit))
+    const [explicit, banks] = await Promise.all([readInventory(), mergedBanksForCurrency(currency)])
+    return banks.map((b) => resolveAvailability(b, currency, explicit))
   } catch (err) {
     console.log("[v0] getBankAvailabilityForCurrency failed:", (err as Error).message)
-    // Fail open to code-level support so the form still works if the table is
-    // briefly unavailable; allocation remains the authoritative gate.
-    return banksForCurrency(currency).map((b) => ({
+    // Fail open to directory-level support so the form still works if the
+    // inventory table is briefly unavailable; allocation remains the gate.
+    const banks = await mergedBanksForCurrency(currency).catch(() => [])
+    return banks.map((b) => ({
       bankKey: b.key,
       currency,
       enabled: true,
@@ -144,6 +158,11 @@ export async function getBankAvailabilityForCurrency(
       allocated: 0,
       remaining: DEFAULT_BANK_CAPACITY,
       available: true,
+      bankName: b.name,
+      country: b.country,
+      countryCode: b.countryCode,
+      bic: b.bic,
+      region: b.region,
     }))
   }
 }
@@ -163,11 +182,11 @@ export type BankInventoryResult =
 export async function getBankInventoryAdmin(passcode: string): Promise<BankInventoryResult> {
   try {
     await requireAdmin(passcode)
-    const explicit = await readInventory()
+    const [explicit, banks] = await Promise.all([readInventory(), mergedPartnerBanks()])
     const inventory: BankAvailability[] = []
-    for (const bank of PARTNER_BANKS) {
+    for (const bank of banks) {
       for (const currency of bank.currencies) {
-        inventory.push(resolveAvailability(bank.key, currency, explicit))
+        inventory.push(resolveAvailability(bank, currency, explicit))
       }
     }
     return { ok: true, inventory }
@@ -190,7 +209,7 @@ export async function setBankAvailabilityAdmin(
     return { ok: false, error: (err as Error).message }
   }
 
-  const bank = partnerBankByKey(bankKey)
+  const bank = await resolvePartnerBank(bankKey)
   if (!bank) return { ok: false, error: "Unknown partner bank." }
   if (!bank.currencies.includes(currency)) {
     return { ok: false, error: `${bank.name} does not support ${currency}.` }
@@ -272,7 +291,7 @@ export async function allocateBankSlotAdmin(
     return { ok: false, error: (err as Error).message }
   }
 
-  const bank = partnerBankByKey(bankKey)
+  const bank = await resolvePartnerBank(bankKey)
   if (!bank) return { ok: false, error: "Unknown partner bank." }
   if (!bank.currencies.includes(currency)) {
     return { ok: false, error: `${bank.name} cannot issue a ${currency} account.` }
