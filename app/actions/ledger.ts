@@ -5,6 +5,7 @@ import { adminActionAuthorized } from "@/lib/admin-auth"
 import { type UserProfile } from "@/lib/users"
 import { resolveAccountProfileById, resolveCurrentSession, resolveDataOwnerIdFor } from "@/lib/session-user"
 import { getDynamicUserByEmail } from "@/lib/admin-users-db"
+import { insertNotification } from "@/lib/notifications-db"
 import { listApprovalsForUser } from "@/lib/approvals-db"
 import { reconcileSubAccountFees } from "@/lib/sub-account-db"
 import { getFinancingRingfence } from "@/lib/guarantees-profile"
@@ -378,6 +379,34 @@ export async function sendInstantTransfer(input: {
         settlement: "Instant / Internal",
       },
     })
+
+    // Bell notifications for BOTH parties (best-effort — a notify failure must
+    // never undo a settled transfer). The recipient is alerted they received
+    // funds; the sender gets a confirmation the transfer went out.
+    const amountLabel = `${currency} ${amount.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+    const netLabel = `${currency} ${netCredit.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+    try {
+      await insertNotification({
+        userId: recipient.id,
+        tone: "success",
+        title: `Payment received — ${netLabel}`,
+        body: `You received ${netLabel} from ${senderLabel} into your Master Account.${feeNote ? ` ${feeNote.trim()}` : ""}${note ? ` Note: ${note}` : ""}`,
+        href: "/dashboard",
+      })
+    } catch (err) {
+      console.log("[v0] transfer recipient notification failed:", (err as Error).message)
+    }
+    try {
+      await insertNotification({
+        userId: session.id,
+        tone: "info",
+        title: `Payment sent — ${amountLabel}`,
+        body: `Your instant transfer of ${amountLabel} to ${recipientLabel} was completed.${note ? ` Note: ${note}` : ""}`,
+        href: "/dashboard",
+      })
+    } catch (err) {
+      console.log("[v0] transfer sender notification failed:", (err as Error).message)
+    }
 
     return { ok: true, reference: ref, entries: await readLedger(senderOwnerId) }
   } catch (err) {
