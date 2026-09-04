@@ -20,8 +20,11 @@ export interface PaymentRequest {
   notes: string
   currency: string
   amount: number // principal
-  fee: number // 2% platform fee
+  fee: number // marginal tiered platform fee (see feeBreakdown)
   total: number // amount + fee
+  /** Tier-by-tier fee breakdown captured at submission (marginal tiered engine),
+   *  recorded so the receipt / history / audit can show how the fee was derived. */
+  feeBreakdown?: { min: number; max: number | null; rate: number; amountInTier: number; fee: number }[]
   payeeSource: string
   /** Compartment the payment is remitted FROM. Absent/empty ⇒ the Main account.
    *  When set, the debit (principal + fee) moves this sub-account's isolated

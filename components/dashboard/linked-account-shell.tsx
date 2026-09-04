@@ -28,6 +28,7 @@ import {
   type LinkedAccountView,
 } from "@/app/actions/linked-account"
 import { validateIban, lookupBankByIban, isGenericBankInfo, type BankInfo } from "@/lib/iban-swift"
+import { calculateTieredFee } from "@/lib/tiered-fees"
 import { resolveIbanExternal } from "@/app/actions/bank-resolve"
 
 function money(n: number, currency: string) {
@@ -269,7 +270,7 @@ function AccountCard({
       </section>
 
       <p className="pb-4 text-center text-[11px] text-neutral-500">
-        Delegated access &middot; A 2% platform fee applies to outgoing payments.
+        Delegated access &middot; A tiered transaction fee applies to outgoing payments.
       </p>
     </div>
   )
@@ -389,8 +390,10 @@ function ActionSheet({
   }, [iban, beneficiary])
 
   const amt = Number.parseFloat(amount)
-  const feeRate = 0.02
-  const fee = Number.isFinite(amt) && amt > 0 ? Math.round(amt * feeRate * 100) / 100 : 0
+  const feeQuote = calculateTieredFee(Number.isFinite(amt) ? amt : 0)
+  const fee = feeQuote.totalFee
+  const feeEffectivePct =
+    amt > 0 ? (feeQuote.effectiveRate * 100).toLocaleString("en-US", { maximumFractionDigits: 2 }) : "0"
 
   const title = "Request a payment"
 
@@ -555,7 +558,7 @@ function ActionSheet({
           {amt > 0 && (
             <div className="rounded-lg border border-white/10 bg-black/20 p-3 text-sm">
               <Row label="Amount" value={money(amt, view.currency)} />
-              <Row label="2% platform fee" value={money(fee, view.currency)} />
+              <Row label={`Transaction fee (${feeEffectivePct}% effective, tiered)`} value={money(fee, view.currency)} />
               <div className="mt-2 border-t border-white/10 pt-2">
                 <Row label="Total" value={money(amt + fee, view.currency)} strong />
               </div>

@@ -10,19 +10,25 @@
 // Pure + framework-free so it can be imported by "use server" modules (which
 // may only export async functions) — the rate/label/helper live here, not in
 // the server action files.
+//
+// The fee is now MARGINAL TIERED (see lib/tiered-fees.ts): each portion of the
+// amount is charged at its own bracket rate. The 2% below is only the headline
+// entry-tier rate (the first €0–€100k bracket) kept for display/legacy refs.
+
+import { calculateTieredFee, type FeeTier } from "@/lib/tiered-fees"
 
 export const INCOMING_TRANSACTION_FEE_RATE = 0.02
-export const INCOMING_TRANSACTION_FEE_LABEL = "2%"
+export const INCOMING_TRANSACTION_FEE_LABEL = "up to 2%"
 
 /**
- * The 2% incoming-transaction fee, computed on the amount (already converted
- * into the account currency) that is being credited. Rounded to 2 decimals.
- * Returns 0 for a non-positive / non-finite base so it can never manufacture a
- * negative credit.
+ * The incoming-transaction fee, computed on the amount (already converted into
+ * the account currency) that is being credited, using the marginal tiered
+ * table. Rounded to 2 decimals. Returns 0 for a non-positive / non-finite base
+ * so it can never manufacture a negative credit. Pass the live `tiers` on the
+ * server (DB-backed); omit to use the default table.
  */
-export function incomingTransactionFee(grossInAccountCurrency: number): number {
-  if (!Number.isFinite(grossInAccountCurrency) || grossInAccountCurrency <= 0) return 0
-  return Math.round(grossInAccountCurrency * INCOMING_TRANSACTION_FEE_RATE * 100) / 100
+export function incomingTransactionFee(grossInAccountCurrency: number, tiers?: FeeTier[]): number {
+  return calculateTieredFee(grossInAccountCurrency, tiers).totalFee
 }
 
 // Platform-wide INTERNAL P2P TRANSFER FEE.
@@ -34,14 +40,14 @@ export function incomingTransactionFee(grossInAccountCurrency: number): number {
 // charged on top of the amount — that is unchanged and unrelated to this.)
 
 export const INTERNAL_TRANSFER_FEE_RATE = 0.02
-export const INTERNAL_TRANSFER_FEE_LABEL = "2%"
+export const INTERNAL_TRANSFER_FEE_LABEL = "up to 2%"
 
 /**
- * The 2% internal-transfer fee, computed on the transfer amount, deducted from
- * the recipient's credit. Rounded to 2 decimals. Returns 0 for a non-positive /
- * non-finite base so it can never manufacture a negative credit.
+ * The internal-transfer fee, computed on the transfer amount using the marginal
+ * tiered table, deducted from the recipient's credit. Rounded to 2 decimals.
+ * Returns 0 for a non-positive / non-finite base so it can never manufacture a
+ * negative credit. Pass the live `tiers` on the server; omit for the default.
  */
-export function internalTransferFee(amount: number): number {
-  if (!Number.isFinite(amount) || amount <= 0) return 0
-  return Math.round(amount * INTERNAL_TRANSFER_FEE_RATE * 100) / 100
+export function internalTransferFee(amount: number, tiers?: FeeTier[]): number {
+  return calculateTieredFee(amount, tiers).totalFee
 }

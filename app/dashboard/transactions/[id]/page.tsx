@@ -217,7 +217,10 @@ export default function TransactionDetailPage() {
               <div className="flex items-start justify-between gap-4 px-5 py-3.5">
                 <dt className="flex items-center gap-2 text-xs text-muted-foreground">
                   <Tag className="h-3.5 w-3.5" />
-                  Platform fee (2%)
+                  Transaction fee
+                  {entry.amount > 0
+                    ? ` (${((feeEntry.amount / entry.amount) * 100).toLocaleString("en-US", { maximumFractionDigits: 2 })}% effective, tiered)`
+                    : " (tiered)"}
                 </dt>
                 <dd className="text-sm font-medium text-foreground">
                   {formatAmount(feeEntry.amount, feeEntry.currency)}

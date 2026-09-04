@@ -11,6 +11,7 @@ import { reconcileSubAccountFees } from "@/lib/sub-account-db"
 import { getFinancingRingfence } from "@/lib/guarantees-profile"
 import { convertCurrency } from "@/lib/fx"
 import { internalTransferFee, INTERNAL_TRANSFER_FEE_LABEL } from "@/lib/incoming-fees"
+import { getFeeTiers } from "@/lib/tiered-fees-db"
 import { logActivity } from "@/app/actions/log-activity"
 import { resolvePaymentRecipientAdmin } from "@/app/actions/reconciliation"
 import { getMyMembership } from "@/app/actions/membership"
@@ -323,9 +324,9 @@ export async function sendInstantTransfer(input: {
     const recipientLabel = `${recipient.profile.fullName || recipient.profile.company || recipient.email} (${recipient.email})`
     const note = (input.note || "").trim()
 
-    // 2% internal-transfer fee, DEDUCTED FROM THE RECIPIENT: the sender is
+    // Tiered internal-transfer fee, DEDUCTED FROM THE RECIPIENT: the sender is
     // debited the full amount and the recipient receives the net.
-    const transferFee = internalTransferFee(amount)
+    const transferFee = internalTransferFee(amount, await getFeeTiers())
     const netCredit = Math.round((amount - transferFee) * 100) / 100
     const feeNote =
       transferFee > 0

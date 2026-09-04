@@ -28,10 +28,19 @@ import { LEVERAGE_AUDIT_FEE_RATE, LEVERAGE_PPI_RATE } from "@/lib/leverage-audit
 import { EQUITY_RATE_AT_MIN_LTV, EQUITY_RATE_AT_MAX_LTV, PPI_RATE } from "@/lib/monetization-equity"
 import { DEBIT_INTEREST_SCALE } from "@/lib/leverage-rates"
 import { ACQUISITION_FEE_RATES, MCC_BENEFIT_SHARE, CLIENT_BENEFIT_SHARE } from "@/lib/instrument-marketplace"
+import { DEFAULT_FEE_TIERS, formatTierRange } from "@/lib/tiered-fees"
+
+/**
+ * The marginal tiered transaction-fee brackets (default table — the admin may
+ * override the live rates in the DB). Each portion of the payment is charged at
+ * its own bracket's rate. Rendered as a readable multi-line string.
+ */
+const TIERED_FEE_TABLE = DEFAULT_FEE_TIERS.map(
+  (t) => `${formatTierRange(t.min, t.max)}: ${pct(t.rate)}`,
+).join(" · ")
 
 // --- Rates that live in server-only modules / page components ---------------
 // (cannot be imported into this client-safe catalogue — kept in sync manually).
-const PAYMENT_PLATFORM_FEE_RATE = 0.02 // from app/dashboard/payments/page.tsx PLATFORM_FEE_RATE
 const FX_EXCHANGE_FEE_RATE = 0.004 // from app/dashboard/exchange/page.tsx conversionFee
 const INBOUND_FX_FEE_RATE = 0.005 // from app/actions/incoming-swift.ts GATEWAY_FX_FEE_RATE
 const MT760_RECEIPT_FEE_RATE = 0.002 // from app/actions/incoming-swift.ts GUARANTEE_RECEIPT_FEE_RATE
@@ -158,13 +167,23 @@ export const COST_SECTIONS: CostSection[] = [
     rows: [
       {
         item: "Outgoing payment (SWIFT MT103)",
-        fee: `${pct(PAYMENT_PLATFORM_FEE_RATE)} of the amount`,
-        when: "Charged on top of every outgoing payment when the request is submitted for administrator approval.",
+        fee: "Marginal tiered — see the rate ladder below",
+        when: "Charged on top of every outgoing payment when the request is submitted for administrator approval. Each portion of the amount is charged at its own tier's rate.",
+      },
+      {
+        item: "Incoming payment / credit",
+        fee: "Marginal tiered — see the rate ladder below",
+        when: "Deducted from every incoming credit (bank/SWIFT deposit, gateway collection or matched inbound payment). Each portion of the amount is charged at its own tier's rate.",
       },
       {
         item: "Instant internal transfer",
-        fee: "Free",
-        when: "Instant sends between accounts on the platform carry no fee.",
+        fee: "Marginal tiered — see the rate ladder below",
+        when: "Deducted from the recipient on instant account-to-account sends. Each portion of the amount is charged at its own tier's rate.",
+      },
+      {
+        item: "Transaction fee rate ladder",
+        fee: TIERED_FEE_TABLE,
+        when: "The marginal brackets applied to incoming, internal and outgoing payments. Thresholds are per payment, in the payment currency. Administrators may adjust these rates.",
       },
       {
         item: "Sub-account internal transfer",

@@ -3,6 +3,7 @@
 import { useState, useMemo, useEffect } from "react"
 import { useActivityLog } from "@/components/activity-tracker"
 import { convertCurrency } from "@/lib/fx"
+import { calculateTieredFee, DEFAULT_FEE_TIERS, type FeeTier, type TieredFeeResult } from "@/lib/tiered-fees"
 import {
   assessPaymentAgainstLimits,
   limitBlockMessage,
@@ -114,8 +115,8 @@ type Payment = {
 // the available balance are rejected for insufficient funds.
 const MASTER_ACCOUNT_CURRENCY = "EUR"
 
-// Platform fee charged on every outgoing payment, on top of the sent amount.
-const PLATFORM_FEE_RATE = 0.02
+// The outgoing-payment platform fee is now a MARGINAL TIERED fee — computed via
+// calculateTieredFee(amount, feeTiers) using the live DB-backed tier table.
 
 const formatCurrency = (value: number, currency: string) =>
   `${currency} ${value.toLocaleString("en-US", {
@@ -228,6 +229,27 @@ export default function PaymentsPage() {
   // an account with outstanding financing can only pay from its OWN free funds
   // (EUR aggregate: available − outstanding financing). Friendly client pre-check;
   // the authoritative hard block lives server-side in submitApproval.
+  // Live marginal tiered fee table (falls back to the default table until loaded
+  // / if the fetch fails). Drives the outgoing-payment fee preview + submit so
+  // the breakdown the customer sees matches what the server stores.
+  const [feeTiers, setFeeTiers] = useState<FeeTier[]>(DEFAULT_FEE_TIERS)
+  useEffect(() => {
+    let cancelled = false
+    fetch("/api/fee-tiers", { credentials: "include", cache: "no-store" })
+      .then((r) => r.json())
+      .then((data) => {
+        if (!cancelled && data?.ok && Array.isArray(data.tiers) && data.tiers.length) {
+          setFeeTiers(data.tiers as FeeTier[])
+        }
+      })
+      .catch(() => {
+        /* keep the default table */
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
   const [ringfence, setRingfence] = useState<{ freeEur: number; exposureEur: number } | null>(null)
   useEffect(() => {
     let cancelled = false
@@ -271,9 +293,17 @@ export default function PaymentsPage() {
   const liveTransfer = useMemo(() => {
     const amt = Number.parseFloat(payAmount)
     if (!payAmount || Number.isNaN(amt) || amt <= 0) {
-      return { valid: false, amount: 0, fee: 0, total: 0, insufficient: false }
+      return {
+        valid: false,
+        amount: 0,
+        fee: 0,
+        total: 0,
+        insufficient: false,
+        breakdown: [] as TieredFeeResult["breakdown"],
+      }
     }
-    const fee = Math.round(amt * PLATFORM_FEE_RATE * 100) / 100
+    const quote = calculateTieredFee(amt, feeTiers)
+    const fee = quote.totalFee
     const total = amt + fee
     return {
       valid: true,
@@ -281,8 +311,9 @@ export default function PaymentsPage() {
       fee,
       total,
       insufficient: total > selectedCurrencyBalance + 0.001,
+      breakdown: quote.breakdown,
     }
-  }, [payAmount, selectedCurrencyBalance])
+  }, [payAmount, selectedCurrencyBalance, feeTiers])
 
   // Ring-fence pre-check: the payment PRINCIPAL (fee excluded, matching the
   // server) converted to EUR must not exceed the client's own free funds when
@@ -600,9 +631,11 @@ export default function PaymentsPage() {
       setFormError(`SWIFT/BIC is invalid: ${validateBic(paySwift).error}`)
       return
     }
-    // A 2% platform fee is charged on top of the outgoing amount.
-    const feeValue = Math.round(amountValue * PLATFORM_FEE_RATE * 100) / 100
+    // A marginal tiered platform fee is charged on top of the outgoing amount.
+    const feeQuote = calculateTieredFee(amountValue, feeTiers)
+    const feeValue = feeQuote.totalFee
     const totalDebit = amountValue + feeValue
+    const effectiveRatePct = (feeQuote.effectiveRate * 100).toLocaleString("en-US", { maximumFractionDigits: 2 })
 
     // Soft pre-check: warn the customer if the SELECTED compartment's balance in
     // the SELECTED currency cannot cover amount + fee. The transfer is debited
@@ -720,6 +753,7 @@ export default function PaymentsPage() {
       amount: amountValue,
       fee: feeValue,
       total: totalDebit,
+      feeBreakdown: feeQuote.breakdown,
       payeeSource,
       subAccountId: activeSubAccount?.id,
       subAccountLabel: activeSubAccount?.label,
@@ -729,7 +763,7 @@ export default function PaymentsPage() {
       action: `Submitted outgoing payment of ${formattedAmount} to ${beneficiary} for Administrator approval`,
       category: "Payments",
       details: {
-        summary: `Submitted a payment request of ${formattedAmount} to ${beneficiary} (${country}) via SWIFT ${swift}, IBAN ${iban}, plus a ${formattedFee} platform fee (2%) for a total of ${formattedTotal}. The request is pending mandatory Administrator approval — no funds have left the account yet. Reference: ${reference}.`,
+        summary: `Submitted a payment request of ${formattedAmount} to ${beneficiary} (${country}) via SWIFT ${swift}, IBAN ${iban}, plus a ${formattedFee} tiered transaction fee (${effectiveRatePct}% effective) for a total of ${formattedTotal}. The request is pending mandatory Administrator approval — no funds have left the account yet. Reference: ${reference}.`,
         paymentId: requestId,
         direction: "Outgoing / Debit (pending approval)",
         beneficiaryName: beneficiary,
@@ -738,7 +772,7 @@ export default function PaymentsPage() {
         swiftBic: swift,
         amount: formattedAmount,
         currency: payCurrency,
-        platformFee: `${formattedFee} (2%)`,
+        platformFee: `${formattedFee} (${effectiveRatePct}% effective, tiered)`,
         totalToDebitOnApproval: formattedTotal,
         paymentReference: reference,
         notes: payNotes.trim() || "(none)",
@@ -1096,8 +1130,10 @@ export default function PaymentsPage() {
                 {(() => {
                   const amt = Number.parseFloat(payAmount)
                   if (!payAmount || Number.isNaN(amt) || amt <= 0) return null
-                  const fee = Math.round(amt * PLATFORM_FEE_RATE * 100) / 100
+                  const quote = calculateTieredFee(amt, feeTiers)
+                  const fee = quote.totalFee
                   const total = amt + fee
+                  const effPct = amt > 0 ? (fee / amt) * 100 : 0
                   return (
                     <div className="rounded-lg border border-border bg-muted/30 p-3 text-sm">
                       <div className="flex items-center justify-between">
@@ -1105,9 +1141,33 @@ export default function PaymentsPage() {
                         <span className="text-foreground">{formatCurrency(amt, payCurrency)}</span>
                       </div>
                       <div className="flex items-center justify-between mt-1">
-                        <span className="text-muted-foreground">Platform fee (2%)</span>
+                        <span className="text-muted-foreground">
+                          Transaction fee ({effPct.toLocaleString("en-US", { maximumFractionDigits: 2 })}% effective)
+                        </span>
                         <span className="text-foreground">{formatCurrency(fee, payCurrency)}</span>
                       </div>
+                      {quote.breakdown.length > 1 && (
+                        <details className="mt-1">
+                          <summary className="cursor-pointer text-xs text-muted-foreground hover:text-foreground">
+                            Fee breakdown by tier
+                          </summary>
+                          <div className="mt-1 space-y-0.5">
+                            {quote.breakdown.map((row, i) => (
+                              <div key={i} className="flex items-center justify-between text-xs text-muted-foreground">
+                                <span>
+                                  {formatCurrency(row.min, payCurrency)}
+                                  {row.max == null ? "+" : ` – ${formatCurrency(row.max, payCurrency)}`}
+                                  {" @ "}
+                                  {(row.rate * 100).toLocaleString("en-US", { maximumFractionDigits: 2 })}%
+                                  {" on "}
+                                  {formatCurrency(row.amountInTier, payCurrency)}
+                                </span>
+                                <span>{formatCurrency(row.fee, payCurrency)}</span>
+                              </div>
+                            ))}
+                          </div>
+                        </details>
+                      )}
                       <div className="flex items-center justify-between mt-2 border-t border-border pt-2 font-medium">
                         <span className="text-foreground">Total to debit on approval</span>
                         <span className={liveTransfer.insufficient ? "text-destructive" : "text-foreground"}>
