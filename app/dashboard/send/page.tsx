@@ -59,7 +59,7 @@ import {
 import { resolveTransferRecipient } from "@/app/actions/transfers"
 import { sendInstantTransfer } from "@/app/actions/ledger"
 import { convertCurrency } from "@/lib/fx"
-import { internalTransferFee, INTERNAL_TRANSFER_FEE_LABEL } from "@/lib/incoming-fees"
+import { internalTransferFee } from "@/lib/incoming-fees"
 import { toast } from "sonner"
 
 const CURRENCIES = ["EUR", "USD", "GBP", "CHF", "JPY", "AUD", "CAD", "SGD"]
@@ -194,6 +194,10 @@ export default function SendMoneyPage() {
   })()
   const previewFee = internalTransferFee(amountValueEntered)
   const previewNet = amountValueEntered - previewFee
+  const previewFeePct =
+    amountValueEntered > 0
+      ? `${((previewFee / amountValueEntered) * 100).toLocaleString("en-US", { maximumFractionDigits: 2 })}%`
+      : ""
   const fmtEur = (n: number) =>
     `EUR ${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 
@@ -372,7 +376,7 @@ export default function SendMoneyPage() {
     toast.success("Transfer sent instantly", {
       description: `${formatCurrency(amountValue, currency)} sent to ${recipient.displayName} (${recipient.email}).${
         instantFee > 0
-          ? ` A ${INTERNAL_TRANSFER_FEE_LABEL} fee of ${formatCurrency(instantFee, currency)} was deducted — they receive ${formatCurrency(instantNet, currency)}.`
+          ? ` A transaction fee of ${formatCurrency(instantFee, currency)} was deducted — they receive ${formatCurrency(instantNet, currency)}.`
           : ""
       }`,
     })
@@ -431,7 +435,7 @@ export default function SendMoneyPage() {
       action: `Submitted internal transfer of ${formatted} to ${to} for Administrator approval`,
       category: "Transfers",
       details: {
-        summary: `Submitted an internal transfer request of ${formatted} to "${to}" for mandatory Administrator approval.${approvalFee > 0 ? ` A ${INTERNAL_TRANSFER_FEE_LABEL} fee applies to the recipient — they will receive ${formatCurrency(approvalNet, currency)} once approved.` : ""} No funds have left the account yet — they will only be debited once the request is approved. Reference: ${requestId}.`,
+        summary: `Submitted an internal transfer request of ${formatted} to "${to}" for mandatory Administrator approval.${approvalFee > 0 ? ` A transaction fee of ${formatCurrency(approvalFee, currency)} applies to the recipient — they will receive ${formatCurrency(approvalNet, currency)} once approved.` : ""} No funds have left the account yet — they will only be debited once the request is approved. Reference: ${requestId}.`,
         reference: requestId,
         recipient: to,
         amount: formatted,
@@ -440,7 +444,7 @@ export default function SendMoneyPage() {
     })
 
     toast.success("Transfer submitted for approval", {
-      description: `Your transfer of ${formatted} to ${to} is pending Administrator approval.${approvalFee > 0 ? ` A ${INTERNAL_TRANSFER_FEE_LABEL} fee is deducted from the recipient — they receive ${formatCurrency(approvalNet, currency)}.` : ""} Funds will only be debited once it is approved.`,
+      description: `Your transfer of ${formatted} to ${to} is pending Administrator approval.${approvalFee > 0 ? ` A transaction fee of ${formatCurrency(approvalFee, currency)} is deducted from the recipient — they receive ${formatCurrency(approvalNet, currency)}.` : ""} Funds will only be debited once it is approved.`,
     })
     resetForm()
   }
@@ -761,7 +765,7 @@ export default function SendMoneyPage() {
                   <span className="font-medium text-foreground">{formatCurrency(amountValueEntered, currency)}</span>
                 </div>
                 <div className="flex items-center justify-between">
-                  <span className="text-muted-foreground">Transfer fee ({INTERNAL_TRANSFER_FEE_LABEL}, paid by recipient)</span>
+                  <span className="text-muted-foreground">Transfer fee ({previewFeePct} effective, paid by recipient)</span>
                   <span className="font-medium text-foreground">− {formatCurrency(previewFee, currency)}</span>
                 </div>
                 <div className="flex items-center justify-between border-t border-border pt-1">
@@ -769,7 +773,7 @@ export default function SendMoneyPage() {
                   <span className="font-semibold text-foreground">{formatCurrency(previewNet, currency)}</span>
                 </div>
                 <p className="pt-1 text-[11px] text-muted-foreground">
-                  The {INTERNAL_TRANSFER_FEE_LABEL} fee is deducted from the recipient — you are debited only{" "}
+                  A tiered transaction fee is deducted from the recipient — you are debited only{" "}
                   {formatCurrency(amountValueEntered, currency)}.
                 </p>
               </div>

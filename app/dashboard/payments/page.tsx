@@ -1045,7 +1045,7 @@ export default function PaymentsPage() {
                     {liveTransfer.insufficient && (
                       <p className="text-xs text-destructive" role="alert">
                         Exceeds available {payCurrency} balance of {formatCurrency(selectedCurrencyBalance, payCurrency)} (need{" "}
-                        {formatCurrency(liveTransfer.total, payCurrency)} incl. 2% fee).
+                        {formatCurrency(liveTransfer.total, payCurrency)} incl. fee).
                       </p>
                     )}
                     {!liveTransfer.insufficient && amountExceedsOwnFunds && ringfence && (

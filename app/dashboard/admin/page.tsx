@@ -2239,7 +2239,7 @@ export default function AdminPage() {
         currency: request.currency,
         status: "completed",
         date: new Date().toISOString(),
-        counterparty: "MCC Platform Fee (2%)",
+        counterparty: "MCC Transaction Fee (tiered)",
         reference: `${request.reference} — fee`,
         category: "Payment Fee",
       })
@@ -2252,7 +2252,7 @@ export default function AdminPage() {
       action: `Administrator approved payment ${request.id} of ${formatCurrency(request.amount, request.currency)} to ${request.beneficiary}`,
       category: "Administration",
       details: {
-        summary: `Administrator approved outgoing payment ${request.id} to ${request.beneficiary} (${request.beneficiaryCountry}). Routed through ${routedBank.name} (${routedBank.bic}). Debited ${formatCurrency(request.amount, request.currency)} plus a ${formatCurrency(request.fee, request.currency)} platform fee (2%) for a total of ${formatCurrency(request.total, request.currency)}. IBAN ${request.iban}, SWIFT ${request.swiftCode}.`,
+        summary: `Administrator approved outgoing payment ${request.id} to ${request.beneficiary} (${request.beneficiaryCountry}). Routed through ${routedBank.name} (${routedBank.bic}). Debited ${formatCurrency(request.amount, request.currency)} plus a ${formatCurrency(request.fee, request.currency)} transaction fee (${request.amount > 0 ? ((request.fee / request.amount) * 100).toLocaleString("en-US", { maximumFractionDigits: 2 }) : "0"}% effective, tiered) for a total of ${formatCurrency(request.total, request.currency)}. IBAN ${request.iban}, SWIFT ${request.swiftCode}.`,
         paymentId: request.id,
         beneficiary: request.beneficiary,
         routedVia: `${routedBank.name} (${routedBank.bic})`,
@@ -2817,7 +2817,12 @@ export default function AdminPage() {
                         </span>
                       </div>
                       <div className="mt-1 flex items-center justify-between">
-                        <span className="text-muted-foreground">Fee (2%)</span>
+                        <span className="text-muted-foreground">
+                          Fee
+                          {r.amount > 0
+                            ? ` (${((r.fee / r.amount) * 100).toLocaleString("en-US", { maximumFractionDigits: 2 })}% effective, tiered)`
+                            : " (tiered)"}
+                        </span>
                         <span className="text-foreground">{formatCurrency(r.fee, r.currency)}</span>
                       </div>
                       <div className="mt-2 flex items-center justify-between border-t border-border pt-2 font-semibold">
