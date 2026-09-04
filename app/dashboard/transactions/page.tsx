@@ -154,7 +154,7 @@ export default function TransactionsPage() {
       amount: formatAmount(e.amount, e.currency),
       amountValue: e.amount,
       currency: e.currency,
-      // Show the linked 2% platform fee inline on the principal payment row.
+      // Show the linked tiered platform fee inline on the principal payment row.
       fee: linkedFee ? formatAmount(linkedFee.amount, linkedFee.currency) : formatAmount(0, e.currency),
       feeValue: linkedFee?.amount ?? 0,
       counterparty: e.counterparty,
@@ -162,7 +162,7 @@ export default function TransactionsPage() {
       category:
         e.category ||
         (isFeeRow
-          ? "Platform Fee (2%)"
+          ? "Transaction Fee (tiered)"
           : e.direction === "credit"
           ? "Incoming Transfer"
           : "Outgoing Payment"),
@@ -646,7 +646,7 @@ export default function TransactionsPage() {
                         </p>
                         {txn.feeValue > 0 && (
                           <p className="text-[10px] text-muted-foreground">
-                            +2% fee: {txn.fee}
+                            + fee: {txn.fee}
                           </p>
                         )}
                       </TableCell>
@@ -719,7 +719,7 @@ export default function TransactionsPage() {
                   { label: "Account", value: selectedTxn.account },
                   { label: "Amount", value: selectedTxn.amount },
                   ...(linkedFee
-                    ? [{ label: "Platform Fee (2%)", value: selectedTxn.fee }]
+                    ? [{ label: "Transaction Fee (tiered)", value: selectedTxn.fee }]
                     : []),
                   ...(showTotal
                     ? [{ label: "Total Debited", value: formatAmount(total, selectedTxn.currency) }]

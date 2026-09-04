@@ -125,3 +125,13 @@ export function calculateTieredFee(amount: number, tiers: FeeTier[] = DEFAULT_FE
 export function tieredFee(amount: number, tiers: FeeTier[] = DEFAULT_FEE_TIERS): number {
   return calculateTieredFee(amount, tiers).totalFee
 }
+
+/**
+ * Human-readable bracket range, e.g. "€0 – €100,000" or "Above €10,000,000".
+ * `symbol` defaults to the euro sign (thresholds are expressed in euro terms).
+ */
+export function formatTierRange(min: number, max: number | null, symbol = "€"): string {
+  const fmt = (n: number) => `${symbol}${n.toLocaleString("en-US")}`
+  if (max == null) return `Above ${fmt(min)}`
+  return `${fmt(min)} – ${fmt(max)}`
+}
