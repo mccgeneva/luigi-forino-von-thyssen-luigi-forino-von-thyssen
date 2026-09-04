@@ -459,6 +459,17 @@ export function useBankAccounts(): BankAccount[] {
       ? resolvedMaster
       : extractMasterBanking(currentUser.banking)
 
+  // Beneficiary / account holder for the client's OWN settlement accounts (the
+  // master ACC-001 and each per-currency account). Each user must see THEIR OWN
+  // entity as the beneficiary — their company (else full name) — not the
+  // hardcoded platform label "MCC Capital". Prefer the resolved master's holder
+  // (so joint/sub members show the master's company, matching the shared
+  // banking coords), then the signed-in user's own profile. Falls back to the
+  // record's own name only when nothing resolves.
+  const ownCompany = currentUser.company && currentUser.company !== "—" ? currentUser.company.trim() : ""
+  const ownFullName = currentUser.fullName && currentUser.fullName !== "Account" ? currentUser.fullName.trim() : ""
+  const beneficiaryName = resolvedMaster?.beneficiaryName?.trim() || ownCompany || ownFullName || ""
+
   // Resolve the bank identity (name / BIC / city / street address) FROM the
   // master IBAN so every displayed coordinate stays consistent with the IBAN's
   // country. Without this the master card kept the hardcoded German-branch
@@ -593,6 +604,9 @@ export function useBankAccounts(): BankAccount[] {
       country,
       countryCode,
       branchAddress,
+      // Beneficiary is the account holder's own entity, not "MCC Capital".
+      accountName: beneficiaryName || account.accountName,
+      accountType: "Master Settlement Account",
       balance: available + reserved,
       availableBalance: available,
       reservedBalance: reserved,
@@ -632,7 +646,8 @@ export function useBankAccounts(): BankAccount[] {
         country,
         countryCode,
         rating: "A",
-        accountName: "MCC Capital",
+        // Beneficiary is the account holder's own entity, not "MCC Capital".
+        accountName: beneficiaryName || "MCC Capital",
         accountNumber: `${cur}-2908 19`,
         iban,
         swift,

@@ -9,6 +9,7 @@ import { Badge } from "@/components/ui/badge"
 import { useState } from "react"
 import { cn } from "@/lib/utils"
 import { useLedger } from "@/lib/ledger-store"
+import { useCurrentUser } from "@/lib/use-current-user"
 
 const bankLogos: Record<string, string> = {
   "Banking Circle - German Branch": "BC",
@@ -106,6 +107,13 @@ export function BankAccounts() {
   const [copiedId, setCopiedId] = useState<string | null>(null)
   const { balanceFor, currencies } = useLedger()
   const router = useRouter()
+  // Beneficiary is the signed-in user's OWN entity (their company, else full
+  // name) — not the hardcoded platform label "MCC Capital".
+  const currentUser = useCurrentUser()
+  const beneficiaryName =
+    (currentUser.company && currentUser.company !== "—" ? currentUser.company.trim() : "") ||
+    (currentUser.fullName && currentUser.fullName !== "Account" ? currentUser.fullName.trim() : "") ||
+    "MCC Capital"
 
   // Always show the core multi-currency accounts, then any other currency the
   // client holds (e.g. proceeds from a less common currency exchange).
@@ -124,8 +132,8 @@ export function BankAccounts() {
         id: index + 1,
         bank: meta.bank,
         country: meta.country,
-        type: meta.type,
-        holder: "MCC Capital",
+        type: cur === "EUR" ? "Master Settlement Account" : meta.type,
+        holder: beneficiaryName,
         iban: meta.iban,
         swift: meta.swift,
         balance: `${symbol}${balanceFor(cur).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,

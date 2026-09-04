@@ -1136,6 +1136,12 @@ export interface MyMasterBanking {
   iban?: string
   swift?: string
   accountCurrency?: string
+  /** The account holder's own name — the data owner's company (fallback to
+   *  their full name). Used as the beneficiary / account name on the client's
+   *  master + per-currency settlement cards, so each user sees their OWN entity
+   *  as the beneficiary rather than a hardcoded platform name. For a joint/sub
+   *  account this is the MASTER's company, matching the shared banking coords. */
+  beneficiaryName?: string
   /** Per-currency settlement accounts (USD / GBP / CHF …) keyed by currency,
    *  so the client overview can overlay each currency's own coordinates. */
   currencies?: Record<string, { bankName?: string; iban?: string; swift?: string }>
@@ -1163,6 +1169,9 @@ export async function getMyMasterBanking(): Promise<MyMasterBanking> {
       if (master && extractBankingCoordinates(master.profile.banking).iban) rec = master
     }
     const primary = extractBankingCoordinates(rec.profile.banking)
+    // The account holder's own entity name (company, else full name) — surfaced
+    // as the beneficiary on the client's settlement cards.
+    const beneficiaryName = (rec.profile.company?.trim() || rec.profile.fullName?.trim() || "") || undefined
     // Fold in every per-currency settlement account on file.
     const currencies: Record<string, { bankName?: string; iban?: string; swift?: string }> = {}
     for (const cur of currenciesWithBankingRows(rec.profile.banking)) {
@@ -1175,7 +1184,11 @@ export async function getMyMasterBanking(): Promise<MyMasterBanking> {
         }
       }
     }
-    return { ...primary, ...(Object.keys(currencies).length ? { currencies } : {}) }
+    return {
+      ...primary,
+      ...(beneficiaryName ? { beneficiaryName } : {}),
+      ...(Object.keys(currencies).length ? { currencies } : {}),
+    }
   } catch {
     return {}
   }
