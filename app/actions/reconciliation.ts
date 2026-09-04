@@ -19,7 +19,7 @@ import { parseSwiftMessage, toReconciliationInput } from "@/lib/swift-mt"
 import { getApprovalById } from "@/lib/approvals-db"
 import { deleteLedgerEntry } from "@/lib/ledger-db"
 import { convertCurrency } from "@/lib/fx"
-import { incomingTransactionFee, INCOMING_TRANSACTION_FEE_LABEL } from "@/lib/incoming-fees"
+import { incomingTransactionFee } from "@/lib/incoming-fees"
 import { getFeeTiers } from "@/lib/tiered-fees-db"
 import { listDynamicUsers } from "@/lib/admin-users-db"
 import { extractCurrencyBankingCoordinates, currenciesWithBankingRows } from "@/lib/banking-coordinates"
@@ -171,7 +171,7 @@ async function creditMatchedAccount(
   const netAmount = round2(payment.amount - incomingFee)
   const feeNote =
     incomingFee > 0
-      ? ` A ${INCOMING_TRANSACTION_FEE_LABEL} incoming-transaction fee (${account.currency} ${incomingFee.toLocaleString("en-US")}) was deducted.`
+      ? ` An incoming-transaction fee of ${account.currency} ${incomingFee.toLocaleString("en-US")} (${((incomingFee / payment.amount) * 100).toLocaleString("en-US", { maximumFractionDigits: 2 })}% effective, tiered) was deducted.`
       : ""
 
   const entry: LedgerEntry = {
@@ -342,7 +342,7 @@ export async function recordGatewayDepositForApproval(
       : ""
     const feeNote =
       incomingFee > 0
-        ? ` A ${INCOMING_TRANSACTION_FEE_LABEL} incoming-transaction fee (${accountCurrency} ${incomingFee.toLocaleString("en-US")}) was deducted.`
+        ? ` An incoming-transaction fee of ${accountCurrency} ${incomingFee.toLocaleString("en-US")} (${((incomingFee / grossConverted) * 100).toLocaleString("en-US", { maximumFractionDigits: 2 })}% effective, tiered) was deducted.`
         : ""
 
     const entry: LedgerEntry = {
@@ -683,7 +683,7 @@ export async function recordRegisteredAccountDepositForApproval(
       : ""
     const feeNote =
       incomingFee > 0
-        ? ` A ${INCOMING_TRANSACTION_FEE_LABEL} incoming-transaction fee (${accountCurrency} ${incomingFee.toLocaleString("en-US")}) was deducted.`
+        ? ` An incoming-transaction fee of ${accountCurrency} ${incomingFee.toLocaleString("en-US")} (${((incomingFee / grossConverted) * 100).toLocaleString("en-US", { maximumFractionDigits: 2 })}% effective, tiered) was deducted.`
         : ""
 
     // Has this credit already been posted? (decide whether to also log.)
@@ -932,7 +932,7 @@ export async function recordMasterBankingDepositForApproval(
     const reference = record.reference?.trim() || approval.id
     const feeNote =
       incomingFee > 0
-        ? ` A ${INCOMING_TRANSACTION_FEE_LABEL} incoming-transaction fee (${sentCurrency} ${incomingFee.toLocaleString("en-US")}) was deducted.`
+        ? ` An incoming-transaction fee of ${sentCurrency} ${incomingFee.toLocaleString("en-US")} (${((incomingFee / sentAmount) * 100).toLocaleString("en-US", { maximumFractionDigits: 2 })}% effective, tiered) was deducted.`
         : ""
 
     const existing = await query(`SELECT 1 FROM ledger_entries WHERE user_id = $1 AND entry_id = $2`, [

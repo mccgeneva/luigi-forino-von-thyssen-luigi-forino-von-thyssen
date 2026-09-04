@@ -10,7 +10,7 @@ import { listApprovalsForUser } from "@/lib/approvals-db"
 import { reconcileSubAccountFees } from "@/lib/sub-account-db"
 import { getFinancingRingfence } from "@/lib/guarantees-profile"
 import { convertCurrency } from "@/lib/fx"
-import { internalTransferFee, INTERNAL_TRANSFER_FEE_LABEL } from "@/lib/incoming-fees"
+import { internalTransferFee } from "@/lib/incoming-fees"
 import { getFeeTiers } from "@/lib/tiered-fees-db"
 import { logActivity } from "@/app/actions/log-activity"
 import { resolvePaymentRecipientAdmin } from "@/app/actions/reconciliation"
@@ -328,9 +328,11 @@ export async function sendInstantTransfer(input: {
     // debited the full amount and the recipient receives the net.
     const transferFee = internalTransferFee(amount, await getFeeTiers())
     const netCredit = Math.round((amount - transferFee) * 100) / 100
+    const feeEffectivePct =
+      amount > 0 ? `${((transferFee / amount) * 100).toLocaleString("en-US", { maximumFractionDigits: 2 })}%` : ""
     const feeNote =
       transferFee > 0
-        ? ` A ${INTERNAL_TRANSFER_FEE_LABEL} transfer fee (${currency} ${transferFee.toLocaleString("en-US")}) was deducted.`
+        ? ` A transfer fee of ${currency} ${transferFee.toLocaleString("en-US")} (${feeEffectivePct} effective, tiered) was deducted.`
         : ""
 
     // Credit the recipient (shared owner ledger) the NET amount. Distinct entry
@@ -371,7 +373,7 @@ export async function sendInstantTransfer(input: {
       action: `Sent an instant internal transfer of ${currency} ${amount.toLocaleString("en-US")} to ${recipient.email}`,
       category: "Payments",
       details: {
-        summary: `Instant internal P2P transfer of ${currency} ${amount.toLocaleString("en-US")} from ${senderLabel} to ${recipientLabel}. Settled in real time on the server ledger.${feeNote ? ` ${INTERNAL_TRANSFER_FEE_LABEL} fee ${currency} ${transferFee.toLocaleString("en-US")} deducted from the recipient (net ${currency} ${netCredit.toLocaleString("en-US")}).` : ""} Reference: ${ref}.`,
+        summary: `Instant internal P2P transfer of ${currency} ${amount.toLocaleString("en-US")} from ${senderLabel} to ${recipientLabel}. Settled in real time on the server ledger.${feeNote ? ` Transfer fee ${currency} ${transferFee.toLocaleString("en-US")} (${feeEffectivePct} effective, tiered) deducted from the recipient (net ${currency} ${netCredit.toLocaleString("en-US")}).` : ""} Reference: ${ref}.`,
         referenceId: ref,
         recipientEmail: recipient.email,
         amount: `${currency} ${amount.toLocaleString("en-US")}`,
