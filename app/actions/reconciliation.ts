@@ -20,6 +20,7 @@ import { getApprovalById } from "@/lib/approvals-db"
 import { deleteLedgerEntry } from "@/lib/ledger-db"
 import { convertCurrency } from "@/lib/fx"
 import { incomingTransactionFee, INCOMING_TRANSACTION_FEE_LABEL } from "@/lib/incoming-fees"
+import { getFeeTiers } from "@/lib/tiered-fees-db"
 import { listDynamicUsers } from "@/lib/admin-users-db"
 import { extractCurrencyBankingCoordinates, currenciesWithBankingRows } from "@/lib/banking-coordinates"
 
@@ -165,8 +166,8 @@ async function creditMatchedAccount(
   // lives under its Master) so the Master Account balance reflects the funds.
   const ledgerOwnerId = await resolveDataOwnerIdFor(account.userId)
 
-  // 2% incoming-transaction fee, deducted from the credit (same currency here).
-  const incomingFee = incomingTransactionFee(payment.amount)
+  // Tiered incoming-transaction fee, deducted from the credit (same currency).
+  const incomingFee = incomingTransactionFee(payment.amount, await getFeeTiers())
   const netAmount = round2(payment.amount - incomingFee)
   const feeNote =
     incomingFee > 0
@@ -325,9 +326,9 @@ export async function recordGatewayDepositForApproval(
     // FX rate expressed as units of account currency per 1 unit sent.
     const fxRate = isFx ? grossConverted / sentAmount : 1
     const fxFee = isFx ? round2(grossConverted * GATEWAY_FX_FEE_RATE) : 0
-    // 2% incoming-transaction fee on the converted amount, deducted from the
-    // credit (in ADDITION to any FX fee).
-    const incomingFee = incomingTransactionFee(grossConverted)
+    // Tiered incoming-transaction fee on the converted amount, deducted from
+    // the credit (in ADDITION to any FX fee).
+    const incomingFee = incomingTransactionFee(grossConverted, await getFeeTiers())
     const amount = round2(grossConverted - fxFee - incomingFee)
     if (!Number.isFinite(amount) || amount <= 0) return { matched: false }
 
@@ -671,7 +672,7 @@ export async function recordRegisteredAccountDepositForApproval(
     const fxFee = isFx ? round2(grossConverted * GATEWAY_FX_FEE_RATE) : 0
     // 2% incoming-transaction fee on the converted amount, deducted from the
     // credit (in ADDITION to any FX fee).
-    const incomingFee = incomingTransactionFee(grossConverted)
+    const incomingFee = incomingTransactionFee(grossConverted, await getFeeTiers())
     const amount = round2(grossConverted - fxFee - incomingFee)
     if (!Number.isFinite(amount) || amount <= 0) return { matched: false }
 
@@ -922,9 +923,9 @@ export async function recordMasterBankingDepositForApproval(
 
     const ledgerEntryId = `MBD-${approval.id}`
     // Master Account is multi-currency: credit the SENT currency directly, no FX.
-    // 2% incoming-transaction fee, deducted from the credit.
-    const incomingFee = incomingTransactionFee(sentAmount)
-    const amount = round2(sentAmount - incomingFee)
+  // Tiered incoming-transaction fee, deducted from the credit.
+  const incomingFee = incomingTransactionFee(sentAmount, await getFeeTiers())
+  const amount = round2(sentAmount - incomingFee)
     if (!Number.isFinite(amount) || amount <= 0) return { matched: false }
 
     const sender = await resolveAccountProfileById(approval.userId)

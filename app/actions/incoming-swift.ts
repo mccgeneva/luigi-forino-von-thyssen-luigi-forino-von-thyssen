@@ -31,6 +31,7 @@ import {
   incomingTransactionFee,
   INCOMING_TRANSACTION_FEE_LABEL,
 } from "@/lib/incoming-fees"
+import { getFeeTiers } from "@/lib/tiered-fees-db"
 import { upsertLedgerEntry, readLedgerEntries, availableByCurrency } from "@/lib/ledger-db"
 import { getOverdraftStatusForOwner } from "@/lib/overdraft"
 import { adminIssueInstrument } from "@/app/actions/approvals"
@@ -715,9 +716,9 @@ export async function creditIncomingSwiftAdmin(passcode: string, id: string): Pr
     const grossConverted = isFx ? convertCurrency(receivedAmount, receivedCurrency, accountCurrency) : receivedAmount
     const fxRate = isFx && receivedAmount > 0 ? grossConverted / receivedAmount : 1
     const fxFee = isFx ? round2(grossConverted * GATEWAY_FX_FEE_RATE) : 0
-    // 2% incoming-transaction fee on the converted amount, deducted from the
-    // credit (in ADDITION to any FX fee). Same-currency credits get only this.
-    const incomingFee = incomingTransactionFee(grossConverted)
+    // Tiered incoming-transaction fee on the converted amount, deducted from
+    // the credit (in ADDITION to any FX fee). Same-currency credits get only this.
+    const incomingFee = incomingTransactionFee(grossConverted, await getFeeTiers())
     const amount = round2(grossConverted - fxFee - incomingFee)
     if (!Number.isFinite(amount) || amount <= 0) {
       return { ok: false, error: "The credit amount could not be computed." }
