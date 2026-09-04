@@ -25,6 +25,7 @@ import {
 } from "@/components/ui/select"
 import { useActivityLog } from "@/components/activity-tracker"
 import { useLedger } from "@/lib/ledger-store"
+import { useCurrentUser } from "@/lib/use-current-user"
 import { addLedgerEntryForUserAdmin } from "@/app/actions/ledger"
 import { getActiveUserId } from "@/lib/user-scope"
 import { VerifiedBankField } from "@/components/verified-bank-field"
@@ -64,6 +65,14 @@ const receivingAccount = {
 export default function ReceiveFundsPage() {
   const logActivity = useActivityLog()
   const { balanceFor, refresh } = useLedger()
+  // The beneficiary of the client's own receiving account is the client's OWN
+  // entity (their company, else full name) — not the platform label "MCC
+  // Capital". Payers must see the account holder as this user's own company.
+  const currentUser = useCurrentUser()
+  const beneficiaryName =
+    (currentUser.company && currentUser.company !== "—" ? currentUser.company.trim() : "") ||
+    (currentUser.fullName && currentUser.fullName !== "Account" ? currentUser.fullName.trim() : "") ||
+    receivingAccount.accountName
   const [copiedField, setCopiedField] = useState<string | null>(null)
   const [reqAmount, setReqAmount] = useState("")
   const [reqCurrency, setReqCurrency] = useState("EUR")
@@ -196,7 +205,7 @@ export default function ReceiveFundsPage() {
   }
 
   const detailRows: { label: string; value: string }[] = [
-    { label: "Account Holder", value: receivingAccount.accountName },
+    { label: "Account Holder", value: beneficiaryName },
     { label: "Bank", value: receivingAccount.bankName },
     { label: "IBAN", value: receivingAccount.iban },
     { label: "SWIFT / BIC", value: receivingAccount.swift },
@@ -208,7 +217,7 @@ export default function ReceiveFundsPage() {
   const requestSummary = [
     `Please remit funds to the following account:`,
     ``,
-    `Account Holder: ${receivingAccount.accountName}`,
+    `Account Holder: ${beneficiaryName}`,
     `Bank: ${receivingAccount.bankName}`,
     `IBAN: ${receivingAccount.iban}`,
     `SWIFT/BIC: ${receivingAccount.swift}`,
@@ -227,11 +236,11 @@ export default function ReceiveFundsPage() {
       action: `Generated incoming payment request for ${amountText}`,
       category: "Receive Funds",
       details: {
-        summary: `Client generated a payment request asking a payer to remit ${amountText} to ${receivingAccount.accountName} (IBAN ${receivingAccount.iban}, SWIFT ${receivingAccount.swift}). Reference: ${reqReference || receivingAccount.reference}.`,
+        summary: `Client generated a payment request asking a payer to remit ${amountText} to ${beneficiaryName} (IBAN ${receivingAccount.iban}, SWIFT ${receivingAccount.swift}). Reference: ${reqReference || receivingAccount.reference}.`,
         requestedAmount: amountText,
         currency: reqCurrency,
         reference: reqReference || receivingAccount.reference,
-        receivingAccount: receivingAccount.accountName,
+        receivingAccount: beneficiaryName,
         iban: receivingAccount.iban,
         swiftBic: receivingAccount.swift,
       },
