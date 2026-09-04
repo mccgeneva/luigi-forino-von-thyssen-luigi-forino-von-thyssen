@@ -27,10 +27,7 @@ import {
   type IncomingSwiftMessage,
 } from "@/lib/incoming-swift-db"
 import { convertCurrency } from "@/lib/fx"
-import {
-  incomingTransactionFee,
-  INCOMING_TRANSACTION_FEE_LABEL,
-} from "@/lib/incoming-fees"
+import { incomingTransactionFee } from "@/lib/incoming-fees"
 import { getFeeTiers } from "@/lib/tiered-fees-db"
 import { upsertLedgerEntry, readLedgerEntries, availableByCurrency } from "@/lib/ledger-db"
 import { getOverdraftStatusForOwner } from "@/lib/overdraft"
@@ -734,7 +731,7 @@ export async function creditIncomingSwiftAdmin(passcode: string, id: string): Pr
       : ""
     const feeNote =
       incomingFee > 0
-        ? ` A ${INCOMING_TRANSACTION_FEE_LABEL} incoming-transaction fee (${accountCurrency} ${incomingFee.toLocaleString("en-US")}) was deducted.`
+        ? ` An incoming-transaction fee of ${accountCurrency} ${incomingFee.toLocaleString("en-US")} (${((incomingFee / grossConverted) * 100).toLocaleString("en-US", { maximumFractionDigits: 2 })}% effective, tiered) was deducted.`
         : ""
 
     // Deterministic idempotency key derived from the message id.
