@@ -30,7 +30,7 @@ import {
 import { convertCurrency } from "@/lib/fx"
 import { incomingTransactionFee } from "@/lib/incoming-fees"
 import { applyCashbackForOwner } from "@/lib/fee-cashback-db"
-import { cashbackNote } from "@/lib/fee-cashback"
+import { cashbackNote, applyCashback } from "@/lib/fee-cashback"
 import { getFeeTiers } from "@/lib/tiered-fees-db"
 import { upsertLedgerEntry, readLedgerEntries, availableByCurrency } from "@/lib/ledger-db"
 import { getOverdraftStatusForOwner } from "@/lib/overdraft"
@@ -839,7 +839,14 @@ export interface GuaranteeResult {
   alreadyBooked?: boolean
 }
 
-export async function recordGuaranteeInstrumentAdmin(passcode: string, id: string): Promise<GuaranteeResult> {
+export async function recordGuaranteeInstrumentAdmin(
+  passcode: string,
+  id: string,
+  // Optional cashback the administrator applies AT CONFIRM TIME (fraction 0..1),
+  // reducing the 0.2% receipt fee. When omitted, the customer's preset SWIFT
+  // cashback (if any) applies instead.
+  cashbackRateOverride?: number,
+): Promise<GuaranteeResult> {
   if (!(await adminActionAuthorized(passcode))) {
     return { ok: false, error: "Administrator authorization failed." }
   }
@@ -874,9 +881,14 @@ export async function recordGuaranteeInstrumentAdmin(passcode: string, id: strin
     // if its receipt fee is unpayable even on overdraft.
     // -----------------------------------------------------------------------
     const ledgerOwnerId = (await resolveDataOwnerIdFor(message.userId)) ?? message.userId
-    // Admin-set cashback reduces the MT760 receipt fee.
+    // Cashback reduces the MT760 receipt fee. If the administrator authorised a
+    // cashback at confirm time it wins; otherwise the customer's preset SWIFT
+    // cashback (if any) applies. The net fee is what is actually charged.
     const standardReceiptFee = round2(faceValue * GUARANTEE_RECEIPT_FEE_RATE)
-    const receiptCashback = await applyCashbackForOwner(ledgerOwnerId, "swift", standardReceiptFee)
+    const receiptCashback =
+      typeof cashbackRateOverride === "number" && Number.isFinite(cashbackRateOverride) && cashbackRateOverride > 0
+        ? applyCashback(standardReceiptFee, cashbackRateOverride)
+        : await applyCashbackForOwner(ledgerOwnerId, "swift", standardReceiptFee)
     const feeAmount = receiptCashback.netFee
     const feeLabel = `${currency} ${feeAmount.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 

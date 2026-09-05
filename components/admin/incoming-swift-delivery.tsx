@@ -20,6 +20,8 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Textarea } from "@/components/ui/textarea"
+import { Input } from "@/components/ui/input"
+import { applyCashback, formatCashbackPct } from "@/lib/fee-cashback"
 import {
   Select,
   SelectContent,
@@ -66,6 +68,23 @@ GENEVA
 function fmtDate(iso: string): string {
   const d = new Date(iso)
   return `${d.toLocaleDateString("en-GB")} ${d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}`
+}
+
+// MT760 blocked-funds guarantee receipt fee (display preview only — the server
+// re-parses the face value and is authoritative on the charge).
+const RECEIPT_FEE_RATE = 0.002
+
+// Parse the currency + numeric value out of a formatted amount like
+// "EUR 4,500,000,000" for the admin fee preview.
+function parseAmount(amountStr?: string | null): { currency: string; value: number } {
+  if (!amountStr) return { currency: "", value: 0 }
+  const currency = amountStr.match(/[A-Z]{3}/)?.[0] ?? ""
+  const value = Number(amountStr.replace(/[^0-9.,]/g, "").replace(/,/g, "")) || 0
+  return { currency, value: Number.isFinite(value) ? value : 0 }
+}
+
+function fmtMoney(value: number, currency: string): string {
+  return `${currency} ${value.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 }
 
 export function IncomingSwiftDelivery() {
@@ -134,6 +153,8 @@ export function IncomingSwiftDelivery() {
   const [loadingCreditable, setLoadingCreditable] = useState(false)
   const [crediting, setCrediting] = useState<string | null>(null)
   const [booking, setBooking] = useState<string | null>(null)
+  const [bookOpen, setBookOpen] = useState<string | null>(null)
+  const [bookCashback, setBookCashback] = useState<Record<string, string>>({})
   const [rejecting, setRejecting] = useState<string | null>(null)
   const [rejectOpen, setRejectOpen] = useState<string | null>(null)
   const [rejectReason, setRejectReason] = useState<Record<string, string>>({})
@@ -179,14 +200,15 @@ export function IncomingSwiftDelivery() {
     }
   }
 
-  const handleBookGuarantee = async (m: IncomingSwiftMessage) => {
+  const handleBookGuarantee = async (m: IncomingSwiftMessage, cashbackRate?: number) => {
     setBooking(m.id)
     try {
-      const res = await recordGuaranteeInstrumentAdmin(ADMIN_PASSCODE, m.id)
+      const res = await recordGuaranteeInstrumentAdmin(ADMIN_PASSCODE, m.id, cashbackRate)
       if (res.ok) {
         toast.success(
           `Booked ${res.instrumentLabel} blocked-funds guarantee${res.bookedTo ? ` for ${res.bookedTo}` : ""}. Receipt fee ${res.feeLabel} charged.`,
         )
+        setBookOpen(null)
         setCreditable((prev) => prev.filter((x) => x.id !== m.id))
       } else if (res.alreadyBooked) {
         toast.warning("This message was already processed.")
@@ -461,20 +483,105 @@ export function IncomingSwiftDelivery() {
                       <div className="mt-3 flex flex-wrap items-center gap-2">
                         <Button
                           size="sm"
-                          onClick={() => handleBookGuarantee(m)}
+                          onClick={() => setBookOpen(bookOpen === m.id ? null : m.id)}
                           disabled={booking === m.id}
                           className="gap-1.5"
                         >
-                          {booking === m.id ? (
-                            <Loader2 className="h-4 w-4 animate-spin" />
-                          ) : (
-                            <Lock className="h-4 w-4" />
-                          )}
-                          Record blocked-funds guarantee &amp; charge 0.2%
+                          <Lock className="h-4 w-4" />
+                          Record blocked-funds guarantee
                         </Button>
                         <SwitchCustomerButton id={m.id} open={reassignOpen === m.id} onToggle={setReassignOpen} />
                         <RejectButton id={m.id} open={rejectOpen === m.id} onToggle={setRejectOpen} />
                       </div>
+                      {bookOpen === m.id &&
+                        (() => {
+                          const { currency, value } = parseAmount(m.amount)
+                          const pct = Number(bookCashback[m.id] ?? "")
+                          const rateFraction = Number.isFinite(pct) && pct > 0 ? Math.min(1, pct / 100) : 0
+                          const cb = applyCashback(value * RECEIPT_FEE_RATE, rateFraction)
+                          return (
+                            <div className="mt-3 rounded-md border border-primary/30 bg-primary/5 p-3">
+                              <p className="text-xs font-medium text-foreground">
+                                Apply a cashback before booking (optional)
+                              </p>
+                              <p className="mt-0.5 text-xs text-muted-foreground">
+                                The standard receipt fee is 0.2% of the guarantee. Authorise a cashback % to reduce what
+                                the customer is charged, or leave it blank to charge the full fee. Nothing is debited
+                                until you confirm.
+                              </p>
+                              <div className="mt-2 flex flex-col gap-1">
+                                <label htmlFor={`cb-${m.id}`} className="text-xs text-muted-foreground">
+                                  Cashback %
+                                </label>
+                                <div className="relative w-32">
+                                  <Input
+                                    id={`cb-${m.id}`}
+                                    inputMode="decimal"
+                                    value={bookCashback[m.id] ?? ""}
+                                    onChange={(e) =>
+                                      setBookCashback((prev) => ({
+                                        ...prev,
+                                        [m.id]: e.target.value.replace(/[^0-9.]/g, ""),
+                                      }))
+                                    }
+                                    placeholder="0"
+                                    className="h-10 pr-7 text-base"
+                                  />
+                                  <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-sm text-muted-foreground">
+                                    %
+                                  </span>
+                                </div>
+                              </div>
+                              <div className="mt-3 space-y-1 rounded-md bg-background/60 p-2.5 text-sm">
+                                <div className="flex items-center justify-between">
+                                  <span className="text-muted-foreground">Standard receipt fee (0.2%)</span>
+                                  <span
+                                    className={
+                                      rateFraction > 0 ? "text-muted-foreground line-through" : "text-foreground"
+                                    }
+                                  >
+                                    {fmtMoney(cb.originalFee, currency)}
+                                  </span>
+                                </div>
+                                {rateFraction > 0 && (
+                                  <div className="flex items-center justify-between text-emerald-600 dark:text-emerald-400">
+                                    <span>Cashback ({formatCashbackPct(cb.cashbackRate)})</span>
+                                    <span>−{fmtMoney(cb.cashbackAmount, currency)}</span>
+                                  </div>
+                                )}
+                                <div className="flex items-center justify-between font-semibold text-foreground">
+                                  <span>Charged to customer</span>
+                                  <span>{fmtMoney(cb.netFee, currency)}</span>
+                                </div>
+                              </div>
+                              <div className="mt-3 flex flex-wrap gap-2">
+                                <Button
+                                  size="sm"
+                                  onClick={() =>
+                                    handleBookGuarantee(m, rateFraction > 0 ? rateFraction : undefined)
+                                  }
+                                  disabled={booking === m.id}
+                                  className="gap-1.5"
+                                >
+                                  {booking === m.id ? (
+                                    <Loader2 className="h-4 w-4 animate-spin" />
+                                  ) : (
+                                    <Lock className="h-4 w-4" />
+                                  )}
+                                  Confirm &amp; book — charge {fmtMoney(cb.netFee, currency)}
+                                </Button>
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  onClick={() => setBookOpen(null)}
+                                  disabled={booking === m.id}
+                                >
+                                  Cancel
+                                </Button>
+                              </div>
+                            </div>
+                          )
+                        })()}
                     </>
                   ) : (
                     <div className="mt-3 flex flex-wrap items-center gap-2">
