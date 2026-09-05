@@ -266,16 +266,32 @@ export default function ExchangePage() {
       })
       return
     }
+    // Cap a SETTLING conversion to the outstanding shortfall so it can never
+    // over-convert. The deficit is in the TARGET currency; the source amount
+    // that would exactly clear it is |deficit| / rate. Without this a customer
+    // could keep tapping "Settle" indefinitely, each press posting another
+    // conversion far beyond what the overdraft ever required. Once the shortfall
+    // is covered, `toIsOverdrawn` flips false and the settle path turns itself
+    // off — so pressing again cannot replicate the transaction.
+    const sourceAmount =
+      isSettlingConversion && currentRate > 0
+        ? Math.min(numericFrom, Math.max(0, Math.abs(toNaturalBalance) / currentRate))
+        : numericFrom
+    const sourceFee = sourceAmount * conversionFee
+    const sourceTotal = sourceAmount + sourceFee
+
     // The source amount plus the 0.4% fee must be covered by the balance.
-    if (totalDebit > availableBalance) {
+    // Re-read the balance live so this holds even if the disabled state lags.
+    if (sourceAmount <= 0 || sourceTotal > balanceFor(fromCurrency) + 0.01) {
+      const liveAvailable = balanceFor(fromCurrency)
       toast.error("Insufficient funds", {
-        description: `You need ${currencies.find((c) => c.code === fromCurrency)?.symbol}${totalDebit.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} (incl. fee) but only have ${currencies.find((c) => c.code === fromCurrency)?.symbol}${availableBalance.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${fromCurrency}.`,
+        description: `You need ${currencies.find((c) => c.code === fromCurrency)?.symbol}${sourceTotal.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} (incl. fee) but only have ${currencies.find((c) => c.code === fromCurrency)?.symbol}${liveAvailable.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${fromCurrency}.`,
       })
       logActivity({
         action: `FX conversion ${fromCurrency} → ${toCurrency} DECLINED — insufficient funds`,
         category: "Currency Exchange",
         details: {
-          summary: `Attempted to convert ${fromCurrency} ${numericFrom.toLocaleString()} to ${toCurrency} but the ${fromCurrency} balance was insufficient (needed ${totalDebit.toFixed(2)}, available ${availableBalance.toFixed(2)}).`,
+          summary: `Attempted to convert ${fromCurrency} ${numericFrom.toLocaleString()} to ${toCurrency} but the ${fromCurrency} balance was insufficient (needed ${sourceTotal.toFixed(2)}, available ${liveAvailable.toFixed(2)}).`,
           outcome: "DECLINED — Insufficient funds",
         },
       })
@@ -287,14 +303,23 @@ export default function ExchangePage() {
     submittingRef.current = true
     setIsExecuting(true)
     try {
-    const receivedAmount = numericFrom * currentRate
+    // Final authoritative funds re-check INSIDE the lock — if the balance moved
+    // between the guard above and here (auto-cover, another tab), never post a
+    // debit the account can't cover.
+    if (sourceTotal > balanceFor(fromCurrency) + 0.01) {
+      toast.error("Insufficient funds", {
+        description: "Your balance changed before this conversion could complete. Please try again.",
+      })
+      return
+    }
+    const receivedAmount = sourceAmount * currentRate
     const ref = `FX-${Date.now().toString().slice(-8)}`
     const nowIso = new Date().toISOString()
 
     // Debit the source currency (amount sold).
     addDebit({
       id: ref,
-      amount: numericFrom,
+      amount: sourceAmount,
       currency: fromCurrency,
       status: "completed",
       date: nowIso,
@@ -303,10 +328,10 @@ export default function ExchangePage() {
       category: "Currency Exchange",
     })
     // Debit the 0.4% conversion fee in the source currency.
-    if (feeAmount > 0) {
+    if (sourceFee > 0) {
       addDebit({
         id: `${ref}-FEE`,
-        amount: Math.round(feeAmount * 100) / 100,
+        amount: Math.round(sourceFee * 100) / 100,
         currency: fromCurrency,
         status: "completed",
         date: nowIso,
@@ -328,18 +353,18 @@ export default function ExchangePage() {
     })
 
     logActivity({
-      action: `Executed FX conversion: ${fromCurrency} ${numericFrom.toLocaleString()} → ${toCurrency} ${receivedAmount.toLocaleString(undefined, { maximumFractionDigits: 2 })}`,
+      action: `Executed FX conversion: ${fromCurrency} ${sourceAmount.toLocaleString()} → ${toCurrency} ${receivedAmount.toLocaleString(undefined, { maximumFractionDigits: 2 })}`,
       category: "Currency Exchange",
       details: {
-        summary: `Client converted ${fromCurrency} ${numericFrom.toLocaleString()} into ${toCurrency} ${receivedAmount.toLocaleString(undefined, { maximumFractionDigits: 2 })} at a rate of 1 ${fromCurrency} = ${currentRate.toFixed(4)} ${toCurrency}, with a 0.4% conversion fee (${fromCurrency} ${feeAmount.toFixed(2)}). Balances updated.`,
+        summary: `Client converted ${fromCurrency} ${sourceAmount.toLocaleString()} into ${toCurrency} ${receivedAmount.toLocaleString(undefined, { maximumFractionDigits: 2 })} at a rate of 1 ${fromCurrency} = ${currentRate.toFixed(4)} ${toCurrency}, with a 0.4% conversion fee (${fromCurrency} ${sourceFee.toFixed(2)}). Balances updated.`,
         reference: ref,
         sellCurrency: fromCurrency,
-        sellAmount: `${fromCurrency} ${numericFrom.toLocaleString()}`,
+        sellAmount: `${fromCurrency} ${sourceAmount.toLocaleString()}`,
         buyCurrency: toCurrency,
         buyAmount: `${toCurrency} ${receivedAmount.toLocaleString(undefined, { maximumFractionDigits: 2 })}`,
         exchangeRate: `1 ${fromCurrency} = ${currentRate.toFixed(4)} ${toCurrency}`,
         feePercent: "0.4%",
-        fee: `${fromCurrency} ${feeAmount.toFixed(2)}`,
+        fee: `${fromCurrency} ${sourceFee.toFixed(2)}`,
         executedAt: new Date().toLocaleString("en-GB"),
       },
     })
@@ -353,8 +378,12 @@ export default function ExchangePage() {
         ? ` Your ${toCurrency} pocket was overdrawn, so ${toSymbol}${Math.abs(toNaturalBalance).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} of this first cleared the shortfall — visible ${toCurrency} balance is now about ${toSymbol}${projectedNatural.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}.`
         : ` This reduced an existing ${toCurrency} overdraft — the visible ${toCurrency} balance stays near ${toSymbol}0.00 until the shortfall is fully covered.`
       : ""
+    const capNote =
+      isSettlingConversion && sourceAmount < numericFrom - 0.01
+        ? ` Capped to the outstanding ${toCurrency} shortfall.`
+        : ""
     toast.success("Exchange executed", {
-      description: `Converted ${fromCurrency} ${numericFrom.toLocaleString()} → ${toCurrency} ${receivedAmount.toLocaleString(undefined, { maximumFractionDigits: 2 })}.${offsetNote || " Balances updated."}`,
+      description: `Converted ${fromCurrency} ${sourceAmount.toLocaleString()} → ${toCurrency} ${receivedAmount.toLocaleString(undefined, { maximumFractionDigits: 2 })}.${capNote}${offsetNote || " Balances updated."}`,
     })
       // Pull the authoritative balances so the recomputed overdraft state
       // relabels/disables the button, then release the lock. The short wait
