@@ -4,6 +4,7 @@ import { useState, useMemo, useEffect } from "react"
 import { useActivityLog } from "@/components/activity-tracker"
 import { convertCurrency } from "@/lib/fx"
 import { calculateTieredFee, DEFAULT_FEE_TIERS, type FeeTier, type TieredFeeResult } from "@/lib/tiered-fees"
+import { applyCashback, formatCashbackPct } from "@/lib/fee-cashback"
 import {
   assessPaymentAgainstLimits,
   limitBlockMessage,
@@ -250,6 +251,27 @@ export default function PaymentsPage() {
     }
   }, [])
 
+  // Admin-authorised CASHBACK on the transaction fee (resolved for this user).
+  // Reduces the outgoing-payment fee: the customer is charged the standard
+  // tiered fee minus the cashback. 0 when none is set.
+  const [cashbackRate, setCashbackRate] = useState(0)
+  useEffect(() => {
+    let cancelled = false
+    fetch("/api/fee-cashback", { credentials: "include", cache: "no-store" })
+      .then((r) => r.json())
+      .then((data) => {
+        if (!cancelled && data?.ok && data.cashback) {
+          setCashbackRate(Number(data.cashback.transaction) || 0)
+        }
+      })
+      .catch(() => {
+        /* no cashback preview; the standard fee applies */
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
   const [ringfence, setRingfence] = useState<{ freeEur: number; exposureEur: number } | null>(null)
   useEffect(() => {
     let cancelled = false
@@ -303,17 +325,21 @@ export default function PaymentsPage() {
       }
     }
     const quote = calculateTieredFee(amt, feeTiers)
-    const fee = quote.totalFee
+    const cb = applyCashback(quote.totalFee, cashbackRate)
+    const fee = cb.netFee
     const total = amt + fee
     return {
       valid: true,
       amount: amt,
       fee,
+      originalFee: cb.originalFee,
+      cashbackAmount: cb.cashbackAmount,
+      cashbackRate: cb.cashbackRate,
       total,
       insufficient: total > selectedCurrencyBalance + 0.001,
       breakdown: quote.breakdown,
     }
-  }, [payAmount, selectedCurrencyBalance, feeTiers])
+  }, [payAmount, selectedCurrencyBalance, feeTiers, cashbackRate])
 
   // Ring-fence pre-check: the payment PRINCIPAL (fee excluded, matching the
   // server) converted to EUR must not exceed the client's own free funds when
@@ -631,11 +657,15 @@ export default function PaymentsPage() {
       setFormError(`SWIFT/BIC is invalid: ${validateBic(paySwift).error}`)
       return
     }
-    // A marginal tiered platform fee is charged on top of the outgoing amount.
+    // A marginal tiered platform fee is charged on top of the outgoing amount,
+    // reduced by any admin-authorised cashback (the customer is charged net).
     const feeQuote = calculateTieredFee(amountValue, feeTiers)
-    const feeValue = feeQuote.totalFee
+    const feeCb = applyCashback(feeQuote.totalFee, cashbackRate)
+    const feeValue = feeCb.netFee
     const totalDebit = amountValue + feeValue
-    const effectiveRatePct = (feeQuote.effectiveRate * 100).toLocaleString("en-US", { maximumFractionDigits: 2 })
+    const effectiveRatePct = (
+      (amountValue > 0 ? feeValue / amountValue : 0) * 100
+    ).toLocaleString("en-US", { maximumFractionDigits: 2 })
 
     // Soft pre-check: warn the customer if the SELECTED compartment's balance in
     // the SELECTED currency cannot cover amount + fee. The transfer is debited
@@ -763,7 +793,7 @@ export default function PaymentsPage() {
       action: `Submitted outgoing payment of ${formattedAmount} to ${beneficiary} for Administrator approval`,
       category: "Payments",
       details: {
-        summary: `Submitted a payment request of ${formattedAmount} to ${beneficiary} (${country}) via SWIFT ${swift}, IBAN ${iban}, plus a ${formattedFee} tiered transaction fee (${effectiveRatePct}% effective) for a total of ${formattedTotal}. The request is pending mandatory Administrator approval — no funds have left the account yet. Reference: ${reference}.`,
+        summary: `Submitted a payment request of ${formattedAmount} to ${beneficiary} (${country}) via SWIFT ${swift}, IBAN ${iban}, plus a ${formattedFee} tiered transaction fee (${effectiveRatePct}% effective) for a total of ${formattedTotal}.${feeCb.cashbackAmount > 0 ? ` A ${formatCashbackPct(feeCb.cashbackRate)} cashback (−${formatCurrency(feeCb.cashbackAmount, payCurrency)}) reduced the standard fee of ${formatCurrency(feeCb.originalFee, payCurrency)} to ${formattedFee}.` : ""} The request is pending mandatory Administrator approval — no funds have left the account yet. Reference: ${reference}.`,
         paymentId: requestId,
         direction: "Outgoing / Debit (pending approval)",
         beneficiaryName: beneficiary,
@@ -773,6 +803,12 @@ export default function PaymentsPage() {
         amount: formattedAmount,
         currency: payCurrency,
         platformFee: `${formattedFee} (${effectiveRatePct}% effective, tiered)`,
+        ...(feeCb.cashbackAmount > 0
+          ? {
+              standardFee: formatCurrency(feeCb.originalFee, payCurrency),
+              cashback: `${formatCashbackPct(feeCb.cashbackRate)} (−${formatCurrency(feeCb.cashbackAmount, payCurrency)})`,
+            }
+          : {}),
         totalToDebitOnApproval: formattedTotal,
         paymentReference: reference,
         notes: payNotes.trim() || "(none)",
@@ -1131,18 +1167,32 @@ export default function PaymentsPage() {
                   const amt = Number.parseFloat(payAmount)
                   if (!payAmount || Number.isNaN(amt) || amt <= 0) return null
                   const quote = calculateTieredFee(amt, feeTiers)
-                  const fee = quote.totalFee
+                  const cb = applyCashback(quote.totalFee, cashbackRate)
+                  const fee = cb.netFee
                   const total = amt + fee
                   const effPct = amt > 0 ? (fee / amt) * 100 : 0
+                  const hasCashback = cb.cashbackAmount > 0
                   return (
                     <div className="rounded-lg border border-border bg-muted/30 p-3 text-sm">
                       <div className="flex items-center justify-between">
                         <span className="text-muted-foreground">Amount</span>
                         <span className="text-foreground">{formatCurrency(amt, payCurrency)}</span>
                       </div>
+                      {hasCashback && (
+                        <>
+                          <div className="flex items-center justify-between mt-1">
+                            <span className="text-muted-foreground">Standard transaction fee</span>
+                            <span className="text-muted-foreground line-through">{formatCurrency(cb.originalFee, payCurrency)}</span>
+                          </div>
+                          <div className="flex items-center justify-between mt-1">
+                            <span className="text-emerald-600">Cashback ({formatCashbackPct(cb.cashbackRate)})</span>
+                            <span className="text-emerald-600">−{formatCurrency(cb.cashbackAmount, payCurrency)}</span>
+                          </div>
+                        </>
+                      )}
                       <div className="flex items-center justify-between mt-1">
                         <span className="text-muted-foreground">
-                          Transaction fee ({effPct.toLocaleString("en-US", { maximumFractionDigits: 2 })}% effective)
+                          {hasCashback ? "Net transaction fee" : "Transaction fee"} ({effPct.toLocaleString("en-US", { maximumFractionDigits: 2 })}% effective)
                         </span>
                         <span className="text-foreground">{formatCurrency(fee, payCurrency)}</span>
                       </div>

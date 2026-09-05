@@ -30,6 +30,8 @@ import { guaranteeBlockMessage } from "@/lib/guarantees-accumulator"
 import { planReservation, formatMoney, type ReservationPlan } from "@/lib/fund-reservation"
 import { cardFeeFor, formatCardFee, CARD_FEE_CURRENCY } from "@/lib/card-fees"
 import { instrumentManagementFee, INSTRUMENT_MANAGEMENT_FEE_LABEL } from "@/lib/instrument-fees"
+import { applyCashbackForOwner } from "@/lib/fee-cashback-db"
+import { cashbackNote } from "@/lib/fee-cashback"
 import { leverageApplicationCharges } from "@/lib/leverage-audit-fee"
 import { computeMonetizationEquity } from "@/lib/monetization-equity"
 import { readStampedTrustScore } from "@/lib/ppi-trust"
@@ -465,9 +467,12 @@ export async function submitApproval(input: SubmitApprovalInput): Promise<Submit
   // is posted after the approval row is inserted (see below).
   if (input.kind === "card") {
     const format = (input.payload?.card as { format?: string } | undefined)?.format
-    const fee = cardFeeFor(format)
+    const standardFee = cardFeeFor(format)
     try {
       const ownerId = await resolveDataOwnerIdFor(session.id)
+      // Admin-set cashback reduces the issuance fee — the customer only needs to
+      // afford (and is only charged) the net amount.
+      const fee = (await applyCashbackForOwner(ownerId, "platform", standardFee)).netFee
       const available = availableByCurrency(await readLedgerEntries(ownerId))
       const availableEur = Object.entries(available).reduce(
         (sum, [cur, amt]) => sum + convertCurrency(amt, cur, CARD_FEE_CURRENCY),
@@ -713,9 +718,11 @@ export async function submitApproval(input: SubmitApprovalInput): Promise<Submit
     // client is never left with a card they weren't charged for.
     if (input.kind === "card") {
       const format = (input.payload?.card as { format?: string } | undefined)?.format ?? "physical"
-      const fee = cardFeeFor(format)
+      const standardFee = cardFeeFor(format)
       try {
         const ownerId = await resolveDataOwnerIdFor(session.id)
+        const cb = await applyCashbackForOwner(ownerId, "platform", standardFee)
+        const fee = cb.netFee
         await upsertLedgerEntry(ownerId, {
           id: `CARD-FEE-${request.id}`,
           direction: "debit",
@@ -726,7 +733,7 @@ export async function submitApproval(input: SubmitApprovalInput): Promise<Submit
           counterparty: "MCC Capital — Card Issuance",
           bank: "MCC Capital",
           reference: request.id,
-          comment: `One-time issuance fee for the requested ${format} card (${request.id}).`,
+          comment: `One-time issuance fee for the requested ${format} card (${request.id}).${cashbackNote(cb, CARD_FEE_CURRENCY)}`,
           category: "Card Issuance Fee",
         })
         try {
@@ -2267,10 +2274,13 @@ export async function deleteMyInstrument(
     // charges (the ledger reconciler covers any resulting currency shortfall).
     let feeCharged = 0
     if (chargeManagementFee) {
-      const fee = instrumentManagementFee(faceValue)
-      if (fee > 0) {
+      const standardFee = instrumentManagementFee(faceValue)
+      if (standardFee > 0) {
         try {
           const ownerId = await resolveDataOwnerIdFor(session.id)
+          // Admin-set cashback reduces the management/settlement fee.
+          const cb = await applyCashbackForOwner(ownerId, "instrument", standardFee)
+          const fee = cb.netFee
           await upsertLedgerEntry(ownerId, {
             id: `INSTR-MGMT-FEE-${approvalId}`,
             direction: "debit",
@@ -2281,7 +2291,7 @@ export async function deleteMyInstrument(
             counterparty: instrLabel || "Bank Instrument",
             reference: approvalId,
             category: `Bank Instrument — Management & Settlement Fee (${INSTRUMENT_MANAGEMENT_FEE_LABEL})`,
-            comment: `${INSTRUMENT_MANAGEMENT_FEE_LABEL} management fee on settling out ${feeCurrency} ${faceValue.toLocaleString("en-US")} instrument.`,
+            comment: `${INSTRUMENT_MANAGEMENT_FEE_LABEL} management fee on settling out ${feeCurrency} ${faceValue.toLocaleString("en-US")} instrument.${cashbackNote(cb, feeCurrency)}`,
           })
           feeCharged = fee
           try {
@@ -5952,7 +5962,10 @@ export async function acceptInstrumentUpgrade(approvalId: string): Promise<Instr
     // nothing is issued or charged if the customer cannot cover it.
     const ownerId = await resolveDataOwnerIdFor(existing.userId)
     const feeCurrency = upgrade.feeCurrency
-    const feeAmount = upgrade.fee > 0 ? upgrade.fee : instrumentUpgradeFee(upgrade.newFaceValue || upgrade.oldFaceValue)
+    const standardUpgradeFee = upgrade.fee > 0 ? upgrade.fee : instrumentUpgradeFee(upgrade.newFaceValue || upgrade.oldFaceValue)
+    // Admin-set cashback reduces the expertise & upgrade fee.
+    const upgradeCashback = await applyCashbackForOwner(ownerId, "instrument", standardUpgradeFee)
+    const feeAmount = upgradeCashback.netFee
     const alreadyCharged = upgrade.feeCharged === true || upgrade.status === "proposed"
     if (!alreadyCharged && feeAmount > 0) {
       const available = availableByCurrency(await readLedgerEntries(ownerId))
@@ -5989,7 +6002,7 @@ export async function acceptInstrumentUpgrade(approvalId: string): Promise<Instr
           counterparty: `${String((oldBase as { typeFull?: unknown }).typeFull ?? "Instrument")} ${String((oldBase as { id?: unknown }).id ?? "")}`.trim(),
           reference: approvalId,
           category: `Bank Instrument — Expertise & Upgrade Fee (${INSTRUMENT_UPGRADE_FEE_LABEL})`,
-          comment: `${INSTRUMENT_UPGRADE_FEE_LABEL} one-time upgrade fee on ${feeCurrency} ${upgrade.oldFaceValue.toLocaleString("en-US")} instrument (charged on customer confirm).`,
+          comment: `${INSTRUMENT_UPGRADE_FEE_LABEL} one-time upgrade fee on ${feeCurrency} ${upgrade.oldFaceValue.toLocaleString("en-US")} instrument (charged on customer confirm).${cashbackNote(upgradeCashback, feeCurrency)}`,
         })
       } catch (err) {
         console.log("[v0] upgrade accept fee charge failed:", (err as Error).message)

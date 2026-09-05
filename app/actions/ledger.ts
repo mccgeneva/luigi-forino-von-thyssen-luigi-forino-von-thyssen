@@ -12,6 +12,8 @@ import { getFinancingRingfence } from "@/lib/guarantees-profile"
 import { convertCurrency } from "@/lib/fx"
 import { internalTransferFee } from "@/lib/incoming-fees"
 import { getFeeTiers } from "@/lib/tiered-fees-db"
+import { applyCashbackForOwner } from "@/lib/fee-cashback-db"
+import { cashbackNote } from "@/lib/fee-cashback"
 import { logActivity } from "@/app/actions/log-activity"
 import { resolvePaymentRecipientAdmin } from "@/app/actions/reconciliation"
 import { getMyMembership } from "@/app/actions/membership"
@@ -325,14 +327,19 @@ export async function sendInstantTransfer(input: {
     const note = (input.note || "").trim()
 
     // Tiered internal-transfer fee, DEDUCTED FROM THE RECIPIENT: the sender is
-    // debited the full amount and the recipient receives the net.
-    const transferFee = internalTransferFee(amount, await getFeeTiers())
+    // debited the full amount and the recipient receives the net. Admin-set
+    // cashback (resolved for the fee-bearer = the recipient) reduces the fee, so
+    // the recipient receives MORE. Both the standard fee and the cashback are
+    // recorded for display + audit.
+    const standardTransferFee = internalTransferFee(amount, await getFeeTiers())
+    const transferCashback = await applyCashbackForOwner(recipientOwnerId, "transaction", standardTransferFee)
+    const transferFee = transferCashback.netFee
     const netCredit = Math.round((amount - transferFee) * 100) / 100
     const feeEffectivePct =
       amount > 0 ? `${((transferFee / amount) * 100).toLocaleString("en-US", { maximumFractionDigits: 2 })}%` : ""
     const feeNote =
-      transferFee > 0
-        ? ` A transfer fee of ${currency} ${transferFee.toLocaleString("en-US")} (${feeEffectivePct} effective, tiered) was deducted.`
+      transferCashback.originalFee > 0
+        ? ` A transfer fee of ${currency} ${transferFee.toLocaleString("en-US")} (${feeEffectivePct} effective, tiered) was deducted.${cashbackNote(transferCashback, currency)}`
         : ""
 
     // Credit the recipient (shared owner ledger) the NET amount. Distinct entry
@@ -373,7 +380,7 @@ export async function sendInstantTransfer(input: {
       action: `Sent an instant internal transfer of ${currency} ${amount.toLocaleString("en-US")} to ${recipient.email}`,
       category: "Payments",
       details: {
-        summary: `Instant internal P2P transfer of ${currency} ${amount.toLocaleString("en-US")} from ${senderLabel} to ${recipientLabel}. Settled in real time on the server ledger.${feeNote ? ` Transfer fee ${currency} ${transferFee.toLocaleString("en-US")} (${feeEffectivePct} effective, tiered) deducted from the recipient (net ${currency} ${netCredit.toLocaleString("en-US")}).` : ""} Reference: ${ref}.`,
+        summary: `Instant internal P2P transfer of ${currency} ${amount.toLocaleString("en-US")} from ${senderLabel} to ${recipientLabel}. Settled in real time on the server ledger.${feeNote ? ` Transfer fee ${currency} ${transferFee.toLocaleString("en-US")} (${feeEffectivePct} effective, tiered) deducted from the recipient (net ${currency} ${netCredit.toLocaleString("en-US")}).${cashbackNote(transferCashback, currency)}` : ""} Reference: ${ref}.`,
         referenceId: ref,
         recipientEmail: recipient.email,
         amount: `${currency} ${amount.toLocaleString("en-US")}`,

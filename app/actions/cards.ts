@@ -1,7 +1,7 @@
 "use server"
 
 import { adminActionAuthorized } from "@/lib/admin-auth"
-import { resolveAccountProfileById } from "@/lib/session-user"
+import { resolveAccountProfileById, resolveDataOwnerIdFor } from "@/lib/session-user"
 import { logActivity } from "@/app/actions/log-activity"
 import { insertNotification } from "@/lib/notifications-db"
 import {
@@ -16,6 +16,8 @@ import { adminDecideApproval } from "@/app/actions/approvals"
 import { addLedgerEntryForUserAdmin } from "@/app/actions/ledger"
 import type { LedgerEntry } from "@/lib/ledger-store"
 import { CARD_TRANSACTION_FEE_RATE, CARD_TRANSACTION_FEE_LABEL } from "@/lib/card-transaction-fees"
+import { applyCashbackForOwner } from "@/lib/fee-cashback-db"
+import { cashbackNote } from "@/lib/fee-cashback"
 import { KIND_HREF } from "@/lib/approval-kinds"
 
 async function adminOk(passcode: string): Promise<boolean> {
@@ -194,7 +196,14 @@ export async function adminRecordCardTransaction(
   }
 
   const currency = String(input.currency || "EUR").toUpperCase().slice(0, 3)
-  const fee = round2(amount * CARD_TRANSACTION_FEE_RATE)
+  // Admin-set cashback reduces the card-transaction fee.
+  const standardCardFee = round2(amount * CARD_TRANSACTION_FEE_RATE)
+  const cardFeeCashback = await applyCashbackForOwner(
+    await resolveDataOwnerIdFor(userId),
+    "platform",
+    standardCardFee,
+  )
+  const fee = cardFeeCashback.netFee
   const merchant = (input.merchant || "").trim() || "Card transaction"
   const cardTag = input.last4 ? ` ····${input.last4}` : ""
   const date = input.date && !Number.isNaN(Date.parse(input.date)) ? new Date(input.date).toISOString() : new Date().toISOString()
@@ -232,7 +241,7 @@ export async function adminRecordCardTransaction(
       counterparty: "MCC Capital — Card Transaction Fee",
       reference: baseId,
       category: `Card Transaction Fee (${CARD_TRANSACTION_FEE_LABEL})`,
-      comment: `${CARD_TRANSACTION_FEE_LABEL} platform fee on a ${currency} ${amount.toLocaleString("en-US")} card transaction (${merchant}).`,
+      comment: `${CARD_TRANSACTION_FEE_LABEL} platform fee on a ${currency} ${amount.toLocaleString("en-US")} card transaction (${merchant}).${cashbackNote(cardFeeCashback, currency)}`,
     }
     const feeRes = await addLedgerEntryForUserAdmin(passcode, userId, feeEntry)
     if (!feeRes.ok) {

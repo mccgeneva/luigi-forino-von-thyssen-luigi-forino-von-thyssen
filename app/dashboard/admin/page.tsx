@@ -129,6 +129,7 @@ import { TreuhandPositions } from "@/components/admin/treuhand-positions"
 import { InternalLoanManager } from "@/components/admin/internal-loan-manager"
 import { AccountLimitsManager } from "@/components/admin/account-limits-manager"
 import { FeeTierManager } from "@/components/admin/fee-tier-manager"
+import { FeeCashbackManager } from "@/components/admin/fee-cashback-manager"
   import { GuaranteesManager } from "@/components/admin/guarantees-manager"
   import { SectionAccessManager } from "@/components/admin/section-access-manager"
   import { DemoIdLog } from "@/components/admin/demo-id-log"
@@ -2420,6 +2421,7 @@ export default function AdminPage() {
         { id: "masteraccounts", label: "Master Accounts", description: "Update, replace or re-link the Master Account any customer operates under.", icon: Network, count: 0 },
         { id: "accountlimits", label: "Account Limits", description: "Set the platform-wide Daily Limit and Monthly Volume shown on every account; toggle Unlimited.", icon: Gauge, count: 0 },
         { id: "feetiers", label: "Transaction Fees", description: "Edit the marginal tiered fee brackets applied to incoming, internal and outgoing payments.", icon: Percent, count: 0 },
+        { id: "feecashback", label: "Fee Cashback", description: "Authorise a cashback % that reduces platform fees — globally, per product type, or per customer.", icon: HandCoins, count: 0 },
   { id: "guarantees", label: "Guarantees Accumulator", description: "Independent trust/risk scoring. Tune the factor weights and high-risk threshold; high-risk accounts are blocked from opening new financing.", icon: ShieldAlert, count: 0 },
         { id: "sectionaccess", label: "Section Access", description: "Lock or unlock any dashboard section for an individual user; grant a Visitor full access to a selected section.", icon: Lock, count: 0 },
         { id: "demoid", label: "Demo ID Log", description: "Inspect the ID documents, IP addresses and GPS positions captured from visitors testing the demo account.", icon: Fingerprint, count: 0 },
@@ -5213,7 +5215,7 @@ export default function AdminPage() {
 
                     <p className="font-mono text-xs text-muted-foreground break-all">UETR {deal.uetr}</p>
 
-                    {/* Pending amendment — old → new, decided in the Approvals queue. */}
+                    {/* Pending amendment — old �� new, decided in the Approvals queue. */}
                     {deal.pendingAmendment?.status === "pending" && (
                       <div className="rounded-md border border-amber-500/30 bg-amber-500/5 p-2.5 text-xs">
                         <div className="mb-1.5 flex items-center gap-1.5 font-medium text-amber-600 dark:text-amber-400">
@@ -5523,6 +5525,7 @@ export default function AdminPage() {
         {activeView === "internal-lending" && <InternalLoanManager passcode={ADMIN_PASSCODE} />}
             {activeView === "accountlimits" && <AccountLimitsManager passcode={ADMIN_PASSCODE} />}
             {activeView === "feetiers" && <FeeTierManager passcode={ADMIN_PASSCODE} />}
+            {activeView === "feecashback" && <FeeCashbackManager passcode={ADMIN_PASSCODE} />}
           {activeView === "guarantees" && <GuaranteesManager passcode={ADMIN_PASSCODE} />}
 
             {activeView === "sectionaccess" && <SectionAccessManager passcode={ADMIN_PASSCODE} />}
@@ -5966,7 +5969,7 @@ export default function AdminPage() {
                   .toUpperCase(),
                 isAdmin: false,
               }}
-              initialDraft={`Regarding your AES project funding application ${discussFundingTarget.approvalId} — "${discussFundingTarget.projectName}", ${formatFundingAmount(
+              initialDraft={`Regarding your AES project funding application ${discussFundingTarget.approvalId} ��� "${discussFundingTarget.projectName}", ${formatFundingAmount(
                 discussFundingTarget,
               )}: `}
             />

@@ -420,6 +420,36 @@ export const COST_SECTIONS: CostSection[] = [
       },
     ],
   },
+  {
+    id: "cashback",
+    number: "12",
+    title: "Fee Cashback",
+    intro:
+      "Where cashback forms part of your commercial conditions, an administrator-authorised cashback percentage reduces the platform fees in the sections above. The amount actually debited is the standard fee minus the authorised cashback (standard fee × cashback %); the net fee is never below zero.",
+    rows: [
+      {
+        item: "Transactions",
+        fee: "0% unless authorised",
+        when: "Reduces the tiered fee on incoming, outgoing and internal transfers by the authorised cashback %.",
+      },
+      {
+        item: "Bank instruments",
+        fee: "0% unless authorised",
+        when: "Reduces instrument management/settlement and transformation upgrade fees.",
+      },
+      {
+        item: "SWIFT operations",
+        fee: "0% unless authorised",
+        when: "Reduces the inbound SWIFT credit fee and the MT760 blocked-funds receipt fee.",
+      },
+      {
+        item: "Other platform charges",
+        fee: "0% unless authorised",
+        when: "Reduces card issuance/transaction and payment-gateway account fees.",
+      },
+    ],
+    note: "Cashback is set by the administrator globally, per product type, or per customer (the most specific rule applies). When a cashback applies, the original fee, the cashback percentage and the net amount charged are shown before you confirm and recorded in your transaction history, statements and audit log.",
+  },
 ]
 
 /** Human label for the leverage debit-interest scale, e.g. "1:2 2% … 1:30 22%". */
