@@ -225,8 +225,19 @@ export async function POST(req: Request) {
       // monetized/sold (permanent) — they should never sit in the upgrade
       // waiting list. Pledged-but-returnable instruments (leverage/loan/PPP)
       // stay, shown disabled via `engagedReason`.
+      // EXCEPTION: never hide an instrument that has an OPEN upgrade the admin
+      // must act on (a customer `requested` it, or a live `negotiating`/
+      // `proposed` deal). The command-center bell/count is keyed on
+      // `upgrade.status = 'requested'`, so hiding a requested instrument here
+      // would desync them — the admin gets a bell but the section is empty.
+      // The customer still effectively holds it (they requested the upgrade),
+      // and the admin can always Remove/Withdraw it if it is genuinely gone.
       const held = instruments
-        .filter((i) => !i.monetizedAway)
+        .filter((i) => {
+          const st = i.upgrade?.status
+          const hasOpenUpgrade = st === "requested" || st === "negotiating" || st === "proposed"
+          return hasOpenUpgrade || !i.monetizedAway
+        })
         .map((i) => ({
           approvalId: i.approvalId,
           userId: i.userId,
