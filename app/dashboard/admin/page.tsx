@@ -55,6 +55,7 @@ import {
   HandCoins,
   ShieldAlert,
   Sparkles,
+  DoorOpen,
 } from "lucide-react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -139,6 +140,7 @@ import { listUsers, type AdminUserView } from "@/app/actions/admin-users"
 import { AdminGatewaySection } from "@/components/dashboard/admin-gateway-section"
 import { SwiftRoutingQueue } from "@/components/admin/swift-routing-queue"
 import { IncomingSwiftDelivery } from "@/components/admin/incoming-swift-delivery"
+import { InstrumentExitManager } from "@/components/admin/instrument-exit-manager"
 import { listCreditableIncomingSwiftAdmin } from "@/app/actions/incoming-swift"
 import { EquityReleaseManager } from "@/components/admin/equity-release-manager"
 import { countPendingEquityReleasesAdmin } from "@/app/actions/equity-savings"
@@ -155,6 +157,7 @@ import {
   adminCountYieldTerminationRequests,
   adminCountTradingFundTerminationRequests,
   adminCountInstrumentUpgradeRequests,
+  adminCountInstrumentExitRequests,
   adminDecideApproval,
   adminUpdateApprovalRecord,
   adminMarkPaymentDelivered,
@@ -625,6 +628,9 @@ export default function AdminPage() {
   // awaiting the admin's negotiate-cost & confirm — a pending action that left
   // `pending` (the program is still approved) so it needs its own signal.
   const [yieldTerminationRequests, setYieldTerminationRequests] = useState(0)
+  // Approved instruments whose client requested to settle out (exit) — awaiting
+  // the admin's cashback + confirm. Stays `approved`, so it needs its own signal.
+  const [instrumentExitRequests, setInstrumentExitRequests] = useState(0)
   // Approved Treuhand fund positions whose client requested an early termination
   // awaiting the admin's reconcile & close — the position stays `approved`, so
   // (like the yield case) it left `pending` and needs its own signal.
@@ -663,6 +669,12 @@ export default function AdminPage() {
         if (!cancelled) setTreuhandTerminationRequests(treuhandTerm)
       } catch {
         // Non-fatal: the Treuhand tile just omits the termination signal.
+      }
+      try {
+        const exitReq = await adminCountInstrumentExitRequests(ADMIN_PASSCODE)
+        if (!cancelled) setInstrumentExitRequests(exitReq)
+      } catch {
+        // Non-fatal: the Instrument Exit tile just omits the signal.
       }
       try {
         const upgradeReq = await adminCountInstrumentUpgradeRequests(ADMIN_PASSCODE)
@@ -2348,6 +2360,7 @@ export default function AdminPage() {
     { id: "section-payments", view: "approvals", kind: "payment", label: "Outgoing Payments", count: (dbPending.payment ?? 0) + paymentsAwaitingDelivery, icon: ArrowUpRight },
     { id: "section-instruments", view: "approvals", kind: "instrument", label: "Bank Instruments", count: dbPending.instrument ?? 0, icon: FileText },
     { id: "section-instrument-upgrade", view: "instruments", label: "Instrument Upgrade Requests", count: instrumentUpgradeRequests, icon: Sparkles },
+    { id: "section-instrument-exit", view: "instrumentexit", label: "Instrument Exit Requests", count: instrumentExitRequests, icon: DoorOpen },
     { id: "section-ppp", view: "approvals", kind: "ppp", label: "Yield / PPP", count: (dbPending.ppp ?? 0) + yieldTerminationRequests, icon: TrendingUp },
     { id: "section-trading-fund", view: "approvals", kind: "trading_fund", label: "Treuhand Trading Fund", count: dbPending.trading_fund ?? 0, icon: Coins },
     { id: "section-treuhand-termination", view: "treuhand", label: "Treuhand Early Exit", count: treuhandTerminationRequests, icon: Coins },
@@ -2433,6 +2446,7 @@ export default function AdminPage() {
         { id: "gateway", label: "Payment Gateway", description: "Approve client account requests; configure partner banks and routing.", icon: Settings, count: pendingGatewayCount },
         { id: "swiftrouting", label: "SWIFT Routing", description: "Review client SWIFT messages and route them to the chosen beneficiary.", icon: Send, count: pendingSwiftRoutingCount },
         { id: "incomingswift", label: "Incoming SWIFT", description: "Verify customer-uploaded SWIFT printouts (e.g. MT760 blocked-funds guarantees) and matched inbound messages, then credit or book them.", icon: Inbox, count: pendingIncomingSwiftCount },
+    { id: "instrumentexit", label: "Instrument Exit Requests", description: "Clients requesting to settle out (exit) a bank instrument. Apply a cashback % to the settlement cost, then confirm.", icon: DoorOpen, count: instrumentExitRequests },
     { id: "equityrelease", label: "Equity Releases", description: "Review customer requests to release blocked equity. Negotiate the amount, terms and timing, then approve (now or scheduled) or decline.", icon: PiggyBank, count: pendingEquityReleaseCount },
         { id: "reconciliation", label: "Reconciliation", description: "Automated payment reconciliation engine.", icon: Repeat, count: 0 },
         { id: "treasury", label: "Treasury Services", description: "Security deposits and 1:10 leverage.", icon: Landmark, count: 0 },
@@ -5460,6 +5474,13 @@ export default function AdminPage() {
         {activeView === "incomingswift" && (
           <div className="space-y-6">
             <IncomingSwiftDelivery />
+          </div>
+        )}
+
+        {/* Instrument exit — client settle-out requests, admin cashback + confirm */}
+        {activeView === "instrumentexit" && (
+          <div className="space-y-6">
+            <InstrumentExitManager />
           </div>
         )}
 

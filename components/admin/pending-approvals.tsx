@@ -82,6 +82,7 @@ import {
   type DealHoldState,
 } from "@/app/actions/approvals"
 import { adminDecideCardRequest } from "@/app/actions/cards"
+import { applyCashback, formatCashbackPct } from "@/lib/fee-cashback"
 import { leverageApplicationCharges } from "@/lib/leverage-audit-fee"
 import { computeMonetizationEquity } from "@/lib/monetization-equity"
 import { readStampedTrustScore } from "@/lib/ppi-trust"
@@ -845,10 +846,15 @@ export function PendingApprovals({ initialKind }: { initialKind?: ApprovalKind }
   } | null>(null)
   const [termValue, setTermValue] = useState("")
   const [termNote, setTermNote] = useState("")
+  // Optional cashback % the admin applies to the STANDARD exit cost; it simply
+  // drives the final agreed cost field (which the server charges) so the
+  // negotiated flow stays authoritative.
+  const [termCashback, setTermCashback] = useState("")
 
   const openTermConfirm = (req: ApprovalRequest, info: NonNullable<ReturnType<typeof pppTerminationInfo>>) => {
     setTermValue(info.proposed.toFixed(2))
     setTermNote("")
+    setTermCashback("")
     setTermTarget({
       id: req.id,
       label: req.title,
@@ -2185,6 +2191,42 @@ export function PendingApprovals({ initialKind }: { initialKind?: ApprovalKind }
                     Waive (0)
                   </button>
                 </div>
+              </div>
+              <div className="rounded-md border border-primary/30 bg-primary/5 p-3">
+                <Label htmlFor="term-cashback" className="text-xs">
+                  Apply a cashback % to the standard {(YIELD_EARLY_CANCELLATION_PENALTY_RATE * 100).toFixed(0)}% exit cost
+                </Label>
+                <div className="mt-1.5 flex items-center gap-2">
+                  <div className="relative w-28">
+                    <Input
+                      id="term-cashback"
+                      inputMode="decimal"
+                      value={termCashback}
+                      onChange={(e) => {
+                        const raw = e.target.value.replace(/[^0-9.]/g, "")
+                        setTermCashback(raw)
+                        const pct = Number(raw)
+                        if (Number.isFinite(pct) && pct > 0) {
+                          setTermValue(applyCashback(termTarget.suggested, Math.min(1, pct / 100)).netFee.toFixed(2))
+                        }
+                      }}
+                      placeholder="0"
+                      className="h-10 pr-7 text-base md:text-sm"
+                    />
+                    <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-sm text-muted-foreground">
+                      %
+                    </span>
+                  </div>
+                  {Number(termCashback) > 0 && (
+                    <span className="text-xs text-emerald-600 dark:text-emerald-400">
+                      Net {formatMoney2(applyCashback(termTarget.suggested, Math.min(1, Number(termCashback) / 100)).netFee, termTarget.currency)}{" "}
+                      ({formatCashbackPct(Math.min(1, Number(termCashback) / 100))} off)
+                    </span>
+                  )}
+                </div>
+                <p className="mt-1 text-[11px] text-muted-foreground">
+                  Sets the final agreed exit cost above — you can still edit it directly.
+                </p>
               </div>
               <div className="space-y-1.5">
                 <Label htmlFor="term-note">Note (optional)</Label>

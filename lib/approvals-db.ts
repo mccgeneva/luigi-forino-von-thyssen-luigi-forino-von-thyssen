@@ -402,6 +402,35 @@ export async function countYieldTerminationRequests(): Promise<number> {
 }
 
 /**
+ * Count of APPROVED bank instruments whose client has requested to exit
+ * ("settle out") the holding and the administrator has not yet confirmed. The
+ * exit-request marker lives at the TOP LEVEL of the payload and the instrument
+ * stays `approved`, so — like the yield termination case — it is invisible on
+ * the command center without this dedicated count.
+ */
+export async function countInstrumentExitRequests(): Promise<number> {
+  await ensureTable()
+  const { rows } = await query<{ n: string }>(
+    `SELECT COUNT(*)::int AS n FROM approval_requests
+      WHERE kind = 'instrument' AND status = 'approved'
+        AND payload->'exitRequest' IS NOT NULL`,
+  )
+  return Number(rows[0]?.n ?? 0)
+}
+
+/** APPROVED instruments with a pending client exit request, newest first. */
+export async function listInstrumentExitRequests(): Promise<ApprovalRequest[]> {
+  await ensureTable()
+  const { rows } = await query(
+    `SELECT * FROM approval_requests
+      WHERE kind = 'instrument' AND status = 'approved'
+        AND payload->'exitRequest' IS NOT NULL
+      ORDER BY created_at DESC`,
+  )
+  return rows.map(rowToRequest)
+}
+
+/**
  * Count of APPROVED Treuhand hedge-fund positions (kind `trading_fund`) whose
  * client has requested an early termination the administrator has not yet
  * reconciled. The termination marker lives on the TOP-LEVEL payload (not

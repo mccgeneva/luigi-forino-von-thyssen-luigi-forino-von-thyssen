@@ -31,7 +31,7 @@ import { planReservation, formatMoney, type ReservationPlan } from "@/lib/fund-r
 import { cardFeeFor, formatCardFee, CARD_FEE_CURRENCY } from "@/lib/card-fees"
 import { instrumentManagementFee, INSTRUMENT_MANAGEMENT_FEE_LABEL } from "@/lib/instrument-fees"
 import { applyCashbackForOwner } from "@/lib/fee-cashback-db"
-import { cashbackNote } from "@/lib/fee-cashback"
+import { cashbackNote, applyCashback, formatCashbackPct } from "@/lib/fee-cashback"
 import { leverageApplicationCharges } from "@/lib/leverage-audit-fee"
 import { computeMonetizationEquity } from "@/lib/monetization-equity"
 import { readStampedTrustScore } from "@/lib/ppi-trust"
@@ -67,6 +67,8 @@ import {
   countYieldTerminationRequests,
   countTradingFundTerminationRequests,
   countInstrumentUpgradeRequests,
+  countInstrumentExitRequests,
+  listInstrumentExitRequests,
   decideApproval,
   recordAdminDecision,
   recordMasterDecision,
@@ -2333,6 +2335,327 @@ export async function deleteMyInstrument(
   } catch (err) {
     console.log("[v0] deleteMyInstrument failed:", (err as Error).message)
     return { ok: false, error: "The instrument could not be deleted. Please try again." }
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Instrument EXIT ("settle out") — admin-negotiated with a cashback %.
+//
+// Unlike `deleteMyInstrument` (instant, applies only the customer's PRESET
+// cashback), a settle-out now REQUESTS an exit: the instrument is NOT removed
+// and nothing is charged until the administrator reviews it, applies a cashback
+// %, and confirms — then the instrument is removed and the NET fee is charged.
+// The request stamps a top-level `payload.exitRequest` marker on the approved
+// instrument row (mirrors the yield / Treuhand early-exit pattern).
+// ─────────────────────────────────────────────────────────────────────────
+
+interface InstrumentExitMarker {
+  requestedAt: string
+  reason: string
+  standardFee: number
+  faceValue: number
+  currency: string
+  instrLabel: string
+}
+
+/** CLIENT: request to settle out (exit) a held bank instrument. */
+export async function requestInstrumentExit(
+  approvalId: string,
+  reason?: string,
+): Promise<{ ok: boolean; error?: string; standardFee?: number; currency?: string }> {
+  const session = await resolveCurrentSession()
+  if (!session) return { ok: false, error: "Your session has expired. Please sign in again." }
+  try {
+    const existing = await getApprovalById(approvalId)
+    if (!existing || existing.userId !== session.id) {
+      return { ok: false, error: "This instrument could not be found." }
+    }
+    if (existing.kind !== "instrument") {
+      return { ok: false, error: "Only bank instruments can be exited here." }
+    }
+    // Cannot exit an instrument pledged to a live facility (loan/leverage/etc.).
+    const engagement = await instrumentEngagementReason(existing, session.id)
+    if (engagement) return { ok: false, error: engagement }
+
+    const p = (existing.payload ?? {}) as {
+      instrument?: { faceValue?: number; currency?: string; typeFull?: string; id?: string }
+      record?: { faceValue?: number; currency?: string; typeFull?: string; id?: string }
+      issuedByAdmin?: boolean
+      exitRequest?: unknown
+    }
+    if (p.exitRequest) {
+      return { ok: false, error: "An exit request is already awaiting the administrator." }
+    }
+    const base = (p.issuedByAdmin ? p.instrument : p.record ?? p.instrument) ?? {}
+    const faceValue = Number(base.faceValue ?? existing.amount ?? 0)
+    const currency = String(base.currency ?? "EUR")
+    const instrLabel = `${String(base.typeFull ?? "Instrument")} ${String(base.id ?? "")}`.trim()
+    const standardFee = instrumentManagementFee(faceValue)
+
+    const marker: InstrumentExitMarker = {
+      requestedAt: new Date().toISOString(),
+      reason: reason?.trim() || "",
+      standardFee,
+      faceValue,
+      currency,
+      instrLabel,
+    }
+    await updateApprovalPayload(approvalId, { ...p, exitRequest: marker })
+
+    // Fan out to administrators so the request is discoverable (best-effort).
+    try {
+      const holder = await resolveAccountProfileById(session.id)
+      const admins = await Promise.all(adminEmails().map((e) => getDynamicUserByEmail(e).catch(() => undefined)))
+      const seen = new Set<string>()
+      for (const a of admins) {
+        if (!a || seen.has(a.id) || a.id === session.id) continue
+        seen.add(a.id)
+        await insertNotification({
+          userId: a.id,
+          tone: "warning",
+          title: "Instrument exit requested",
+          body: `${holder.fullName} requested to settle out ${instrLabel || "an instrument"} (${currency} ${faceValue.toLocaleString("en-US")}). Negotiate the exit cost & confirm.`,
+          href: "/dashboard/admin",
+        }).catch(() => {})
+      }
+    } catch {
+      /* admin fan-out is best-effort */
+    }
+
+    try {
+      const profile = await resolveAccountProfileById(session.id)
+      await logActivity({
+        action: `Client requested to settle out bank instrument ${instrLabel}`,
+        category: "Bank Instruments",
+        user: profile.fullName,
+        details: {
+          referenceId: existing.id,
+          summary: `Exit requested${reason?.trim() ? ` — ${reason.trim()}` : ""}. Awaiting administrator confirmation of the settlement cost.`,
+          decision: "Exit requested",
+        },
+      })
+    } catch {
+      /* activity log is best-effort */
+    }
+
+    return { ok: true, standardFee, currency }
+  } catch (err) {
+    console.log("[v0] requestInstrumentExit failed:", (err as Error).message)
+    return { ok: false, error: "The exit request could not be submitted. Please try again." }
+  }
+}
+
+/** CLIENT: withdraw a pending instrument exit request (keeps the instrument). */
+export async function withdrawInstrumentExit(approvalId: string): Promise<{ ok: boolean; error?: string }> {
+  const session = await resolveCurrentSession()
+  if (!session) return { ok: false, error: "Your session has expired. Please sign in again." }
+  try {
+    const existing = await getApprovalById(approvalId)
+    if (!existing || existing.userId !== session.id || existing.kind !== "instrument") {
+      return { ok: false, error: "This instrument could not be found." }
+    }
+    const p = (existing.payload ?? {}) as Record<string, unknown>
+    if (!p.exitRequest) return { ok: true }
+    const { exitRequest: _e, ...rest } = p
+    void _e
+    await updateApprovalPayload(approvalId, rest)
+    return { ok: true }
+  } catch (err) {
+    console.log("[v0] withdrawInstrumentExit failed:", (err as Error).message)
+    return { ok: false, error: "The request could not be withdrawn." }
+  }
+}
+
+export interface AdminInstrumentExitRow {
+  approvalId: string
+  userId: string
+  holderLabel: string
+  holderEmail: string
+  instrLabel: string
+  faceValue: number
+  currency: string
+  standardFee: number
+  reason: string
+  requestedAt: string
+}
+
+/** ADMIN: list all pending instrument exit requests awaiting confirmation. */
+export async function adminListInstrumentExitRequests(passcode: string): Promise<AdminInstrumentExitRow[]> {
+  if (!(await adminOk(passcode))) return []
+  try {
+    const rows = await listInstrumentExitRequests()
+    const out: AdminInstrumentExitRow[] = []
+    for (const r of rows) {
+      const ex = (r.payload as { exitRequest?: InstrumentExitMarker } | undefined)?.exitRequest
+      if (!ex) continue
+      let holderLabel = r.userId
+      let holderEmail = ""
+      try {
+        const profile = await resolveAccountProfileById(r.userId)
+        holderLabel = profile.fullName || (profile.company ?? r.userId)
+        holderEmail = profile.email ?? ""
+      } catch {
+        /* fall back to the id */
+      }
+      out.push({
+        approvalId: r.id,
+        userId: r.userId,
+        holderLabel,
+        holderEmail,
+        instrLabel: ex.instrLabel || String(r.title ?? "Instrument"),
+        faceValue: Number(ex.faceValue ?? 0),
+        currency: ex.currency || "EUR",
+        standardFee: Number(ex.standardFee ?? 0),
+        reason: ex.reason || "",
+        requestedAt: ex.requestedAt,
+      })
+    }
+    return out
+  } catch (err) {
+    console.log("[v0] adminListInstrumentExitRequests failed:", (err as Error).message)
+    return []
+  }
+}
+
+/** ADMIN: count of pending instrument exit requests (for the command center). */
+export async function adminCountInstrumentExitRequests(passcode: string): Promise<number> {
+  try {
+    if (!(await adminOk(passcode))) return 0
+    return await countInstrumentExitRequests()
+  } catch (err) {
+    console.log("[v0] adminCountInstrumentExitRequests failed:", (err as Error).message)
+    return 0
+  }
+}
+
+/**
+ * ADMIN: confirm an instrument exit, applying an optional cashback % that
+ * reduces the standard settlement fee. When `cashbackRate` is omitted/0 the
+ * customer's PRESET instrument cashback applies instead. Removes the instrument
+ * and charges the NET fee to the Master Account.
+ */
+export async function adminConfirmInstrumentExit(
+  passcode: string,
+  approvalId: string,
+  input: { cashbackRate?: number; note?: string },
+): Promise<{ ok: boolean; error?: string; feeCharged?: number; currency?: string }> {
+  if (!(await adminOk(passcode))) return { ok: false, error: "Administrator authorization failed." }
+  try {
+    const existing = await getApprovalById(approvalId)
+    if (!existing) return { ok: false, error: "This instrument could not be found." }
+    if (existing.kind !== "instrument") return { ok: false, error: "Only bank instruments can be exited here." }
+
+    // Re-check engagement (never settle out an instrument still pledged live).
+    const engagement = await instrumentEngagementReason(existing, existing.userId)
+    if (engagement) return { ok: false, error: engagement }
+
+    const p = (existing.payload ?? {}) as {
+      instrument?: { faceValue?: number; currency?: string; typeFull?: string; id?: string }
+      record?: { faceValue?: number; currency?: string; typeFull?: string; id?: string }
+      issuedByAdmin?: boolean
+    }
+    const base = (p.issuedByAdmin ? p.instrument : p.record ?? p.instrument) ?? {}
+    const faceValue = Number(base.faceValue ?? existing.amount ?? 0)
+    const feeCurrency = String(base.currency ?? "EUR")
+    const instrLabel = `${String(base.typeFull ?? "Instrument")} ${String(base.id ?? "")}`.trim()
+    const standardFee = instrumentManagementFee(faceValue)
+
+    const ownerId = await resolveDataOwnerIdFor(existing.userId)
+    const rate = Number(input.cashbackRate)
+    // Admin override wins; otherwise fall back to the customer's preset cashback.
+    const cb =
+      Number.isFinite(rate) && rate > 0
+        ? applyCashback(standardFee, rate)
+        : await applyCashbackForOwner(ownerId, "instrument", standardFee)
+
+    const deleted = await deleteApprovalForUser(approvalId, existing.userId)
+    if (!deleted) return { ok: false, error: "This instrument could no longer be settled out." }
+
+    let feeCharged = 0
+    if (cb.originalFee > 0) {
+      try {
+        await upsertLedgerEntry(ownerId, {
+          id: `INSTR-MGMT-FEE-${approvalId}`,
+          direction: "debit",
+          amount: cb.netFee,
+          currency: feeCurrency,
+          status: "completed",
+          date: new Date().toISOString(),
+          counterparty: instrLabel || "Bank Instrument",
+          reference: approvalId,
+          category: `Bank Instrument — Management & Settlement Fee (${INSTRUMENT_MANAGEMENT_FEE_LABEL})`,
+          comment: `${INSTRUMENT_MANAGEMENT_FEE_LABEL} management fee on settling out ${feeCurrency} ${faceValue.toLocaleString("en-US")} instrument.${cashbackNote(cb, feeCurrency)}${input.note?.trim() ? ` Note: ${input.note.trim()}` : ""}`,
+        })
+        feeCharged = cb.netFee
+      } catch (err) {
+        console.log("[v0] instrument exit fee charge failed:", (err as Error).message)
+      }
+    }
+
+    try {
+      await insertNotification({
+        userId: existing.userId,
+        tone: "info",
+        title: "Instrument exit confirmed",
+        body: `Your request to settle out ${instrLabel || "the instrument"} was confirmed. A settlement fee of ${feeCurrency} ${cb.netFee.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} was charged${cb.cashbackAmount > 0 ? ` (cashback ${formatCashbackPct(cb.cashbackRate)} applied)` : ""}.`,
+        href: "/dashboard/instruments",
+      })
+    } catch {
+      /* notification is best-effort */
+    }
+
+    try {
+      const profile = await resolveAccountProfileById(existing.userId)
+      await logActivity({
+        action: `Administrator confirmed exit of bank instrument ${instrLabel}`,
+        category: "Bank Instruments",
+        user: profile.fullName,
+        details: {
+          referenceId: existing.id,
+          summary: `Settled out. Standard fee ${feeCurrency} ${cb.originalFee.toLocaleString("en-US")}${cb.cashbackAmount > 0 ? `, cashback ${formatCashbackPct(cb.cashbackRate)} (−${feeCurrency} ${cb.cashbackAmount.toLocaleString("en-US")})` : ""} → net ${feeCurrency} ${cb.netFee.toLocaleString("en-US")}.${input.note?.trim() ? ` Note: ${input.note.trim()}` : ""}`,
+          decision: "Exit confirmed",
+        },
+      })
+    } catch {
+      /* activity log is best-effort */
+    }
+
+    return { ok: true, feeCharged, currency: feeCurrency }
+  } catch (err) {
+    console.log("[v0] adminConfirmInstrumentExit failed:", (err as Error).message)
+    return { ok: false, error: "The instrument exit could not be confirmed. Please try again." }
+  }
+}
+
+/** ADMIN: decline a pending instrument exit request (keeps the instrument). */
+export async function adminRejectInstrumentExit(
+  passcode: string,
+  approvalId: string,
+  reason?: string,
+): Promise<{ ok: boolean; error?: string }> {
+  if (!(await adminOk(passcode))) return { ok: false, error: "Administrator authorization failed." }
+  try {
+    const existing = await getApprovalById(approvalId)
+    if (!existing || existing.kind !== "instrument") return { ok: false, error: "This instrument could not be found." }
+    const p = (existing.payload ?? {}) as Record<string, unknown>
+    const { exitRequest: _e, ...rest } = p
+    void _e
+    await updateApprovalPayload(approvalId, rest)
+    try {
+      await insertNotification({
+        userId: existing.userId,
+        tone: "warning",
+        title: "Instrument exit declined",
+        body: `Your request to settle out an instrument was declined by the administrator.${reason?.trim() ? ` Reason: ${reason.trim()}` : ""}`,
+        href: "/dashboard/instruments",
+      })
+    } catch {
+      /* notification is best-effort */
+    }
+    return { ok: true }
+  } catch (err) {
+    console.log("[v0] adminRejectInstrumentExit failed:", (err as Error).message)
+    return { ok: false, error: "The request could not be declined." }
   }
 }
 

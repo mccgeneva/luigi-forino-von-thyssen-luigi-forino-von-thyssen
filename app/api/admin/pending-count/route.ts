@@ -5,6 +5,7 @@ import {
   countPaymentsAwaitingDelivery,
   countYieldTerminationRequests,
   countTradingFundTerminationRequests,
+  countInstrumentExitRequests,
 } from "@/lib/approvals-db"
 import { listCreditableIncomingSwift } from "@/lib/incoming-swift-db"
 import { countPendingEquityReleases } from "@/lib/equity-release-db"
@@ -47,6 +48,7 @@ export async function GET() {
     tradingFundTerminations,
     equityReleases,
     swiftRouting,
+    instrumentExits,
   ] = await Promise.allSettled([
     countPendingByKind(),
     listCreditableIncomingSwift(),
@@ -55,6 +57,7 @@ export async function GET() {
     countTradingFundTerminationRequests(),
     countPendingEquityReleases(),
     listAllSwiftRoutingRequests(),
+    countInstrumentExitRequests(),
   ])
 
   const approvals =
@@ -70,12 +73,13 @@ export async function GET() {
     swiftRouting.status === "fulfilled"
       ? swiftRouting.value.filter((r) => r.status === "pending").length
       : 0
+  const instrumentExit = instrumentExits.status === "fulfilled" ? instrumentExits.value : 0
 
-  const total = approvals + incomingSwift + delivery + yields + treuhand + equity + routing
+  const total = approvals + incomingSwift + delivery + yields + treuhand + equity + routing + instrumentExit
 
   return NextResponse.json({
     ok: true,
     total,
-    breakdown: { approvals, incomingSwift, delivery, yields, treuhand, equity, routing },
+    breakdown: { approvals, incomingSwift, delivery, yields, treuhand, equity, routing, instrumentExit },
   })
 }

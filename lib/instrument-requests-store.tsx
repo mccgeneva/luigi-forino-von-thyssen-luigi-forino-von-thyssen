@@ -4,7 +4,13 @@ import { createContext, useContext } from "react"
 import { buildInstrumentIdentifiers } from "@/lib/instrument-identifiers"
 import { mirrorSubmission, mapApprovalStatus, type ApprovalRecord } from "@/lib/approval-sync"
 import { useServerRequestList } from "@/lib/use-server-request-list"
-import { cancelMyApproval, transferMyInstrument, deleteMyInstrument } from "@/app/actions/approvals"
+import {
+  cancelMyApproval,
+  transferMyInstrument,
+  deleteMyInstrument,
+  requestInstrumentExit,
+  withdrawInstrumentExit,
+} from "@/app/actions/approvals"
 import { releaseInstrumentByIsin } from "@/app/actions/marketplace-instruments"
 import { type InstrumentUpgrade, upgradeBlocksInstrument } from "@/lib/instrument-upgrade"
 import { type InstrumentAudit, isAuditPublished } from "@/lib/instrument-audit"
@@ -94,6 +100,19 @@ export interface Instrument {
    * back server-side by the materializer).
    */
   audit?: InstrumentAudit
+  /**
+   * Pending client "settle out" (exit) request awaiting administrator
+   * confirmation. While present the client sees an "awaiting administrator"
+   * state and cannot re-request; the admin negotiates a cashback % and confirms.
+   */
+  exitRequest?: {
+    requestedAt: string
+    reason?: string
+    standardFee?: number
+    faceValue?: number
+    currency?: string
+    instrLabel?: string
+  }
 }
 
 /**
@@ -113,6 +132,7 @@ function instrumentFromApproval(rec: ApprovalRecord): Instrument | null {
         transferredTo?: string
         upgrade?: InstrumentUpgrade
         audit?: InstrumentAudit
+        exitRequest?: Instrument["exitRequest"]
       }
     | undefined
   const base = p?.issuedByAdmin ? p?.instrument : (p?.record ?? p?.instrument)
@@ -137,6 +157,7 @@ function instrumentFromApproval(rec: ApprovalRecord): Instrument | null {
     decisionNote: rec.decisionNote ?? base.decisionNote,
     upgrade,
     audit,
+    exitRequest: p?.exitRequest,
     blocked: upgradeBlocksInstrument(upgrade) || base.blocked || undefined,
   })
 }
@@ -170,6 +191,14 @@ interface InstrumentRequestsContextValue {
   cancelInstrument: (id: string) => void
   /** Permanently remove an instrument from the list. */
   deleteInstrument: (id: string) => void
+  /**
+   * Request to settle out ("exit") an instrument. Nothing is removed or charged
+   * — the request goes to the administrator, who applies a cashback % and
+   * confirms. Returns the outcome so the caller can surface a decline reason.
+   */
+  requestExit: (id: string, reason?: string) => Promise<{ ok: boolean; error?: string }>
+  /** Withdraw a pending exit request (the instrument stays in the portfolio). */
+  withdrawExit: (id: string) => Promise<{ ok: boolean; error?: string }>
   /**
    * Return an assigned/reserved instrument to the marketplace: it leaves the
    * holder's portfolio (server-side) AND its marketplace row is released
@@ -321,6 +350,22 @@ export function InstrumentRequestsProvider({ children }: { children: React.React
     if (target?.isin && target.status === "pending") void releaseInstrumentByIsin(target.isin)
   }
 
+  const requestExit: InstrumentRequestsContextValue["requestExit"] = async (id, reason) => {
+    const target = instruments.find((i) => i.id === id)
+    if (!target?.approvalId) return { ok: false, error: "This instrument could not be found." }
+    const res = await requestInstrumentExit(target.approvalId, reason)
+    if (res.ok) void refresh()
+    return res
+  }
+
+  const withdrawExit: InstrumentRequestsContextValue["withdrawExit"] = async (id) => {
+    const target = instruments.find((i) => i.id === id)
+    if (!target?.approvalId) return { ok: false, error: "This instrument could not be found." }
+    const res = await withdrawInstrumentExit(target.approvalId)
+    if (res.ok) void refresh()
+    return res
+  }
+
   const returnInstrument: InstrumentRequestsContextValue["returnInstrument"] = (id) => {
     const target = instruments.find((i) => i.id === id)
     // Release the marketplace row first so the instrument becomes available to
@@ -368,11 +413,13 @@ export function InstrumentRequestsProvider({ children }: { children: React.React
         approveInstrument,
         rejectInstrument,
         cancelInstrument,
-        deleteInstrument,
-        returnInstrument,
-        transferInstrument,
-        refresh,
-        hydrated,
+          deleteInstrument,
+          requestExit,
+          withdrawExit,
+          returnInstrument,
+          transferInstrument,
+          refresh,
+          hydrated,
       }}
     >
       {children}

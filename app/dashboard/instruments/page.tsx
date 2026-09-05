@@ -189,16 +189,64 @@ export default function InstrumentsPage() {
   // Read-only portfolio: clients can no longer create, cancel, or delete
   // instruments. Bank instruments are issued and managed exclusively by the
   // administrator; the client view only displays them.
-  const { instruments, transferInstrument, addInstrument, deleteInstrument, returnInstrument, refresh: refreshInstruments } =
+  const { instruments, transferInstrument, addInstrument, deleteInstrument, returnInstrument, requestExit, withdrawExit, refresh: refreshInstruments } =
     useInstrumentRequests()
+  void deleteInstrument
   const { totalIn, balanceFor, addDebit, entries: ledgerEntries, refresh: refreshLedger, hydrated: ledgerHydrated } = useLedger()
   const { addRequest: addMonetizationRequest, requests: monetizationRequests, hydrated: monetizationHydrated } = useMonetizationRequests()
   const { requests: leverageRequests } = useLeverageRequests()
   const { requests: pppRequests } = usePPPRequests()
   const { loans: internalLoans } = useInternalLoans()
 
-  // Delete confirmation target (client-initiated removal of an unused holding).
+  // Exit ("settle out") request target — the client requests it, the admin
+  // negotiates the cost (applying a cashback %) and confirms. (State name kept
+  // as deleteTarget to minimise churn; the dialog now submits a request.)
   const [deleteTarget, setDeleteTarget] = useState<Instrument | null>(null)
+  const [exitReason, setExitReason] = useState("")
+  const [exitSubmitting, setExitSubmitting] = useState(false)
+  const [withdrawingExitId, setWithdrawingExitId] = useState<string | null>(null)
+
+  const handleRequestExit = async (target: Instrument, reason: string) => {
+    setExitSubmitting(true)
+    try {
+      const res = await requestExit(target.id, reason)
+      if (res.ok) {
+        toast.success("Exit request sent", {
+          description: `Your request to settle out ${target.type} ${target.id} was sent to the administrator, who will confirm the settlement cost (a cashback may be applied).`,
+        })
+        logActivity({
+          action: `Requested exit of bank instrument ${target.id}`,
+          category: "Bank Instruments",
+          details: {
+            summary: `Client requested to settle out ${target.typeFull} (${target.id}). Awaiting administrator confirmation of the exit cost.${reason.trim() ? ` Reason: ${reason.trim()}` : ""}`,
+            referenceId: target.id,
+          },
+        })
+        setDeleteTarget(null)
+        setExitReason("")
+      } else {
+        toast.error("Could not request exit", { description: res.error })
+      }
+    } finally {
+      setExitSubmitting(false)
+    }
+  }
+
+  const handleWithdrawExit = async (target: Instrument) => {
+    setWithdrawingExitId(target.id)
+    try {
+      const res = await withdrawExit(target.id)
+      if (res.ok) {
+        toast.success("Exit request withdrawn", {
+          description: `${target.type} ${target.id} stays in your portfolio.`,
+        })
+      } else {
+        toast.error("Could not withdraw the request", { description: res.error })
+      }
+    } finally {
+      setWithdrawingExitId(null)
+    }
+  }
   // Return-to-marketplace target (assigned/reserved instrument going back).
   const [returnTarget, setReturnTarget] = useState<Instrument | null>(null)
   // Administrator transformation-upgrade offer the customer can accept/decline.
@@ -1737,6 +1785,17 @@ export default function InstrumentsPage() {
                                   Return to marketplace
                                 </DropdownMenuItem>
                               </>
+                            ) : instrument.exitRequest ? (
+                              <>
+                                <DropdownMenuSeparator />
+                                <DropdownMenuItem
+                                  onClick={() => void handleWithdrawExit(instrument)}
+                                  disabled={withdrawingExitId === instrument.id}
+                                >
+                                  <Undo2 className="mr-2 h-4 w-4" />
+                                  Withdraw exit request
+                                </DropdownMenuItem>
+                              </>
                             ) : (
                               canDeleteInstrument(instrument) && (
                                 <>
@@ -1746,7 +1805,7 @@ export default function InstrumentsPage() {
                                     className="text-destructive focus:text-destructive"
                                   >
                                     <Trash2 className="mr-2 h-4 w-4" />
-                                    Delete
+                                    Request exit
                                   </DropdownMenuItem>
                                 </>
                               )
@@ -2989,23 +3048,24 @@ export default function InstrumentsPage() {
         </DialogContent>
       </Dialog>
 
-      {/* Confirm removal of an unused holding from the portfolio. */}
-      <Dialog open={deleteTarget !== null} onOpenChange={(o) => !o && setDeleteTarget(null)}>
+      {/* Request to settle out (exit) an unused holding — the administrator
+          confirms the cost and may apply a cashback before anything is charged. */}
+      <Dialog open={deleteTarget !== null} onOpenChange={(o) => !o && !exitSubmitting && (setDeleteTarget(null), setExitReason(""))}>
         <DialogContent className="sm:max-w-md">
           {deleteTarget && (
             <>
               <DialogHeader>
                 <DialogTitle className="flex items-center gap-2">
                   <Trash2 className="h-5 w-5 text-destructive" />
-                  Delete instrument
+                  Request instrument exit
                 </DialogTitle>
                 <DialogDescription>
-                  Remove{" "}
+                  Request to settle out{" "}
                   <span className="font-medium text-foreground">
                     {deleteTarget.typeFull} ({deleteTarget.id})
                   </span>{" "}
-                  issued by {deleteTarget.issuer} from your portfolio. This holding is not pledged to any leverage line
-                  or monetization request, so it can be safely removed. This action cannot be undone.
+                  issued by {deleteTarget.issuer}. Nothing is removed or charged now — the administrator reviews the
+                  request, agrees the settlement cost (a cashback may be applied) and confirms.
                 </DialogDescription>
               </DialogHeader>
               {(() => {
@@ -3015,44 +3075,39 @@ export default function InstrumentsPage() {
                   <div className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-600 dark:text-amber-400">
                     <Percent className="mt-0.5 h-4 w-4 shrink-0" />
                     <p className="text-pretty">
-                      A one-time management &amp; settlement fee of{" "}
+                      The standard management &amp; settlement fee is{" "}
                       <span className="font-semibold">{formatInstrumentFee(fee, deleteTarget.currency)}</span> (
                       {INSTRUMENT_MANAGEMENT_FEE_LABEL} of the {formatInstrumentFee(deleteTarget.faceValue, deleteTarget.currency)}{" "}
-                      face value) will be debited from your Master Account when you settle out this instrument.
+                      face value). The <span className="font-semibold">final cost is set by the administrator</span>, who
+                      may reduce it with a cashback before confirming your exit.
                     </p>
                   </div>
                 )
               })()}
+              <div className="space-y-1.5">
+                <label htmlFor="exit-reason" className="text-xs font-medium text-muted-foreground">
+                  Note to the administrator (optional)
+                </label>
+                <Textarea
+                  id="exit-reason"
+                  value={exitReason}
+                  onChange={(e) => setExitReason(e.target.value)}
+                  placeholder="e.g. no longer required — please settle out."
+                  rows={3}
+                  className="text-base"
+                />
+              </div>
               <DialogFooter>
-                <Button variant="outline" onClick={() => setDeleteTarget(null)}>
+                <Button variant="outline" onClick={() => (setDeleteTarget(null), setExitReason(""))} disabled={exitSubmitting}>
                   Cancel
                 </Button>
                 <Button
                   variant="destructive"
-                  onClick={() => {
-                    const target = deleteTarget
-                    const fee = instrumentManagementFee(target.faceValue)
-                    deleteInstrument(target.id)
-                    logActivity({
-                      action: `Removed bank instrument ${target.id} from portfolio`,
-                      category: "Bank Instruments",
-                      details: {
-                        summary: `Client removed ${target.typeFull} (${target.id}) issued by ${target.issuer} from their portfolio. The instrument was not pledged or monetized.`,
-                        referenceId: target.id,
-                        ...(fee > 0 ? { fee: formatInstrumentFee(fee, target.currency) } : {}),
-                      },
-                    })
-                    toast.success("Instrument removed", {
-                      description:
-                        fee > 0
-                          ? `${target.type} ${target.id} removed. A management fee of ${formatInstrumentFee(fee, target.currency)} was charged to your Master Account.`
-                          : `${target.type} ${target.id} has been removed from your portfolio.`,
-                    })
-                    setDeleteTarget(null)
-                  }}
+                  disabled={exitSubmitting}
+                  onClick={() => void handleRequestExit(deleteTarget, exitReason)}
                 >
                   <Trash2 className="mr-2 h-4 w-4" />
-                  Delete instrument
+                  {exitSubmitting ? "Sending…" : "Request exit"}
                 </Button>
               </DialogFooter>
             </>
