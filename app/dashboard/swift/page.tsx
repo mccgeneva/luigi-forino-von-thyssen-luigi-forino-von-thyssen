@@ -19,7 +19,7 @@ import { SwiftComposer, SWIFT_MESSAGE_TYPES, type SwiftSentSummary } from "@/com
 import { SwiftUploadDialog } from "@/components/dashboard/swift-upload-dialog"
 import { parseSwiftMessage } from "@/lib/swift-mt"
 import { submitSwiftForRouting } from "@/app/actions/swift-routing"
-import { getMyIncomingSwiftMessages, markMyIncomingSwiftRead } from "@/app/actions/incoming-swift"
+import { getMyIncomingSwiftMessages, markMyIncomingSwiftRead, markAllMyIncomingSwiftRead } from "@/app/actions/incoming-swift"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -65,6 +65,7 @@ import {
   Eye,
   Inbox,
   RefreshCw,
+  CheckCheck,
 } from "lucide-react"
 
 // Sample SWIFT messages
@@ -320,6 +321,25 @@ export default function SwiftPage() {
       )
       void markMyIncomingSwiftRead(message.id).then(() => mutateIncoming())
     }
+  }
+
+  const handleMarkAllRead = () => {
+    if (unreadInboxCount === 0) return
+    const nowIso = new Date().toISOString()
+    // Optimistically clear every unread flag so the dots + badge update instantly.
+    void mutateIncoming(
+      (current) => (current ?? []).map((m) => (m.readAt == null ? { ...m, readAt: nowIso } : m)),
+      { revalidate: false },
+    )
+    void markAllMyIncomingSwiftRead().then((res) => {
+      void mutateIncoming()
+      if (res.ok) toast.success(`Marked ${res.count} message${res.count === 1 ? "" : "s"} as read`)
+    })
+    logActivity({
+      action: "Marked all incoming SWIFT messages as read",
+      category: "SWIFT Messaging",
+      details: { summary: "Client marked every unread inbound SWIFT message as read." },
+    })
   }
 
   const logMessageExport = (message: SwiftMessage, format: string) => {
@@ -704,6 +724,19 @@ export default function SwiftPage() {
               Banks
             </TabsTrigger>
           </TabsList>
+          {(activeTab === "inbox" || activeTab === "all") && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleMarkAllRead}
+              disabled={unreadInboxCount === 0}
+              className="w-full gap-2 sm:w-auto"
+            >
+              <CheckCheck className="h-4 w-4" />
+              Mark all read
+              {unreadInboxCount > 0 && ` (${unreadInboxCount})`}
+            </Button>
+          )}
         </div>
 
         {/* Filters - shown for message tabs */}

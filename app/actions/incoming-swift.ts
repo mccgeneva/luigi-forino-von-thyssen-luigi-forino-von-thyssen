@@ -23,6 +23,7 @@ import {
   listCreditableIncomingSwift,
   markIncomingSwiftCredited,
   markIncomingSwiftRead,
+  markAllIncomingSwiftRead,
   rejectIncomingSwift,
   type IncomingSwiftMessage,
 } from "@/lib/incoming-swift-db"
@@ -392,6 +393,17 @@ export async function markMyIncomingSwiftRead(id: string): Promise<{ ok: boolean
     return { ok: true }
   } catch {
     return { ok: false }
+  }
+}
+
+export async function markAllMyIncomingSwiftRead(): Promise<{ ok: boolean; count: number }> {
+  const { ok, ids } = await sessionMemberIds()
+  if (!ok) return { ok: false, count: 0 }
+  try {
+    const count = await markAllIncomingSwiftRead(ids)
+    return { ok: true, count }
+  } catch {
+    return { ok: false, count: 0 }
   }
 }
 
