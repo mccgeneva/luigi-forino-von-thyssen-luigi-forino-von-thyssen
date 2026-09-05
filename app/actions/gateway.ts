@@ -18,6 +18,8 @@ import {
   GATEWAY_TERMINATION_FEE,
   GATEWAY_FEE_CURRENCY,
 } from "@/lib/gateway-catalog"
+import { applyCashbackForOwner } from "@/lib/fee-cashback-db"
+import { cashbackNote } from "@/lib/fee-cashback"
 import { resolvePartnerBank } from "@/lib/gateway-banks-db"
 import type {
   GatewayAccount,
@@ -262,16 +264,21 @@ export async function requestGatewayAccountWithFee(input: {
     // Sub-account's spendable funds live under its Master.
     const ownerId = await resolveDataOwnerIdFor(user.id)
 
+    // Admin-set cashback reduces the setup fee — the customer only needs to
+    // afford (and is only charged) the net amount.
+    const feeCb = await applyCashbackForOwner(ownerId, "platform", GATEWAY_ACCOUNT_FEE)
+    const netSetupFee = feeCb.netFee
+
     // 1) Real-time affordability check.
     const available = availableByCurrency(await readLedgerEntries(ownerId))
     const availableEur = Object.entries(available).reduce(
       (sum, [cur, amt]) => sum + convertCurrency(amt, cur, GATEWAY_FEE_CURRENCY),
       0,
     )
-    if (GATEWAY_ACCOUNT_FEE > availableEur + 0.01) {
+    if (netSetupFee > availableEur + 0.01) {
       return {
         ok: false,
-        error: `Adding a bank account carries a one-time ${fmtEur(GATEWAY_ACCOUNT_FEE)} setup fee, but your Master Account has only ${fmtEur(
+        error: `Adding a bank account carries a one-time ${fmtEur(netSetupFee)} setup fee, but your Master Account has only ${fmtEur(
           Math.max(0, availableEur),
         )} available. Please fund your account and try again.`,
       }
@@ -305,14 +312,14 @@ export async function requestGatewayAccountWithFee(input: {
         [
           ownerId,
           feeReference,
-          GATEWAY_ACCOUNT_FEE,
+          netSetupFee,
           GATEWAY_FEE_CURRENCY,
           new Date().toISOString(),
           "MCC Capital — Payment Gateway",
           null,
           bank.name,
           account.id,
-          `One-time setup fee for Payment Gateway ${ACCOUNT_TYPES[type].label} ${account.id} (${currency}).`,
+          `One-time setup fee for Payment Gateway ${ACCOUNT_TYPES[type].label} ${account.id} (${currency}).${cashbackNote(feeCb, GATEWAY_FEE_CURRENCY)}`,
           "Payment Gateway Fee",
         ],
       )
@@ -337,7 +344,7 @@ export async function requestGatewayAccountWithFee(input: {
         userId: ownerId,
         tone: "info",
         title: "Payment Gateway fee charged",
-        body: `A one-time ${fmtEur(GATEWAY_ACCOUNT_FEE)} setup fee was charged for your new ${ACCOUNT_TYPES[type].label} request (${account.id}), now pending approval.`,
+        body: `A one-time ${fmtEur(netSetupFee)} setup fee was charged for your new ${ACCOUNT_TYPES[type].label} request (${account.id}), now pending approval.`,
         href: "/dashboard/gateway",
       })
     } catch {
@@ -413,16 +420,20 @@ export async function closeGatewayAccountWithFee(requestId: string): Promise<Clo
 
     const ownerId = await resolveDataOwnerIdFor(user.id)
 
+    // Admin-set cashback reduces the termination cost.
+    const termCb = await applyCashbackForOwner(ownerId, "platform", GATEWAY_TERMINATION_FEE)
+    const netTerminationFee = termCb.netFee
+
     // 2) Real-time affordability check (fee in EUR, whole balance converted).
     const available = availableByCurrency(await readLedgerEntries(ownerId))
     const availableEur = Object.entries(available).reduce(
       (sum, [cur, amt]) => sum + convertCurrency(amt, cur, GATEWAY_FEE_CURRENCY),
       0,
     )
-    if (GATEWAY_TERMINATION_FEE > availableEur + 0.01) {
+    if (netTerminationFee > availableEur + 0.01) {
       return {
         ok: false,
-        error: `Closing a bank account carries a ${fmtEur(GATEWAY_TERMINATION_FEE)} termination cost, but your Master Account has only ${fmtEur(
+        error: `Closing a bank account carries a ${fmtEur(netTerminationFee)} termination cost, but your Master Account has only ${fmtEur(
           Math.max(0, availableEur),
         )} available. Please fund your account and try again.`,
       }
@@ -440,14 +451,14 @@ export async function closeGatewayAccountWithFee(requestId: string): Promise<Clo
       [
         ownerId,
         feeReference,
-        GATEWAY_TERMINATION_FEE,
+        netTerminationFee,
         GATEWAY_FEE_CURRENCY,
         new Date().toISOString(),
         "MCC Capital — Payment Gateway",
         null,
         bankName,
         account.id,
-        `Termination cost for closing Payment Gateway account ${account.id} (${account.currency}).`,
+        `Termination cost for closing Payment Gateway account ${account.id} (${account.currency}).${cashbackNote(termCb, GATEWAY_FEE_CURRENCY)}`,
         "Payment Gateway Termination Fee",
       ],
     )
@@ -473,7 +484,7 @@ export async function closeGatewayAccountWithFee(requestId: string): Promise<Clo
         userId: ownerId,
         tone: "info",
         title: "Gateway account closed",
-        body: `Your Payment Gateway account ${account.id} (${account.currency}) was closed and a ${fmtEur(GATEWAY_TERMINATION_FEE)} termination cost was charged to your Master Account.`,
+        body: `Your Payment Gateway account ${account.id} (${account.currency}) was closed and a ${fmtEur(netTerminationFee)} termination cost was charged to your Master Account.`,
         href: "/dashboard/gateway",
       })
     } catch {

@@ -20,6 +20,8 @@ import { getApprovalById } from "@/lib/approvals-db"
 import { deleteLedgerEntry } from "@/lib/ledger-db"
 import { convertCurrency } from "@/lib/fx"
 import { incomingTransactionFee } from "@/lib/incoming-fees"
+import { applyCashbackForOwner } from "@/lib/fee-cashback-db"
+import { cashbackNote } from "@/lib/fee-cashback"
 import { getFeeTiers } from "@/lib/tiered-fees-db"
 import { listDynamicUsers } from "@/lib/admin-users-db"
 import { extractCurrencyBankingCoordinates, currenciesWithBankingRows } from "@/lib/banking-coordinates"
@@ -167,11 +169,14 @@ async function creditMatchedAccount(
   const ledgerOwnerId = await resolveDataOwnerIdFor(account.userId)
 
   // Tiered incoming-transaction fee, deducted from the credit (same currency).
-  const incomingFee = incomingTransactionFee(payment.amount, await getFeeTiers())
+  // Admin-set cashback reduces the fee so the customer keeps more.
+  const standardIncomingFee = incomingTransactionFee(payment.amount, await getFeeTiers())
+  const incomingCashback = await applyCashbackForOwner(ledgerOwnerId, "transaction", standardIncomingFee)
+  const incomingFee = incomingCashback.netFee
   const netAmount = round2(payment.amount - incomingFee)
   const feeNote =
-    incomingFee > 0
-      ? ` An incoming-transaction fee of ${account.currency} ${incomingFee.toLocaleString("en-US")} (${((incomingFee / payment.amount) * 100).toLocaleString("en-US", { maximumFractionDigits: 2 })}% effective, tiered) was deducted.`
+    incomingCashback.originalFee > 0
+      ? ` An incoming-transaction fee of ${account.currency} ${incomingFee.toLocaleString("en-US")} (${((incomingFee / payment.amount) * 100).toLocaleString("en-US", { maximumFractionDigits: 2 })}% effective, tiered) was deducted.${cashbackNote(incomingCashback, account.currency)}`
       : ""
 
   const entry: LedgerEntry = {
@@ -327,8 +332,14 @@ export async function recordGatewayDepositForApproval(
     const fxRate = isFx ? grossConverted / sentAmount : 1
     const fxFee = isFx ? round2(grossConverted * GATEWAY_FX_FEE_RATE) : 0
     // Tiered incoming-transaction fee on the converted amount, deducted from
-    // the credit (in ADDITION to any FX fee).
-    const incomingFee = incomingTransactionFee(grossConverted, await getFeeTiers())
+    // the credit (in ADDITION to any FX fee). Admin-set cashback reduces it.
+    const standardIncomingFee = incomingTransactionFee(grossConverted, await getFeeTiers())
+    const incomingCashback = await applyCashbackForOwner(
+      await resolveDataOwnerIdFor(account.userId),
+      "transaction",
+      standardIncomingFee,
+    )
+    const incomingFee = incomingCashback.netFee
     const amount = round2(grossConverted - fxFee - incomingFee)
     if (!Number.isFinite(amount) || amount <= 0) return { matched: false }
 
@@ -341,8 +352,8 @@ export async function recordGatewayDepositForApproval(
       ? ` Received ${sentCurrency} ${sentAmount.toLocaleString("en-US")}, converted to ${accountCurrency} at ${fxRate.toFixed(6)} (FX fee ${accountCurrency} ${fxFee.toLocaleString("en-US")}), net credited ${accountCurrency} ${amount.toLocaleString("en-US")}.`
       : ""
     const feeNote =
-      incomingFee > 0
-        ? ` An incoming-transaction fee of ${accountCurrency} ${incomingFee.toLocaleString("en-US")} (${((incomingFee / grossConverted) * 100).toLocaleString("en-US", { maximumFractionDigits: 2 })}% effective, tiered) was deducted.`
+      incomingCashback.originalFee > 0
+        ? ` An incoming-transaction fee of ${accountCurrency} ${incomingFee.toLocaleString("en-US")} (${((incomingFee / grossConverted) * 100).toLocaleString("en-US", { maximumFractionDigits: 2 })}% effective, tiered) was deducted.${cashbackNote(incomingCashback, accountCurrency)}`
         : ""
 
     const entry: LedgerEntry = {
@@ -671,8 +682,10 @@ export async function recordRegisteredAccountDepositForApproval(
     const fxRate = isFx ? grossConverted / sentAmount : 1
     const fxFee = isFx ? round2(grossConverted * GATEWAY_FX_FEE_RATE) : 0
     // 2% incoming-transaction fee on the converted amount, deducted from the
-    // credit (in ADDITION to any FX fee).
-    const incomingFee = incomingTransactionFee(grossConverted, await getFeeTiers())
+    // credit (in ADDITION to any FX fee). Admin-set cashback reduces it.
+    const standardIncomingFee = incomingTransactionFee(grossConverted, await getFeeTiers())
+    const incomingCashback = await applyCashbackForOwner(recipientOwnerId, "transaction", standardIncomingFee)
+    const incomingFee = incomingCashback.netFee
     const amount = round2(grossConverted - fxFee - incomingFee)
     if (!Number.isFinite(amount) || amount <= 0) return { matched: false }
 
@@ -682,8 +695,8 @@ export async function recordRegisteredAccountDepositForApproval(
       ? ` Received ${sentCurrency} ${sentAmount.toLocaleString("en-US")}, converted to ${accountCurrency} at ${fxRate.toFixed(6)} (FX fee ${accountCurrency} ${fxFee.toLocaleString("en-US")}), net credited ${accountCurrency} ${amount.toLocaleString("en-US")}.`
       : ""
     const feeNote =
-      incomingFee > 0
-        ? ` An incoming-transaction fee of ${accountCurrency} ${incomingFee.toLocaleString("en-US")} (${((incomingFee / grossConverted) * 100).toLocaleString("en-US", { maximumFractionDigits: 2 })}% effective, tiered) was deducted.`
+      incomingCashback.originalFee > 0
+        ? ` An incoming-transaction fee of ${accountCurrency} ${incomingFee.toLocaleString("en-US")} (${((incomingFee / grossConverted) * 100).toLocaleString("en-US", { maximumFractionDigits: 2 })}% effective, tiered) was deducted.${cashbackNote(incomingCashback, accountCurrency)}`
         : ""
 
     // Has this credit already been posted? (decide whether to also log.)
@@ -923,16 +936,19 @@ export async function recordMasterBankingDepositForApproval(
 
     const ledgerEntryId = `MBD-${approval.id}`
     // Master Account is multi-currency: credit the SENT currency directly, no FX.
-  // Tiered incoming-transaction fee, deducted from the credit.
-  const incomingFee = incomingTransactionFee(sentAmount, await getFeeTiers())
+  // Tiered incoming-transaction fee, deducted from the credit. Admin-set
+  // cashback reduces it.
+  const standardIncomingFee = incomingTransactionFee(sentAmount, await getFeeTiers())
+  const incomingCashback = await applyCashbackForOwner(recipientOwnerId, "transaction", standardIncomingFee)
+  const incomingFee = incomingCashback.netFee
   const amount = round2(sentAmount - incomingFee)
     if (!Number.isFinite(amount) || amount <= 0) return { matched: false }
 
     const sender = await resolveAccountProfileById(approval.userId)
     const reference = record.reference?.trim() || approval.id
     const feeNote =
-      incomingFee > 0
-        ? ` An incoming-transaction fee of ${sentCurrency} ${incomingFee.toLocaleString("en-US")} (${((incomingFee / sentAmount) * 100).toLocaleString("en-US", { maximumFractionDigits: 2 })}% effective, tiered) was deducted.`
+      incomingCashback.originalFee > 0
+        ? ` An incoming-transaction fee of ${sentCurrency} ${incomingFee.toLocaleString("en-US")} (${((incomingFee / sentAmount) * 100).toLocaleString("en-US", { maximumFractionDigits: 2 })}% effective, tiered) was deducted.${cashbackNote(incomingCashback, sentCurrency)}`
         : ""
 
     const existing = await query(`SELECT 1 FROM ledger_entries WHERE user_id = $1 AND entry_id = $2`, [

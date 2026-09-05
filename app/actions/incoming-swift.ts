@@ -29,6 +29,8 @@ import {
 } from "@/lib/incoming-swift-db"
 import { convertCurrency } from "@/lib/fx"
 import { incomingTransactionFee } from "@/lib/incoming-fees"
+import { applyCashbackForOwner } from "@/lib/fee-cashback-db"
+import { cashbackNote } from "@/lib/fee-cashback"
 import { getFeeTiers } from "@/lib/tiered-fees-db"
 import { upsertLedgerEntry, readLedgerEntries, availableByCurrency } from "@/lib/ledger-db"
 import { getOverdraftStatusForOwner } from "@/lib/overdraft"
@@ -727,7 +729,14 @@ export async function creditIncomingSwiftAdmin(passcode: string, id: string): Pr
     const fxFee = isFx ? round2(grossConverted * GATEWAY_FX_FEE_RATE) : 0
     // Tiered incoming-transaction fee on the converted amount, deducted from
     // the credit (in ADDITION to any FX fee). Same-currency credits get only this.
-    const incomingFee = incomingTransactionFee(grossConverted, await getFeeTiers())
+    // Admin-set SWIFT cashback reduces it.
+    const standardIncomingFee = incomingTransactionFee(grossConverted, await getFeeTiers())
+    const incomingCashback = await applyCashbackForOwner(
+      (await resolveDataOwnerIdFor(message.userId)) ?? message.userId,
+      "swift",
+      standardIncomingFee,
+    )
+    const incomingFee = incomingCashback.netFee
     const amount = round2(grossConverted - fxFee - incomingFee)
     if (!Number.isFinite(amount) || amount <= 0) {
       return { ok: false, error: "The credit amount could not be computed." }
@@ -742,8 +751,8 @@ export async function creditIncomingSwiftAdmin(passcode: string, id: string): Pr
       ? ` Received ${receivedCurrency} ${receivedAmount.toLocaleString("en-US")}, converted to ${accountCurrency} at ${fxRate.toFixed(6)} (FX fee ${accountCurrency} ${fxFee.toLocaleString("en-US")}), net credited ${creditedLabel}.`
       : ""
     const feeNote =
-      incomingFee > 0
-        ? ` An incoming-transaction fee of ${accountCurrency} ${incomingFee.toLocaleString("en-US")} (${((incomingFee / grossConverted) * 100).toLocaleString("en-US", { maximumFractionDigits: 2 })}% effective, tiered) was deducted.`
+      incomingCashback.originalFee > 0
+        ? ` An incoming-transaction fee of ${accountCurrency} ${incomingFee.toLocaleString("en-US")} (${((incomingFee / grossConverted) * 100).toLocaleString("en-US", { maximumFractionDigits: 2 })}% effective, tiered) was deducted.${cashbackNote(incomingCashback, accountCurrency)}`
         : ""
 
     // Deterministic idempotency key derived from the message id.
@@ -864,9 +873,12 @@ export async function recordGuaranteeInstrumentAdmin(passcode: string, id: strin
     // is REJECTED (never booked): a blocked-funds guarantee cannot be received
     // if its receipt fee is unpayable even on overdraft.
     // -----------------------------------------------------------------------
-    const feeAmount = round2(faceValue * GUARANTEE_RECEIPT_FEE_RATE)
-    const feeLabel = `${currency} ${feeAmount.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
     const ledgerOwnerId = (await resolveDataOwnerIdFor(message.userId)) ?? message.userId
+    // Admin-set cashback reduces the MT760 receipt fee.
+    const standardReceiptFee = round2(faceValue * GUARANTEE_RECEIPT_FEE_RATE)
+    const receiptCashback = await applyCashbackForOwner(ledgerOwnerId, "swift", standardReceiptFee)
+    const feeAmount = receiptCashback.netFee
+    const feeLabel = `${currency} ${feeAmount.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 
     if (feeAmount > 0) {
       try {
@@ -980,7 +992,7 @@ export async function recordGuaranteeInstrumentAdmin(passcode: string, id: strin
         counterparty: "NAFTAhub Treasury",
         reference: instrumentId,
         category: "Blocked-Funds Guarantee Receipt Fee (0.2%)",
-        comment: `0.2% receipt fee on a ${currency} ${faceValue.toLocaleString("en-US")} MT760 blocked-funds guarantee from ${issuer}${message.uetr ? ` (UETR ${message.uetr})` : ""}. If ${currency} is short it is auto-covered from your strongest funded currency.`,
+        comment: `0.2% receipt fee on a ${currency} ${faceValue.toLocaleString("en-US")} MT760 blocked-funds guarantee from ${issuer}${message.uetr ? ` (UETR ${message.uetr})` : ""}. If ${currency} is short it is auto-covered from your strongest funded currency.${cashbackNote(receiptCashback, currency)}`,
       }
       try {
         await upsertLedgerEntry(ledgerOwnerId, feeEntry)
