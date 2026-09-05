@@ -215,6 +215,18 @@ export default function ExchangePage() {
   const worstOverdrawn = overdrawnPockets.slice().sort((a, b) => a.natural - b.natural)[0]
   const accountHasOverdraft = overdrawnPockets.length > 0
 
+  // A SETTLING conversion buys the overdrawn TARGET currency using a HEALTHY
+  // source currency — e.g. USD → EUR when EUR is the overdrawn pocket. This
+  // repays the shortfall directly (the proceeds land in the deficit currency
+  // and reduce it) instead of churning, so it stays allowed even while the
+  // account is overdrawn. Selling a healthy pocket into another healthy pocket
+  // while a third is negative — or selling the overdrawn pocket itself — stays
+  // blocked, because auto-cover would just sweep those proceeds into the hole.
+  const fromIsOverdrawn = naturalBalanceFor(fromCurrency) < -0.01
+  const isSettlingConversion =
+    accountHasOverdraft && toIsOverdrawn && !fromIsOverdrawn && fromCurrency !== toCurrency
+  const exchangePaused = accountHasOverdraft && !isSettlingConversion
+
   const handleExecuteExchange = () => {
     if (numericFrom <= 0) {
       toast.error("Enter an amount to convert")
@@ -224,9 +236,11 @@ export default function ExchangePage() {
       toast.error("Choose two different currencies")
       return
     }
-    // Block while any pocket is overdrawn — otherwise auto-cover instantly sweeps
-    // the proceeds to fill the shortfall (funds "vanish") and the fee is lost.
-    if (worstOverdrawn) {
+    // Block while any pocket is overdrawn — UNLESS this is a settling conversion
+    // (buying the overdrawn currency with a healthy one), which is exactly how a
+    // customer clears the shortfall. Otherwise auto-cover instantly sweeps the
+    // proceeds to fill the hole (funds "vanish") and the fee is lost.
+    if (worstOverdrawn && !isSettlingConversion) {
       const owed = Math.abs(worstOverdrawn.natural).toLocaleString("en-US", {
         minimumFractionDigits: 2,
         maximumFractionDigits: 2,
@@ -604,15 +618,26 @@ export default function ExchangePage() {
                 </div>
               </div>
 
-              {accountHasOverdraft && worstOverdrawn && (
+              {exchangePaused && worstOverdrawn && (
                 <div className="rounded-lg border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-500">
                   Your {worstOverdrawn.code} balance is overdrawn by {worstOverdrawn.symbol}
                   {Math.abs(worstOverdrawn.natural).toLocaleString("en-US", {
                     minimumFractionDigits: 2,
                     maximumFractionDigits: 2,
                   })}
-                  . Currency exchange is paused until the overdraft is settled — converting now
-                  would be swept into the shortfall instead of staying in your target currency.
+                  . To settle it, convert one of your funded currencies (e.g. USD) INTO {worstOverdrawn.code} —
+                  that repays the shortfall. Converting the other way is paused because the proceeds would just
+                  be swept back into the deficit.
+                </div>
+              )}
+
+              {isSettlingConversion && worstOverdrawn && (
+                <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-3 text-sm text-emerald-600 dark:text-emerald-400">
+                  This {fromCurrency} → {toCurrency} conversion settles your overdrawn {toCurrency} pocket
+                  ({toSymbol}
+                  {Math.abs(toNaturalBalance).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}).
+                  The proceeds first repay the shortfall; your visible {toCurrency} balance rises once you convert more
+                  than the overdrawn amount.
                 </div>
               )}
 
@@ -621,14 +646,16 @@ export default function ExchangePage() {
                 size="lg"
                 onClick={handleExecuteExchange}
                 disabled={
-                  isExecuting || numericFrom <= 0 || totalDebit > availableBalance || accountHasOverdraft
+                  isExecuting || numericFrom <= 0 || totalDebit > availableBalance || exchangePaused
                 }
               >
-                {accountHasOverdraft
+                {exchangePaused
                   ? "Settle Overdraft First"
                   : totalDebit > availableBalance
                     ? "Insufficient Funds"
-                    : "Execute Exchange"}
+                    : isSettlingConversion
+                      ? `Settle ${toCurrency} Overdraft`
+                      : "Execute Exchange"}
               </Button>
 
               <p className="text-xs text-center text-muted-foreground">

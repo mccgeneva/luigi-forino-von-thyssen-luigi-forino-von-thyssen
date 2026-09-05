@@ -170,12 +170,35 @@ export function PortfolioOverview() {
     ...currencies.filter((c) => !CORE_CURRENCIES.includes(c)),
   ].filter((c, i, arr) => arr.indexOf(c) === i)
   const heldCurrencies = orderedCurrencies.length
+
+  // NATURAL balance of a currency = completed credits − debits EXCLUDING the
+  // internal auto-cover rows (FX-COVER-*). When a fee is charged in a currency
+  // that has no cash, the server's auto-cover reconciler quietly converts from
+  // the strongest funded currency to fill that pocket back to ~0 — so the card
+  // shows 0.00 while the pre-cover position is deeply negative. We surface that
+  // pre-cover figure as a note so this card reconciles with the Exchange screen
+  // (which shows the natural overdraft) instead of looking contradictory.
+  const naturalBalanceFor = (cur: string) =>
+    entries
+      .filter(
+        (e) =>
+          e.currency === cur &&
+          e.status === "completed" &&
+          !e.subAccountId &&
+          !(e.id ?? "").startsWith("FX-COVER-"),
+      )
+      .reduce((sum, e) => sum + (e.direction === "credit" ? e.amount : -e.amount), 0)
+
   const currencyBalances = orderedCurrencies.map((cur) => {
     // balanceFor = settled (completed credits − debits) − reserved holds.
     const raw = balanceFor(cur)
     const reserved = reservedFor(cur)
     // settled = the real cash position, independent of pending holds.
     const settled = raw + reserved
+    // Pre-auto-cover position: if it is negative while the displayed settled
+    // figure is ~0, the difference was covered from another currency.
+    const natural = naturalBalanceFor(cur)
+    const coveredFromOthers = natural < -0.01 && settled > natural + 0.01 ? -natural : 0
     // Only clamp the display to 0 when the negativity is caused by a PENDING
     // reservation (settled cash is still ≥ 0 but a hold exceeds it — e.g. a large
     // fund subscription awaiting approval). A genuinely overdrawn balance
@@ -192,6 +215,8 @@ export function PortfolioOverview() {
       reservedFormatted: formatMoney(reservedFor(cur), cur),
       locked: lockedCreditsFor(cur),
       lockedFormatted: formatMoney(lockedCreditsFor(cur), cur),
+      coveredFromOthers,
+      coveredFormatted: formatMoney(coveredFromOthers, cur),
     }
   })
 
@@ -307,6 +332,15 @@ export function PortfolioOverview() {
                       <ChevronRight className="h-3 w-3" />
                     </span>
                   </button>
+                )}
+                {cb.coveredFromOthers > 0 && (
+                  <p className="mt-1 flex items-start gap-1 text-[11px] leading-relaxed text-muted-foreground">
+                    <ArrowDownRight className="mt-0.5 h-3 w-3 shrink-0 text-primary" />
+                    <span>
+                      {cb.coveredFormatted} of fees were charged here and auto-covered from your other
+                      currencies. The Exchange screen shows this as the pre-cover figure.
+                    </span>
+                  </p>
                 )}
                 {cb.locked > 0 && (
                   <div
