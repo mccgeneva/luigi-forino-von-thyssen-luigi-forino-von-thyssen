@@ -1435,6 +1435,15 @@ export function PendingApprovals({ initialKind }: { initialKind?: ApprovalKind }
                               </>
                             )}
                           </div>
+                          {Boolean((req.payload as Record<string, unknown> | undefined)?.record &&
+                            ((req.payload as { record?: { reserveAppeal?: boolean } }).record?.reserveAppeal)) &&
+                            mon.negotiated == null && (
+                              <p className="mt-1 text-[11px] leading-relaxed text-orange-600 dark:text-orange-400">
+                                The client appealed the upfront cost — they couldn&apos;t fund it in full. It is held
+                                (their balance may show negative) pending your reduced-cost decision. Use{" "}
+                                <strong>Negotiate reserve</strong> to propose the right amount.
+                              </p>
+                            )}
                         </div>
                       )}
                       <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1 text-[11px] text-muted-foreground">

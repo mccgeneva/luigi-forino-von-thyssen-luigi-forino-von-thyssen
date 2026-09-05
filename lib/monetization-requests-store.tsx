@@ -55,6 +55,15 @@ export interface MonetizationRequest {
 
   notes: string
 
+  // --- Upfront-cost appeal (client couldn't fund the equity + PPI reserve) ---
+  /** Set when the request was submitted via "Make appeal / negotiate" because
+   *  the client could not cover the upfront reserve. The reserve is posted as a
+   *  reversible HOLD (available may go negative) pending the administrator
+   *  agreeing a reduced cost via the reserve-negotiation flow. */
+  reserveAppeal?: boolean
+  /** The standard (pre-negotiation) reserve amount the client appealed. */
+  appealReserveOriginal?: number
+
   status: MonetizationStatus
   submittedAt: string // ISO timestamp
   decidedAt?: string // ISO timestamp of approval/rejection
