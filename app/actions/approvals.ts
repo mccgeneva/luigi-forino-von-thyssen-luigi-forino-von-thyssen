@@ -6313,6 +6313,21 @@ export async function acceptInstrumentUpgrade(approvalId: string): Promise<Instr
     if (!upgrade || (upgrade.status !== "negotiating" && upgrade.status !== "proposed")) {
       return { ok: false, error: "There is no upgrade offer to accept for this instrument." }
     }
+    // MONEY-CRITICAL GUARD: a customer who has submitted a counter-offer CANNOT
+    // self-accept the deal — the counter must go back to the administrator, who
+    // revises the terms (which clears the counter) or the customer withdraws it.
+    // The admin `revise` op rebuilds `upgrade` WITHOUT the counter fields, so the
+    // presence of `customerCounterFaceValue` means the admin has NOT yet
+    // responded. Without this, a customer could counter (lower value) and then
+    // immediately confirm, issuing a fresh instrument + charging the fee with NO
+    // administrator approval of the negotiated price.
+    if (upgrade.status === "negotiating" && upgrade.customerCounterFaceValue != null) {
+      return {
+        ok: false,
+        error:
+          "You have a counter-offer awaiting the administrator. You can't confirm the upgrade until they revise the terms in response. Withdraw your counter-offer to accept the current proposed terms instead.",
+      }
+    }
     const oldBase = (payload.issuedByAdmin ? payload.instrument : payload.record ?? payload.instrument) ?? {}
 
     // Charge the one-time expertise & upgrade fee NOW (on confirm) unless a
@@ -6629,6 +6644,45 @@ export async function counterInstrumentUpgrade(
   } catch (err) {
     console.log("[v0] counterInstrumentUpgrade failed:", (err as Error).message)
     return { ok: false, error: "The counter-offer could not be sent. Please try again." }
+  }
+}
+
+/**
+ * Customer withdraws their pending counter-offer, reverting the negotiation to
+ * the administrator's current STANDING terms. This never bypasses the admin —
+ * it only clears the customer's counter so they can accept the admin's own
+ * (already-set) proposed price, or send a fresh counter. The negotiated
+ * `newFaceValue`/`fee` (all admin-set) are untouched.
+ */
+export async function withdrawInstrumentUpgradeCounter(approvalId: string): Promise<InstrumentUpgradeResult> {
+  const session = await resolveCurrentSession()
+  if (!session) return { ok: false, error: "Your session has expired. Please sign in again." }
+  try {
+    const existing = await getApprovalById(approvalId)
+    if (!existing || existing.kind !== "instrument") return { ok: false, error: "Instrument not found." }
+    if (existing.userId !== session.dataOwnerId) {
+      return { ok: false, error: "You can only act on instruments in your own portfolio." }
+    }
+    const payload = (existing.payload ?? {}) as { upgrade?: InstrumentUpgrade }
+    const upgrade = payload.upgrade
+    if (!upgrade || upgrade.status !== "negotiating") {
+      return { ok: false, error: "This offer is no longer open." }
+    }
+    // Strip the customer counter fields; keep every admin-set term intact.
+    const {
+      customerCounterFaceValue: _v,
+      customerCounterAt: _a,
+      customerCounterNote: _n,
+      ...rest
+    } = upgrade
+    void _v
+    void _a
+    void _n
+    await updateApprovalPayload(approvalId, { ...(existing.payload ?? {}), upgrade: rest })
+    return { ok: true }
+  } catch (err) {
+    console.log("[v0] withdrawInstrumentUpgradeCounter failed:", (err as Error).message)
+    return { ok: false, error: "The counter-offer could not be withdrawn. Please try again." }
   }
 }
 

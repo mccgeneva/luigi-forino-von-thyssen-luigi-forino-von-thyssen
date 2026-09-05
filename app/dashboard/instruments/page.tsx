@@ -95,7 +95,7 @@ import {
   isMccOwnedAction,
 } from "@/lib/instrument-marketplace"
 import { resolveTransferRecipient } from "@/app/actions/transfers"
-import { acceptInstrumentUpgrade, declineInstrumentUpgrade, counterInstrumentUpgrade, requestInstrumentUpgrade } from "@/app/actions/approvals"
+  import { acceptInstrumentUpgrade, declineInstrumentUpgrade, counterInstrumentUpgrade, withdrawInstrumentUpgradeCounter, requestInstrumentUpgrade } from "@/app/actions/approvals"
 import { INSTRUMENT_UPGRADE_FEE_LABEL, isUpgradeOpen } from "@/lib/instrument-upgrade"
 import {
   instrumentManagementFee,
@@ -612,6 +612,42 @@ export default function InstrumentsPage() {
     }
   }
 
+  // Withdraw a pending counter-offer, reverting to the administrator's standing
+  // terms so the customer can accept those (or send a fresh counter).
+  const withdrawCounter = async () => {
+    const target = upgradeTarget
+    if (!target?.approvalId || counterBusy) return
+    setCounterBusy(true)
+    try {
+      const res = await withdrawInstrumentUpgradeCounter(target.approvalId)
+      if (!res.ok) {
+        toast.error("Could not withdraw counter-offer", { description: res.error })
+        return
+      }
+      toast.success("Counter-offer withdrawn", {
+        description: "You can now accept the administrator's proposed terms or send a new counter-offer.",
+      })
+      setUpgradeTarget((prev) =>
+        prev && prev.upgrade
+          ? {
+              ...prev,
+              upgrade: {
+                ...prev.upgrade,
+                customerCounterFaceValue: undefined,
+                customerCounterAt: undefined,
+                customerCounterNote: undefined,
+              },
+            }
+          : prev,
+      )
+      setCounterValue("")
+      setCounterNote("")
+      void refreshInstruments()
+    } finally {
+      setCounterBusy(false)
+    }
+  }
+
   // Send a counter-offer for the new instrument's face value during negotiation.
   const submitCounter = async () => {
     const target = upgradeTarget
@@ -639,6 +675,22 @@ export default function InstrumentsPage() {
           referenceId: target.id,
         },
       })
+      // Reflect the pending counter immediately so the Accept button locks — the
+      // customer can't self-confirm until the administrator responds.
+      const noteSent = counterNote.trim() || undefined
+      setUpgradeTarget((prev) =>
+        prev && prev.upgrade
+          ? {
+              ...prev,
+              upgrade: {
+                ...prev.upgrade,
+                customerCounterFaceValue: value,
+                customerCounterAt: new Date().toISOString(),
+                customerCounterNote: noteSent,
+              },
+            }
+          : prev,
+      )
       setCounterValue("")
       setCounterNote("")
       void refreshInstruments()
@@ -3395,6 +3447,20 @@ export default function InstrumentsPage() {
                         {u.customerCounterNote ? (
                           <p className="mt-1 text-muted-foreground">"{u.customerCounterNote}"</p>
                         ) : null}
+                        <p className="mt-2 text-muted-foreground text-pretty">
+                          The upgrade can&apos;t be confirmed while your counter-offer is pending — the administrator must
+                          revise the terms first. To take the administrator&apos;s proposed terms instead, withdraw your
+                          counter-offer.
+                        </p>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="mt-2 w-full"
+                          onClick={withdrawCounter}
+                          disabled={counterBusy || upgradeBusy}
+                        >
+                          {counterBusy ? "Working…" : "Withdraw counter-offer"}
+                        </Button>
                       </div>
                     ) : null}
 
@@ -3496,11 +3562,15 @@ export default function InstrumentsPage() {
                     </Button>
                     <Button
                       onClick={acceptUpgrade}
-                      disabled={upgradeBusy || counterBusy}
+                      disabled={upgradeBusy || counterBusy || u.customerCounterFaceValue != null}
                       className="bg-amber-600 hover:bg-amber-700"
                     >
                       <Handshake className="mr-2 h-4 w-4" />
-                      {upgradeBusy ? "Working…" : "Confirm & accept deal"}
+                      {upgradeBusy
+                        ? "Working…"
+                        : u.customerCounterFaceValue != null
+                          ? "Counter-offer pending admin"
+                          : "Confirm & accept deal"}
                     </Button>
                   </DialogFooter>
                 </>
