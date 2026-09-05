@@ -255,6 +255,19 @@ export async function markIncomingSwiftRead(id: string, userIds: string[]): Prom
   )
 }
 
+/** Mark every unread message that concerns the customer(s) read. Returns the
+ *  number of messages that were flipped to read. */
+export async function markAllIncomingSwiftRead(userIds: string[]): Promise<number> {
+  await ensureTable()
+  if (!userIds.length) return 0
+  const { rowCount } = await query(
+    `UPDATE incoming_swift_messages SET read_at = now()
+       WHERE user_id = ANY($1) AND status IN ('matched','assigned') AND read_at IS NULL`,
+    [userIds],
+  )
+  return rowCount ?? 0
+}
+
 /**
  * Messages that concern a platform account (matched or admin-assigned) and are
  * awaiting the administrator's credit execution — i.e. not yet credited.
