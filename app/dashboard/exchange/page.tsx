@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect, useMemo } from "react"
+import { useState, useEffect, useMemo, useRef } from "react"
 import { toast } from "sonner"
 import { useActivityLog } from "@/components/activity-tracker"
 import { useLedger } from "@/lib/ledger-store"
@@ -89,8 +89,13 @@ export default function ExchangePage() {
   const [fromAmount, setFromAmount] = useState("1000")
   const [toAmount, setToAmount] = useState("1089.20")
   const [isExecuting, setIsExecuting] = useState(false)
+  // Synchronous re-entry lock: React state updates are async, so a fast
+  // double-tap can fire the handler again before `isExecuting` re-renders the
+  // button as disabled. This ref blocks the second call in the same instant so
+  // no duplicate conversion can ever be posted.
+  const submittingRef = useRef(false)
   const logActivity = useActivityLog()
-  const { addReceipt, addDebit, balanceFor, entries } = useLedger()
+  const { addReceipt, addDebit, balanceFor, entries, refresh: refreshLedger } = useLedger()
 
   // Live FX quotes drive both the conversion calculator and the rates panel.
   const { quotes, updatedAt, isLoading: isRefreshing, refresh } = useMarketQuotes(FX_SYMBOLS)
@@ -227,7 +232,10 @@ export default function ExchangePage() {
     accountHasOverdraft && toIsOverdrawn && !fromIsOverdrawn && fromCurrency !== toCurrency
   const exchangePaused = accountHasOverdraft && !isSettlingConversion
 
-  const handleExecuteExchange = () => {
+  const handleExecuteExchange = async () => {
+    // Hard re-entry guard — ignore any tap while a conversion is already in
+    // flight (prevents duplicate transactions from rapid double-clicks).
+    if (submittingRef.current || isExecuting) return
     if (numericFrom <= 0) {
       toast.error("Enter an amount to convert")
       return
@@ -274,7 +282,11 @@ export default function ExchangePage() {
       return
     }
 
+    // Engage the synchronous lock BEFORE any state/ledger write so a second tap
+    // in the same instant is rejected by the guard above.
+    submittingRef.current = true
     setIsExecuting(true)
+    try {
     const receivedAmount = numericFrom * currentRate
     const ref = `FX-${Date.now().toString().slice(-8)}`
     const nowIso = new Date().toISOString()
@@ -344,7 +356,16 @@ export default function ExchangePage() {
     toast.success("Exchange executed", {
       description: `Converted ${fromCurrency} ${numericFrom.toLocaleString()} → ${toCurrency} ${receivedAmount.toLocaleString(undefined, { maximumFractionDigits: 2 })}.${offsetNote || " Balances updated."}`,
     })
-    setIsExecuting(false)
+      // Pull the authoritative balances so the recomputed overdraft state
+      // relabels/disables the button, then release the lock. The short wait
+      // keeps the button disabled across the fresh render + the human
+      // double-tap window so the settled figures are in before it re-enables.
+      refreshLedger()
+      await new Promise((resolve) => setTimeout(resolve, 800))
+    } finally {
+      submittingRef.current = false
+      setIsExecuting(false)
+    }
   }
 
   useEffect(() => {
