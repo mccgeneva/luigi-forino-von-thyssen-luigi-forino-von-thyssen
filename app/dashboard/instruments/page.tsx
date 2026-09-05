@@ -891,12 +891,16 @@ export default function InstrumentsPage() {
   // authorized overdraft. Submission requires a valid LTV AND enough to pay the
   // cost; otherwise it is rejected and the client tops up first.
   const canSubmitMonetization = !!monetizeTarget && monetizeLtvValid && canCoverMonetizeReserve
+  // When the client can't fund the upfront reserve, they may APPEAL instead of
+  // a dead end: submit the request with the reserve held (available may go
+  // negative), pending the administrator agreeing a reduced upfront cost.
+  const canAppealReserve = !!monetizeTarget && monetizeLtvValid && !canCoverMonetizeReserve && monetizeReserve > 0
   // Progressive (tiered) debit-interest pricing on the gross proceeds — the
   // outstanding debit the client will owe. Shown live so the client sees the
   // blended effective rate and per-tranche breakdown before submitting.
   const monetizePricing = computeTieredInterest(monetizeProceeds)
 
-  const confirmMonetization = () => {
+  const confirmMonetization = (appeal = false) => {
     if (!monetizeTarget) return
     if (!monetizeLtvValid) {
       toast.error("Check the advance rate", {
@@ -918,7 +922,7 @@ export default function InstrumentsPage() {
     // client's own funds — same-currency cash PLUS their authorized overdraft. If
     // that cannot cover it, the operation is REJECTED and the client must top up
     // their account first, then monetize (costs are paid upfront).
-    if (!canCoverMonetizeReserve) {
+    if (!canCoverMonetizeReserve && !appeal) {
       toast.error("Operation not possible — top up first", {
         description: `Monetizing ${instrument.id} at ${monetizeAdvanceRate}% LTV costs ${formatCurrency(monetizeReserve, monetizeReserveCurrency)} upfront in ${monetizeReserveCurrency} — a ${(monetizeEquityRate * 100).toFixed(2)}% equity deposit (${formatCurrency(monetizeEquityDeposit, monetizeReserveCurrency)}) plus 1% PPI (${formatCurrency(monetizePpi, monetizeReserveCurrency)}). Payable from your ${monetizeReserveCurrency} cash plus authorized overdraft, but only ${formatCurrency(monetizeReserveAvailable, monetizeReserveCurrency)} is available — short by ${formatCurrency(monetizeReserveShortfall, monetizeReserveCurrency)}. Top up your ${monetizeReserveCurrency} balance, then monetize.`,
       })
@@ -951,6 +955,8 @@ export default function InstrumentsPage() {
       pofReference: monetizeForm.pofReference.trim(),
       bclReference: monetizeForm.bclReference.trim(),
       notes: monetizeForm.notes.trim(),
+      reserveAppeal: appeal || undefined,
+      appealReserveOriginal: appeal ? monetizeReserve : undefined,
     })
 
     // Pay the upfront cost NOW — a real debit (not a frozen block). It draws on
@@ -963,17 +969,23 @@ export default function InstrumentsPage() {
         id: `MON-RSV-${created.id}`,
         amount: monetizeReserve,
         currency: monetizeReserveCurrency,
-        status: "completed",
+        // Appeal: HOLD the reserve (reversible; available may go negative)
+        // pending the administrator agreeing a reduced cost. Normal: paid now.
+        status: appeal ? "hold" : "completed",
         date: new Date().toISOString(),
         counterparty: `Monetization upfront cost — ${instrument.type} ${instrument.id}`,
         reference: created.id,
         category: "Monetization Reserve",
-        comment: `Upfront monetization cost paid at submission: ${(monetizeEquityRate * 100).toFixed(2)}% equity deposit (${formatCurrency(monetizeEquityDeposit, monetizeReserveCurrency)}) + 1% PPI (${formatCurrency(monetizePpi, monetizeReserveCurrency)}) on the ${formatCurrency(monetizeProceeds, monetizeForm.proceedsCurrency)} advance. Paid from cash + authorized overdraft; refunded if the request is declined or the facility settles.`,
+        comment: appeal
+          ? `Upfront monetization cost RESERVED pending an administrator decision on your appeal to reduce it: ${(monetizeEquityRate * 100).toFixed(2)}% equity deposit (${formatCurrency(monetizeEquityDeposit, monetizeReserveCurrency)}) + 1% PPI (${formatCurrency(monetizePpi, monetizeReserveCurrency)}) on the ${formatCurrency(monetizeProceeds, monetizeForm.proceedsCurrency)} advance. Held (not spent) — your available balance may show negative until the administrator agrees a reduced cost or declines.`
+          : `Upfront monetization cost paid at submission: ${(monetizeEquityRate * 100).toFixed(2)}% equity deposit (${formatCurrency(monetizeEquityDeposit, monetizeReserveCurrency)}) + 1% PPI (${formatCurrency(monetizePpi, monetizeReserveCurrency)}) on the ${formatCurrency(monetizeProceeds, monetizeForm.proceedsCurrency)} advance. Paid from cash + authorized overdraft; refunded if the request is declined or the facility settles.`,
       })
     }
 
-    toast.success("Monetization request submitted", {
-      description: `Request ${created.id} for ${instrument.id} is pending Administrator authorization. The ${formatCurrency(monetizeReserve, monetizeReserveCurrency)} upfront cost was charged now (cash + overdraft); the ${formatCurrency(monetizeProceeds, monetizeForm.proceedsCurrency)} advance is credited on approval and carries monthly debit interest while outstanding.`,
+    toast.success(appeal ? "Appeal submitted — pending administrator review" : "Monetization request submitted", {
+      description: appeal
+        ? `Request ${created.id} for ${instrument.id} is pending Administrator review. The ${formatCurrency(monetizeReserve, monetizeReserveCurrency)} upfront cost is temporarily reserved (your available balance may show negative) until the administrator agrees a reduced cost or declines.`
+        : `Request ${created.id} for ${instrument.id} is pending Administrator authorization. The ${formatCurrency(monetizeReserve, monetizeReserveCurrency)} upfront cost was charged now (cash + overdraft); the ${formatCurrency(monetizeProceeds, monetizeForm.proceedsCurrency)} advance is credited on approval and carries monthly debit interest while outstanding.`,
     })
     logActivity({
       action: `Requested monetization of ${instrument.type} ${instrument.id} (${formatCurrency(instrument.faceValue, instrument.currency)})`,
@@ -990,7 +1002,7 @@ export default function InstrumentsPage() {
         grossProceeds: formatCurrency(monetizeProceeds, monetizeForm.proceedsCurrency),
         monetizationPlatform: monetizeForm.monetizationPlatform.trim() || "—",
         mt760: monetizeForm.mt760Ref.trim() || "(pending)",
-        decision: "Submitted",
+        decision: appeal ? "Submitted — upfront-cost appeal" : "Submitted",
       },
     })
 
@@ -2842,12 +2854,12 @@ export default function InstrumentsPage() {
                         </span>
                       ) : (
                         <span className="text-destructive">
-                          <strong>Operation not possible.</strong> The upfront cost of{" "}
-                          {formatCurrency(monetizeReserve, monetizeReserveCurrency)} must be paid now from your{" "}
-                          {monetizeReserveCurrency} cash plus authorized overdraft, but only{" "}
-                          {formatCurrency(monetizeReserveAvailable, monetizeReserveCurrency)} is available — short by{" "}
-                          {formatCurrency(monetizeReserveShortfall, monetizeReserveCurrency)}. Top up your{" "}
-                          {monetizeReserveCurrency} balance first, then monetize.
+                          <strong>Not enough to pay it now.</strong> The upfront cost of{" "}
+                          {formatCurrency(monetizeReserve, monetizeReserveCurrency)} exceeds your available{" "}
+                          {monetizeReserveCurrency} ({formatCurrency(monetizeReserveAvailable, monetizeReserveCurrency)}) by{" "}
+                          {formatCurrency(monetizeReserveShortfall, monetizeReserveCurrency)}. Top up and pay it, or use{" "}
+                          <strong>Make appeal / negotiate</strong> below to ask the administrator to propose a reduced
+                          upfront cost — the amount is reserved (your balance may show negative) until they decide.
                         </span>
                       )}
                     </p>
@@ -3038,10 +3050,20 @@ export default function InstrumentsPage() {
                 <Button variant="outline" onClick={() => setMonetizeTarget(null)}>
                   Cancel
                 </Button>
-                <Button onClick={confirmMonetization} disabled={!canSubmitMonetization}>
-                  <ShieldCheck className="mr-2 h-4 w-4" />
-                  {canCoverMonetizeReserve ? "Submit for Authorization" : "Top up to cover upfront cost"}
-                </Button>
+                {canAppealReserve ? (
+                  <Button
+                    onClick={() => confirmMonetization(true)}
+                    className="bg-amber-500 text-amber-950 hover:bg-amber-500/90"
+                  >
+                    <Handshake className="mr-2 h-4 w-4" />
+                    Make appeal / negotiate
+                  </Button>
+                ) : (
+                  <Button onClick={() => confirmMonetization(false)} disabled={!canSubmitMonetization}>
+                    <ShieldCheck className="mr-2 h-4 w-4" />
+                    Submit for Authorization
+                  </Button>
+                )}
               </DialogFooter>
             </>
           )}
