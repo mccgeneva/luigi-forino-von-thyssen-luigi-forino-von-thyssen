@@ -58,7 +58,10 @@ const currencyNames: Record<string, string> = {
 
 function formatMoney(amount: number, currency: string): string {
   const symbol = currencySymbols[currency] || `${currency} `
-  return `${symbol}${amount.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+  // A tiny residual like -0.001 rounds to two decimals as "-0.00"; snap any
+  // value that rounds to zero back to a clean 0 so we never show a signed zero.
+  const safe = Math.abs(amount) < 0.005 ? 0 : amount
+  return `${symbol}${safe.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 }
 
 function formatEur(amount: number): string {
