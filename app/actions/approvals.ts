@@ -4094,6 +4094,41 @@ export async function adminDecideApproval(
         console.log("[v0] applyLedgerEffect failed:", (err as Error).message)
       }
 
+      // Settle the monetization UPFRONT-COST RESERVE on administrator
+      // confirmation. The `MON-RSV-<localId>` reserve is a client-posted ledger
+      // entry that, on the appeal path (or after the admin negotiates it down),
+      // sits as a `hold` — which the client's balance card shows as "€X
+      // reserved" indefinitely while the facility is approved+outstanding. Once
+      // the admin CONFIRMS the monetization it is genuinely CHARGED: flip that
+      // hold to a `completed` debit in place (same amount, so the visible
+      // balance number is unchanged — a held debit and a completed debit reduce
+      // available equally — but the "reserved" line disappears). Server-side so
+      // it happens at confirmation regardless of which page the client is on
+      // (the client-side reconciler only runs on the Bank Instruments page).
+      // Idempotent: a reserve already `completed` is skipped.
+      if (updated.kind === "monetization") {
+        try {
+          const localId =
+            (updated.payload as { localId?: string })?.localId ??
+            (updated.payload as { record?: { id?: string } })?.record?.id
+          if (localId) {
+            const reserveId = `MON-RSV-${localId}`
+            const ownerId = await resolveDataOwnerIdFor(updated.userId)
+            const rows = await readLedgerEntries(ownerId)
+            const reserve = rows.find((e) => e.id === reserveId && e.status === "hold")
+            if (reserve) {
+              await upsertLedgerEntry(ownerId, {
+                ...reserve,
+                status: "completed",
+                comment: `${reserve.comment ? `${reserve.comment} ` : ""}Charged on administrator confirmation of the monetization.`,
+              })
+            }
+          }
+        } catch (err) {
+          console.log("[v0] monetization reserve settle on approve failed:", (err as Error).message)
+        }
+      }
+
       // If this approved outgoing payment is addressed to a Collect-funds
       // gateway IBAN, record it as a received deposit on that account and credit
       // the gateway owner's Master Account. Idempotent and self-validating.
