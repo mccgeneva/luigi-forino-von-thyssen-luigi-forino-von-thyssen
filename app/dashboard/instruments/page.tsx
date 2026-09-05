@@ -80,7 +80,7 @@ import { toast } from "sonner"
 import { useInstrumentRequests, isMccHeldInstrument, type Instrument } from "@/lib/instrument-requests-store"
 import { riskScoreTone } from "@/lib/instrument-audit"
 import { useLedger } from "@/lib/ledger-store"
-import { removeMyLedgerEntry } from "@/app/actions/ledger"
+  import { removeMyLedgerEntry, persistMyLedgerEntry } from "@/app/actions/ledger"
 import { computeMonetizationEquity } from "@/lib/monetization-equity"
 import { convertCurrency } from "@/lib/fx"
 import { InstrumentMarketplace } from "@/components/dashboard/instrument-marketplace"
@@ -1069,6 +1069,46 @@ export default function InstrumentsPage() {
     void (async () => {
       for (const e of stale) {
         await removeMyLedgerEntry(e.id)
+      }
+      void refreshLedger()
+    })()
+  }, [monetizationRequests, ledgerEntries, ledgerHydrated, monetizationHydrated, refreshLedger])
+
+  // Settle the upfront-cost reserve once the monetization is FINALIZED. While a
+  // request is pending (incl. an appeal awaiting the admin's reduced-cost
+  // decision) the `MON-RSV-<id>` reserve is a reversible HOLD, which the UI shows
+  // as "€X reserved". The moment the administrator CONFIRMS (status → approved)
+  // that upfront cost is genuinely charged: convert the hold into a COMPLETED
+  // debit (same amount) so the "reserved" line DISAPPEARS and it simply reflects
+  // in the balance — the visible balance number is unchanged because a hold
+  // already reduced it. Re-persisting the same id upserts the row in place (no
+  // duplicate). Reserves already posted as `completed` (the funded, non-appeal
+  // path) never match this filter, so this is a no-op for them.
+  const settledReservesRef = useRef<Set<string>>(new Set())
+  useEffect(() => {
+    if (!ledgerHydrated || !monetizationHydrated) return
+    const approvedIds = new Set(
+      monetizationRequests.filter((r) => r.status === "approved" && isLiveRequest(r)).map((r) => r.id),
+    )
+    const toSettle = ledgerEntries.filter(
+      (e) =>
+        e.status === "hold" &&
+        e.direction === "debit" &&
+        e.category === "Monetization Reserve" &&
+        typeof e.id === "string" &&
+        e.id.startsWith("MON-RSV-") &&
+        approvedIds.has(e.id.slice("MON-RSV-".length)) &&
+        !settledReservesRef.current.has(e.id),
+    )
+    if (toSettle.length === 0) return
+    toSettle.forEach((e) => settledReservesRef.current.add(e.id))
+    void (async () => {
+      for (const e of toSettle) {
+        await persistMyLedgerEntry({
+          ...e,
+          status: "completed",
+          comment: `${e.comment ? `${e.comment} ` : ""}Charged on administrator confirmation of the monetization.`,
+        })
       }
       void refreshLedger()
     })()
