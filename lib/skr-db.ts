@@ -199,6 +199,70 @@ export async function appendSkrDocumentForUser(
   }
 }
 
+/**
+ * Scoped, additive patch of the expertise/evaluation/audit sub-object (and a
+ * few controlled top-level fields) on ONE of a client's own SKR records.
+ *
+ * Used by both the customer (apply / accept / decline) and the custody desk
+ * (return the valuation). It only ever touches a row that belongs to `userId`,
+ * merges the `expertise` partial over any existing expertise, applies a small
+ * whitelist of top-level fields (`blockedAsCollateral`), and optionally prepends
+ * a transaction — without disturbing administrator-authored custody fields.
+ * Returns the updated record, or `null` if no matching record is owned by the
+ * user.
+ */
+export async function patchSkrExpertiseForUser(
+  userId: string,
+  recordId: string,
+  patch: {
+    expertise?: Record<string, unknown>
+    blockedAsCollateral?: boolean
+    transaction?: Record<string, unknown>
+  },
+): Promise<StoredSkr | null> {
+  await ensureTables()
+  const client = await pool.connect()
+  try {
+    await client.query("BEGIN")
+    const { rows } = await client.query(
+      `SELECT * FROM client_skr_records WHERE id = $1 AND user_id = $2 FOR UPDATE`,
+      [recordId, userId],
+    )
+    if (rows.length === 0) {
+      await client.query("ROLLBACK")
+      return null
+    }
+    const stored = toStored(rows[0])
+    const data = { ...stored.data }
+    if (patch.expertise) {
+      const existing = (data.expertise as Record<string, unknown> | undefined) ?? {}
+      data.expertise = { ...existing, ...patch.expertise }
+    }
+    if (typeof patch.blockedAsCollateral === "boolean") {
+      data.blockedAsCollateral = patch.blockedAsCollateral
+    }
+    if (patch.transaction) {
+      const transactions = Array.isArray(data.transactions) ? [...(data.transactions as unknown[])] : []
+      transactions.unshift(patch.transaction)
+      data.transactions = transactions
+    }
+    const { rows: updated } = await client.query(
+      `UPDATE client_skr_records
+         SET data = $1::jsonb, updated_at = now()
+       WHERE id = $2 AND user_id = $3
+       RETURNING *`,
+      [JSON.stringify(data), recordId, userId],
+    )
+    await client.query("COMMIT")
+    return toStored(updated[0])
+  } catch (err) {
+    await client.query("ROLLBACK")
+    throw err
+  } finally {
+    client.release()
+  }
+}
+
 // --- SKR client requests ----------------------------------------------------
 
 /** List every SKR request raised by a single client. */
