@@ -130,6 +130,55 @@ export async function listSkrExpertiseQueue(): Promise<SkrExpertiseQueueItem[]> 
   })
 }
 
+export interface SkrRequestQueueItem {
+  userId: string
+  requestId: string
+  type: string
+  message: string
+  recordId: string
+  status: string
+  submittedAt?: string
+}
+
+/**
+ * Count generic SKR service requests (Statement / Transfer / etc.) awaiting the
+ * custody desk (status `pending`) — powers the admin command-center count so a
+ * client request is discoverable, not just a transient bell.
+ */
+export async function countPendingSkrRequests(): Promise<number> {
+  await ensureTables()
+  const { rows } = await query(
+    `SELECT COUNT(*)::int AS n FROM client_skr_requests WHERE status = 'pending'`,
+  )
+  return Number((rows[0] as { n?: number })?.n ?? 0)
+}
+
+/**
+ * Cross-client queue of generic SKR requests awaiting action. Carries the owning
+ * `userId` so the admin SKR desk can jump straight to the client that needs
+ * action (the manager is per-client, so a bare landing shows nothing).
+ */
+export async function listPendingSkrRequestQueue(): Promise<SkrRequestQueueItem[]> {
+  await ensureTables()
+  const { rows } = await query(
+    `SELECT id, user_id, data, status FROM client_skr_requests
+     WHERE status = 'pending'
+     ORDER BY created_at DESC`,
+  )
+  return rows.map((row) => {
+    const data = ((row as { data?: Record<string, unknown> }).data ?? {}) as Record<string, unknown>
+    return {
+      userId: String((row as { user_id: string }).user_id),
+      requestId: String((row as { id: string }).id),
+      type: String(data.type ?? "Request"),
+      message: String(data.message ?? ""),
+      recordId: String(data.recordId ?? ""),
+      status: String((row as { status: string }).status ?? "pending"),
+      submittedAt: data.submittedAt ? String(data.submittedAt) : undefined,
+    }
+  })
+}
+
 // --- SKR records (administrator-owned, assigned to a client) ----------------
 
 /** List every SKR record assigned to a single client. */
@@ -377,9 +426,10 @@ export async function replaceSkrRequestsForUser(userId: string, items: SkrItemIn
  * status and decision fields while accepting nothing destructive from the
  * client. Requests are never deleted here (clients cannot withdraw them).
  */
-export async function mergeSkrRequestsForUser(userId: string, items: SkrItemInput[]): Promise<void> {
+export async function mergeSkrRequestsForUser(userId: string, items: SkrItemInput[]): Promise<SkrItemInput[]> {
   await ensureTables()
   const client = await pool.connect()
+  const inserted: SkrItemInput[] = []
   try {
     await client.query("BEGIN")
     const { rows: existingRows } = await client.query(
@@ -397,12 +447,13 @@ export async function mergeSkrRequestsForUser(userId: string, items: SkrItemInpu
         // Already on the server — preserve the administrator's decision.
         continue
       }
-      await client.query(
+      const { rowCount } = await client.query(
         `INSERT INTO client_skr_requests (id, user_id, data, status, updated_at)
          VALUES ($1, $2, $3::jsonb, $4, now())
          ON CONFLICT (id) DO NOTHING`,
         [item.id, userId, JSON.stringify(item.data), item.status],
       )
+      if (rowCount && rowCount > 0) inserted.push(item)
     }
     await client.query("COMMIT")
   } catch (err) {
@@ -411,4 +462,5 @@ export async function mergeSkrRequestsForUser(userId: string, items: SkrItemInpu
   } finally {
     client.release()
   }
+  return inserted
 }

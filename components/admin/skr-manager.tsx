@@ -71,8 +71,9 @@ import {
   adminReplaceSkrRequests,
   adminSetSkrExpertise,
   adminListSkrExpertiseQueue,
+  adminListSkrRequestQueue,
 } from "@/app/actions/skr"
-import type { SkrExpertiseQueueItem } from "@/lib/skr-db"
+import type { SkrExpertiseQueueItem, SkrRequestQueueItem } from "@/lib/skr-db"
 import {
   SKR_EXPERTISE_STATUS_LABELS,
   type SkrExpertiseStatus,
@@ -191,6 +192,16 @@ export function SkrManager() {
     })
   }, [])
 
+  // Cross-client queue of generic SKR service requests (Statement / Transfer /
+  // etc.) awaiting action — so the admin arriving from the "SKR request"
+  // notification can jump straight to the client that needs action.
+  const [requestQueue, setRequestQueue] = useState<SkrRequestQueueItem[]>([])
+  const loadRequestQueue = useCallback(() => {
+    void adminListSkrRequestQueue(ADMIN_PASSCODE).then((res) => {
+      if (res.ok) setRequestQueue(res.items)
+    })
+  }, [])
+
   const targetUser = clients.find((c) => c.id === targetUserId) ?? FALLBACK_CLIENT
 
   useEffect(() => {
@@ -204,10 +215,11 @@ export function SkrManager() {
       })
       .catch(() => {})
     loadExpertiseQueue()
+    loadRequestQueue()
     return () => {
       active = false
     }
-  }, [loadExpertiseQueue])
+  }, [loadExpertiseQueue, loadRequestQueue])
 
   // Load the selected client's SKR data from the server (durable, cross-device).
   const reload = (userId: string) => {
@@ -865,6 +877,7 @@ export function SkrManager() {
         : r,
     )
     persistRequests(next)
+    loadRequestQueue()
     toast.success(`Request ${status}`, { description: `${req.type} request ${req.id} ${status}.` })
     logActivity({
       action: `Administrator ${status} SKR ${req.type} request ${req.id}`,
@@ -998,6 +1011,50 @@ export function SkrManager() {
             </div>
             <p className="mt-2 text-[11px] text-muted-foreground">
               Select an application to load that client, then use &ldquo;Return valuation&rdquo; on the SKR below.
+            </p>
+          </div>
+        )}
+
+        {/* Cross-client service-request queue — surfaces Statement / Transfer /
+            etc. requests awaiting action so the desk can jump to the client. */}
+        {requestQueue.length > 0 && (
+          <div className="rounded-lg border border-primary/40 bg-primary/5 p-3">
+            <div className="mb-2 flex items-center gap-2">
+              <ClipboardCheck className="h-4 w-4 text-primary" />
+              <p className="text-sm font-semibold text-foreground">
+                {requestQueue.length} SKR{" "}
+                {requestQueue.length === 1 ? "request" : "requests"} awaiting action
+              </p>
+            </div>
+            <div className="space-y-2">
+              {requestQueue.map((q) => {
+                const client = clients.find((c) => c.id === q.userId)
+                return (
+                  <button
+                    key={`${q.userId}-${q.requestId}`}
+                    type="button"
+                    onClick={() => setTargetUserId(q.userId)}
+                    className="flex w-full items-center justify-between gap-3 rounded-md border border-border bg-card px-3 py-2 text-left transition-colors hover:border-primary/60"
+                  >
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-medium text-foreground">
+                        {client?.fullName || "Client"} — {q.type}
+                      </p>
+                      <p className="truncate text-xs text-muted-foreground">
+                        {q.recordId ? `${q.recordId} · ` : ""}
+                        {q.message || "No message"}
+                        {client ? ` · ${client.company}` : ""}
+                      </p>
+                    </div>
+                    <span className="shrink-0 rounded-md bg-primary px-2.5 py-1 text-xs font-medium text-primary-foreground">
+                      {targetUserId === q.userId ? "Selected" : "Open"}
+                    </span>
+                  </button>
+                )
+              })}
+            </div>
+            <p className="mt-2 text-[11px] text-muted-foreground">
+              Select a request to load that client, then action it under &ldquo;My Requests&rdquo; below.
             </p>
           </div>
         )}

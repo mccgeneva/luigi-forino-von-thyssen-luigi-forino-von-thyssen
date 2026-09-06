@@ -10,13 +10,16 @@ import {
   patchSkrExpertiseForUser,
   countSkrExpertiseRequests,
   listSkrExpertiseQueue,
+  countPendingSkrRequests,
+  listPendingSkrRequestQueue,
   listAllSkrRecords,
   listAllSkrRequests,
   type SkrItemInput,
   type SkrExpertiseQueueItem,
+  type SkrRequestQueueItem,
 } from "@/lib/skr-db"
 import { adminActionAuthorized, adminEmails } from "@/lib/admin-auth"
-import { resolveCurrentSession } from "@/lib/session-user"
+import { resolveCurrentSession, resolveAccountProfileById } from "@/lib/session-user"
 import { listSelectableClients } from "@/app/actions/admin-users"
 import { getDynamicUserByEmail } from "@/lib/admin-users-db"
 import { insertNotification } from "@/lib/notifications-db"
@@ -173,11 +176,51 @@ export async function syncMySkrRequests(items: SkrItemInput[]): Promise<SkrMutat
   try {
     const session = await resolveCurrentSession()
     if (!session) return { ok: false, error: "No active session." }
-    await mergeSkrRequestsForUser(session.id, items)
+    const inserted = await mergeSkrRequestsForUser(session.id, items)
+
+    // Alert every administrator about genuinely new requests so the custody
+    // desk gets a bell (not just a silent DB row). `mergeSkrRequestsForUser`
+    // returns only brand-new rows, so a routine re-sync never re-notifies.
+    if (inserted.length > 0) {
+      try {
+        const profile = await resolveAccountProfileById(session.id)
+        const clientLabel = profile.fullName || profile.company || "A client"
+        const admins = await resolveAdminRecipients()
+        for (const item of inserted) {
+          const d = (item.data ?? {}) as { type?: string; message?: string; recordId?: string }
+          const reqType = String(d.type ?? "Request")
+          const about = d.recordId ? ` concerning SKR ${d.recordId}` : ""
+          for (const adminId of admins) {
+            await insertNotification({
+              userId: adminId,
+              tone: "warning",
+              title: `SKR ${reqType.toLowerCase()} request`,
+              body: `${clientLabel} submitted a ${reqType.toLowerCase()} request${about}. Open the SKR desk to review and action it.`,
+              href: "/dashboard/admin?view=skr",
+            }).catch(() => undefined)
+          }
+        }
+      } catch {
+        // best-effort — a notification failure must never fail the sync
+      }
+    }
     return { ok: true }
   } catch (err) {
     return { ok: false, error: friendlyError(err) }
   }
+}
+
+/** Resolve the set of administrator account ids for notification fan-out. */
+async function resolveAdminRecipients(): Promise<string[]> {
+  const ids: string[] = []
+  const seen = new Set<string>()
+  for (const email of adminEmails()) {
+    const admin = await getDynamicUserByEmail(email)
+    if (!admin || seen.has(admin.id)) continue
+    seen.add(admin.id)
+    ids.push(admin.id)
+  }
+  return ids
 }
 
 /**
@@ -436,6 +479,34 @@ export async function adminListSkrExpertiseQueue(passcode: string): Promise<SkrE
   try {
     await requireAdmin(passcode)
     return { ok: true, items: await listSkrExpertiseQueue() }
+  } catch (err) {
+    return { ok: false, error: friendlyError(err) }
+  }
+}
+
+/**
+ * Command-center count of generic SKR requests (Statement/Transfer/etc.)
+ * awaiting the custody desk. Kept in lock-step with the request notification
+ * so the admin sees a persistent signal, not just a transient bell.
+ */
+export async function adminCountSkrRequests(passcode: string): Promise<number> {
+  try {
+    await requireAdmin(passcode)
+    return await countPendingSkrRequests()
+  } catch {
+    return 0
+  }
+}
+
+export type SkrRequestQueueResult =
+  | { ok: true; items: SkrRequestQueueItem[] }
+  | { ok: false; error: string }
+
+/** Cross-client list of generic SKR requests awaiting action. */
+export async function adminListSkrRequestQueue(passcode: string): Promise<SkrRequestQueueResult> {
+  try {
+    await requireAdmin(passcode)
+    return { ok: true, items: await listPendingSkrRequestQueue() }
   } catch (err) {
     return { ok: false, error: friendlyError(err) }
   }
