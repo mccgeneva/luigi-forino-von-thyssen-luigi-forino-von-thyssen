@@ -101,6 +101,7 @@ const expertiseBadgeStyles: Record<SkrExpertiseStatus, string> = {
   assessed: "border-blue-500/20 bg-blue-500/10 text-blue-400",
   accepted: "border-green-500/20 bg-green-500/10 text-green-500",
   declined: "border-muted bg-muted text-muted-foreground",
+  released: "border-muted bg-muted text-muted-foreground",
 }
 
 const todayISO = () => new Date().toISOString().slice(0, 10)

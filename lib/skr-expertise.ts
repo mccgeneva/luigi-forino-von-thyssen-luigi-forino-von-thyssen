@@ -28,8 +28,11 @@ export const SKR_EXPERTISE_KINDS: SkrExpertiseKind[] = ["Expertise", "Evaluation
  *  - assessed  : admin set the assessed value + outcome; cost quoted to the client.
  *  - accepted  : client accepted; cost charged and SKR blocked as collateral.
  *  - declined  : client declined the assessed outcome/cost (nothing charged).
+ *  - released  : the collateral instrument was later removed (deleted / returned
+ *                / revoked / transferred), so the SKR is unblocked and usable
+ *                again. Kept distinct from `declined` for the audit trail.
  */
-export type SkrExpertiseStatus = "requested" | "assessed" | "accepted" | "declined"
+export type SkrExpertiseStatus = "requested" | "assessed" | "accepted" | "declined" | "released"
 
 /** Fee rate applied to the SKR face value (0.075%). */
 export const SKR_EXPERTISE_RATE = 0.00075
@@ -61,6 +64,8 @@ export interface SkrExpertise {
   // --- Acceptance ----------------------------------------------------------
   acceptedAt?: string
   declinedAt?: string
+  /** When the collateral was released because its instrument was removed (ISO). */
+  releasedAt?: string
   /** Net cost actually charged after any cashback (audit trail). */
   chargedAmount?: number
   /** Ledger entry id of the charge (deterministic, idempotent). */
@@ -88,4 +93,5 @@ export const SKR_EXPERTISE_STATUS_LABELS: Record<SkrExpertiseStatus, string> = {
   assessed: "Valuation returned",
   accepted: "Accepted — collateral",
   declined: "Declined",
+  released: "Collateral released",
 }

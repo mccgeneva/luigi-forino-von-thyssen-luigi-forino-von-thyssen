@@ -23,6 +23,7 @@ import { insertNotification } from "@/lib/notifications-db"
 import { logActivity } from "@/app/actions/log-activity"
 import { gatherGuaranteeProfile } from "@/lib/guarantees-profile"
 import { getGuaranteeConfig } from "@/lib/guarantees-config-db"
+import { listApprovalsForUser } from "@/lib/approvals-db"
 import {
   skrExpertiseCost,
   SKR_EXPERTISE_KINDS,
@@ -73,11 +74,82 @@ export async function getMySkrRecords(): Promise<SkrListResult> {
   try {
     const session = await resolveCurrentSession()
     if (!session) return { ok: true, items: [] }
-    const rows = await listSkrRecordsForUser(session.id)
+    let rows = await listSkrRecordsForUser(session.id)
+    // Self-heal: if a blocked SKR's collateral instrument was later removed
+    // (deleted / returned to marketplace / admin-revoked / transferred), the
+    // SKR must stop showing as blocked collateral. This read is the single
+    // session-scoped source behind the SKR page, so reconciling here covers
+    // every removal path in one place and runs exactly where the stale badge
+    // shows — no per-deletion-path hooks needed. Best-effort: never fail the read.
+    try {
+      const released = await releaseOrphanedSkrCollateral(session.id, rows)
+      if (released) rows = await listSkrRecordsForUser(session.id)
+    } catch (err) {
+      console.log("[v0] SKR collateral reconcile skipped:", (err as Error).message)
+    }
     return { ok: true, items: toRows(rows) }
   } catch (err) {
     return { ok: false, error: friendlyError(err) }
   }
+}
+
+/** Statuses that mean the client no longer holds the instrument. */
+const TERMINAL_INSTRUMENT_STATUSES = new Set([
+  "rejected",
+  "cancelled",
+  "canceled",
+  "transferred",
+  "reversed",
+  "expired",
+])
+
+/**
+ * Releases any SKR that is `blockedAsCollateral` but whose materialised
+ * collateral instrument (`expertise.instrumentId` === `payload.instrument.id`)
+ * no longer exists or has reached a terminal status. Returns the number of
+ * records released (0 if nothing to do). Scoped to the owning `userId`.
+ */
+async function releaseOrphanedSkrCollateral(
+  userId: string,
+  rows: { id: string; data: Record<string, unknown> }[],
+): Promise<number> {
+  const blocked = rows.filter((r) => {
+    const d = r.data as { blockedAsCollateral?: boolean; expertise?: { status?: string; instrumentId?: string } }
+    return d.blockedAsCollateral === true && !!d.expertise?.instrumentId
+  })
+  if (blocked.length === 0) return 0
+
+  // The instrument's own id (SKR-COLL-<recordId>) lives in payload.instrument.id
+  // for an admin-issued instrument; the approval row id differs, so match by it.
+  const instrumentApprovals = await listApprovalsForUser(userId, "instrument")
+  const liveInstrumentIds = new Set<string>()
+  for (const appr of instrumentApprovals) {
+    if (TERMINAL_INSTRUMENT_STATUSES.has(String(appr.status))) continue
+    const p = (appr.payload ?? {}) as { instrument?: { id?: string }; record?: { id?: string } }
+    const instId = p.instrument?.id ?? p.record?.id
+    if (instId) liveInstrumentIds.add(String(instId))
+  }
+
+  let releasedCount = 0
+  for (const r of blocked) {
+    const d = r.data as { expertise?: { instrumentId?: string; kind?: string } }
+    const instrumentId = String(d.expertise?.instrumentId ?? "")
+    if (instrumentId && liveInstrumentIds.has(instrumentId)) continue // still held — keep blocked
+    const now = new Date().toISOString()
+    await patchSkrExpertiseForUser(userId, r.id, {
+      expertise: { status: "released", releasedAt: now },
+      blockedAsCollateral: false,
+      transaction: {
+        id: skrRef("TX"),
+        date: now,
+        type: "Collateral Released",
+        description: `The collateral bank instrument (${instrumentId || "linked instrument"}) was removed, so this SKR is no longer blocked as collateral and can be used or re-assessed.`,
+        reference: r.id,
+      },
+    })
+    releasedCount += 1
+  }
+  return releasedCount
 }
 
 /** Returns the current client's own SKR requests. */
