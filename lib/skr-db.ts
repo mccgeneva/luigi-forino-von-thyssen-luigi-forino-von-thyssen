@@ -78,6 +78,58 @@ function toStored(row: Record<string, unknown>): StoredSkr {
   }
 }
 
+export interface SkrExpertiseQueueItem {
+  userId: string
+  recordId: string
+  kind: string
+  status: string
+  beneficialOwner: string
+  faceValue: number
+  currency: string
+  requestedAt?: string
+}
+
+/**
+ * Count SKR records with an expertise application AWAITING the custody desk
+ * (status `requested`) — powers the admin command-center count/badge so a
+ * customer application is discoverable, not just a transient bell.
+ */
+export async function countSkrExpertiseRequests(): Promise<number> {
+  await ensureTables()
+  const { rows } = await query(
+    `SELECT COUNT(*)::int AS n FROM client_skr_records WHERE data->'expertise'->>'status' = 'requested'`,
+  )
+  return Number((rows[0] as { n?: number })?.n ?? 0)
+}
+
+/**
+ * Cross-client queue of SKR expertise applications awaiting valuation. Carries
+ * the owning `userId` so the admin SKR desk can jump straight to the client that
+ * needs action (the manager is per-client, so a bare landing shows nothing).
+ */
+export async function listSkrExpertiseQueue(): Promise<SkrExpertiseQueueItem[]> {
+  await ensureTables()
+  const { rows } = await query(
+    `SELECT id, user_id, data FROM client_skr_records
+     WHERE data->'expertise'->>'status' = 'requested'
+     ORDER BY updated_at DESC`,
+  )
+  return rows.map((row) => {
+    const data = ((row as { data?: Record<string, unknown> }).data ?? {}) as Record<string, unknown>
+    const exp = (data.expertise ?? {}) as Record<string, unknown>
+    return {
+      userId: String((row as { user_id: string }).user_id),
+      recordId: String((row as { id: string }).id),
+      kind: String(exp.kind ?? "Expertise"),
+      status: String(exp.status ?? "requested"),
+      beneficialOwner: String(data.beneficialOwner ?? ""),
+      faceValue: Number(data.faceValue ?? 0),
+      currency: String(data.currency ?? "USD"),
+      requestedAt: exp.requestedAt ? String(exp.requestedAt) : undefined,
+    }
+  })
+}
+
 // --- SKR records (administrator-owned, assigned to a client) ----------------
 
 /** List every SKR record assigned to a single client. */

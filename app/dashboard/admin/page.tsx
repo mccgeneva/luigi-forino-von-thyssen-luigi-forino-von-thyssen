@@ -56,6 +56,7 @@ import {
   ShieldAlert,
   Sparkles,
   DoorOpen,
+  ClipboardCheck,
 } from "lucide-react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -180,6 +181,7 @@ import { BalanceManager } from "@/components/admin/balance-manager"
 import { FundBlockManager } from "@/components/admin/fund-block-manager"
 import { SkrManager } from "@/components/admin/skr-manager"
 import { SkrOverview } from "@/components/admin/skr-overview"
+import { adminCountSkrExpertiseRequests } from "@/app/actions/skr"
 import { InstrumentIssuer } from "@/components/admin/instrument-issuer"
   import { InstrumentUpgradeManager } from "@/components/admin/instrument-upgrade-manager"
   import { InstrumentAuditManager } from "@/components/admin/instrument-audit-manager"
@@ -640,6 +642,7 @@ export default function AdminPage() {
   // blocked/charged), so it left `pending` and needs its own signal — otherwise
   // the admin gets the bell but the panel shows "all caught up".
   const [instrumentUpgradeRequests, setInstrumentUpgradeRequests] = useState(0)
+  const [skrExpertiseRequests, setSkrExpertiseRequests] = useState(0)
   // The type a command-center tile deep-links into when opening the dashboard.
   const [approvalsInitialKind, setApprovalsInitialKind] = useState<ApprovalKind | undefined>(undefined)
   useEffect(() => {
@@ -681,6 +684,12 @@ export default function AdminPage() {
         if (!cancelled) setInstrumentUpgradeRequests(upgradeReq)
       } catch {
         // Non-fatal: the Bank Instruments tile just omits the upgrade-request signal.
+      }
+      try {
+        const skrExp = await adminCountSkrExpertiseRequests(ADMIN_PASSCODE)
+        if (!cancelled) setSkrExpertiseRequests(skrExp)
+      } catch {
+        // Non-fatal: the SKR tile just omits the expertise-request signal.
       }
     })()
     return () => {
@@ -2376,6 +2385,7 @@ export default function AdminPage() {
     { id: "section-dtc", view: "approvals", kind: "dtc", label: "DTC Settlement", count: dbPending.dtc ?? 0, icon: Layers },
     { id: "section-euroclear", view: "approvals", kind: "euroclear", label: "Euroclear Settlement", count: dbPending.euroclear ?? 0, icon: Globe },
     { id: "section-commodity", view: "approvals", kind: "commodity", label: "Commodity Deals", count: dbPending.commodity ?? 0, icon: Ship },
+    { id: "section-skr-expertise", view: "skr", label: "SKR Expertise Requests", count: skrExpertiseRequests, icon: ClipboardCheck },
   ]
 
   const actionablePending = pendingCategories.filter((c) => c.count > 0)
@@ -2424,7 +2434,7 @@ export default function AdminPage() {
       title: "Safe Keeping Receipts (SKR)",
       items: [
         { id: "skr-overview", label: "SKR Overview", description: "Portfolio-wide custody position across every client.", icon: Gauge, count: 0 },
-        { id: "skr", label: "SKR Management", description: "Create, assign, transfer and administer safe-keeping receipts.", icon: ShieldCheck, count: 0 },
+        { id: "skr", label: "SKR Management", description: "Create, assign, transfer and administer safe-keeping receipts. Expertise/evaluation/audit applications appear here.", icon: ClipboardCheck, count: skrExpertiseRequests },
       ],
     },
     {

@@ -8,9 +8,12 @@ import {
   mergeSkrRequestsForUser,
   appendSkrDocumentForUser,
   patchSkrExpertiseForUser,
+  countSkrExpertiseRequests,
+  listSkrExpertiseQueue,
   listAllSkrRecords,
   listAllSkrRequests,
   type SkrItemInput,
+  type SkrExpertiseQueueItem,
 } from "@/lib/skr-db"
 import { adminActionAuthorized, adminEmails } from "@/lib/admin-auth"
 import { resolveCurrentSession } from "@/lib/session-user"
@@ -314,7 +317,7 @@ export async function requestSkrExpertise(
           tone: "warning",
           title: `SKR ${kind.toLowerCase()} requested`,
           body: `${clientLabel} applied for an official ${kind.toLowerCase()} of SKR ${recordId}. Set the assessed value and return the outcome from the SKR desk.`,
-          href: "/dashboard/admin",
+          href: "/dashboard/admin?view=skr",
         }).catch(() => undefined)
       }
     } catch {
@@ -333,6 +336,34 @@ export async function requestSkrExpertise(
     }).catch(() => undefined)
 
     return { ok: true }
+  } catch (err) {
+    return { ok: false, error: friendlyError(err) }
+  }
+}
+
+/**
+ * Command-center count of SKR expertise applications awaiting valuation. Kept
+ * in lock-step with the request notification so the admin sees a persistent
+ * signal, not just a transient bell.
+ */
+export async function adminCountSkrExpertiseRequests(passcode: string): Promise<number> {
+  try {
+    await requireAdmin(passcode)
+    return await countSkrExpertiseRequests()
+  } catch {
+    return 0
+  }
+}
+
+export type SkrExpertiseQueueResult =
+  | { ok: true; items: SkrExpertiseQueueItem[] }
+  | { ok: false; error: string }
+
+/** Cross-client list of SKR expertise applications awaiting valuation. */
+export async function adminListSkrExpertiseQueue(passcode: string): Promise<SkrExpertiseQueueResult> {
+  try {
+    await requireAdmin(passcode)
+    return { ok: true, items: await listSkrExpertiseQueue() }
   } catch (err) {
     return { ok: false, error: friendlyError(err) }
   }
