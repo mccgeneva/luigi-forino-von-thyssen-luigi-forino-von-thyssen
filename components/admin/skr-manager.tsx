@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
 import {
   ShieldCheck,
   Plus,
@@ -70,7 +70,9 @@ import {
   adminListSkrRequests,
   adminReplaceSkrRequests,
   adminSetSkrExpertise,
+  adminListSkrExpertiseQueue,
 } from "@/app/actions/skr"
+import type { SkrExpertiseQueueItem } from "@/lib/skr-db"
 import {
   SKR_EXPERTISE_STATUS_LABELS,
   type SkrExpertiseStatus,
@@ -178,6 +180,16 @@ export function SkrManager() {
   const [expBusy, setExpBusy] = useState(false)
   const [expResult, setExpResult] = useState<{ cost: number; tradeScore: number; currency: string } | null>(null)
 
+  // Cross-client queue of expertise applications awaiting valuation — so the
+  // admin arriving from the "SKR expertise requested" notification can jump
+  // straight to the client that needs action (the desk is per-client).
+  const [expertiseQueue, setExpertiseQueue] = useState<SkrExpertiseQueueItem[]>([])
+  const loadExpertiseQueue = useCallback(() => {
+    void adminListSkrExpertiseQueue(ADMIN_PASSCODE).then((res) => {
+      if (res.ok) setExpertiseQueue(res.items)
+    })
+  }, [])
+
   const targetUser = clients.find((c) => c.id === targetUserId) ?? FALLBACK_CLIENT
 
   useEffect(() => {
@@ -190,10 +202,11 @@ export function SkrManager() {
         setTargetUserId((cur) => cur || list[0].id)
       })
       .catch(() => {})
+    loadExpertiseQueue()
     return () => {
       active = false
     }
-  }, [])
+  }, [loadExpertiseQueue])
 
   // Load the selected client's SKR data from the server (durable, cross-device).
   const reload = (userId: string) => {
@@ -559,6 +572,7 @@ export function SkrManager() {
       description: `Service cost ${formatSkrValue(res.cost, res.currency)} (trade score ${res.tradeScore.toFixed(2)}). The client can now accept to unlock it as collateral.`,
     })
     reload(targetUserId)
+    loadExpertiseQueue()
   }
 
   // --- Status quick-change ---------------------------------------------------
@@ -944,6 +958,49 @@ export function SkrManager() {
         </div>
       </CardHeader>
       <CardContent className="space-y-5">
+        {/* Cross-client expertise queue — surfaces applications awaiting a
+            valuation so the desk can jump straight to the right client. */}
+        {expertiseQueue.length > 0 && (
+          <div className="rounded-lg border border-primary/40 bg-primary/5 p-3">
+            <div className="mb-2 flex items-center gap-2">
+              <ClipboardCheck className="h-4 w-4 text-primary" />
+              <p className="text-sm font-semibold text-foreground">
+                {expertiseQueue.length} expertise{" "}
+                {expertiseQueue.length === 1 ? "application" : "applications"} awaiting valuation
+              </p>
+            </div>
+            <div className="space-y-2">
+              {expertiseQueue.map((q) => {
+                const client = clients.find((c) => c.id === q.userId)
+                return (
+                  <button
+                    key={`${q.userId}-${q.recordId}`}
+                    type="button"
+                    onClick={() => setTargetUserId(q.userId)}
+                    className="flex w-full items-center justify-between gap-3 rounded-md border border-border bg-card px-3 py-2 text-left transition-colors hover:border-primary/60"
+                  >
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-medium text-foreground">
+                        {q.beneficialOwner || client?.fullName || "Client"} — {q.kind}
+                      </p>
+                      <p className="truncate text-xs text-muted-foreground">
+                        {q.recordId} · {formatSkrValue(q.faceValue, q.currency)}
+                        {client ? ` · ${client.company}` : ""}
+                      </p>
+                    </div>
+                    <span className="shrink-0 rounded-md bg-primary px-2.5 py-1 text-xs font-medium text-primary-foreground">
+                      {targetUserId === q.userId ? "Selected" : "Open"}
+                    </span>
+                  </button>
+                )
+              })}
+            </div>
+            <p className="mt-2 text-[11px] text-muted-foreground">
+              Select an application to load that client, then use &ldquo;Return valuation&rdquo; on the SKR below.
+            </p>
+          </div>
+        )}
+
         {/* Client selector */}
         <div className="space-y-2">
           <Label>Client account</Label>
@@ -1528,7 +1585,7 @@ export function SkrManager() {
                   .filter((c) => c.id !== targetUserId)
                   .map((u) => (
                     <SelectItem key={u.id} value={u.id}>
-                      {u.fullName} — {u.company}
+                      {u.fullName} ��� {u.company}
                     </SelectItem>
                   ))}
               </SelectContent>
