@@ -103,6 +103,7 @@ const expertiseBadgeStyles: Record<SkrExpertiseStatus, string> = {
   assessed: "border-blue-500/20 bg-blue-500/10 text-blue-400",
   accepted: "border-green-500/20 bg-green-500/10 text-green-500",
   declined: "border-muted bg-muted text-muted-foreground",
+  released: "border-muted bg-muted text-muted-foreground",
 }
 
 const formatDate = (iso?: string) => {
@@ -619,7 +620,7 @@ export default function SkrPage() {
                     const canApply =
                       record.status !== "cancelled" &&
                       !record.blockedAsCollateral &&
-                      (!exp || exp.status === "declined")
+                      (!exp || exp.status === "declined" || exp.status === "released")
                     if (canApply) {
                       return (
                         <div className="mt-4 flex flex-col gap-2 rounded-lg border border-border bg-secondary/30 p-3 sm:flex-row sm:items-center sm:justify-between">
