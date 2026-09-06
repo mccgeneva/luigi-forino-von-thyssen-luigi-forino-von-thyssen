@@ -20,6 +20,8 @@ import {
   Paperclip,
   Upload,
   Loader2,
+  ClipboardCheck,
+  ArrowRight,
 } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -54,7 +56,15 @@ import { blobFileUrl } from "@/lib/kyc-types"
 import { downloadFile } from "@/lib/download-file"
 import { Award } from "lucide-react"
 import { upload } from "@vercel/blob/client"
-import { addMySkrDocument } from "@/app/actions/skr"
+import Link from "next/link"
+import { addMySkrDocument, requestSkrExpertise, declineSkrExpertise } from "@/app/actions/skr"
+import { acceptSkrExpertise } from "@/app/actions/approvals"
+import {
+  SKR_EXPERTISE_KINDS,
+  SKR_EXPERTISE_STATUS_LABELS,
+  type SkrExpertiseKind,
+  type SkrExpertiseStatus,
+} from "@/lib/skr-expertise"
 import {
   useSkr,
   formatSkrValue,
@@ -88,6 +98,13 @@ const REQUEST_TYPES: SkrRequestType[] = [
   "Other",
 ]
 
+const expertiseBadgeStyles: Record<SkrExpertiseStatus, string> = {
+  requested: "border-yellow-500/20 bg-yellow-500/10 text-yellow-500",
+  assessed: "border-blue-500/20 bg-blue-500/10 text-blue-400",
+  accepted: "border-green-500/20 bg-green-500/10 text-green-500",
+  declined: "border-muted bg-muted text-muted-foreground",
+}
+
 const formatDate = (iso?: string) => {
   if (!iso) return "—"
   const d = new Date(iso)
@@ -119,6 +136,13 @@ export default function SkrPage() {
   const [reqMessage, setReqMessage] = useState("")
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [uploadingId, setUploadingId] = useState<string | null>(null)
+
+  // Expertise / evaluation / audit application + acceptance
+  const [applyTarget, setApplyTarget] = useState<SkrRecord | null>(null)
+  const [applyKind, setApplyKind] = useState<SkrExpertiseKind>("Expertise")
+  const [applyNote, setApplyNote] = useState("")
+  const [applyBusy, setApplyBusy] = useState(false)
+  const [expActionId, setExpActionId] = useState<string | null>(null)
 
   // Keep the open detail modal in sync with the latest server data, so a freshly
   // uploaded document appears immediately after the post-upload refresh.
@@ -308,6 +332,82 @@ export default function SkrPage() {
     setRequestOpen(true)
   }
 
+  // --- Expertise / evaluation / audit ----------------------------------------
+
+  const openApply = (record: SkrRecord) => {
+    setApplyTarget(record)
+    setApplyKind("Expertise")
+    setApplyNote("")
+  }
+
+  const submitApply = async () => {
+    if (!applyTarget) return
+    setApplyBusy(true)
+    const res = await requestSkrExpertise(applyTarget.id, applyKind, applyNote.trim() || undefined)
+    setApplyBusy(false)
+    if (!res.ok) {
+      toast.error("Could not submit your application", { description: res.error })
+      return
+    }
+    toast.success("Application submitted", {
+      description: `Your ${applyKind.toLowerCase()} request for ${applyTarget.id} has been sent to the custody desk.`,
+    })
+    logActivity({
+      action: `Applied for an SKR ${applyKind.toLowerCase()} on ${applyTarget.id}`,
+      category: "SKR Trading",
+      details: {
+        summary: `Client applied for an official ${applyKind} of the goods held under safe keeping receipt ${applyTarget.id}.`,
+        referenceId: applyTarget.id,
+        requestType: applyKind,
+        status: "Awaiting custody-desk valuation",
+      },
+    })
+    setApplyTarget(null)
+    await refresh()
+  }
+
+  const acceptExpertise = async (record: SkrRecord) => {
+    setExpActionId(record.id)
+    try {
+      const res = await acceptSkrExpertise(record.id)
+      if (!res.ok) {
+        toast.error("Could not accept the valuation", { description: res.error })
+        return
+      }
+      toast.success("SKR unlocked as collateral", {
+        description: `${formatSkrValue(res.charged, res.currency)} charged. ${record.id} is now blocked collateral, ready for monetization, upgrade, leverage and loans.`,
+      })
+      logActivity({
+        action: `Accepted the SKR expertise valuation for ${record.id}`,
+        category: "SKR Trading",
+        details: {
+          summary: `Client accepted the expertise valuation for safe keeping receipt ${record.id}. Service cost ${formatSkrValue(res.charged, res.currency)} charged to the Master Account; the SKR is now blocked as collateral (instrument ${res.instrumentId}).`,
+          referenceId: record.id,
+          cost: formatSkrValue(res.charged, res.currency),
+          instrument: res.instrumentId,
+        },
+      })
+      await refresh()
+    } finally {
+      setExpActionId(null)
+    }
+  }
+
+  const declineExpertise = async (record: SkrRecord) => {
+    setExpActionId(record.id)
+    try {
+      const res = await declineSkrExpertise(record.id)
+      if (!res.ok) {
+        toast.error("Could not decline the valuation", { description: res.error })
+        return
+      }
+      toast.success("Valuation declined", { description: `You declined the assessment for ${record.id}. You can apply again later.` })
+      await refresh()
+    } finally {
+      setExpActionId(null)
+    }
+  }
+
   const submitRequest = () => {
     if (!reqMessage.trim()) {
       toast.error("Please describe your request", {
@@ -453,6 +553,24 @@ export default function SkrPage() {
                         >
                           {SKR_STATUS_LABELS[record.status]}
                         </Badge>
+                        {record.expertise && (
+                          <Badge
+                            variant="outline"
+                            className={cn("gap-1 text-[10px]", expertiseBadgeStyles[record.expertise.status])}
+                          >
+                            <ClipboardCheck className="h-3 w-3" />
+                            {record.expertise.kind}: {SKR_EXPERTISE_STATUS_LABELS[record.expertise.status]}
+                          </Badge>
+                        )}
+                        {record.blockedAsCollateral && (
+                          <Badge
+                            variant="outline"
+                            className="gap-1 border-primary/20 bg-primary/10 text-[10px] text-primary"
+                          >
+                            <Lock className="h-3 w-3" />
+                            Collateral
+                          </Badge>
+                        )}
                       </div>
                       <div className="grid gap-x-6 gap-y-1.5 text-sm sm:grid-cols-2">
                         <div className="flex items-center gap-2">
@@ -494,6 +612,134 @@ export default function SkrPage() {
                       </Button>
                     </div>
                   </div>
+
+                  {/* Expertise / Evaluation / Audit */}
+                  {(() => {
+                    const exp = record.expertise
+                    const canApply =
+                      record.status !== "cancelled" &&
+                      !record.blockedAsCollateral &&
+                      (!exp || exp.status === "declined")
+                    if (canApply) {
+                      return (
+                        <div className="mt-4 flex flex-col gap-2 rounded-lg border border-border bg-secondary/30 p-3 sm:flex-row sm:items-center sm:justify-between">
+                          <p className="text-xs text-muted-foreground text-pretty">
+                            Apply for an official expertise, evaluation or audit of the goods. Once assessed and
+                            accepted, this SKR can be used as collateral for monetization, upgrades, leverage and loans.
+                          </p>
+                          <Button
+                            size="sm"
+                            className="shrink-0"
+                            onClick={() => openApply(record)}
+                          >
+                            <ClipboardCheck className="mr-1.5 h-4 w-4" />
+                            Apply for expertise
+                          </Button>
+                        </div>
+                      )
+                    }
+                    if (!exp) return null
+                    if (exp.status === "requested") {
+                      return (
+                        <div className="mt-4 flex items-start gap-2 rounded-lg border border-yellow-500/20 bg-yellow-500/5 p-3">
+                          <Clock className="mt-0.5 h-4 w-4 shrink-0 text-yellow-500" />
+                          <p className="text-xs text-muted-foreground text-pretty">
+                            Your <span className="font-medium text-foreground">{exp.kind.toLowerCase()}</span> application
+                            is with the custody desk. You&apos;ll be notified when the assessed value and cost are ready.
+                          </p>
+                        </div>
+                      )
+                    }
+                    if (exp.status === "assessed") {
+                      const busy = expActionId === record.id
+                      return (
+                        <div className="mt-4 space-y-3 rounded-lg border border-blue-500/20 bg-blue-500/5 p-3">
+                          <div className="flex items-center gap-2">
+                            <ClipboardCheck className="h-4 w-4 text-blue-400" />
+                            <p className="text-sm font-medium text-foreground">
+                              {exp.kind} completed — review &amp; accept
+                            </p>
+                          </div>
+                          <div className="grid gap-x-6 gap-y-1 text-sm sm:grid-cols-2">
+                            {exp.assessedValue != null && (
+                              <div className="flex items-center justify-between gap-2">
+                                <span className="text-muted-foreground">Assessed value</span>
+                                <span className="font-medium text-foreground">
+                                  {formatSkrValue(exp.assessedValue, exp.assessedCurrency ?? record.currency)}
+                                </span>
+                              </div>
+                            )}
+                            {exp.cost != null && (
+                              <div className="flex items-center justify-between gap-2">
+                                <span className="text-muted-foreground">Service cost</span>
+                                <span className="font-medium text-foreground">
+                                  {formatSkrValue(exp.cost, exp.costCurrency ?? record.currency)}
+                                </span>
+                              </div>
+                            )}
+                          </div>
+                          {exp.outcomeNote && (
+                            <p className="text-xs text-muted-foreground text-pretty">
+                              <span className="font-medium text-foreground">Outcome:</span> {exp.outcomeNote}
+                            </p>
+                          )}
+                          <p className="text-[11px] text-muted-foreground text-pretty">
+                            Accepting charges the service cost to your Master Account and blocks this SKR as collateral
+                            (MT760-equivalent), unlocking monetization, upgrade, leverage and loan uses under Bank
+                            Instruments.
+                          </p>
+                          <div className="flex flex-col gap-2 sm:flex-row">
+                            <Button
+                              size="sm"
+                              className="sm:flex-1"
+                              onClick={() => acceptExpertise(record)}
+                              disabled={busy}
+                            >
+                              {busy ? (
+                                <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
+                              ) : (
+                                <CheckCircle2 className="mr-1.5 h-4 w-4" />
+                              )}
+                              Accept &amp; unlock as collateral
+                            </Button>
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              className="sm:flex-1"
+                              onClick={() => declineExpertise(record)}
+                              disabled={busy}
+                            >
+                              <XCircle className="mr-1.5 h-4 w-4" />
+                              Decline
+                            </Button>
+                          </div>
+                        </div>
+                      )
+                    }
+                    if (exp.status === "accepted") {
+                      return (
+                        <div className="mt-4 flex flex-col gap-2 rounded-lg border border-green-500/20 bg-green-500/5 p-3 sm:flex-row sm:items-center sm:justify-between">
+                          <div className="flex items-start gap-2">
+                            <Lock className="mt-0.5 h-4 w-4 shrink-0 text-green-500" />
+                            <p className="text-xs text-muted-foreground text-pretty">
+                              This SKR is blocked as collateral
+                              {exp.assessedValue != null
+                                ? ` (${formatSkrValue(exp.assessedValue, exp.assessedCurrency ?? record.currency)})`
+                                : ""}
+                              . Use it for monetization, upgrade, leverage or loans under Bank Instruments.
+                            </p>
+                          </div>
+                          <Button asChild variant="outline" size="sm" className="shrink-0">
+                            <Link href="/dashboard/instruments">
+                              Bank Instruments
+                              <ArrowRight className="ml-1.5 h-4 w-4" />
+                            </Link>
+                          </Button>
+                        </div>
+                      )
+                    }
+                    return null
+                  })()}
                 </CardContent>
               </Card>
             ))
@@ -781,6 +1027,68 @@ export default function SkrPage() {
               Cancel
             </Button>
             <Button onClick={submitRequest}>Submit Request</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Apply for expertise / evaluation / audit */}
+      <Dialog open={!!applyTarget} onOpenChange={(open) => !open && !applyBusy && setApplyTarget(null)}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Apply for expertise — {applyTarget?.id}</DialogTitle>
+            <DialogDescription>
+              Request an official assessment of the goods held under this SKR. The custody desk will value them
+              and return the outcome plus a service cost for your review. Nothing is charged until you accept.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <Label>Assessment type</Label>
+              <Select value={applyKind} onValueChange={(v) => setApplyKind(v as SkrExpertiseKind)}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {SKR_EXPERTISE_KINDS.map((k) => (
+                    <SelectItem key={k} value={k}>
+                      {k}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="skr-apply-note">Notes for the custody desk (optional)</Label>
+              <Textarea
+                id="skr-apply-note"
+                value={applyNote}
+                onChange={(e) => setApplyNote(e.target.value)}
+                placeholder="Add any context about the goods, documents available, or the purpose of the assessment."
+                rows={3}
+              />
+            </div>
+            <p className="text-[11px] text-muted-foreground text-pretty">
+              Once accepted, the assessed SKR is treated as blocked collateral (equivalent to a SWIFT MT760) and
+              becomes available for monetization, instrument upgrade, leverage and loan collateral.
+            </p>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setApplyTarget(null)} disabled={applyBusy}>
+              Cancel
+            </Button>
+            <Button onClick={submitApply} disabled={applyBusy}>
+              {applyBusy ? (
+                <>
+                  <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
+                  Submitting…
+                </>
+              ) : (
+                <>
+                  <ClipboardCheck className="mr-1.5 h-4 w-4" />
+                  Submit application
+                </>
+              )}
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

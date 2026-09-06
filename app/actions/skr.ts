@@ -7,13 +7,28 @@ import {
   replaceSkrRequestsForUser,
   mergeSkrRequestsForUser,
   appendSkrDocumentForUser,
+  patchSkrExpertiseForUser,
   listAllSkrRecords,
   listAllSkrRequests,
   type SkrItemInput,
 } from "@/lib/skr-db"
-import { adminActionAuthorized } from "@/lib/admin-auth"
+import { adminActionAuthorized, adminEmails } from "@/lib/admin-auth"
 import { resolveCurrentSession } from "@/lib/session-user"
 import { listSelectableClients } from "@/app/actions/admin-users"
+import { getDynamicUserByEmail } from "@/lib/admin-users-db"
+import { insertNotification } from "@/lib/notifications-db"
+import { logActivity } from "@/app/actions/log-activity"
+import { gatherGuaranteeProfile } from "@/lib/guarantees-profile"
+import { getGuaranteeConfig } from "@/lib/guarantees-config-db"
+import {
+  skrExpertiseCost,
+  SKR_EXPERTISE_KINDS,
+  type SkrExpertiseKind,
+} from "@/lib/skr-expertise"
+
+function skrRef(prefix: string): string {
+  return `${prefix}-${Math.floor(100000 + Math.random() * 900000)}`
+}
 
 async function requireAdmin(passcode: string): Promise<void> {
   if (!(await adminActionAuthorized(passcode))) {
@@ -211,6 +226,253 @@ export async function adminListAllSkr(passcode: string): Promise<SkrOverviewResu
       }
     }
     return { ok: true, records: records.map(decorate), requests: requests.map(decorate) }
+  } catch (err) {
+    return { ok: false, error: friendlyError(err) }
+  }
+}
+
+// --- Expertise / Evaluation / Audit ----------------------------------------
+
+type SkrRecordData = {
+  faceValue?: number
+  currency?: string
+  custodian?: string
+  beneficialOwner?: string
+  status?: string
+  blockedAsCollateral?: boolean
+  expertise?: { status?: string; kind?: string }
+}
+
+export type SkrExpertiseResult = { ok: true } | { ok: false; error: string }
+export type SkrExpertiseAssessResult =
+  | { ok: true; cost: number; tradeScore: number; currency: string }
+  | { ok: false; error: string }
+
+/**
+ * Customer applies for an Expertise / Evaluation / Audit of one of their own
+ * SKRs. Writes a `requested` expertise onto the record (scoped to the owner) and
+ * alerts the custody desk. Nothing is charged here.
+ */
+export async function requestSkrExpertise(
+  recordId: string,
+  kind: SkrExpertiseKind,
+  note?: string,
+): Promise<SkrExpertiseResult> {
+  try {
+    const session = await resolveCurrentSession()
+    if (!session) return { ok: false, error: "Your session has expired. Please sign in again." }
+    if (!SKR_EXPERTISE_KINDS.includes(kind)) return { ok: false, error: "Unknown assessment type." }
+
+    const rows = await listSkrRecordsForUser(session.id)
+    const row = rows.find((r) => r.id === recordId)
+    if (!row) return { ok: false, error: "SKR record not found in your portfolio." }
+    const data = row.data as SkrRecordData
+    if (data.status === "cancelled") return { ok: false, error: "This SKR is cancelled and cannot be assessed." }
+    if (data.blockedAsCollateral) {
+      return { ok: false, error: "This SKR is already blocked as collateral and cannot be re-assessed." }
+    }
+    const st = data.expertise?.status
+    if (st === "requested" || st === "assessed") {
+      return { ok: false, error: "An assessment is already in progress for this SKR." }
+    }
+
+    const now = new Date().toISOString()
+    const updated = await patchSkrExpertiseForUser(session.id, recordId, {
+      expertise: {
+        kind,
+        status: "requested",
+        requestedAt: now,
+        requestNote: note?.trim() || undefined,
+        // clear any prior valuation if re-applying after a decline
+        assessedValue: undefined,
+        cost: undefined,
+        tradeScore: undefined,
+        outcomeNote: undefined,
+        assessedAt: undefined,
+        declinedAt: undefined,
+      },
+      transaction: {
+        id: skrRef("TX"),
+        date: now,
+        type: "Expertise Requested",
+        description: `Client applied for an official ${kind.toLowerCase()} of the goods held under this SKR.`,
+        reference: skrRef("EXP"),
+      },
+    })
+    if (!updated) return { ok: false, error: "SKR record not found in your portfolio." }
+
+    // Alert every administrator so the request surfaces on the custody desk.
+    try {
+      const clientLabel = data.beneficialOwner || "A client"
+      const seen = new Set<string>()
+      for (const email of adminEmails()) {
+        const admin = await getDynamicUserByEmail(email)
+        if (!admin || seen.has(admin.id)) continue
+        seen.add(admin.id)
+        await insertNotification({
+          userId: admin.id,
+          tone: "warning",
+          title: `SKR ${kind.toLowerCase()} requested`,
+          body: `${clientLabel} applied for an official ${kind.toLowerCase()} of SKR ${recordId}. Set the assessed value and return the outcome from the SKR desk.`,
+          href: "/dashboard/admin",
+        }).catch(() => undefined)
+      }
+    } catch {
+      // best-effort — a notification failure must never fail the request
+    }
+
+    await logActivity({
+      action: `Applied for an SKR ${kind.toLowerCase()} on ${recordId}`,
+      category: "SKR Trading",
+      details: {
+        summary: `Client applied for an official ${kind} of the goods held under safe keeping receipt ${recordId}.`,
+        referenceId: recordId,
+        requestType: kind,
+        status: "Awaiting custody-desk valuation",
+      },
+    }).catch(() => undefined)
+
+    return { ok: true }
+  } catch (err) {
+    return { ok: false, error: friendlyError(err) }
+  }
+}
+
+/**
+ * Administrator returns the valuation: sets the assessed value of the goods and
+ * a professional outcome, and quotes the formula-based service cost
+ * `(faceValue × 0.075% × (tradeScore + 1)) / 1.5` using the customer's
+ * Guarantees-Accumulator trade score. The client then accepts or declines.
+ */
+export async function adminSetSkrExpertise(
+  passcode: string,
+  userId: string,
+  recordId: string,
+  input: { assessedValue: number; assessedCurrency?: string; outcomeNote: string },
+): Promise<SkrExpertiseAssessResult> {
+  try {
+    await requireAdmin(passcode)
+    const rows = await listSkrRecordsForUser(userId)
+    const row = rows.find((r) => r.id === recordId)
+    if (!row) return { ok: false, error: "SKR record not found for this client." }
+    const data = row.data as SkrRecordData
+    if (data.blockedAsCollateral) {
+      return { ok: false, error: "This SKR is already blocked as collateral." }
+    }
+    const st = data.expertise?.status
+    if (st !== "requested" && st !== "assessed") {
+      return { ok: false, error: "There is no open expertise application to value." }
+    }
+    const assessedValue = Number(input.assessedValue)
+    if (!Number.isFinite(assessedValue) || assessedValue <= 0) {
+      return { ok: false, error: "Enter a valid assessed value greater than zero." }
+    }
+    if (!input.outcomeNote.trim()) {
+      return { ok: false, error: "Enter the expertise outcome / findings." }
+    }
+
+    const faceValue = Number(data.faceValue ?? 0)
+    const currency = String(data.currency ?? "USD")
+
+    // Customer Trade Score = Guarantees Accumulator risk score (finalScore).
+    let tradeScore = 0
+    try {
+      const profile = await gatherGuaranteeProfile(userId, await getGuaranteeConfig())
+      tradeScore = Number.isFinite(profile.score.finalScore) ? profile.score.finalScore : 0
+    } catch {
+      tradeScore = 0
+    }
+    const cost = skrExpertiseCost(faceValue, tradeScore)
+    const now = new Date().toISOString()
+
+    const updated = await patchSkrExpertiseForUser(userId, recordId, {
+      expertise: {
+        status: "assessed",
+        assessedValue,
+        assessedCurrency: input.assessedCurrency?.trim() || currency,
+        outcomeNote: input.outcomeNote.trim(),
+        tradeScore,
+        cost,
+        costCurrency: currency,
+        assessedAt: now,
+        declinedAt: undefined,
+      },
+      transaction: {
+        id: skrRef("TX"),
+        date: now,
+        type: "Expertise Valued",
+        description: `Custody desk returned the assessment. Assessed value ${(input.assessedCurrency?.trim() || currency)} ${assessedValue.toLocaleString("en-US")}; service cost ${currency} ${cost.toLocaleString("en-US")}.`,
+        reference: skrRef("EXP"),
+      },
+    })
+    if (!updated) return { ok: false, error: "SKR record not found for this client." }
+
+    try {
+      await insertNotification({
+        userId,
+        tone: "info",
+        title: "SKR expertise ready",
+        body: `Your ${(data.expertise?.kind ?? "expertise").toString().toLowerCase()} of SKR ${recordId} is ready. Assessed value ${(input.assessedCurrency?.trim() || currency)} ${assessedValue.toLocaleString("en-US")}. Review the outcome and the ${currency} ${cost.toLocaleString("en-US")} cost, then accept to unlock it as collateral.`,
+        href: "/dashboard/skr",
+      })
+    } catch {
+      // best-effort
+    }
+
+    await logActivity({
+      action: `Returned SKR expertise valuation for ${recordId}`,
+      category: "Administration",
+      details: {
+        summary: `Administrator returned the expertise valuation for SKR ${recordId}: assessed value ${(input.assessedCurrency?.trim() || currency)} ${assessedValue.toLocaleString("en-US")}, trade score ${tradeScore.toFixed(2)}, service cost ${currency} ${cost.toLocaleString("en-US")}.`,
+        referenceId: recordId,
+        assessedValue: `${input.assessedCurrency?.trim() || currency} ${assessedValue.toLocaleString("en-US")}`,
+        tradeScore: tradeScore.toFixed(2),
+        cost: `${currency} ${cost.toLocaleString("en-US")}`,
+      },
+    }).catch(() => undefined)
+
+    return { ok: true, cost, tradeScore, currency }
+  } catch (err) {
+    return { ok: false, error: friendlyError(err) }
+  }
+}
+
+/**
+ * Customer declines the returned valuation. Nothing was charged, so this simply
+ * marks the expertise declined (the client may apply again later).
+ */
+export async function declineSkrExpertise(recordId: string): Promise<SkrExpertiseResult> {
+  try {
+    const session = await resolveCurrentSession()
+    if (!session) return { ok: false, error: "Your session has expired. Please sign in again." }
+    const rows = await listSkrRecordsForUser(session.id)
+    const row = rows.find((r) => r.id === recordId)
+    if (!row) return { ok: false, error: "SKR record not found in your portfolio." }
+    const data = row.data as SkrRecordData
+    if (data.expertise?.status !== "assessed") {
+      return { ok: false, error: "There is no returned valuation to decline." }
+    }
+    const now = new Date().toISOString()
+    await patchSkrExpertiseForUser(session.id, recordId, {
+      expertise: { status: "declined", declinedAt: now },
+      transaction: {
+        id: skrRef("TX"),
+        date: now,
+        type: "Expertise Declined",
+        description: `Client declined the returned expertise valuation and cost.`,
+        reference: skrRef("EXP"),
+      },
+    })
+    await logActivity({
+      action: `Declined the SKR expertise valuation for ${recordId}`,
+      category: "SKR Trading",
+      details: {
+        summary: `Client declined the returned expertise valuation for safe keeping receipt ${recordId}.`,
+        referenceId: recordId,
+        status: "Declined",
+      },
+    }).catch(() => undefined)
+    return { ok: true }
   } catch (err) {
     return { ok: false, error: friendlyError(err) }
   }

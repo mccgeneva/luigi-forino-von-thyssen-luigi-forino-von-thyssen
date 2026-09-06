@@ -54,6 +54,7 @@ import { findInstrumentType } from "@/lib/instrument-marketplace"
 import { buildInstrumentIdentifiers, generateCusip } from "@/lib/instrument-identifiers"
 import { buildInternalLoanPosts } from "@/lib/internal-loan"
 import { isLiveRequest } from "@/lib/live-request"
+import { listSkrRecordsForUser, patchSkrExpertiseForUser } from "@/lib/skr-db"
 import type { LedgerEntry } from "@/lib/ledger-store"
 import { insertNotification } from "@/lib/notifications-db"
 import {
@@ -6019,6 +6020,222 @@ export async function adminIssueInstrument(
   } catch (err) {
     console.log("[v0] adminIssueInstrument failed:", (err as Error).message)
     return { ok: false, error: "The instrument could not be issued. Please try again." }
+  }
+}
+
+// --- SKR expertise acceptance (charge + MT760-style collateralization) ------
+
+export type AcceptSkrExpertiseResult =
+  | { ok: true; instrumentId: string; charged: number; currency: string }
+  | { ok: false; error: string }
+
+/**
+ * The customer accepts the administrator's returned SKR expertise/evaluation/
+ * audit valuation. On acceptance:
+ *  1. the quoted service cost (after cashback) is charged to the Master Account,
+ *     within the authorized overdraft; if unpayable even on overdraft it is
+ *     rejected (top-up-first), consistent with every other fee gate;
+ *  2. the SKR is materialised as a pledgeable bank INSTRUMENT (assessed value,
+ *     monetizable, non-assignable) — the exact MT760 blocked-funds treatment —
+ *     so it immediately flows through the monetization, upgrade, leverage and
+ *     loan-collateral pickers with no extra wiring;
+ *  3. the SKR record is marked accepted + blocked collateral.
+ *
+ * Authority: the administrator already set the assessed value + cost (status
+ * `assessed`); the client merely accepts their own quoted deal, so the audited
+ * issue path runs without a passcode gate (mirrors acceptInstrumentUpgrade).
+ */
+export async function acceptSkrExpertise(recordId: string): Promise<AcceptSkrExpertiseResult> {
+  const session = await resolveCurrentSession()
+  if (!session) return { ok: false, error: "Your session has expired. Please sign in again." }
+  try {
+    const rows = await listSkrRecordsForUser(session.id)
+    const row = rows.find((r) => r.id === recordId)
+    if (!row) return { ok: false, error: "SKR record not found in your portfolio." }
+    const data = row.data as {
+      faceValue?: number
+      currency?: string
+      custodian?: string
+      beneficialOwner?: string
+      expiryDate?: string
+      blockedAsCollateral?: boolean
+      expertise?: {
+        kind?: string
+        status?: string
+        assessedValue?: number
+        assessedCurrency?: string
+        cost?: number
+        costCurrency?: string
+      }
+    }
+    const exp = data.expertise
+    if (!exp || exp.status !== "assessed") {
+      return { ok: false, error: "There is no returned valuation to accept." }
+    }
+    if (data.blockedAsCollateral) {
+      return { ok: false, error: "This SKR is already blocked as collateral." }
+    }
+    const kind = String(exp.kind ?? "Expertise")
+    const cost = Number(exp.cost ?? 0)
+    const costCurrency = String(exp.costCurrency ?? data.currency ?? "USD")
+    const assessedValue = Number(exp.assessedValue ?? 0)
+    const assessedCurrency = String(exp.assessedCurrency ?? data.currency ?? costCurrency)
+    if (!Number.isFinite(assessedValue) || assessedValue <= 0) {
+      return { ok: false, error: "The assessed value is missing — ask the custody desk to re-issue the valuation." }
+    }
+
+    const ownerId = await resolveDataOwnerIdFor(session.id)
+
+    // Cashback on the expertise fee (instrument product), consistent with fees.
+    const cb = await applyCashbackForOwner(ownerId, "instrument", cost)
+    const netFee = cb.netFee
+    const feeLabel = `${costCurrency} ${netFee.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+
+    // Solvency gate incl. authorized overdraft — reject if unpayable.
+    if (netFee > 0) {
+      try {
+        const entries = await readLedgerEntries(ownerId)
+        const avail = availableByCurrency(entries)
+        let availableInCcy = 0
+        for (const [cur, amt] of Object.entries(avail)) {
+          availableInCcy += cur === costCurrency ? amt : convertCurrency(amt, cur, costCurrency)
+        }
+        const od = await getOverdraftStatusForOwner(ownerId)
+        const overdraftInCcy = od.remainingEur > 0 ? convertCurrency(od.remainingEur, "EUR", costCurrency) : 0
+        if (netFee > availableInCcy + overdraftInCcy + 0.01) {
+          return {
+            ok: false,
+            error: `The ${feeLabel} expertise cost exceeds your available funds and overdraft allowance. Top up your Master Account and accept again.`,
+          }
+        }
+      } catch (err) {
+        // A transient FX/DB error must not wrongly block a funded customer.
+        console.log("[v0] SKR expertise fee solvency check failed (proceeding):", (err as Error).message)
+      }
+    }
+
+    // Materialise the SKR as MT760-equivalent pledgeable collateral.
+    const now = new Date()
+    const issuedDate = now.toISOString()
+    const expiryDate = data.expiryDate
+      ? new Date(data.expiryDate).toISOString()
+      : new Date(now.getTime() + 365 * 24 * 60 * 60 * 1000).toISOString()
+    const daysRemaining = Math.max(0, Math.round((new Date(expiryDate).getTime() - now.getTime()) / 86_400_000))
+    const instrumentId = `SKR-COLL-${recordId}`
+    const instrument: Record<string, unknown> = {
+      id: instrumentId,
+      type: "SKR",
+      typeFull: `Safe Keeping Receipt Collateral (${kind})`,
+      issuer: data.custodian || "Custodian",
+      faceValue: assessedValue,
+      currency: assessedCurrency,
+      rating: "AAA",
+      purpose:
+        "Expertised SKR — blocked-funds collateral (MT760-equivalent), pledgeable for monetization, upgrade, leverage and loans",
+      // Single-use collateral: monetizable + pledgeable, never assignable.
+      assignable: false,
+      monetizable: true,
+      blocked: false,
+      owner: data.beneficialOwner || undefined,
+      issuedDate,
+      expiryDate,
+      daysRemaining,
+      deliveryMethod: "SKR Custody",
+      form: `SKR ${kind}`,
+      governingLaw: "ICC custodial rules",
+      tradeType: "Expertised SKR collateral (MT760-equivalent)",
+      skrRef: recordId,
+    }
+
+    let issuedApprovalId = ""
+    try {
+      const created = await insertApproval({
+        userId: session.id,
+        kind: "instrument",
+        title: `${instrument.typeFull} · ${instrument.issuer}`,
+        summary: `${assessedCurrency} ${assessedValue.toLocaleString("en-US")} ${instrument.typeFull} unlocked from SKR ${recordId} (expertise accepted).`,
+        amount: assessedValue,
+        currency: assessedCurrency,
+        payload: { issuedByAdmin: true, instrument },
+      })
+      const decided = await decideApproval(created.id, "approved", "Administrator")
+      issuedApprovalId = (decided ?? created).id
+    } catch (err) {
+      console.log("[v0] SKR collateral issuance failed:", (err as Error).message)
+      return { ok: false, error: "The SKR could not be unlocked as collateral. Please try again." }
+    }
+    void issuedApprovalId
+
+    // Charge the expertise fee AFTER the instrument exists (never charge without
+    // unlocking). Deterministic id → idempotent on a retry.
+    let chargeEntryId: string | undefined
+    if (netFee > 0) {
+      try {
+        chargeEntryId = `SKR-EXP-FEE-${recordId}`
+        await upsertLedgerEntry(ownerId, {
+          id: chargeEntryId,
+          direction: "debit",
+          amount: netFee,
+          currency: costCurrency,
+          status: "completed",
+          date: issuedDate,
+          counterparty: "MCC Capital — SKR Custody Services",
+          reference: recordId,
+          category: "SKR Expertise Fee",
+          comment: `${kind} of SKR ${recordId}.${cb.originalFee > netFee ? ` ${cashbackNote(cb, costCurrency)}` : ""}`,
+        })
+      } catch (err) {
+        console.log("[v0] SKR expertise fee charge failed:", (err as Error).message)
+      }
+    }
+
+    // Mark the SKR accepted + blocked as collateral.
+    await patchSkrExpertiseForUser(session.id, recordId, {
+      expertise: {
+        status: "accepted",
+        acceptedAt: issuedDate,
+        chargedAmount: netFee,
+        chargeEntryId,
+        instrumentId,
+      },
+      blockedAsCollateral: true,
+      transaction: {
+        id: `TX-${Date.now()}`,
+        date: issuedDate,
+        type: "Expertise Accepted",
+        description: `Client accepted the ${kind.toLowerCase()}. ${feeLabel} charged to the Master Account; SKR blocked as collateral and unlocked as pledgeable instrument ${instrumentId}.`,
+        reference: recordId,
+      },
+    })
+
+    try {
+      await insertNotification({
+        userId: session.id,
+        tone: "success",
+        title: "SKR unlocked as collateral",
+        body: `Your SKR ${recordId} is now blocked collateral (${assessedCurrency} ${assessedValue.toLocaleString("en-US")}) and available for monetization, upgrade, leverage and loans under Bank Instruments.`,
+        href: "/dashboard/instruments",
+      })
+    } catch {
+      // best-effort
+    }
+
+    await logActivity({
+      action: `Accepted SKR ${kind.toLowerCase()} and unlocked ${recordId} as collateral`,
+      category: "SKR Trading",
+      details: {
+        summary: `Client accepted the ${kind} of SKR ${recordId}. ${feeLabel} charged to the Master Account; the SKR is blocked as MT760-equivalent collateral (${assessedCurrency} ${assessedValue.toLocaleString("en-US")}) and materialised as pledgeable instrument ${instrumentId}.`,
+        referenceId: recordId,
+        cost: feeLabel,
+        collateralValue: `${assessedCurrency} ${assessedValue.toLocaleString("en-US")}`,
+        instrument: instrumentId,
+      },
+    }).catch(() => undefined)
+
+    return { ok: true, instrumentId, charged: netFee, currency: costCurrency }
+  } catch (err) {
+    console.log("[v0] acceptSkrExpertise failed:", (err as Error).message)
+    return { ok: false, error: "The expertise could not be accepted. Please try again." }
   }
 }
 

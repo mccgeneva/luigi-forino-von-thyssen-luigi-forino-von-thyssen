@@ -20,6 +20,7 @@ import {
   RotateCcw,
   Upload,
   Award,
+  ClipboardCheck,
 } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -68,7 +69,12 @@ import {
   adminReplaceSkrRecords,
   adminListSkrRequests,
   adminReplaceSkrRequests,
+  adminSetSkrExpertise,
 } from "@/app/actions/skr"
+import {
+  SKR_EXPERTISE_STATUS_LABELS,
+  type SkrExpertiseStatus,
+} from "@/lib/skr-expertise"
 import { creditSkrCollateralAdmin, reverseSkrCollateralAdmin } from "@/app/actions/treasury"
 import { upload } from "@vercel/blob/client"
 import { blobFileUrl } from "@/lib/kyc-types"
@@ -86,6 +92,13 @@ const statusStyles: Record<SkrStatus, string> = {
   transferred: "border-primary/20 bg-primary/10 text-primary",
   suspended: "border-orange-500/20 bg-orange-500/10 text-orange-400",
   cancelled: "border-muted bg-muted text-muted-foreground",
+}
+
+const expertiseBadgeStyles: Record<SkrExpertiseStatus, string> = {
+  requested: "border-yellow-500/20 bg-yellow-500/10 text-yellow-500",
+  assessed: "border-blue-500/20 bg-blue-500/10 text-blue-400",
+  accepted: "border-green-500/20 bg-green-500/10 text-green-500",
+  declined: "border-muted bg-muted text-muted-foreground",
 }
 
 const todayISO = () => new Date().toISOString().slice(0, 10)
@@ -156,6 +169,14 @@ export function SkrManager() {
   const [creditTarget, setCreditTarget] = useState<SkrRecord | null>(null)
   const [creditAmount, setCreditAmount] = useState("")
   const [creditBusy, setCreditBusy] = useState(false)
+
+  // Expertise / evaluation / audit valuation dialog
+  const [expTarget, setExpTarget] = useState<SkrRecord | null>(null)
+  const [expValue, setExpValue] = useState("")
+  const [expCurrency, setExpCurrency] = useState("USD")
+  const [expOutcome, setExpOutcome] = useState("")
+  const [expBusy, setExpBusy] = useState(false)
+  const [expResult, setExpResult] = useState<{ cost: number; tradeScore: number; currency: string } | null>(null)
 
   const targetUser = clients.find((c) => c.id === targetUserId) ?? FALLBACK_CLIENT
 
@@ -499,6 +520,45 @@ export function SkrManager() {
         decision: "Reversed",
       },
     })
+  }
+
+  // --- Expertise / evaluation / audit valuation ------------------------------
+
+  const openExpertise = (record: SkrRecord) => {
+    setExpTarget(record)
+    setExpValue(String(record.expertise?.assessedValue ?? record.faceValue ?? ""))
+    setExpCurrency(record.expertise?.assessedCurrency ?? record.currency)
+    setExpOutcome(record.expertise?.outcomeNote ?? "")
+    setExpResult(null)
+  }
+
+  const submitExpertise = async () => {
+    if (!expTarget) return
+    const assessedValue = Number(expValue)
+    if (!Number.isFinite(assessedValue) || assessedValue <= 0) {
+      toast.error("Enter a valid assessed value greater than zero.")
+      return
+    }
+    if (!expOutcome.trim()) {
+      toast.error("Enter the expertise outcome / findings.")
+      return
+    }
+    setExpBusy(true)
+    const res = await adminSetSkrExpertise(ADMIN_PASSCODE, targetUserId, expTarget.id, {
+      assessedValue,
+      assessedCurrency: expCurrency,
+      outcomeNote: expOutcome.trim(),
+    })
+    setExpBusy(false)
+    if (!res.ok) {
+      toast.error("Could not return the valuation", { description: res.error })
+      return
+    }
+    setExpResult({ cost: res.cost, tradeScore: res.tradeScore, currency: res.currency })
+    toast.success("Valuation returned to the client", {
+      description: `Service cost ${formatSkrValue(res.cost, res.currency)} (trade score ${res.tradeScore.toFixed(2)}). The client can now accept to unlock it as collateral.`,
+    })
+    reload(targetUserId)
   }
 
   // --- Status quick-change ---------------------------------------------------
@@ -993,6 +1053,15 @@ export function SkrManager() {
                           In Treasury
                         </Badge>
                       )}
+                      {record.expertise && (
+                        <Badge
+                          variant="outline"
+                          className={cn("gap-1 text-[10px]", expertiseBadgeStyles[record.expertise.status])}
+                        >
+                          <ClipboardCheck className="h-3 w-3" />
+                          {record.expertise.kind}: {SKR_EXPERTISE_STATUS_LABELS[record.expertise.status]}
+                        </Badge>
+                      )}
                     </div>
                     <div className="grid gap-x-6 gap-y-1 text-sm sm:grid-cols-2">
                       <div className="flex items-center gap-2">
@@ -1015,6 +1084,53 @@ export function SkrManager() {
                     <p className="text-[11px] text-muted-foreground">
                       {record.transactions.length} transactions · {record.documents.length} documents
                     </p>
+                    {record.expertise && (
+                      <div className="space-y-1 rounded-lg border border-border bg-background p-2.5 text-xs">
+                        <p className="font-medium text-foreground">
+                          {record.expertise.kind} — {SKR_EXPERTISE_STATUS_LABELS[record.expertise.status]}
+                        </p>
+                        {record.expertise.requestNote && (
+                          <p className="text-muted-foreground text-pretty">&ldquo;{record.expertise.requestNote}&rdquo;</p>
+                        )}
+                        {record.expertise.status !== "requested" && record.expertise.assessedValue != null && (
+                          <div className="flex flex-wrap gap-x-4 gap-y-0.5 text-muted-foreground">
+                            <span>
+                              Assessed value:{" "}
+                              <span className="text-foreground">
+                                {formatSkrValue(
+                                  record.expertise.assessedValue,
+                                  record.expertise.assessedCurrency ?? record.currency,
+                                )}
+                              </span>
+                            </span>
+                            {record.expertise.tradeScore != null && (
+                              <span>
+                                Trade score: <span className="text-foreground">{record.expertise.tradeScore.toFixed(2)}</span>
+                              </span>
+                            )}
+                            {record.expertise.cost != null && (
+                              <span>
+                                Service cost:{" "}
+                                <span className="text-foreground">
+                                  {formatSkrValue(record.expertise.cost, record.expertise.costCurrency ?? record.currency)}
+                                </span>
+                              </span>
+                            )}
+                          </div>
+                        )}
+                        {record.expertise.outcomeNote && (
+                          <p className="text-muted-foreground text-pretty">
+                            <span className="font-medium text-foreground">Outcome:</span> {record.expertise.outcomeNote}
+                          </p>
+                        )}
+                        {record.expertise.status === "accepted" && (
+                          <p className="text-green-600 dark:text-green-500 text-pretty">
+                            Accepted — blocked as MT760-equivalent collateral
+                            {record.expertise.instrumentId ? ` (instrument ${record.expertise.instrumentId})` : ""}.
+                          </p>
+                        )}
+                      </div>
+                    )}
                     {record.documents.length > 0 && (
                       <div className="flex flex-col gap-1.5 pt-1">
                         {record.documents.map((doc) => (
@@ -1095,6 +1211,18 @@ export function SkrManager() {
                       <Award className="mr-1 h-3.5 w-3.5" />
                       Generate SKR Certificate
                     </Button>
+                    {record.expertise &&
+                      (record.expertise.status === "requested" || record.expertise.status === "assessed") && (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="border-amber-500/40 text-amber-600 hover:bg-amber-500/10 hover:text-amber-600 dark:text-amber-400"
+                          onClick={() => openExpertise(record)}
+                        >
+                          <ClipboardCheck className="mr-1 h-3.5 w-3.5" />
+                          {record.expertise.status === "requested" ? "Return valuation" : "Revise valuation"}
+                        </Button>
+                      )}
                     {record.creditedToTreasury ? (
                       <Button
                         variant="outline"
@@ -1416,6 +1544,116 @@ export function SkrManager() {
       </Dialog>
 
       {/* Credit-to-treasury dialog */}
+      {/* Expertise / evaluation / audit valuation */}
+      <Dialog
+        open={!!expTarget}
+        onOpenChange={(open) => {
+          if (!open && !expBusy) {
+            setExpTarget(null)
+            setExpResult(null)
+          }
+        }}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>
+              {expTarget?.expertise?.kind ?? "Expertise"} valuation — {expTarget?.id}
+            </DialogTitle>
+            <DialogDescription>
+              Set the assessed value of the goods and return a professional outcome. The service cost is
+              calculated as{" "}
+              <span className="font-medium text-foreground">
+                (face value × 0.075% × (trade score + 1)) ÷ 1.50
+              </span>{" "}
+              using {targetUser.fullName}&apos;s live trade score.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="rounded-lg border border-border bg-secondary/30 p-3 text-sm">
+              <div className="flex items-center justify-between">
+                <span className="text-muted-foreground">SKR face value</span>
+                <span className="font-medium text-foreground">
+                  {expTarget ? formatSkrValue(expTarget.faceValue, expTarget.currency) : "—"}
+                </span>
+              </div>
+              <div className="mt-1 flex items-center justify-between">
+                <span className="text-muted-foreground">Custodian</span>
+                <span className="text-foreground">{expTarget?.custodian}</span>
+              </div>
+            </div>
+            <div className="grid grid-cols-3 gap-2">
+              <div className="col-span-2 space-y-2">
+                <Label htmlFor="skr-exp-value">Assessed value of goods</Label>
+                <MoneyInput id="skr-exp-value" value={expValue} onValueChange={setExpValue} placeholder="0.00" />
+              </div>
+              <div className="space-y-2">
+                <Label>Currency</Label>
+                <Select value={expCurrency} onValueChange={setExpCurrency}>
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {CURRENCIES.map((c) => (
+                      <SelectItem key={c} value={c}>
+                        {c}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="skr-exp-outcome">Expertise outcome / findings</Label>
+              <Textarea
+                id="skr-exp-outcome"
+                value={expOutcome}
+                onChange={(e) => setExpOutcome(e.target.value)}
+                placeholder="Summarise the professional assessment, condition and valuation basis returned to the client."
+                rows={4}
+              />
+            </div>
+            {expResult && (
+              <div className="space-y-1 rounded-lg border border-green-500/30 bg-green-500/5 p-3 text-sm">
+                <p className="font-medium text-foreground">Valuation returned to the client</p>
+                <div className="flex items-center justify-between text-muted-foreground">
+                  <span>Trade score</span>
+                  <span className="text-foreground">{expResult.tradeScore.toFixed(2)}</span>
+                </div>
+                <div className="flex items-center justify-between text-muted-foreground">
+                  <span>Service cost (charged on acceptance)</span>
+                  <span className="font-medium text-foreground">{formatSkrValue(expResult.cost, expResult.currency)}</span>
+                </div>
+              </div>
+            )}
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setExpTarget(null)
+                setExpResult(null)
+              }}
+              disabled={expBusy}
+            >
+              {expResult ? "Close" : "Cancel"}
+            </Button>
+            <Button onClick={submitExpertise} disabled={expBusy}>
+              {expBusy ? (
+                <>
+                  <Loader2 className="mr-1 h-4 w-4 animate-spin" />
+                  Returning…
+                </>
+              ) : (
+                <>
+                  <ClipboardCheck className="mr-1 h-4 w-4" />
+                  {expResult ? "Re-issue valuation" : "Return valuation & cost"}
+                </>
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       <Dialog open={!!creditTarget} onOpenChange={(open) => !open && setCreditTarget(null)}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>

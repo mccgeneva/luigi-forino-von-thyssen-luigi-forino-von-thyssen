@@ -2,6 +2,7 @@
 
 import { createContext, useContext, useCallback, useEffect, useRef, useState } from "react"
 import { syncMySkrRequests } from "@/app/actions/skr"
+import type { SkrExpertise } from "@/lib/skr-expertise"
 
 // ---------------------------------------------------------------------------
 // SKR (Safe Keeping Receipt) Trading Platform store.
@@ -84,6 +85,17 @@ export interface SkrRecord {
   treasuryCreditAmount?: number
   /** When the treasury credit was applied (ISO). */
   treasuryCreditedAt?: string
+  /**
+   * Expertise / evaluation / audit lifecycle. Present once a customer applies;
+   * the administrator sets the assessed value + outcome and the client accepts.
+   */
+  expertise?: SkrExpertise
+  /**
+   * Set true once an accepted expertise has blocked this SKR as MT760-style
+   * collateral (materialised as a pledgeable bank instrument). While blocked it
+   * cannot be re-applied for expertise.
+   */
+  blockedAsCollateral?: boolean
   createdAt: string // ISO
   updatedAt: string // ISO
 }
