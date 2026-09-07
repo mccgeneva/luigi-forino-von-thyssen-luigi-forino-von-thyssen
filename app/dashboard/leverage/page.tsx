@@ -1861,8 +1861,17 @@ export default function LeveragePage() {
                           <Button
                             className="w-full"
                             onClick={() => {
-                              setActiveTab("lines")
+                              const line = requests.find((r) => r.id === engagedInfo.reference)
                               setEngagementTarget(null)
+                              if (line && line.status === "approved") {
+                                // Open the real Terminate & Unwind dialog directly —
+                                // it's a portal overlay, so it works from any tab.
+                                setSwitchOffTarget(line)
+                              } else {
+                                // Already switching off (awaiting admin) or pending —
+                                // send them to the lines tab where the status shows.
+                                setActiveTab("lines")
+                              }
                             }}
                           >
                             {engagedInfo.manageLabel}
