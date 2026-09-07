@@ -4,7 +4,11 @@ import { createContext, useContext } from "react"
 import { mirrorSubmissionDetailed, mapApprovalStatus, type ApprovalRecord } from "@/lib/approval-sync"
 import { toast } from "sonner"
 import { useServerRequestList } from "@/lib/use-server-request-list"
-import { updateMyApprovalRecord, withdrawMyLeverageApplication } from "@/app/actions/approvals"
+import {
+  updateMyApprovalRecord,
+  withdrawMyLeverageApplication,
+  requestLeverageSwitchOff,
+} from "@/app/actions/approvals"
 import {
   LEVERAGE_RATIOS,
   TREASURY_LEVERAGE_RATIOS,
@@ -399,9 +403,14 @@ export function LeverageRequestsProvider({ children }: { children: React.ReactNo
         return r
       }),
     )
-    // Persist the switch-off request so the admin sees it and it survives across
-    // devices. The DB approval stays "approved"; the sub-state lives in the record.
-    persistRecord(updated)
+    // Persist + notify via the server so EVERY admin gets a bell and the request
+    // enters the cross-client switch-off queue (not just a silent record flip).
+    // The server sets the same switchoff_pending sub-state + switchOffRequestedAt,
+    // so the optimistic mutation above matches; refresh reconciles authoritatively.
+    const target = requests.find((r) => r.id === id && r.status === "approved")
+    if (target?.approvalId) {
+      void requestLeverageSwitchOff(target.approvalId).then(() => void refresh())
+    }
     return updated
   }
 

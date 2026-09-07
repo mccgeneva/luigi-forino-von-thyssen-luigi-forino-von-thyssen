@@ -122,7 +122,6 @@ import {
   LEVERAGE_ACCOUNTS,
   type LeverageRequest,
 } from "@/lib/leverage-requests-store"
-import { postedLeverageInterest } from "@/lib/leverage-financing"
 import { round2 } from "@/lib/interest-accrual"
 import { ADMIN_PASSCODE, ADMIN_SESSION_KEY } from "@/lib/admin-config"
   import { confirmAdminSession } from "@/app/actions/admin-session"
@@ -159,6 +158,10 @@ import {
   adminCountTradingFundTerminationRequests,
   adminCountInstrumentUpgradeRequests,
   adminCountInstrumentExitRequests,
+  adminListLeverageSwitchOff,
+  adminApproveLeverageSwitchOff,
+  adminRejectLeverageSwitchOff,
+  type AdminLeverageSwitchOff,
   adminDecideApproval,
   adminUpdateApprovalRecord,
   adminMarkPaymentDelivered,
@@ -316,8 +319,6 @@ export default function AdminPage() {
     approveRequest: approveLeverage,
     rejectRequest: rejectLeverage,
     modifyRatio: modifyLeverageRatio,
-    approveSwitchOff: approveLeverageSwitchOff,
-    rejectSwitchOff: rejectLeverageSwitchOff,
   } = useLeverageRequests()
   const { addReceipt, addDebit, balanceFor, entries: ledgerEntries } = useLedger()
   const logActivity = useActivityLog()
@@ -375,7 +376,7 @@ export default function AdminPage() {
   const [rejectDocReason, setRejectDocReason] = useState("")
   const [rejectLeverageTarget, setRejectLeverageTarget] = useState<LeverageRequest | null>(null)
   const [rejectLeverageReason, setRejectLeverageReason] = useState("")
-  const [rejectSwitchOffTarget, setRejectSwitchOffTarget] = useState<LeverageRequest | null>(null)
+  const [rejectSwitchOffTarget, setRejectSwitchOffTarget] = useState<AdminLeverageSwitchOff | null>(null)
   const [rejectSwitchOffReason, setRejectSwitchOffReason] = useState("")
   // Modify-ratio dialog: the active line being adjusted, the chosen new ratio
   // and an optional note for the audit trail.
@@ -644,6 +645,10 @@ export default function AdminPage() {
   const [instrumentUpgradeRequests, setInstrumentUpgradeRequests] = useState(0)
   const [skrExpertiseRequests, setSkrExpertiseRequests] = useState(0)
   const [skrPendingRequests, setSkrPendingRequests] = useState(0)
+  // Cross-client leverage lines a client asked to switch off (unwind). The
+  // sub-state lives on the still-approved approval record, so it is loaded
+  // server-side (not from the admin's own session leverage store).
+  const [switchOffQueue, setSwitchOffQueue] = useState<AdminLeverageSwitchOff[]>([])
   // The type a command-center tile deep-links into when opening the dashboard.
   const [approvalsInitialKind, setApprovalsInitialKind] = useState<ApprovalKind | undefined>(undefined)
   useEffect(() => {
@@ -685,6 +690,12 @@ export default function AdminPage() {
         if (!cancelled) setInstrumentUpgradeRequests(upgradeReq)
       } catch {
         // Non-fatal: the Bank Instruments tile just omits the upgrade-request signal.
+      }
+      try {
+        const so = await adminListLeverageSwitchOff(ADMIN_PASSCODE)
+        if (!cancelled && so.ok) setSwitchOffQueue(so.items)
+      } catch {
+        // Non-fatal: the Leverage Switch-Off tile falls back to 0.
       }
       try {
         const skrExp = await adminCountSkrExpertiseRequests(ADMIN_PASSCODE)
@@ -1233,18 +1244,6 @@ export default function AdminPage() {
         .sort((a, b) => new Date(b.submittedAt).getTime() - new Date(a.submittedAt).getTime()),
     [leverageRequests],
   )
-  // Active lines for which the client has requested a switch-off.
-  const pendingSwitchOff = useMemo(
-    () =>
-      leverageRequests
-        .filter((r) => r.status === "switchoff_pending")
-        .sort(
-          (a, b) =>
-            new Date(b.switchOffRequestedAt || b.submittedAt).getTime() -
-            new Date(a.switchOffRequestedAt || a.submittedAt).getTime(),
-        ),
-    [leverageRequests],
-  )
   // History excludes lines that are still active or awaiting a switch-off decision.
   const decidedLeverage = useMemo(
     () =>
@@ -1286,9 +1285,9 @@ export default function AdminPage() {
     })
   }, [activeLeverage])
 
-  const formatLeverageMoney = (r: LeverageRequest, value: number) =>
+  const formatLeverageMoney = (r: { currency: string }, value: number) =>
     `${r.currency} ${value.toLocaleString("en-US", { maximumFractionDigits: 0 })}`
-  const formatLeverageMoney2 = (r: LeverageRequest, value: number) =>
+  const formatLeverageMoney2 = (r: { currency: string }, value: number) =>
     `${r.currency} ${value.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 
   const handleApproveLeverage = async (request: LeverageRequest) => {
@@ -1337,65 +1336,32 @@ export default function AdminPage() {
     })
   }
 
-  // Approve a switch-off: settle accrued interest and repay the borrowed
-  // principal from the client's balance, then close the line.
-  const handleApproveSwitchOff = (request: LeverageRequest) => {
-    // Total lifetime interest, minus whatever has already been collected
-    // month-by-month by the LeverageInterestReconciler. At switch-off we only
-    // settle the REMAINDER so the client is never charged twice for the same
-    // accrued interest.
-    const totalInterest = accruedInterest(request, Date.now())
-    const alreadyPosted = postedLeverageInterest(request.id, ledgerEntries)
-    const interest = Math.max(0, round2(totalInterest - alreadyPosted))
-    const now = new Date().toISOString()
-    const repayRef = `LEV-RP-${Date.now().toString().slice(-8)}`
-    const repayEntry = addDebit({
-      id: repayRef,
-      amount: request.borrowedAmount,
-      currency: request.currency,
-      status: "completed",
-      date: now,
-      counterparty: "MCC Leverage Desk",
-      reference: request.id,
-      category: "Leverage Principal Repaid",
-      comment: `Repayment of borrowed funds on switch-off of 1:${request.leverageRatio} leverage line ${request.id} (${request.accountLabel}).`,
-    })
-    let interestRef: string | undefined
-    if (interest > 0) {
-      interestRef = `LEV-IN-${Date.now().toString().slice(-7)}`
-      addDebit({
-        id: interestRef,
-        amount: interest,
-        currency: request.currency,
-        status: "completed",
-        date: now,
-        counterparty: "MCC Leverage Desk",
-        reference: request.id,
-        category: "Leverage Debit Interest",
-        comment: `Accrued debit interest (${(request.interestRate * 100).toFixed(1)}% per year) settled on switch-off of leverage line ${request.id}.`,
-      })
+  // Approve a switch-off through the SERVER so the CLIENT's ledger is settled
+  // (principal repayment + remaining accrued interest) and the line closed —
+  // regardless of which admin is signed in. The server blocks the settlement if
+  // it would push the client beyond their authorized overdraft (borrowed funds
+  // still deployed).
+  const handleApproveSwitchOff = async (r: AdminLeverageSwitchOff) => {
+    const res = await adminApproveLeverageSwitchOff(ADMIN_PASSCODE, r.approvalId)
+    if (!res.ok) {
+      toast.error("Could not switch off leverage line", { description: res.error })
+      return
     }
-    const closed = approveLeverageSwitchOff(request.id, {
-      settledInterest: interest,
-      repayEntryId: repayEntry.id,
-      interestEntryId: interestRef,
-    })
-    if (!closed) return
+    setSwitchOffQueue((prev) => prev.filter((x) => x.approvalId !== r.approvalId))
     toast.success("Leverage switched off", {
-      description: `${request.id} closed. ${formatLeverageMoney(request, request.borrowedAmount)} principal repaid and ${formatLeverageMoney2(request, interest)} interest settled.`,
+      description: `${r.lineId} closed. ${formatLeverageMoney(r, r.borrowedAmount)} principal repaid and ${formatLeverageMoney2(r, r.interest)} interest settled from the client's Master Account.`,
     })
     logActivity({
-      action: `Administrator switched off leverage line ${request.id} (${request.accountLabel}, 1:${request.leverageRatio})`,
+      action: `Administrator switched off leverage line ${r.lineId} (${r.accountName}, 1:${r.leverageRatio})`,
       category: "Administration",
       details: {
-        summary: `Administrator approved the switch-off of leverage line ${request.id} on the ${request.accountLabel}. Accrued debit interest of ${formatLeverageMoney2(request, interest)} was settled and the borrowed principal of ${formatLeverageMoney(request, request.borrowedAmount)} was repaid from the client's balance. The leverage multiplier was removed and the interest cleared.`,
-        referenceId: request.id,
-        fundingAccount: request.accountLabel,
-        leverage: `1:${request.leverageRatio}`,
-        principalRepaid: formatLeverageMoney(request, request.borrowedAmount),
-        interestSettled: formatLeverageMoney2(request, interest),
-        principalLedgerReference: repayRef,
-        interestLedgerReference: interestRef || "(none)",
+        summary: `Administrator approved the switch-off of leverage line ${r.lineId} (${r.accountLabel}, 1:${r.leverageRatio}) held by ${r.accountName} (${r.accountEmail}). The borrowed principal of ${formatLeverageMoney(r, r.borrowedAmount)} was repaid and ${formatLeverageMoney2(r, r.interest)} accrued interest settled from the client's Master Account. The leverage multiplier was removed.`,
+        referenceId: r.lineId,
+        fundingAccount: r.accountLabel,
+        leverage: `1:${r.leverageRatio}`,
+        principalRepaid: formatLeverageMoney(r, r.borrowedAmount),
+        interestSettled: formatLeverageMoney2(r, r.interest),
+        client: `${r.accountName} (${r.accountEmail})`,
         decision: "Switched Off",
       },
     })
@@ -1513,21 +1479,26 @@ export default function AdminPage() {
     setModifyRatioNote("")
   }
 
-  const confirmRejectSwitchOff = () => {
+  const confirmRejectSwitchOff = async () => {
     if (!rejectSwitchOffTarget) return
-    const request = rejectSwitchOffTarget
-    rejectLeverageSwitchOff(request.id, rejectSwitchOffReason)
+    const r = rejectSwitchOffTarget
+    const res = await adminRejectLeverageSwitchOff(ADMIN_PASSCODE, r.approvalId, rejectSwitchOffReason)
+    if (!res.ok) {
+      toast.error("Could not decline the switch-off", { description: res.error })
+      return
+    }
+    setSwitchOffQueue((prev) => prev.filter((x) => x.approvalId !== r.approvalId))
     toast.success("Switch-off request rejected", {
-      description: `The switch-off of ${request.id} was declined. The line remains active.`,
+      description: `The switch-off of ${r.lineId} was declined. The line remains active.`,
     })
     logActivity({
-      action: `Administrator rejected the switch-off request for leverage line ${request.id} (${request.accountLabel})`,
+      action: `Administrator rejected the switch-off request for leverage line ${r.lineId} (${r.accountName})`,
       category: "Administration",
       details: {
-        summary: `Administrator rejected the client's request to switch off leverage line ${request.id} on the ${request.accountLabel}. The line remains active and debit interest continues to accrue.${rejectSwitchOffReason.trim() ? ` Reason: ${rejectSwitchOffReason.trim()}` : ""}`,
-        referenceId: request.id,
-        fundingAccount: request.accountLabel,
-        leverage: `1:${request.leverageRatio}`,
+        summary: `Administrator rejected ${r.accountName}'s request to switch off leverage line ${r.lineId} on the ${r.accountLabel}. The line remains active and debit interest continues to accrue.${rejectSwitchOffReason.trim() ? ` Reason: ${rejectSwitchOffReason.trim()}` : ""}`,
+        referenceId: r.lineId,
+        fundingAccount: r.accountLabel,
+        leverage: `1:${r.leverageRatio}`,
         decision: "Switch-Off Rejected",
         reason: rejectSwitchOffReason.trim() || "(none)",
       },
@@ -2385,7 +2356,7 @@ export default function AdminPage() {
     { id: "section-funding", view: "approvals", kind: "project_funding", label: "Project Funding", count: dbPending.project_funding ?? 0, icon: Building2 },
     { id: "section-fiduciary", view: "approvals", kind: "fiduciary", label: "Fiduciary & Assets", count: dbPending.fiduciary ?? 0, icon: Landmark },
     { id: "section-leverage", view: "approvals", kind: "leverage", label: "Leverage Lines", count: dbPending.leverage ?? 0, icon: Gauge },
-      { id: "section-switchoff", view: "approvals", kind: "leverage_switchoff", label: "Leverage Switch-Off", count: dbPending.leverage_switchoff ?? 0, icon: Power },
+      { id: "section-switchoff", view: "leverage", label: "Leverage Switch-Off", count: switchOffQueue.length, icon: Power },
       { id: "section-debit-termination", view: "approvals", kind: "debit_termination", label: "Debit Termination (overdraft)", count: dbPending.debit_termination ?? 0, icon: Undo2 },
     { id: "section-dof", view: "approvals", kind: "dof", label: "Download of Funds", count: dbPending.dof ?? 0, icon: Banknote },
     { id: "section-monetization", view: "approvals", kind: "monetization", label: "Instrument Monetization", count: dbPending.monetization ?? 0, icon: Landmark },
@@ -2420,7 +2391,7 @@ export default function AdminPage() {
         { id: "instruments", label: "Bank Instruments", description: "Approve SBLC, BG and MTN issuance requests, and review customer upgrade requests.", icon: FileText, count: pendingInstruments.length + instrumentUpgradeRequests },
         { id: "ppp", label: "Yield / PPP", description: "Review private placement & yield applications.", icon: TrendingUp, count: pendingPPP.length },
         { id: "funding", label: "Project Funding", description: "Assess AES project funding applications.", icon: Building2, count: pendingFunding.length },
-        { id: "leverage", label: "Leverage Lines", description: "Approve leverage and switch-off requests.", icon: Gauge, count: pendingLeverage.length + pendingSwitchOff.length },
+        { id: "leverage", label: "Leverage Lines", description: "Approve leverage and switch-off requests.", icon: Gauge, count: pendingLeverage.length + switchOffQueue.length },
         { id: "fiduciary", label: "Fiduciary & Assets", description: "Process fiduciary service jobs.", icon: Landmark, count: pendingFiduciary.length },
         { id: "dof", label: "Download of Funds", description: "Authorize download-of-funds requests.", icon: Banknote, count: pendingDOF.length },
         { id: "monetization", label: "Monetization", description: "Review instrument monetization requests.", icon: Layers, count: pendingMonetization.length },
@@ -2624,14 +2595,14 @@ export default function AdminPage() {
                   pendingDOF.length +
                   pendingMonetization.length +
                   pendingLeverage.length +
-                  pendingSwitchOff.length}
+                  switchOffQueue.length}
               </p>
               <p className="mt-1 text-[11px] text-muted-foreground">
                 {pending.length} payments · {pendingInstruments.length} instruments ·{" "}
                 {pendingPPP.length} PPP · {pendingFunding.length} funding ·{" "}
                 {pendingFiduciary.length} fiduciary · {pendingDOF.length} DOF ·{" "}
                 {pendingMonetization.length} monetization · {pendingLeverage.length} leverage ·{" "}
-                {pendingSwitchOff.length} switch-off
+                {switchOffQueue.length} switch-off
               </p>
             </div>
             <div className="rounded-lg bg-secondary p-3">
@@ -3828,7 +3799,7 @@ export default function AdminPage() {
           <CardTitle className="text-lg font-semibold">Pending Leverage Switch-Off</CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
-          {pendingSwitchOff.length === 0 ? (
+          {switchOffQueue.length === 0 ? (
             <div className="flex flex-col items-center justify-center gap-2 py-10 text-center">
               <Check className="h-8 w-8 text-muted-foreground" />
               <p className="text-sm text-muted-foreground">
@@ -3836,89 +3807,90 @@ export default function AdminPage() {
               </p>
             </div>
           ) : (
-            pendingSwitchOff.map((r) => {
-              const interest = accruedInterest(r, Date.now())
-              const total = r.borrowedAmount + interest
-              return (
-                <div key={r.id} className="rounded-lg border border-border bg-secondary/30 p-4">
-                  <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-                    <div className="space-y-3">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <Badge
-                          variant="outline"
-                          className="border-orange-500/20 bg-orange-500/10 text-orange-400 text-[10px]"
-                        >
-                          <Power className="mr-1 h-3 w-3" />
-                          Switch-Off Requested
-                        </Badge>
-                        <span className="font-medium text-foreground">
-                          {r.accountLabel} · 1:{r.leverageRatio}
-                        </span>
-                        <span className="text-xs text-muted-foreground">{r.id}</span>
-                        <span className="text-xs text-muted-foreground">
-                          Requested {formatTimestamp(r.switchOffRequestedAt)}
-                        </span>
-                      </div>
-                      <div className="grid gap-x-6 gap-y-2 text-sm sm:grid-cols-2">
-                        <div className="flex items-center gap-2">
-                          <Banknote className="h-4 w-4 text-muted-foreground" />
-                          <span className="text-muted-foreground">Equity:</span>
-                          <span className="font-medium text-foreground">
-                            {formatLeverageMoney(r, r.equity)}
-                          </span>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <Gauge className="h-4 w-4 text-muted-foreground" />
-                          <span className="text-muted-foreground">Activated:</span>
-                          <span className="text-foreground">{formatTimestamp(r.activatedAt)}</span>
-                        </div>
-                      </div>
+            switchOffQueue.map((r) => (
+              <div key={r.approvalId} className="rounded-lg border border-border bg-secondary/30 p-4">
+                <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                  <div className="space-y-3">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Badge
+                        variant="outline"
+                        className="border-orange-500/20 bg-orange-500/10 text-orange-400 text-[10px]"
+                      >
+                        <Power className="mr-1 h-3 w-3" />
+                        Switch-Off Requested
+                      </Badge>
+                      <span className="font-medium text-foreground">
+                        {r.accountLabel} · 1:{r.leverageRatio}
+                      </span>
+                      <span className="text-xs text-muted-foreground">{r.lineId}</span>
+                      <span className="text-xs text-muted-foreground">
+                        Requested {formatTimestamp(r.switchOffRequestedAt ?? undefined)}
+                      </span>
                     </div>
-
-                    <div className="flex flex-col items-stretch gap-3 lg:w-64 lg:shrink-0">
-                      <div className="space-y-1.5 rounded-lg border border-border bg-card p-3 text-sm">
-                        <div className="flex items-center justify-between">
-                          <span className="text-muted-foreground">Principal to repay</span>
-                          <span className="font-semibold text-foreground">
-                            {formatLeverageMoney(r, r.borrowedAmount)}
-                          </span>
-                        </div>
-                        <div className="flex items-center justify-between">
-                          <span className="text-muted-foreground">Accrued interest</span>
-                          <span className="font-semibold text-orange-400">
-                            {formatLeverageMoney2(r, interest)}
-                          </span>
-                        </div>
-                        <div className="flex items-center justify-between border-t border-border pt-1.5">
-                          <span className="font-medium text-foreground">Total deducted</span>
-                          <span className="font-bold text-foreground">
-                            {formatLeverageMoney2(r, total)}
-                          </span>
-                        </div>
+                    <div className="text-sm">
+                      <span className="text-muted-foreground">Client: </span>
+                      <span className="font-medium text-foreground">{r.accountName}</span>
+                      <span className="text-muted-foreground"> · {r.accountEmail}</span>
+                    </div>
+                    <div className="grid gap-x-6 gap-y-2 text-sm sm:grid-cols-2">
+                      <div className="flex items-center gap-2">
+                        <Banknote className="h-4 w-4 text-muted-foreground" />
+                        <span className="text-muted-foreground">Equity:</span>
+                        <span className="font-medium text-foreground">
+                          {formatLeverageMoney(r, r.equity)}
+                        </span>
                       </div>
-                      <div className="flex gap-2">
-                        <Button className="flex-1" size="sm" onClick={() => handleApproveSwitchOff(r)}>
-                          <Power className="mr-1 h-4 w-4" />
-                          Approve &amp; Settle
-                        </Button>
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          className="flex-1 border-destructive/30 text-destructive hover:bg-destructive/10 hover:text-destructive"
-                          onClick={() => {
-                            setRejectSwitchOffReason("")
-                            setRejectSwitchOffTarget(r)
-                          }}
-                        >
-                          <X className="mr-1 h-4 w-4" />
-                          Reject
-                        </Button>
+                      <div className="flex items-center gap-2">
+                        <Gauge className="h-4 w-4 text-muted-foreground" />
+                        <span className="text-muted-foreground">Activated:</span>
+                        <span className="text-foreground">{formatTimestamp(r.activatedAt ?? undefined)}</span>
                       </div>
                     </div>
                   </div>
+
+                  <div className="flex flex-col items-stretch gap-3 lg:w-64 lg:shrink-0">
+                    <div className="space-y-1.5 rounded-lg border border-border bg-card p-3 text-sm">
+                      <div className="flex items-center justify-between">
+                        <span className="text-muted-foreground">Principal to repay</span>
+                        <span className="font-semibold text-foreground">
+                          {formatLeverageMoney(r, r.borrowedAmount)}
+                        </span>
+                      </div>
+                      <div className="flex items-center justify-between">
+                        <span className="text-muted-foreground">Accrued interest</span>
+                        <span className="font-semibold text-orange-400">
+                          {formatLeverageMoney2(r, r.interest)}
+                        </span>
+                      </div>
+                      <div className="flex items-center justify-between border-t border-border pt-1.5">
+                        <span className="font-medium text-foreground">Total deducted</span>
+                        <span className="font-bold text-foreground">
+                          {formatLeverageMoney2(r, r.total)}
+                        </span>
+                      </div>
+                    </div>
+                    <div className="flex gap-2">
+                      <Button className="flex-1" size="sm" onClick={() => handleApproveSwitchOff(r)}>
+                        <Power className="mr-1 h-4 w-4" />
+                        Approve &amp; Settle
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="flex-1 border-destructive/30 text-destructive hover:bg-destructive/10 hover:text-destructive"
+                        onClick={() => {
+                          setRejectSwitchOffReason("")
+                          setRejectSwitchOffTarget(r)
+                        }}
+                      >
+                        <X className="mr-1 h-4 w-4" />
+                        Reject
+                      </Button>
+                    </div>
+                  </div>
                 </div>
-              )
-            })
+              </div>
+            ))
           )}
         </CardContent>
       </Card>
@@ -6231,8 +6203,8 @@ export default function AdminPage() {
               <DialogHeader>
                 <DialogTitle>Reject Switch-Off Request</DialogTitle>
                 <DialogDescription>
-                  Decline the switch-off of line {rejectSwitchOffTarget.id} (
-                  {rejectSwitchOffTarget.accountLabel} 1:{rejectSwitchOffTarget.leverageRatio}). The line
+                      Decline the switch-off of line {rejectSwitchOffTarget.lineId} (
+                      {rejectSwitchOffTarget.accountLabel} 1:{rejectSwitchOffTarget.leverageRatio}). The line
                   stays active and debit interest keeps accruing.
                 </DialogDescription>
               </DialogHeader>
@@ -6427,7 +6399,7 @@ export default function AdminPage() {
               <DialogHeader>
                 <DialogTitle>Reject Switch-Off Request</DialogTitle>
                 <DialogDescription>
-                  Decline the switch-off of line {rejectSwitchOffTarget.id} (
+                  Decline the switch-off of line {rejectSwitchOffTarget.lineId} (
                   {rejectSwitchOffTarget.accountLabel} �� 1:{rejectSwitchOffTarget.leverageRatio}). The line
                   stays active and debit interest keeps accruing.
                 </DialogDescription>

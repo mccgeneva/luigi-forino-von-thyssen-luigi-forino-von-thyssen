@@ -54,6 +54,9 @@ import { findInstrumentType } from "@/lib/instrument-marketplace"
 import { buildInstrumentIdentifiers, generateCusip } from "@/lib/instrument-identifiers"
 import { buildInternalLoanPosts } from "@/lib/internal-loan"
 import { isLiveRequest } from "@/lib/live-request"
+import { accruedInterest } from "@/lib/leverage-interest"
+import { postedLeverageInterest } from "@/lib/leverage-financing"
+import type { LeverageRequest } from "@/lib/leverage-requests-store"
 import { listSkrRecordsForUser, patchSkrExpertiseForUser } from "@/lib/skr-db"
 import type { LedgerEntry } from "@/lib/ledger-store"
 import { insertNotification } from "@/lib/notifications-db"
@@ -3887,6 +3890,296 @@ export async function adminListTradingFundPositions(
   } catch (err) {
     console.log("[v0] adminListTradingFundPositions failed:", (err as Error).message)
     return { ok: false, error: "Positions could not be loaded. Please try again." }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Leverage switch-off (server-side, cross-client).
+// A client asks to close (unwind) an active leverage line. This is NOT a
+// separate approval row — the line stays a kind:"leverage" approval and the
+// sub-state lives in `payload.record.status` ("switchoff_pending"). These
+// actions (a) fire an admin bell on request, (b) expose the CROSS-CLIENT queue
+// + count for the admin panel, and (c) settle the CLIENT's ledger (principal
+// repayment + accrued interest) on approval — with an overdraft gate — or
+// reactivate the line on reject. Previously the switch-off only flipped the
+// client-side record with no admin signal, and the admin card/approve settled
+// the ADMIN's own session ledger, so a client's switch-off never reached them.
+// ---------------------------------------------------------------------------
+
+const switchOffRound2 = (n: number) => Math.round((n + Number.EPSILON) * 100) / 100
+
+/** A leverage line awaiting a switch-off decision, for the admin panel. */
+export interface AdminLeverageSwitchOff {
+  approvalId: string
+  userId: string
+  accountName: string
+  accountEmail: string
+  lineId: string
+  accountLabel: string
+  leverageRatio: number
+  currency: string
+  equity: number
+  borrowedAmount: number
+  interestRate: number
+  activatedAt: string | null
+  switchOffRequestedAt: string | null
+  interest: number
+  total: number
+}
+
+/** Client requests to switch off (unwind) an active leverage line. */
+export async function requestLeverageSwitchOff(
+  approvalId: string,
+): Promise<{ ok: boolean; error?: string }> {
+  const session = await resolveCurrentSession()
+  if (!session) return { ok: false, error: "Your session has expired. Please sign in again." }
+  try {
+    const existing = await getApprovalById(approvalId)
+    if (!existing || existing.kind !== "leverage") return { ok: false, error: "Leverage line not found." }
+    const memberIds = await resolveEnvironmentMemberIds(session.id)
+    if (existing.userId !== session.id && !memberIds.includes(existing.userId)) {
+      return { ok: false, error: "You cannot modify this leverage line." }
+    }
+    const payload = existing.payload ?? {}
+    const record = (payload.record as Record<string, unknown> | undefined) ?? {}
+    const recStatus = String(record.status ?? "")
+    if (recStatus === "closed") return { ok: false, error: "This leverage line is already closed." }
+    if (recStatus === "switchoff_pending") return { ok: true } // already queued — idempotent
+    const now = new Date().toISOString()
+    const updated = await updateApprovalPayload(approvalId, {
+      ...payload,
+      record: { ...record, status: "switchoff_pending", switchOffRequestedAt: now },
+    })
+    if (!updated) return { ok: false, error: "The leverage line could not be updated." }
+    // Fan an admin bell out (deep-linked to the Leverage desk) so the custody
+    // desk sees it — a silent record flip is not a signal.
+    try {
+      const profile = await resolveAccountProfileById(existing.userId)
+      const clientLabel = profile.fullName || profile.company || "A client"
+      const currency = String(record.currency ?? "EUR")
+      const borrowed = Number(record.borrowedAmount) || 0
+      const lineId = String(record.id ?? existing.title ?? approvalId)
+      const seen = new Set<string>()
+      for (const email of adminEmails()) {
+        const admin = await getDynamicUserByEmail(email).catch(() => undefined)
+        if (!admin || admin.id === existing.userId || admin.id === session.id || seen.has(admin.id)) continue
+        seen.add(admin.id)
+        await insertNotification({
+          userId: admin.id,
+          tone: "warning",
+          title: "Leverage switch-off requested",
+          body: `${clientLabel} requested to switch off leverage line ${lineId}${borrowed > 0 ? ` (repay ${currency} ${borrowed.toLocaleString("en-US")})` : ""}. Open the Leverage desk to approve & settle or decline.`,
+          href: "/dashboard/admin?view=leverage",
+        }).catch(() => undefined)
+      }
+    } catch {
+      // best-effort — never fail the request over a notification
+    }
+    return { ok: true }
+  } catch (err) {
+    console.log("[v0] requestLeverageSwitchOff failed:", (err as Error).message)
+    return { ok: false, error: "The switch-off request could not be sent. Please try again." }
+  }
+}
+
+/** Cross-client list of leverage lines awaiting a switch-off decision. */
+export async function adminListLeverageSwitchOff(
+  passcode: string,
+): Promise<{ ok: true; items: AdminLeverageSwitchOff[] } | { ok: false; error: string }> {
+  if (!(await adminOk(passcode))) return { ok: false, error: "Administrator authorization failed." }
+  try {
+    const reqs = await listAllApprovals({ kind: "leverage", status: "approved" })
+    const items: AdminLeverageSwitchOff[] = []
+    for (const req of reqs) {
+      const record = req.payload?.record as LeverageRequest | undefined
+      if (!record || String(record.status ?? "") !== "switchoff_pending") continue
+      const ownerId = await resolveDataOwnerIdFor(req.userId)
+      const entries = await readLedgerEntries(ownerId)
+      const totalInterest = accruedInterest(record, Date.now())
+      const alreadyPosted = postedLeverageInterest(record.id, entries)
+      const interest = Math.max(0, switchOffRound2(totalInterest - alreadyPosted))
+      const profile = await resolveAccountProfileById(req.userId)
+      const borrowed = Number(record.borrowedAmount) || 0
+      items.push({
+        approvalId: req.id,
+        userId: req.userId,
+        accountName: profile.fullName,
+        accountEmail: profile.email,
+        lineId: record.id,
+        accountLabel: record.accountLabel,
+        leverageRatio: record.leverageRatio,
+        currency: record.currency || "EUR",
+        equity: Number(record.equity) || 0,
+        borrowedAmount: borrowed,
+        interestRate: Number(record.interestRate) || 0,
+        activatedAt: record.activatedAt ?? null,
+        switchOffRequestedAt: record.switchOffRequestedAt ?? null,
+        interest,
+        total: switchOffRound2(borrowed + interest),
+      })
+    }
+    items.sort(
+      (a, b) =>
+        new Date(b.switchOffRequestedAt || 0).getTime() - new Date(a.switchOffRequestedAt || 0).getTime(),
+    )
+    return { ok: true, items }
+  } catch (err) {
+    console.log("[v0] adminListLeverageSwitchOff failed:", (err as Error).message)
+    return { ok: false, error: "Switch-off requests could not be loaded. Please try again." }
+  }
+}
+
+/**
+ * Admin approves a switch-off: repay the borrowed principal + settle the
+ * remaining accrued interest from the CLIENT's master account, then close the
+ * line. Blocked if it would push the account beyond its authorized overdraft
+ * (the borrowed funds are likely still deployed and must be returned first).
+ */
+export async function adminApproveLeverageSwitchOff(
+  passcode: string,
+  approvalId: string,
+): Promise<DecideResult> {
+  if (!(await adminOk(passcode))) return { ok: false, error: "Administrator authorization failed." }
+  try {
+    const existing = await getApprovalById(approvalId)
+    if (!existing || existing.kind !== "leverage") return { ok: false, error: "Leverage line not found." }
+    const payload = existing.payload ?? {}
+    const record = payload.record as LeverageRequest | undefined
+    if (!record) return { ok: false, error: "This leverage line has no record to settle." }
+    const recStatus = String(record.status ?? "")
+    if (recStatus === "closed") return { ok: false, error: "This leverage line is already closed." }
+    if (recStatus !== "switchoff_pending") return { ok: false, error: "This line has no pending switch-off request." }
+
+    const currency = record.currency || "EUR"
+    const principal = Math.max(0, Number(record.borrowedAmount) || 0)
+    const ownerId = await resolveDataOwnerIdFor(existing.userId)
+    const entries = await readLedgerEntries(ownerId)
+    const totalInterest = accruedInterest(record, Date.now())
+    const alreadyPosted = postedLeverageInterest(record.id, entries)
+    const interest = Math.max(0, switchOffRound2(totalInterest - alreadyPosted))
+
+    // OVERDRAFT GATE. Repaying principal + interest debits the master account.
+    // Allow within the authorized overdraft; otherwise refuse and ask the admin
+    // to have the client return/settle the deployed funds (or fund the account).
+    try {
+      const netSettlementEur = switchOffRound2(convertCurrency(-(principal + interest), currency, "EUR"))
+      const od = await getOverdraftStatusForOwner(ownerId)
+      const projectedEur = switchOffRound2(od.balanceEur + netSettlementEur)
+      const projected = computeOverdraftStatus(od.depositBaseEur, projectedEur)
+      if (projected.breachRatio > 1.0001) {
+        const overBy = `EUR ${switchOffRound2(projected.negativeEur - projected.limitEur).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+        return {
+          ok: false,
+          error:
+            `Switching off ${record.id} repays ${currency} ${(principal + interest).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} and would take the client's Master Account ${overBy} beyond their authorized overdraft (EUR ${od.limitEur.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}). The borrowed funds are likely still deployed — have the client return/settle them or fund the account before closing this line.`,
+        }
+      }
+    } catch (guardErr) {
+      console.log("[v0] switch-off overdraft guard could not evaluate (proceeding):", (guardErr as Error).message)
+    }
+
+    const now = new Date().toISOString()
+    const repayRef = `LEV-RP-${approvalId}`
+    await upsertLedgerEntry(ownerId, {
+      id: repayRef,
+      direction: "debit",
+      amount: principal,
+      currency,
+      status: "completed",
+      date: now,
+      counterparty: "MCC Leverage Desk",
+      bank: "MCC Capital",
+      reference: record.id,
+      category: "Leverage Principal Repaid",
+      comment: `Repayment of borrowed funds on switch-off of 1:${record.leverageRatio} leverage line ${record.id} (${record.accountLabel}).`,
+    })
+    let interestRef: string | undefined
+    if (interest > 0) {
+      interestRef = `LEV-IN-${approvalId}`
+      await upsertLedgerEntry(ownerId, {
+        id: interestRef,
+        direction: "debit",
+        amount: interest,
+        currency,
+        status: "completed",
+        date: now,
+        counterparty: "MCC Leverage Desk",
+        bank: "MCC Capital",
+        reference: record.id,
+        category: "Leverage Debit Interest",
+        comment: `Accrued debit interest (${(Number(record.interestRate) * 100).toFixed(1)}% per year) settled on switch-off of leverage line ${record.id}.`,
+      })
+    }
+    const updated = await updateApprovalPayload(approvalId, {
+      ...payload,
+      record: {
+        ...record,
+        status: "closed",
+        closedAt: now,
+        settledInterest: interest,
+        repayEntryId: repayRef,
+        interestEntryId: interestRef,
+      },
+    })
+    if (!updated) return { ok: false, error: "The leverage line could not be closed." }
+    try {
+      await insertNotification({
+        userId: existing.userId,
+        tone: "success",
+        title: "Leverage line switched off",
+        body: `Your 1:${record.leverageRatio} leverage line ${record.id} has been closed. ${currency} ${principal.toLocaleString("en-US")} principal was repaid${interest > 0 ? ` and ${currency} ${interest.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} accrued interest settled` : ""} from your Master Account.`,
+        href: "/dashboard/leverage",
+      })
+    } catch {
+      // best-effort notification
+    }
+    return { ok: true, request: updated }
+  } catch (err) {
+    console.log("[v0] adminApproveLeverageSwitchOff failed:", (err as Error).message)
+    return { ok: false, error: "The switch-off could not be completed. Please try again." }
+  }
+}
+
+/** Admin declines a switch-off: the line stays active, nothing is settled. */
+export async function adminRejectLeverageSwitchOff(
+  passcode: string,
+  approvalId: string,
+  reason?: string,
+): Promise<DecideResult> {
+  if (!(await adminOk(passcode))) return { ok: false, error: "Administrator authorization failed." }
+  try {
+    const existing = await getApprovalById(approvalId)
+    if (!existing || existing.kind !== "leverage") return { ok: false, error: "Leverage line not found." }
+    const payload = existing.payload ?? {}
+    const record = payload.record as LeverageRequest | undefined
+    if (!record || String(record.status ?? "") !== "switchoff_pending") {
+      return { ok: false, error: "This line has no pending switch-off request." }
+    }
+    const updated = await updateApprovalPayload(approvalId, {
+      ...payload,
+      record: {
+        ...record,
+        status: "approved",
+        switchOffRequestedAt: undefined,
+        decisionNote: reason?.trim() || undefined,
+      },
+    })
+    if (!updated) return { ok: false, error: "The leverage line could not be updated." }
+    try {
+      await insertNotification({
+        userId: existing.userId,
+        tone: "info",
+        title: "Leverage switch-off declined",
+        body: `Your request to switch off leverage line ${record.id} was declined${reason?.trim() ? ` — ${reason.trim()}` : ""}. The line remains active and debit interest continues to accrue.`,
+        href: "/dashboard/leverage",
+      })
+    } catch {
+      // best-effort notification
+    }
+    return { ok: true, request: updated }
+  } catch (err) {
+    console.log("[v0] adminRejectLeverageSwitchOff failed:", (err as Error).message)
+    return { ok: false, error: "The switch-off could not be declined. Please try again." }
   }
 }
 
