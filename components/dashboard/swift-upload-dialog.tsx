@@ -190,8 +190,9 @@ export function SwiftUploadDialog({ onSubmitted }: SwiftUploadDialogProps) {
             Upload SWIFT printout receipt
           </DialogTitle>
           <DialogDescription>
-            Received an incoming SWIFT (e.g. an MT760 blocked-funds guarantee) from your counterparty? Upload the bank
-            printout and we&apos;ll transmit it to the platform for verification and action.
+            Received an incoming SWIFT or a bank instrument (MT760 blocked-funds guarantee, BG, SBLC, DLC, MTN or Bond)
+            from your counterparty? Upload the bank printout and we&apos;ll transmit it to the platform for verification
+            and action.
           </DialogDescription>
         </DialogHeader>
 
@@ -285,8 +286,9 @@ export function SwiftUploadDialog({ onSubmitted }: SwiftUploadDialogProps) {
 
           <p className="flex items-start gap-1.5 text-xs text-muted-foreground">
             <ShieldCheck className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-            Submitting does not credit or book anything automatically. An administrator verifies the message; for an
-            MT760 it is then booked to your Bank Instruments as pledgeable blocked-funds collateral.
+            Submitting does not credit or book anything automatically. An administrator verifies the message and books
+            the recognized bank instrument (BG, SBLC, DLC, MTN, Bond or an MT760 blocked-funds guarantee) to your Bank
+            Instruments as pledgeable collateral.
           </p>
         </div>
 

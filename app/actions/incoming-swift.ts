@@ -35,6 +35,7 @@ import { getFeeTiers } from "@/lib/tiered-fees-db"
 import { upsertLedgerEntry, readLedgerEntries, availableByCurrency } from "@/lib/ledger-db"
 import { getOverdraftStatusForOwner } from "@/lib/overdraft"
 import { adminIssueInstrument } from "@/app/actions/approvals"
+import { findInstrumentType } from "@/lib/instrument-marketplace"
 import type { GatewayAccount } from "@/lib/gateway-store"
 import type { LedgerEntry } from "@/lib/ledger-store"
 
@@ -846,6 +847,11 @@ export async function recordGuaranteeInstrumentAdmin(
   // reducing the 0.2% receipt fee. When omitted, the customer's preset SWIFT
   // cashback (if any) applies instead.
   cashbackRateOverride?: number,
+  // Optional booking overrides. The admin recognizes the printout and picks the
+  // instrument type (BG / SBLC / DLC / MTN / Bond / …) plus confirms the face
+  // value + currency (auto-filled from the parse, but editable — MTN/Bond
+  // printouts are not SWIFT guarantee messages so the parse can be partial).
+  overrides?: { instrumentTypeCode?: string; faceValue?: number; currency?: string },
 ): Promise<GuaranteeResult> {
   if (!(await adminActionAuthorized(passcode))) {
     return { ok: false, error: "Administrator authorization failed." }
@@ -861,18 +867,39 @@ export async function recordGuaranteeInstrumentAdmin(
   }
 
   try {
-    // Re-parse the raw FIN so every value is authoritative.
+    // Re-parse the raw FIN so every value is authoritative. BG/SBLC arrive as an
+    // MT760, but DLC (MT700) and MTN/Bond printouts are not guarantee messages —
+    // the admin recognises the printout and picks the type, so we accept the
+    // parse as a best-effort source for amount/currency/parties, overridable.
     const parsed = parseSwiftMessage(message.raw)
-    if (parsed.type !== "MT760") {
-      return { ok: false, error: "Only an MT760 bank guarantee can be booked as blocked-funds collateral." }
-    }
     const g = parsed.guarantee
-    const faceValue = Number(g?.amount ?? parsed.amount ?? 0)
-    const currency = (g?.currency ?? parsed.currency ?? message.currency ?? "").toUpperCase()
+    const parsedFace = Number(g?.amount ?? parsed.amount ?? 0)
+    const parsedCurrency = (g?.currency ?? parsed.currency ?? message.currency ?? "").toUpperCase()
+    const faceValue =
+      typeof overrides?.faceValue === "number" && Number.isFinite(overrides.faceValue) && overrides.faceValue > 0
+        ? overrides.faceValue
+        : parsedFace
+    const currency = (overrides?.currency || parsedCurrency).toUpperCase()
     if (!Number.isFinite(faceValue) || faceValue <= 0) {
-      return { ok: false, error: "The MT760 has no valid undertaking amount (:32B:)." }
+      return { ok: false, error: "Enter a valid face value for this instrument." }
     }
-    if (!currency) return { ok: false, error: "The MT760 has no undertaking currency." }
+    if (!currency) return { ok: false, error: "Enter the instrument currency." }
+
+    // Resolve the chosen instrument type from the catalog (assignable/monetizable
+    // rules per type). Falls back to the MT760 blocked-funds treatment when the
+    // admin does not pick a type AND the message is an MT760 guarantee.
+    const typeMeta = overrides?.instrumentTypeCode
+      ? findInstrumentType(overrides.instrumentTypeCode)
+      : undefined
+    if (overrides?.instrumentTypeCode && !typeMeta) {
+      return { ok: false, error: "Unknown instrument type." }
+    }
+    if (!typeMeta && parsed.type !== "MT760") {
+      return {
+        ok: false,
+        error: "Choose the instrument type (BG / SBLC / DLC / MTN / Bond) to book this printout.",
+      }
+    }
 
     // -----------------------------------------------------------------------
     // Solvency gate — the customer must be able to cover the 0.2% receipt fee,
@@ -951,36 +978,47 @@ export async function recordGuaranteeInstrumentAdmin(
     const formLabel =
       g?.form === "STBY" ? "Standby Letter of Credit" : g?.form === "DGAR" ? "Demand Guarantee" : "Bank Guarantee"
 
-    // Deterministic instrument id derived from the message, so re-running is safe.
-    const instrumentId = `MT760-${message.id}`
+    // The instrument's shape depends on whether the admin recognised a specific
+    // type (BG/SBLC/DLC/MTN/Bond/…) or is booking a bare MT760 blocked-funds
+    // guarantee. A typed instrument follows the catalog's assignable/monetizable
+    // rules; the MT760 fallback stays single-use blocked-funds collateral.
+    const typeCode = typeMeta?.code ?? "MT760"
+    const typeFull = typeMeta
+      ? typeMeta.full
+      : `MT760 ${formLabel} (Blocked Funds)`
+    const instrumentId = `${typeCode}-${message.id}`
     const instrument: Record<string, unknown> = {
       id: instrumentId,
-      type: "MT760",
-      typeFull: `MT760 ${formLabel} (Blocked Funds)`,
+      type: typeCode,
+      typeFull,
       issuer,
       issuerBic: message.senderBic || undefined,
       faceValue,
       currency,
       rating: "AAA",
-      purpose: "Blocked-funds guarantee — pledgeable as treasury leverage collateral",
-      // A blocked-funds guarantee is single-use collateral: it can be MONETIZED
-      // (raise liquidity against it) and pledged for a Leverage/PPP line, but it
-      // must NEVER be assigned/transferred to a third party — the funds are
-      // blocked on behalf of this holder, so handing off the guarantee is not
-      // permitted. Hence monetizable:true, assignable:false.
-      assignable: false,
-      monetizable: true,
-      blocked: false, // pledgeable for leverage; "blocked" here means an upgrade-in-progress lock, which does NOT apply
+      purpose: typeMeta
+        ? `${typeMeta.purpose} — pledgeable as treasury leverage / PPP collateral`
+        : "Blocked-funds guarantee — pledgeable as treasury leverage collateral",
+      // Capability follows the catalog per type. The MT760 fallback is single-use
+      // blocked-funds collateral: monetizable + pledgeable but NEVER assignable
+      // (funds blocked on behalf of the holder). A typed instrument uses its
+      // catalog rules (e.g. BG/SBLC/MTN/Bond assignable + monetizable; DLC
+      // monetizable only). All remain pledgeable for a Leverage/PPP line.
+      assignable: typeMeta ? typeMeta.assignable : false,
+      monetizable: typeMeta ? typeMeta.monetizable : true,
+      blocked: false, // "blocked" here means an upgrade-in-progress lock, which does NOT apply
       owner: message.matchedAccountHolder || applicantName || undefined,
       issuedDate,
       expiryDate,
       daysRemaining,
-      deliveryMethod: "SWIFT MT760",
-      form: formLabel,
-      governingLaw: g?.applicableRules || "URDG 758",
+      deliveryMethod: `SWIFT ${parsed.type ?? "printout"}`,
+      form: typeMeta ? undefined : formLabel,
+      governingLaw: g?.applicableRules || (typeMeta ? undefined : "URDG 758"),
       placeOfIssue: undefined,
       // Trade-finance provenance for the instrument detail view.
-      tradeType: "Blocked-funds guarantee (MT760)",
+      tradeType: typeMeta
+        ? `Received via SWIFT (${parsed.type ?? "printout"})`
+        : "Blocked-funds guarantee (MT760)",
     }
 
     // Materialise the instrument in the customer's portfolio (reuses the audited,
@@ -991,11 +1029,16 @@ export async function recordGuaranteeInstrumentAdmin(
     }
     const approvalId = issued.request.id
 
+    // Human label for the booked instrument (e.g. "Bank Guarantee (BG)" or
+    // "MT760 blocked-funds guarantee"), reused across the fee note, stamp,
+    // notification and audit log.
+    const bookLabel = typeMeta ? `${typeMeta.full} (${typeMeta.code})` : "MT760 blocked-funds guarantee"
+
     // Charge the 0.2% receipt fee to the customer's Master Account (data owner).
     // feeAmount / feeLabel / ledgerOwnerId were computed and affordability-gated above.
     if (feeAmount > 0) {
       const feeEntry: LedgerEntry = {
-        id: `MT760-FEE-${approvalId}`,
+        id: `INSTR-RECEIPT-FEE-${approvalId}`,
         direction: "debit",
         amount: feeAmount,
         currency,
@@ -1003,13 +1046,13 @@ export async function recordGuaranteeInstrumentAdmin(
         date: issuedDate,
         counterparty: "NAFTAhub Treasury",
         reference: instrumentId,
-        category: "Blocked-Funds Guarantee Receipt Fee (0.2%)",
-        comment: `0.2% receipt fee on a ${currency} ${faceValue.toLocaleString("en-US")} MT760 blocked-funds guarantee from ${issuer}${message.uetr ? ` (UETR ${message.uetr})` : ""}. If ${currency} is short it is auto-covered from your strongest funded currency.${cashbackNote(receiptCashback, currency)}`,
+        category: "Bank Instrument Receipt Fee (0.2%)",
+        comment: `0.2% receipt fee on a ${currency} ${faceValue.toLocaleString("en-US")} ${bookLabel} from ${issuer}${message.uetr ? ` (UETR ${message.uetr})` : ""}. If ${currency} is short it is auto-covered from your strongest funded currency.${cashbackNote(receiptCashback, currency)}`,
       }
       try {
         await upsertLedgerEntry(ledgerOwnerId, feeEntry)
       } catch (err) {
-        console.log("[v0] guarantee receipt fee post failed:", (err as Error).message)
+        console.log("[v0] instrument receipt fee post failed:", (err as Error).message)
       }
     }
 
@@ -1020,7 +1063,7 @@ export async function recordGuaranteeInstrumentAdmin(
     const stamped = await markIncomingSwiftCredited(
       message.id,
       approvalId,
-      `${instrumentLabel} MT760 guarantee (fee ${feeLabel})`,
+      `${instrumentLabel} ${bookLabel} (fee ${feeLabel})`,
     )
     if (!stamped) {
       return { ok: false, alreadyBooked: true, error: "This message has already been processed." }
@@ -1029,23 +1072,24 @@ export async function recordGuaranteeInstrumentAdmin(
     await insertNotification({
       userId: message.userId,
       tone: "success",
-      title: `Blocked-funds guarantee received — ${instrumentLabel}`,
-      body: `An MT760 bank guarantee of ${instrumentLabel} from ${issuer} was booked to your Bank Instruments as blocked-funds collateral. A ${feeLabel} receipt fee (0.2%) was applied. You can pledge it for a treasury leverage line under Leverage → Bank Instruments.`,
+      title: `Bank instrument received — ${instrumentLabel}`,
+      body: `A ${bookLabel} of ${instrumentLabel} from ${issuer} was booked to your Bank Instruments. A ${feeLabel} receipt fee (0.2%) was applied. You can pledge it for a treasury leverage / PPP line under Leverage → Bank Instruments.`,
       href: "/dashboard/instruments",
     })
 
     await logActivity({
-      action: `MT760 blocked-funds guarantee (${instrumentLabel}) booked for ${message.matchedAccountHolder ?? message.userId} and 0.2% receipt fee ${feeLabel} charged`,
+      action: `${bookLabel} (${instrumentLabel}) booked for ${message.matchedAccountHolder ?? message.userId} and 0.2% receipt fee ${feeLabel} charged`,
       category: "SWIFT",
       details: {
-        summary: `Administrator booked inbound SWIFT MT760 (${message.id}, beneficiary IBAN ${message.beneficiaryIban || "n/a"}${message.uetr ? `, UETR ${message.uetr}` : ""}) as a pledgeable bank guarantee instrument ${instrumentId} (approval ${approvalId}) of ${instrumentLabel} for ${message.matchedAccountHolder ?? message.userId}, and charged a ${feeLabel} receipt fee (0.2%) to the Master Account.`,
+        summary: `Administrator booked inbound SWIFT (${message.id}, beneficiary IBAN ${message.beneficiaryIban || "n/a"}${message.uetr ? `, UETR ${message.uetr}` : ""}) as a pledgeable ${bookLabel} instrument ${instrumentId} (approval ${approvalId}) of ${instrumentLabel} for ${message.matchedAccountHolder ?? message.userId}, and charged a ${feeLabel} receipt fee (0.2%) to the Master Account.`,
         messageId: message.id,
         matchedUserId: message.userId,
         instrumentId,
         approvalId,
+        instrumentType: typeCode,
         faceValue: instrumentLabel,
         fee: feeLabel,
-        decision: "Blocked-funds guarantee booked",
+        decision: "Bank instrument booked",
       },
     })
 
