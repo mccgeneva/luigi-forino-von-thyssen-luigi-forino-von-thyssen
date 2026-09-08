@@ -36,6 +36,7 @@ import { upsertLedgerEntry, readLedgerEntries, availableByCurrency } from "@/lib
 import { getOverdraftStatusForOwner } from "@/lib/overdraft"
 import { adminIssueInstrument } from "@/app/actions/approvals"
 import { findInstrumentType } from "@/lib/instrument-marketplace"
+import { buildInstrumentIdentifiers } from "@/lib/instrument-identifiers"
 import type { GatewayAccount } from "@/lib/gateway-store"
 import type { LedgerEntry } from "@/lib/ledger-store"
 
@@ -987,12 +988,23 @@ export async function recordGuaranteeInstrumentAdmin(
       ? typeMeta.full
       : `MT760 ${formLabel} (Blocked Funds)`
     const instrumentId = `${typeCode}-${message.id}`
+    // Generate a STABLE ISIN (+ common code, serial, and a US CUSIP where the
+    // issuer is US) now, at booking time, when the printout carries none — the
+    // SWIFT parse for a BG/SBLC/MTN/Bond has no ISIN. Stamping it here persists a
+    // single fixed identifier; the client materialiser only lazily mints (and
+    // would otherwise recompute a DIFFERENT random ISIN on every read/device).
+    // Deterministic id fields only — SWIFT-derived provenance below is untouched.
+    const ids = buildInstrumentIdentifiers(issuer, typeCode, new Date(issuedDate))
     const instrument: Record<string, unknown> = {
       id: instrumentId,
       type: typeCode,
       typeFull,
       issuer,
       issuerBic: message.senderBic || undefined,
+      isin: ids.isin,
+      commonCode: ids.commonCode,
+      cusip: ids.cusip,
+      serialNumber: ids.serialNumber,
       faceValue,
       currency,
       rating: "AAA",
