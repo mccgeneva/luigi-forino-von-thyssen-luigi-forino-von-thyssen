@@ -22,10 +22,13 @@ import { Badge } from "@/components/ui/badge"
 import { Textarea } from "@/components/ui/textarea"
 import { Input } from "@/components/ui/input"
 import { applyCashback, formatCashbackPct } from "@/lib/fee-cashback"
+import { instrumentTypesByCategory } from "@/lib/instrument-marketplace"
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
+  SelectLabel,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
@@ -155,6 +158,11 @@ export function IncomingSwiftDelivery() {
   const [booking, setBooking] = useState<string | null>(null)
   const [bookOpen, setBookOpen] = useState<string | null>(null)
   const [bookCashback, setBookCashback] = useState<Record<string, string>>({})
+  // Per-message booking overrides: the type the admin recognised + editable
+  // face value / currency (prefilled from the parse when the panel is opened).
+  const [bookType, setBookType] = useState<Record<string, string>>({})
+  const [bookFace, setBookFace] = useState<Record<string, string>>({})
+  const [bookCurrency, setBookCurrency] = useState<Record<string, string>>({})
   const [rejecting, setRejecting] = useState<string | null>(null)
   const [rejectOpen, setRejectOpen] = useState<string | null>(null)
   const [rejectReason, setRejectReason] = useState<Record<string, string>>({})
@@ -200,13 +208,30 @@ export function IncomingSwiftDelivery() {
     }
   }
 
+  // Open the booking panel, prefilling the amount/currency parsed from the
+  // message and defaulting the type to MT760 (BG/SBLC guarantees) when the
+  // message is a guarantee, else leaving the admin to recognise it.
+  const openBookPanel = (m: IncomingSwiftMessage) => {
+    const { currency, value } = parseAmount(m.amount)
+    setBookFace((p) => ({ ...p, [m.id]: p[m.id] ?? (value > 0 ? String(value) : "") }))
+    setBookCurrency((p) => ({ ...p, [m.id]: p[m.id] ?? currency }))
+    setBookType((p) => ({ ...p, [m.id]: p[m.id] ?? (m.messageType === "MT760" ? "BG" : "") }))
+    setBookOpen(bookOpen === m.id ? null : m.id)
+  }
+
   const handleBookGuarantee = async (m: IncomingSwiftMessage, cashbackRate?: number) => {
     setBooking(m.id)
     try {
-      const res = await recordGuaranteeInstrumentAdmin(ADMIN_PASSCODE, m.id, cashbackRate)
+      const faceRaw = Number((bookFace[m.id] ?? "").replace(/,/g, ""))
+      const overrides = {
+        instrumentTypeCode: bookType[m.id] || undefined,
+        faceValue: Number.isFinite(faceRaw) && faceRaw > 0 ? faceRaw : undefined,
+        currency: (bookCurrency[m.id] || "").trim().toUpperCase() || undefined,
+      }
+      const res = await recordGuaranteeInstrumentAdmin(ADMIN_PASSCODE, m.id, cashbackRate, overrides)
       if (res.ok) {
         toast.success(
-          `Booked ${res.instrumentLabel} blocked-funds guarantee${res.bookedTo ? ` for ${res.bookedTo}` : ""}. Receipt fee ${res.feeLabel} charged.`,
+          `Booked ${res.instrumentLabel} bank instrument${res.bookedTo ? ` for ${res.bookedTo}` : ""}. Receipt fee ${res.feeLabel} charged.`,
         )
         setBookOpen(null)
         setCreditable((prev) => prev.filter((x) => x.id !== m.id))
@@ -472,136 +497,183 @@ export function IncomingSwiftDelivery() {
                       </Button>
                     </div>
                   )}
-                  {m.messageType === "MT760" ? (
-                    <>
-                      <p className="mt-2 flex items-start gap-1.5 text-xs text-muted-foreground">
-                        <Lock className="mt-0.5 h-3.5 w-3.5 shrink-0" /> An MT760 is a bank guarantee (blocked funds),
-                        not a cash transfer. Booking it adds a pledgeable bank instrument to the customer&apos;s
-                        portfolio and charges a 0.2% receipt fee to their Master Account. They can then pledge it for a
-                        treasury leverage line.
-                      </p>
-                      <div className="mt-3 flex flex-wrap items-center gap-2">
-                        <Button
-                          size="sm"
-                          onClick={() => setBookOpen(bookOpen === m.id ? null : m.id)}
-                          disabled={booking === m.id}
-                          className="gap-1.5"
-                        >
-                          <Lock className="h-4 w-4" />
-                          Record blocked-funds guarantee
-                        </Button>
-                        <SwitchCustomerButton id={m.id} open={reassignOpen === m.id} onToggle={setReassignOpen} />
-                        <RejectButton id={m.id} open={rejectOpen === m.id} onToggle={setRejectOpen} />
-                      </div>
-                      {bookOpen === m.id &&
-                        (() => {
-                          const { currency, value } = parseAmount(m.amount)
-                          const pct = Number(bookCashback[m.id] ?? "")
-                          const rateFraction = Number.isFinite(pct) && pct > 0 ? Math.min(1, pct / 100) : 0
-                          const cb = applyCashback(value * RECEIPT_FEE_RATE, rateFraction)
-                          return (
-                            <div className="mt-3 rounded-md border border-primary/30 bg-primary/5 p-3">
-                              <p className="text-xs font-medium text-foreground">
-                                Apply a cashback before booking (optional)
-                              </p>
-                              <p className="mt-0.5 text-xs text-muted-foreground">
-                                The standard receipt fee is 0.2% of the guarantee. Authorise a cashback % to reduce what
-                                the customer is charged, or leave it blank to charge the full fee. Nothing is debited
-                                until you confirm.
-                              </p>
-                              <div className="mt-2 flex flex-col gap-1">
-                                <label htmlFor={`cb-${m.id}`} className="text-xs text-muted-foreground">
-                                  Cashback %
-                                </label>
-                                <div className="relative w-32">
-                                  <Input
-                                    id={`cb-${m.id}`}
-                                    inputMode="decimal"
-                                    value={bookCashback[m.id] ?? ""}
-                                    onChange={(e) =>
-                                      setBookCashback((prev) => ({
-                                        ...prev,
-                                        [m.id]: e.target.value.replace(/[^0-9.]/g, ""),
-                                      }))
-                                    }
-                                    placeholder="0"
-                                    className="h-10 pr-7 text-base"
-                                  />
-                                  <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-sm text-muted-foreground">
-                                    %
-                                  </span>
-                                </div>
-                              </div>
-                              <div className="mt-3 space-y-1 rounded-md bg-background/60 p-2.5 text-sm">
-                                <div className="flex items-center justify-between">
-                                  <span className="text-muted-foreground">Standard receipt fee (0.2%)</span>
-                                  <span
-                                    className={
-                                      rateFraction > 0 ? "text-muted-foreground line-through" : "text-foreground"
-                                    }
-                                  >
-                                    {fmtMoney(cb.originalFee, currency)}
-                                  </span>
-                                </div>
-                                {rateFraction > 0 && (
-                                  <div className="flex items-center justify-between text-emerald-600 dark:text-emerald-400">
-                                    <span>Cashback ({formatCashbackPct(cb.cashbackRate)})</span>
-                                    <span>−{fmtMoney(cb.cashbackAmount, currency)}</span>
-                                  </div>
-                                )}
-                                <div className="flex items-center justify-between font-semibold text-foreground">
-                                  <span>Charged to customer</span>
-                                  <span>{fmtMoney(cb.netFee, currency)}</span>
-                                </div>
-                              </div>
-                              <div className="mt-3 flex flex-wrap gap-2">
-                                <Button
-                                  size="sm"
-                                  onClick={() =>
-                                    handleBookGuarantee(m, rateFraction > 0 ? rateFraction : undefined)
-                                  }
-                                  disabled={booking === m.id}
-                                  className="gap-1.5"
-                                >
-                                  {booking === m.id ? (
-                                    <Loader2 className="h-4 w-4 animate-spin" />
-                                  ) : (
-                                    <Lock className="h-4 w-4" />
-                                  )}
-                                  Confirm &amp; book — charge {fmtMoney(cb.netFee, currency)}
-                                </Button>
-                                <Button
-                                  size="sm"
-                                  variant="ghost"
-                                  onClick={() => setBookOpen(null)}
-                                  disabled={booking === m.id}
-                                >
-                                  Cancel
-                                </Button>
-                              </div>
-                            </div>
-                          )
-                        })()}
-                    </>
-                  ) : (
-                    <div className="mt-3 flex flex-wrap items-center gap-2">
+                  <p className="mt-2 flex items-start gap-1.5 text-xs text-muted-foreground">
+                    <Lock className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                    {m.messageType === "MT760"
+                      ? "An MT760 is a bank guarantee (blocked funds), not a cash transfer. Book it as a pledgeable bank instrument, or recognise it as a specific type below."
+                      : "Recognise this printout as a bank instrument (BG / SBLC / DLC / MTN / Bond) and book it into the customer's Bank Instruments — or, if it is a cash transfer, credit the Master Account."}{" "}
+                    A 0.2% receipt fee applies to the Master Account. The instrument can then be pledged for a treasury
+                    leverage / PPP line.
+                  </p>
+                  <div className="mt-3 flex flex-wrap items-center gap-2">
+                    <Button size="sm" onClick={() => openBookPanel(m)} disabled={booking === m.id} className="gap-1.5">
+                      <Lock className="h-4 w-4" />
+                      Book as bank instrument
+                    </Button>
+                    {m.messageType !== "MT760" && (
                       <Button
                         size="sm"
+                        variant="outline"
                         onClick={() => handleCredit(m)}
                         disabled={crediting === m.id}
-                        className="gap-1.5"
+                        className="gap-1.5 bg-transparent"
                       >
                         {crediting === m.id ? (
                           <Loader2 className="h-4 w-4 animate-spin" />
                         ) : (
                           <Banknote className="h-4 w-4" />
                         )}
-                        Execute &amp; credit to Master Account
+                        Credit as cash to Master Account
                       </Button>
-                      <SwitchCustomerButton id={m.id} open={reassignOpen === m.id} onToggle={setReassignOpen} />
-                      <RejectButton id={m.id} open={rejectOpen === m.id} onToggle={setRejectOpen} />
-                    </div>
-                  )}
+                    )}
+                    <SwitchCustomerButton id={m.id} open={reassignOpen === m.id} onToggle={setReassignOpen} />
+                    <RejectButton id={m.id} open={rejectOpen === m.id} onToggle={setRejectOpen} />
+                  </div>
+                  {bookOpen === m.id &&
+                    (() => {
+                      const currency = (bookCurrency[m.id] || "").toUpperCase()
+                      const value = Number((bookFace[m.id] ?? "").replace(/,/g, "")) || 0
+                      const pct = Number(bookCashback[m.id] ?? "")
+                      const rateFraction = Number.isFinite(pct) && pct > 0 ? Math.min(1, pct / 100) : 0
+                      const cb = applyCashback(value * RECEIPT_FEE_RATE, rateFraction)
+                      const canBook = value > 0 && currency.length === 3 && Boolean(bookType[m.id])
+                      return (
+                        <div className="mt-3 rounded-md border border-primary/30 bg-primary/5 p-3">
+                          <p className="text-xs font-medium text-foreground">Recognise &amp; book this instrument</p>
+                          <p className="mt-0.5 text-xs text-muted-foreground">
+                            Pick the instrument type and confirm the face value + currency (prefilled from the
+                            printout). Nothing is debited until you confirm.
+                          </p>
+
+                          <div className="mt-3 grid gap-3 sm:grid-cols-3">
+                            <div className="flex flex-col gap-1 sm:col-span-1">
+                              <label className="text-xs text-muted-foreground">Instrument type</label>
+                              <Select
+                                value={bookType[m.id] ?? ""}
+                                onValueChange={(v) => setBookType((p) => ({ ...p, [m.id]: v }))}
+                              >
+                                <SelectTrigger className="h-10 text-base">
+                                  <SelectValue placeholder="Choose type…" />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  {instrumentTypesByCategory().map((group) => (
+                                    <SelectGroup key={group.category}>
+                                      <SelectLabel>{group.category}</SelectLabel>
+                                      {group.types.map((t) => (
+                                        <SelectItem key={t.code} value={t.code}>
+                                          {t.full} ({t.code})
+                                        </SelectItem>
+                                      ))}
+                                    </SelectGroup>
+                                  ))}
+                                </SelectContent>
+                              </Select>
+                            </div>
+                            <div className="flex flex-col gap-1 sm:col-span-1">
+                              <label htmlFor={`face-${m.id}`} className="text-xs text-muted-foreground">
+                                Face value
+                              </label>
+                              <Input
+                                id={`face-${m.id}`}
+                                inputMode="decimal"
+                                value={bookFace[m.id] ?? ""}
+                                onChange={(e) =>
+                                  setBookFace((p) => ({ ...p, [m.id]: e.target.value.replace(/[^0-9.,]/g, "") }))
+                                }
+                                placeholder="0"
+                                className="h-10 text-base"
+                              />
+                            </div>
+                            <div className="flex flex-col gap-1 sm:col-span-1">
+                              <label htmlFor={`ccy-${m.id}`} className="text-xs text-muted-foreground">
+                                Currency
+                              </label>
+                              <Input
+                                id={`ccy-${m.id}`}
+                                value={bookCurrency[m.id] ?? ""}
+                                onChange={(e) =>
+                                  setBookCurrency((p) => ({
+                                    ...p,
+                                    [m.id]: e.target.value.replace(/[^A-Za-z]/g, "").toUpperCase().slice(0, 3),
+                                  }))
+                                }
+                                placeholder="EUR"
+                                className="h-10 text-base uppercase"
+                              />
+                            </div>
+                          </div>
+
+                          <div className="mt-3 flex flex-col gap-1">
+                            <label htmlFor={`cb-${m.id}`} className="text-xs text-muted-foreground">
+                              Cashback % on the 0.2% receipt fee (optional)
+                            </label>
+                            <div className="relative w-32">
+                              <Input
+                                id={`cb-${m.id}`}
+                                inputMode="decimal"
+                                value={bookCashback[m.id] ?? ""}
+                                onChange={(e) =>
+                                  setBookCashback((prev) => ({
+                                    ...prev,
+                                    [m.id]: e.target.value.replace(/[^0-9.]/g, ""),
+                                  }))
+                                }
+                                placeholder="0"
+                                className="h-10 pr-7 text-base"
+                              />
+                              <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-sm text-muted-foreground">
+                                %
+                              </span>
+                            </div>
+                          </div>
+
+                          <div className="mt-3 space-y-1 rounded-md bg-background/60 p-2.5 text-sm">
+                            <div className="flex items-center justify-between">
+                              <span className="text-muted-foreground">Standard receipt fee (0.2%)</span>
+                              <span
+                                className={rateFraction > 0 ? "text-muted-foreground line-through" : "text-foreground"}
+                              >
+                                {fmtMoney(cb.originalFee, currency || "—")}
+                              </span>
+                            </div>
+                            {rateFraction > 0 && (
+                              <div className="flex items-center justify-between text-emerald-600 dark:text-emerald-400">
+                                <span>Cashback ({formatCashbackPct(cb.cashbackRate)})</span>
+                                <span>−{fmtMoney(cb.cashbackAmount, currency || "—")}</span>
+                              </div>
+                            )}
+                            <div className="flex items-center justify-between font-semibold text-foreground">
+                              <span>Charged to customer</span>
+                              <span>{fmtMoney(cb.netFee, currency || "—")}</span>
+                            </div>
+                          </div>
+
+                          <div className="mt-3 flex flex-wrap gap-2">
+                            <Button
+                              size="sm"
+                              onClick={() => handleBookGuarantee(m, rateFraction > 0 ? rateFraction : undefined)}
+                              disabled={booking === m.id || !canBook}
+                              className="gap-1.5"
+                            >
+                              {booking === m.id ? (
+                                <Loader2 className="h-4 w-4 animate-spin" />
+                              ) : (
+                                <Lock className="h-4 w-4" />
+                              )}
+                              Confirm &amp; book — charge {fmtMoney(cb.netFee, currency || "—")}
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              onClick={() => setBookOpen(null)}
+                              disabled={booking === m.id}
+                            >
+                              Cancel
+                            </Button>
+                          </div>
+                        </div>
+                      )
+                    })()}
 
                   {reassignOpen === m.id && (
                     <div className="mt-3 rounded-md border border-amber-500/30 bg-amber-500/5 p-3">
