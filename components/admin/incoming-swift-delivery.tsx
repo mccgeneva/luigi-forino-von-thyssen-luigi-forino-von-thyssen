@@ -23,6 +23,7 @@ import { Textarea } from "@/components/ui/textarea"
 import { Input } from "@/components/ui/input"
 import { applyCashback, formatCashbackPct } from "@/lib/fee-cashback"
 import { instrumentTypesByCategory } from "@/lib/instrument-marketplace"
+import { parseSwiftMessage } from "@/lib/swift-mt"
 import {
   Select,
   SelectContent,
@@ -88,6 +89,22 @@ function parseAmount(amountStr?: string | null): { currency: string; value: numb
 
 function fmtMoney(value: number, currency: string): string {
   return `${currency} ${value.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+}
+
+// Derive the default instrument type from the printout. An MT760 is NOT always
+// a BG — it carries the form in :22D: (STBY = Standby LC = SBLC, DGAR = Demand
+// Guarantee = BG), so an SBLC must default to SBLC, never silently to BG. The
+// admin can still override the type in the picker.
+function defaultTypeFor(m: IncomingSwiftMessage): string {
+  if (m.messageType !== "MT760") return ""
+  try {
+    const form = parseSwiftMessage(m.raw).guarantee?.form?.toUpperCase()
+    if (form === "STBY") return "SBLC"
+    if (form === "DGAR") return "BG"
+  } catch {
+    // fall through to the guarantee default
+  }
+  return "BG"
 }
 
 export function IncomingSwiftDelivery() {
@@ -209,13 +226,13 @@ export function IncomingSwiftDelivery() {
   }
 
   // Open the booking panel, prefilling the amount/currency parsed from the
-  // message and defaulting the type to MT760 (BG/SBLC guarantees) when the
-  // message is a guarantee, else leaving the admin to recognise it.
+  // message and defaulting the type from the printout's :22D: form (SBLC vs BG
+  // for an MT760); the admin can still override it in the picker.
   const openBookPanel = (m: IncomingSwiftMessage) => {
     const { currency, value } = parseAmount(m.amount)
     setBookFace((p) => ({ ...p, [m.id]: p[m.id] ?? (value > 0 ? String(value) : "") }))
     setBookCurrency((p) => ({ ...p, [m.id]: p[m.id] ?? currency }))
-    setBookType((p) => ({ ...p, [m.id]: p[m.id] ?? (m.messageType === "MT760" ? "BG" : "") }))
+    setBookType((p) => ({ ...p, [m.id]: p[m.id] ?? defaultTypeFor(m) }))
     setBookOpen(bookOpen === m.id ? null : m.id)
   }
 
